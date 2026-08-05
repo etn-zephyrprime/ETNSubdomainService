@@ -4,11 +4,20 @@ export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/ele
 export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://testnet-blockexplorer.electroneum.com";
 
 // Contract addresses
-// TODO: MARKETPLACE_ADDRESS is the pre-renewName deployment — update once
-// scripts/deployMarketplace_remix.ts has been re-run after adding renewName()/quoteRenewal().
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0xFE8a448D84272Cb363F85B9B9E404Bde92350840";
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x09194a12fd71eC420449cc6709E3991a5103C69A";
+// Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
+// unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
+// have a subname price set) start here instead of from genesis. Must be updated alongside
+// MARKETPLACE_ADDRESS on every redeploy.
+export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 14667390;
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5BFb2958062Ac12d2019Ac1E69243DDbafCCc2c5";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x7b787b31Ad58D563D7B3938b4bbfAB2c588624C5";
+// registerName() always wraps — the raw ERC721 ends up owned by NameWrapper itself, so
+// ownership lookups for any registered name must query NameWrapper.ownerOf(node), not
+// BaseRegistrar.ownerOf(tokenId) (which just returns NameWrapper's own address post-wrap).
+export const NAME_WRAPPER_ADDRESS = import.meta.env.VITE_NAME_WRAPPER_ADDRESS || "0x388f495A886644883F41a5958C11382e7c0D23F5";
 
 // namehash("etn") — Electroneum's ENS fork uses its own TLD, not "eth". Confirmed on-chain:
 // ENSRegistry.owner(this node) returns exactly BaseRegistrarImplementation's address.

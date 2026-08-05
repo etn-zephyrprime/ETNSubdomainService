@@ -284,7 +284,7 @@ export default function RegistrationFlow({
                   <span>{basePriceEth} ETN</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: mutedLight, marginBottom: 10 }}>
-                  <span>Platform fee</span>
+                  <span>Brokerage fee</span>
                   <span>{brokerageFeeEth} ETN</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 900, color: green, paddingTop: 10, borderTop: `1px solid ${border}` }}>

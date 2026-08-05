@@ -16,3 +16,22 @@ export function computeNode(label) {
 export function computeTokenId(label) {
   return ethers.keccak256(ethers.toUtf8Bytes(label));
 }
+
+/** Child node one level below parentNode — same construction as computeNode, generalized. */
+export function computeSubnode(parentNode, label) {
+  const labelHash = ethers.keccak256(ethers.toUtf8Bytes(label));
+  return ethers.keccak256(ethers.concat([parentNode, labelHash]));
+}
+
+/**
+ * Decodes the first (leftmost) label out of a DNS-wire-encoded name, as returned by
+ * NameWrapper.names(node) — e.g. "\x05alice\x03etn\x00" -> "alice". Same parsing the contract's
+ * own _firstLabelMatches does in Solidity, just reading instead of comparing.
+ */
+export function decodeFirstLabel(dnsEncodedHex) {
+  const bytes = ethers.getBytes(dnsEncodedHex);
+  if (bytes.length < 1) return null;
+  const len = bytes[0];
+  if (bytes.length < 1 + len) return null;
+  return ethers.toUtf8String(bytes.slice(1, 1 + len));
+}

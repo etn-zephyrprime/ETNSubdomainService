@@ -89,5 +89,88 @@
     ],
     "name": "NameRenewed",
     "type": "event"
+  },
+  {
+    "inputs": [{ "internalType": "bytes32", "name": "node", "type": "bytes32" }],
+    "name": "domainActivated",
+    "outputs": [{ "internalType": "bool", "name": "", "type": "bool" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "brokerageBps",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "node", "type": "bytes32" },
+      { "internalType": "string", "name": "label", "type": "string" }
+    ],
+    "name": "activateDomain",
+    "outputs": [{ "internalType": "uint256", "name": "fee", "type": "uint256" }],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "bytes32", "name": "parentNode", "type": "bytes32" }],
+    "name": "subnamePrice",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
+      { "internalType": "uint256", "name": "price", "type": "uint256" }
+    ],
+    "name": "setSubnamePrice",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
+      { "internalType": "string", "name": "label", "type": "string" }
+    ],
+    "name": "registerSubname",
+    "outputs": [{ "internalType": "bytes32", "name": "subNode", "type": "bytes32" }],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "node", "type": "bytes32" },
+      { "indexed": true, "internalType": "address", "name": "payer", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "feePaid", "type": "uint256" }
+    ],
+    "name": "DomainActivated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" }
+    ],
+    "name": "SubnamePriceSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
+      { "indexed": false, "internalType": "string", "name": "label", "type": "string" },
+      { "indexed": true, "internalType": "address", "name": "buyer", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "sellerAmount", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "burnAmount", "type": "uint256" }
+    ],
+    "name": "SubnameRegistered",
+    "type": "event"
   }
 ]

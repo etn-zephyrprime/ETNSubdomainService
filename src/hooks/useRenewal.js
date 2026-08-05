@@ -1,9 +1,10 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
-import { computeTokenId } from "../utils/ens.js";
+import { MARKETPLACE_ADDRESS, BASE_REGISTRAR_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL } from "../config.js";
+import { computeTokenId, computeNode } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import BaseRegistrarABI from "../abis/BaseRegistrarABI.json";
+import NameWrapperABI from "../abis/NameWrapperABI.json";
 
 export function useRenewal() {
   const [loading, setLoading] = useState(false);
@@ -14,6 +15,7 @@ export function useRenewal() {
     return {
       marketplace: new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, provider),
       baseRegistrar: new ethers.Contract(BASE_REGISTRAR_ADDRESS, BaseRegistrarABI, provider),
+      nameWrapper: new ethers.Contract(NAME_WRAPPER_ADDRESS, NameWrapperABI, provider),
     };
   }, []);
 
@@ -30,11 +32,14 @@ export function useRenewal() {
     }
   }, [getReadContracts]);
 
+  // registerName() always wraps, so the raw ERC721 lives in NameWrapper's own custody once
+  // registered — real ownership must be read from NameWrapper.ownerOf(node), not
+  // BaseRegistrar.ownerOf(tokenId) (that would just return NameWrapper's address).
   const getOwner = useCallback(async (label) => {
     try {
-      const { baseRegistrar } = getReadContracts();
-      const tokenId = computeTokenId(label);
-      return await baseRegistrar.ownerOf(tokenId);
+      const { nameWrapper } = getReadContracts();
+      const node = computeNode(label);
+      return await nameWrapper.ownerOf(node);
     } catch (err) {
       console.error("Failed to fetch name owner:", err);
       throw err;

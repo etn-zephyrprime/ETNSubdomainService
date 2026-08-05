@@ -42,7 +42,7 @@ export default function Footer() {
         />
 
         <span>
-          © {new Date().getFullYear()} Planet Zephyros × @ETN_Villain
+          © {new Date().getFullYear()} Planet Zephyros × @ETN_ZephyrPrime
         </span>
       </div>
 

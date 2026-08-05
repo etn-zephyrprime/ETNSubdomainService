@@ -4,12 +4,13 @@ import { panel, muted } from "./styles/theme.js";
 import SearchBar from "./components/SearchBar.jsx";
 import RegistrationFlow from "./components/RegistrationFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
+import SubnameSearch from "./components/SubnameSearch.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
 
 function AppContent() {
-  const SUSPENDED = true; // flip to false to restore access
+  const SUSPENDED = false; // flip to false to restore access
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   useEffect(() => {
@@ -59,6 +60,7 @@ function AppContent() {
 
   const [selectedName, setSelectedName] = useState(null);
   const [showManageSubdomain, setShowManageSubdomain] = useState(false);
+  const [showSubnameSearch, setShowSubnameSearch] = useState(false);
 
   const handleNameSelected = async (nameData) => {
     if (!wallet.isConnected) {
@@ -92,11 +94,27 @@ function AppContent() {
 
   const handleBackFromManage = () => setShowManageSubdomain(false);
 
+  const handleSubnameSearch = async () => {
+    if (!wallet.isConnected) {
+      await wallet.connectWallet();
+      return;
+    }
+    try {
+      await wallet.ensureCorrectNetwork();
+    } catch (err) {
+      console.error("Network switch failed:", err);
+      return;
+    }
+    setShowSubnameSearch(true);
+  };
+
+  const handleBackFromSubnameSearch = () => setShowSubnameSearch(false);
+
   const handleRegistrationSuccess = (result) => {
     console.log("Registration successful:", result);
   };
 
-  const showingMainSearch = !selectedName && !showManageSubdomain;
+  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch;
 
   return (
     <div style={{
@@ -119,13 +137,27 @@ function AppContent() {
               wallet={wallet}
               onNameSelected={handleNameSelected}
             />
-            <div style={{ width: "100%", maxWidth: 600, margin: "16px auto 0", padding: "0 16px" }}>
+            <div style={{
+              width: "100%",
+              maxWidth: 600,
+              margin: "16px auto 0",
+              padding: "0 16px",
+              display: "flex",
+              gap: 12,
+            }}>
               <NeonButton
                 variant="dark"
                 onClick={handleManageSubdomain}
-                style={{ width: "100%", justifyContent: "center" }}
+                style={{ flex: 1, justifyContent: "center" }}
               >
                 Your Names
+              </NeonButton>
+              <NeonButton
+                variant="dark"
+                onClick={handleSubnameSearch}
+                style={{ flex: 1, justifyContent: "center" }}
+              >
+                Get a Subname
               </NeonButton>
             </div>
           </>
@@ -136,10 +168,15 @@ function AppContent() {
             onBack={handleBack}
             onSuccess={handleRegistrationSuccess}
           />
-        ) : (
+        ) : showManageSubdomain ? (
           <ManageSubdomain
             wallet={wallet}
             onBack={handleBackFromManage}
+          />
+        ) : (
+          <SubnameSearch
+            wallet={wallet}
+            onBack={handleBackFromSubnameSearch}
           />
         )}
       </div>
