@@ -1,168 +1,150 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, RPC_URL } from "../config.js";
+import { computeNode } from "../utils/ens.js";
+import MarketplaceABI from "../abis/MarketplaceABI.json";
+import ETHRegistrarControllerABI from "../abis/ETHRegistrarControllerABI.json";
 
-// Minimal ABI for registration
-const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
-
-function getProjectNode(project) {
-  const labelHash = ethers.keccak256(ethers.toUtf8Bytes(project));
-  return ethers.keccak256(ethers.concat([ETN_NODE, labelHash]));
-}
-
-const REGISTRAR_ABI = [
-  "function getBasicYearPrice() view returns (uint256)",
-  "function getBasicLifetimePrice() view returns (uint256)",
-  "function getProjectNameYearPrice() view returns (uint256)",
-  "function getProjectNameLifetimePrice() view returns (uint256)",
-  "function namespaceProjectYearPrice(bytes32 projectNode) view returns (uint256)",
-  "function namespaceProjectLifetimePrice(bytes32 projectNode) view returns (uint256)",
-  "function fallbackProjectYearPrice() view returns (uint256)",
-  "function fallbackProjectLifetimePrice() view returns (uint256)",
-  "function registerBasic(string calldata name, address resolver, bool lifetime) external payable",
-  "function registerProject(string calldata name, string calldata project, address resolver, bool lifetime) external payable",
-  "event NameRegistered(bytes32 indexed node, string name, string tld, address indexed registrant, bool lifetime, uint256 expiresAt)",
-];
+const SESSION_STORAGE_PREFIX = "etn-pending-registration:";
 
 export function useRegistration() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Fetch price from contract
-const getPrice = useCallback(async (type, lifetime, project = null) => {
-  try {
+  const getReadContracts = useCallback(() => {
     const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const registrar = new ethers.Contract(REGISTRAR_ADDRESS, REGISTRAR_ABI, provider);
-
-    if (type === "basic") {
-      return lifetime
-        ? await registrar.getBasicLifetimePrice()
-        : await registrar.getBasicYearPrice();
-    }
-
-    // Project name — check for namespace-specific custom pricing first
-    if (project) {
-      const projectNode = getProjectNode(project);
-      const customPrice = lifetime
-        ? await registrar.namespaceProjectLifetimePrice(projectNode)
-        : await registrar.namespaceProjectYearPrice(projectNode);
-
-      if (customPrice > 0n) {
-        return customPrice;
-      }
-    }
-
-    // No custom price set — fall back to global default
-    return lifetime
-      ? await registrar.getProjectNameLifetimePrice()
-      : await registrar.getProjectNameYearPrice();
-  } catch (err) {
-    console.error("Failed to fetch price:", err);
-    throw err;
-  }
-}, []);
-
-  // Register a basic name
-const registerBasicName = useCallback(async (name, signer, lifetime, resolver = null) => {
-  setLoading(true);
-  setError(null);
-
-  try {
-    const registrar = new ethers.Contract(REGISTRAR_ADDRESS, REGISTRAR_ABI, signer);
-    const price = await getPrice("basic", lifetime);
-
-    const tx = await registrar.registerBasic(
-      name,
-      resolver || ethers.ZeroAddress,
-      lifetime,
-      { value: price }
-    );
-
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error("Registration failed");
-
-    // Extract node from the NameRegistered event
-    let node = null;
-    for (const log of receipt.logs) {
-      try {
-        const parsed = registrar.interface.parseLog(log);
-        if (parsed?.name === "NameRegistered") {
-          node = parsed.args.node;
-          break;
-        }
-      } catch {
-        // not this event, skip
-      }
-    }
-
     return {
-      success: true,
-      txHash: tx.hash,
-      name: `${name}.etn`,
-      node, // bytes32 hex string, e.g. "0xabc123..."
+      marketplace: new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, provider),
+      controller: new ethers.Contract(REGISTRAR_CONTROLLER_ADDRESS, ETHRegistrarControllerABI, provider),
     };
-  } catch (err) {
-    console.error("Registration failed:", err);
-    setError(err?.reason || err?.message || "Registration failed");
-    throw err;
-  } finally {
-    setLoading(false);
-  }
-}, [getPrice]);
+  }, []);
 
-  // Register a project name
-const registerProjectName = useCallback(async (name, project, signer, lifetime, resolver = null) => {
-  setLoading(true);
-  setError(null);
-
-  try {
-    const registrar = new ethers.Contract(REGISTRAR_ADDRESS, REGISTRAR_ABI, signer);
-    const price = await getPrice("project", lifetime, project); // ← pass project here
-
-    const tx = await registrar.registerProject(
-      name,
-      project,
-      resolver || ethers.ZeroAddress,
-      lifetime,
-      { value: price }
-    );
-
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error("Registration failed");
-
-    // Extract node from the NameRegistered event
-    let node = null;
-    for (const log of receipt.logs) {
-      try {
-        const parsed = registrar.interface.parseLog(log);
-        if (parsed?.name === "NameRegistered") {
-          node = parsed.args.node;
-          break;
-        }
-      } catch {
-        // not this event, skip
-      }
+  // Fetch registration price from the marketplace (registrar's own price + brokerage fee).
+  const quoteRegistration = useCallback(async (label, duration) => {
+    try {
+      const { marketplace } = getReadContracts();
+      const [basePrice, brokerageFee, totalPrice] = await marketplace.quoteRegistration(label, duration);
+      return { basePrice, brokerageFee, totalPrice };
+    } catch (err) {
+      console.error("Failed to fetch registration price:", err);
+      throw err;
     }
+  }, [getReadContracts]);
 
-    return {
-      success: true,
-      txHash: tx.hash,
-      name: `${name}.${project}.etn`,
-      node,
-    };
-  } catch (err) {
-    console.error("Registration failed:", err);
-    setError(err?.reason || err?.message || "Registration failed");
-    throw err;
-  } finally {
-    setLoading(false);
-  }
-}, [getPrice]);
+  // Builds the exact commitment the buyer must commit() on the real registrar before calling
+  // registerName — via the marketplace's own computeCommitment, so it's guaranteed to match
+  // (owner is forced to the marketplace contract internally, not something we set here).
+  const computeCommitment = useCallback(async (label, duration, secret, referrer) => {
+    try {
+      const { marketplace } = getReadContracts();
+      return await marketplace.computeCommitment(label, duration, secret, referrer);
+    } catch (err) {
+      console.error("Failed to compute commitment:", err);
+      throw err;
+    }
+  }, [getReadContracts]);
+
+  const getMinCommitmentAge = useCallback(async () => {
+    const { controller } = getReadContracts();
+    return await controller.minCommitmentAge();
+  }, [getReadContracts]);
+
+  const getMaxCommitmentAge = useCallback(async () => {
+    const { controller } = getReadContracts();
+    return await controller.maxCommitmentAge();
+  }, [getReadContracts]);
+
+  // Submits commit() directly on the real ETHRegistrarController — a separate transaction
+  // against a separate contract from the eventual registerName() call.
+  const commitRegistration = useCallback(async (commitment, signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const controller = new ethers.Contract(REGISTRAR_CONTROLLER_ADDRESS, ETHRegistrarControllerABI, signer);
+      const tx = await controller.commit(commitment);
+      const receipt = await tx.wait();
+      return { success: true, txHash: tx.hash, blockTimestamp: (await receipt.getBlock())?.timestamp ?? null };
+    } catch (err) {
+      console.error("Commit failed:", err);
+      setError(err?.reason || err?.message || "Commit failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Persists the in-flight commitment so a page reload during the minCommitmentAge wait doesn't
+  // lose the secret needed to complete registration.
+  const savePendingCommitment = useCallback((label, data) => {
+    sessionStorage.setItem(SESSION_STORAGE_PREFIX + label, JSON.stringify(data));
+  }, []);
+
+  const loadPendingCommitment = useCallback((label) => {
+    const raw = sessionStorage.getItem(SESSION_STORAGE_PREFIX + label);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const clearPendingCommitment = useCallback((label) => {
+    sessionStorage.removeItem(SESSION_STORAGE_PREFIX + label);
+  }, []);
+
+  // Registers + wraps the name via the marketplace. expectedNode is caller-computed
+  // (ethers.namehash-equivalent, see utils/ens.js) and passed straight through — NameRegistered
+  // doesn't emit the node, so there's nothing to parse back out of the receipt for it.
+  const registerName = useCallback(async (label, duration, secret, referrer, wrappedOwner, totalPrice, signer) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+      const expectedNode = computeNode(label);
+
+      const tx = await marketplace.registerName(
+        label,
+        duration,
+        secret,
+        referrer,
+        wrappedOwner,
+        0, // ownerControlledFuses — no restrictions by default
+        expectedNode,
+        { value: totalPrice }
+      );
+
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error("Registration failed");
+
+      clearPendingCommitment(label);
+
+      return {
+        success: true,
+        txHash: tx.hash,
+        name: `${label}.etn`,
+        node: expectedNode,
+      };
+    } catch (err) {
+      console.error("Registration failed:", err);
+      setError(err?.reason || err?.message || "Registration failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [clearPendingCommitment]);
 
   return {
-    getPrice,
-    registerBasicName,
-    registerProjectName,
+    quoteRegistration,
+    computeCommitment,
+    getMinCommitmentAge,
+    getMaxCommitmentAge,
+    commitRegistration,
+    registerName,
+    savePendingCommitment,
+    loadPendingCommitment,
+    clearPendingCommitment,
     loading,
     error,
   };

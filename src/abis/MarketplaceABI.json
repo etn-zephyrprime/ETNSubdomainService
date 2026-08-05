@@ -1,0 +1,93 @@
+[
+  {
+    "inputs": [
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" },
+      { "internalType": "bytes32", "name": "secret", "type": "bytes32" },
+      { "internalType": "bytes32", "name": "referrer", "type": "bytes32" }
+    ],
+    "name": "computeCommitment",
+    "outputs": [{ "internalType": "bytes32", "name": "", "type": "bytes32" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" }
+    ],
+    "name": "quoteRegistration",
+    "outputs": [
+      { "internalType": "uint256", "name": "basePrice", "type": "uint256" },
+      { "internalType": "uint256", "name": "brokerageFee", "type": "uint256" },
+      { "internalType": "uint256", "name": "totalPrice", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" },
+      { "internalType": "bytes32", "name": "secret", "type": "bytes32" },
+      { "internalType": "bytes32", "name": "referrer", "type": "bytes32" },
+      { "internalType": "address", "name": "wrappedOwner", "type": "address" },
+      { "internalType": "uint16", "name": "ownerControlledFuses", "type": "uint16" },
+      { "internalType": "bytes32", "name": "expectedNode", "type": "bytes32" }
+    ],
+    "name": "registerName",
+    "outputs": [{ "internalType": "uint64", "name": "expiry", "type": "uint64" }],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" }
+    ],
+    "name": "quoteRenewal",
+    "outputs": [
+      { "internalType": "uint256", "name": "basePrice", "type": "uint256" },
+      { "internalType": "uint256", "name": "brokerageFee", "type": "uint256" },
+      { "internalType": "uint256", "name": "totalPrice", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" },
+      { "internalType": "bytes32", "name": "referrer", "type": "bytes32" }
+    ],
+    "name": "renewName",
+    "outputs": [{ "internalType": "uint256", "name": "newExpiry", "type": "uint256" }],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "buyer", "type": "address" },
+      { "indexed": false, "internalType": "string", "name": "label", "type": "string" },
+      { "indexed": false, "internalType": "uint256", "name": "basePrice", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "brokerageFee", "type": "uint256" },
+      { "indexed": false, "internalType": "address", "name": "wrappedTo", "type": "address" },
+      { "indexed": false, "internalType": "uint16", "name": "fuses", "type": "uint16" }
+    ],
+    "name": "NameRegistered",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "payer", "type": "address" },
+      { "indexed": false, "internalType": "string", "name": "label", "type": "string" },
+      { "indexed": false, "internalType": "uint256", "name": "basePrice", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "brokerageFee", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "newExpiry", "type": "uint256" }
+    ],
+    "name": "NameRenewed",
+    "type": "event"
+  }
+]

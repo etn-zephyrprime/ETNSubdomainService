@@ -2,131 +2,94 @@ import React, { useState } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
-import { useNamespace } from "../hooks/useNamespace.js";
+import { useRenewal } from "../hooks/useRenewal.js";
 import NeonButton from "./NeonButton.jsx";
+import { DEFAULT_DURATION_SECONDS } from "../config.js";
 
+// "Your Names" — look up a name you own, view its expiry, renew it. No namespace/listing
+// concepts in V1: no accrued fees, no withdraw, no pricing floors.
 export default function ManageSubdomain({ wallet, onBack = null }) {
-  const [namespaceInput, setNamespaceInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState(null);
-  const [verifiedNamespace, setVerifiedNamespace] = useState(null);
+  const [verifiedName, setVerifiedName] = useState(null);
+  const [expiry, setExpiry] = useState(null);
 
-  const [yearPriceInput, setYearPriceInput] = useState("");
-  const [lifetimePriceInput, setLifetimePriceInput] = useState("");
-  const [yearFloor, setYearFloor] = useState(null);
-  const [lifetimeFloor, setLifetimeFloor] = useState(null);
-  const [pricingError, setPricingError] = useState(null);
-  const [pricingTxLoading, setPricingTxLoading] = useState(false);
-  const [pricingSuccess, setPricingSuccess] = useState(false);
+  const [renewLoading, setRenewLoading] = useState(false);
+  const [renewError, setRenewError] = useState(null);
+  const [renewSuccess, setRenewSuccess] = useState(false);
+  const [renewTxHash, setRenewTxHash] = useState(null);
 
-  const [accruedFees, setAccruedFees] = useState(null);
-  const [withdrawLoading, setWithdrawLoading] = useState(false);
-  const [withdrawError, setWithdrawError] = useState(null);
-  const [withdrawSuccess, setWithdrawSuccess] = useState(false);
-
-  const {
-    getNamespaceOwner,
-    getCurrentNamespacePricing,
-    getAccruedFees,
-    setNamespacePricing,
-    withdrawFees,
-  } = useNamespace();
+  const { getOwner, getCurrentExpiry, quoteRenewal, renewName } = useRenewal();
 
   const handleLookup = async () => {
     if (!wallet.isConnected) {
       setLookupError("Connect your wallet first");
       return;
     }
-    if (!namespaceInput) {
-      setLookupError("Enter a namespace name");
+    if (!nameInput) {
+      setLookupError("Enter a name");
       return;
     }
 
     setLookupLoading(true);
     setLookupError(null);
-    setVerifiedNamespace(null);
-    setPricingSuccess(false);
-    setWithdrawSuccess(false);
+    setVerifiedName(null);
+    setRenewSuccess(false);
+    setRenewError(null);
 
     try {
-      const owner = await getNamespaceOwner(namespaceInput);
+      const owner = await getOwner(nameInput);
 
       if (owner === ethers.ZeroAddress) {
-        setLookupError(`"${namespaceInput}.etn" doesn't exist`);
+        setLookupError(`"${nameInput}.etn" doesn't exist`);
         return;
       }
 
       if (owner.toLowerCase() !== wallet.account.toLowerCase()) {
-        setLookupError("Your wallet doesn't own this namespace");
+        setLookupError("Your wallet doesn't own this name");
         return;
       }
 
-      const pricing = await getCurrentNamespacePricing(namespaceInput);
-      setYearPriceInput(ethers.formatEther(pricing.yearPrice));
-      setLifetimePriceInput(ethers.formatEther(pricing.lifetimePrice));
-      setYearFloor(pricing.yearFloor);
-      setLifetimeFloor(pricing.lifetimeFloor);
-
-      const fees = await getAccruedFees(wallet.account);
-      setAccruedFees(fees);
-
-      setVerifiedNamespace(namespaceInput);
+      const currentExpiry = await getCurrentExpiry(nameInput);
+      setExpiry(currentExpiry);
+      setVerifiedName(nameInput);
     } catch (err) {
-      console.error("Namespace lookup failed:", err);
+      console.error("Name lookup failed:", err);
       setLookupError(err?.reason || err?.message || "Lookup failed");
     } finally {
       setLookupLoading(false);
     }
   };
 
-  const handleUpdatePricing = async () => {
-    setPricingError(null);
-    setPricingSuccess(false);
+  const handleRenew = async () => {
+    setRenewError(null);
+    setRenewSuccess(false);
+    setRenewLoading(true);
 
-    const yearWei = ethers.parseEther(yearPriceInput || "0");
-    const lifetimeWei = ethers.parseEther(lifetimePriceInput || "0");
-
-    if (yearFloor !== null && yearWei < yearFloor) {
-      setPricingError(`1-year price must be at least ${ethers.formatEther(yearFloor)} ETN`);
-      return;
-    }
-    if (lifetimeFloor !== null && lifetimeWei < lifetimeFloor) {
-      setPricingError(`Lifetime price must be at least ${ethers.formatEther(lifetimeFloor)} ETN`);
-      return;
-    }
-
-    setPricingTxLoading(true);
     try {
+      const { totalPrice } = await quoteRenewal(verifiedName, DEFAULT_DURATION_SECONDS);
       const signer = await wallet.getSigner();
-      await setNamespacePricing(verifiedNamespace, yearWei, lifetimeWei, signer);
-      setPricingSuccess(true);
+      const result = await renewName(verifiedName, DEFAULT_DURATION_SECONDS, ethers.ZeroHash, totalPrice, signer);
+
+      setRenewTxHash(result.txHash);
+      setRenewSuccess(true);
+
+      const newExpiry = await getCurrentExpiry(verifiedName);
+      setExpiry(newExpiry);
     } catch (err) {
-      setPricingError(err?.reason || err?.message || "Failed to update pricing");
+      console.error("Renewal failed:", err);
+      setRenewError(err?.reason || err?.message || "Renewal failed");
     } finally {
-      setPricingTxLoading(false);
+      setRenewLoading(false);
     }
   };
 
-  const handleWithdraw = async () => {
-    setWithdrawError(null);
-    setWithdrawSuccess(false);
-    setWithdrawLoading(true);
-
-    try {
-      const signer = await wallet.getSigner();
-      await withdrawFees(signer);
-      setWithdrawSuccess(true);
-      setAccruedFees(0n);
-    } catch (err) {
-      setWithdrawError(err?.reason || err?.message || "Withdrawal failed");
-    } finally {
-      setWithdrawLoading(false);
-    }
-  };
+  const expiryDate = expiry ? new Date(Number(expiry) * 1000) : null;
+  const daysRemaining = expiry ? Math.floor((Number(expiry) * 1000 - Date.now()) / (1000 * 60 * 60 * 24)) : null;
 
   return (
     <div style={{ width: "100%", maxWidth: 600, margin: "0 auto", padding: "0 16px" }}>
-      {/* Back button */}
       <div style={{ marginBottom: 20 }}>
         <button
           onClick={onBack}
@@ -149,7 +112,6 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
         </button>
       </div>
 
-      {/* Header */}
       <div style={{ marginBottom: 32, textAlign: "center" }}>
         <div style={{
           fontSize: 11,
@@ -159,7 +121,7 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
           color: muted,
           marginBottom: 10,
         }}>
-          Manage Subdomain
+          Manage
         </div>
         <h2 style={{
           fontSize: 28,
@@ -168,7 +130,7 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
           color: "#fff",
           textShadow: `0 0 16px ${greenGlow}`,
         }}>
-          Your Namespace
+          Your Names
         </h2>
         <div style={{
           width: 40,
@@ -180,15 +142,15 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
         }} />
       </div>
 
-      {/* Namespace lookup */}
+      {/* Lookup */}
       <div style={{ marginBottom: 24 }}>
         <input
           type="text"
-          placeholder="your-namespace"
-          value={namespaceInput}
+          placeholder="your-name"
+          value={nameInput}
           onChange={(e) => {
-            setNamespaceInput(e.target.value.toLowerCase().trim());
-            setVerifiedNamespace(null);
+            setNameInput(e.target.value.toLowerCase().trim());
+            setVerifiedName(null);
           }}
           style={{
             width: "100%",
@@ -207,11 +169,11 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
         <NeonButton
           variant="green"
           onClick={handleLookup}
-          disabled={lookupLoading || !namespaceInput}
+          disabled={lookupLoading || !nameInput}
           loading={lookupLoading}
           style={{ width: "100%", justifyContent: "center" }}
         >
-          {lookupLoading ? "Checking..." : "Load Namespace"}
+          {lookupLoading ? "Checking..." : "Look Up"}
         </NeonButton>
         {lookupError && (
           <div style={{ fontSize: 12, color: error, marginTop: 8, textAlign: "center" }}>
@@ -220,134 +182,53 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
         )}
       </div>
 
-      {verifiedNamespace && (
-        <>
-          {/* Pricing section */}
-          <div style={{
-            padding: 16,
-            borderRadius: 12,
-            background: panel2,
-            border: `1px solid ${border}`,
-            marginBottom: 20,
-          }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>
-              Pricing for {verifiedNamespace}.etn
-            </div>
-
-            <div style={{ marginBottom: 14, textAlign: "left" }}>
-              <label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>
-                1 Year Price (ETN)
-              </label>
-              <input
-                type="number"
-                value={yearPriceInput}
-                onChange={(e) => setYearPriceInput(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "12px 14px",
-                  borderRadius: 10,
-                  border: `1px solid ${border}`,
-                  background: "#0a1c2e",
-                  color: "#fff",
-                  fontSize: 15,
-                  fontWeight: 600,
-                  boxSizing: "border-box",
-                  outline: "none",
-                }}
-              />
-              {yearFloor !== null && (
-                <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>
-                  Minimum: {ethers.formatEther(yearFloor)} ETN
-                </div>
-              )}
-            </div>
-
-            <div style={{ marginBottom: 14, textAlign: "left" }}>
-              <label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>
-                Lifetime Price (ETN)
-              </label>
-              <input
-                type="number"
-                value={lifetimePriceInput}
-                onChange={(e) => setLifetimePriceInput(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "12px 14px",
-                  borderRadius: 10,
-                  border: `1px solid ${border}`,
-                  background: "#0a1c2e",
-                  color: "#fff",
-                  fontSize: 15,
-                  fontWeight: 600,
-                  boxSizing: "border-box",
-                  outline: "none",
-                }}
-              />
-              {lifetimeFloor !== null && (
-                <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>
-                  Minimum: {ethers.formatEther(lifetimeFloor)} ETN
-                </div>
-              )}
-            </div>
-
-            {pricingError && (
-              <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
-                {pricingError}
-              </div>
-            )}
-            {pricingSuccess && (
-              <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
-                ✓ Pricing updated
-              </div>
-            )}
-
-            <NeonButton
-              variant="green"
-              onClick={handleUpdatePricing}
-              disabled={pricingTxLoading}
-              loading={pricingTxLoading}
-              style={{ width: "100%", justifyContent: "center" }}
-            >
-              {pricingTxLoading ? "Updating..." : "Update Pricing"}
-            </NeonButton>
+      {verifiedName && (
+        <div style={{
+          padding: 16,
+          borderRadius: 12,
+          background: panel2,
+          border: `1px solid ${border}`,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 12 }}>
+            {verifiedName}.etn
           </div>
 
-          {/* Withdraw section */}
-          <div style={{
-            padding: 16,
-            borderRadius: 12,
-            background: panel2,
-            border: `1px solid ${border}`,
-          }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 8 }}>
-              Accrued Earnings
-            </div>
-            <div style={{ fontSize: 24, fontWeight: 900, color: green, marginBottom: 16 }}>
-              {accruedFees !== null ? ethers.formatEther(accruedFees) : "0.00"} ETN
-            </div>
-
-            {withdrawError && (
-              <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
-                {withdrawError}
+          {expiryDate && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Expires</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: daysRemaining < 30 ? "#ffb366" : "#fff" }}>
+                {expiryDate.toLocaleDateString()} ({daysRemaining} days remaining)
               </div>
-            )}
-            {withdrawSuccess && (
-              <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
-                ✓ Withdrawn successfully
-              </div>
-            )}
+            </div>
+          )}
 
-            <NeonButton
-              variant="green"
-              onClick={handleWithdraw}
-              disabled={withdrawLoading || !accruedFees || accruedFees === 0n}
-              loading={withdrawLoading}
-              style={{ width: "100%", justifyContent: "center" }}
-            >
-              {withdrawLoading ? "Withdrawing..." : "Withdraw Earnings"}
-            </NeonButton>
-          </div>
-        </>
+          {renewError && (
+            <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
+              {renewError}
+            </div>
+          )}
+          {renewSuccess && (
+            <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
+              ✓ Renewed successfully
+            </div>
+          )}
+
+          <NeonButton
+            variant="green"
+            onClick={handleRenew}
+            disabled={renewLoading}
+            loading={renewLoading}
+            style={{ width: "100%", justifyContent: "center" }}
+          >
+            {renewLoading ? "Renewing..." : "Renew (1 year)"}
+          </NeonButton>
+
+          {renewTxHash && renewSuccess && (
+            <div style={{ marginTop: 12, textAlign: "center", fontSize: 11, color: mutedLight }}>
+              tx: {renewTxHash.slice(0, 10)}...{renewTxHash.slice(-8)}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

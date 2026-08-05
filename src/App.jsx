@@ -3,7 +3,6 @@ import { useReownWallet } from "./hooks/useReownWallet.jsx";
 import { panel, muted } from "./styles/theme.js";
 import SearchBar from "./components/SearchBar.jsx";
 import RegistrationFlow from "./components/RegistrationFlow.jsx";
-import NamespaceFlow from "./components/NamespaceFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
@@ -59,7 +58,6 @@ function AppContent() {
   }, []);
 
   const [selectedName, setSelectedName] = useState(null);
-  const [showNamespaceFlow, setShowNamespaceFlow] = useState(false);
   const [showManageSubdomain, setShowManageSubdomain] = useState(false);
 
   const handleNameSelected = async (nameData) => {
@@ -77,22 +75,6 @@ function AppContent() {
   };
 
   const handleBack = () => setSelectedName(null);
-
-  const handleNamespaceFlow = async () => {
-    if (!wallet.isConnected) {
-      await wallet.connectWallet();
-      return;
-    }
-    try {
-      await wallet.ensureCorrectNetwork();
-    } catch (err) {
-      console.error("Network switch failed:", err);
-      return;
-    }
-    setShowNamespaceFlow(true);
-  };
-
-  const handleBackFromNamespace = () => setShowNamespaceFlow(false);
 
   const handleManageSubdomain = async () => {
     if (!wallet.isConnected) {
@@ -114,11 +96,7 @@ function AppContent() {
     console.log("Registration successful:", result);
   };
 
-  const handleNamespaceSuccess = (result) => {
-    console.log("Namespace created:", result);
-  };
-
-  const showingMainSearch = !selectedName && !showNamespaceFlow && !showManageSubdomain;
+  const showingMainSearch = !selectedName && !showManageSubdomain;
 
   return (
     <div style={{
@@ -140,7 +118,6 @@ function AppContent() {
               key={wallet.isConnected ? "connected" : "disconnected"}
               wallet={wallet}
               onNameSelected={handleNameSelected}
-              onNamespaceFlow={handleNamespaceFlow}
             />
             <div style={{ width: "100%", maxWidth: 600, margin: "16px auto 0", padding: "0 16px" }}>
               <NeonButton
@@ -148,7 +125,7 @@ function AppContent() {
                 onClick={handleManageSubdomain}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                Manage Subdomain
+                Your Names
               </NeonButton>
             </div>
           </>
@@ -158,12 +135,6 @@ function AppContent() {
             wallet={wallet}
             onBack={handleBack}
             onSuccess={handleRegistrationSuccess}
-          />
-        ) : showNamespaceFlow ? (
-          <NamespaceFlow
-            wallet={wallet}
-            onBack={handleBackFromNamespace}
-            onSuccess={handleNamespaceSuccess}
           />
         ) : (
           <ManageSubdomain
