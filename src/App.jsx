@@ -10,7 +10,7 @@ import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
 
 function AppContent() {
-  const SUSPENDED = false; // flip to false to restore access
+  const SUSPENDED = true; // flip to false to restore access
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   useEffect(() => {
@@ -60,6 +60,7 @@ function AppContent() {
 
   const [selectedName, setSelectedName] = useState(null);
   const [showManageSubdomain, setShowManageSubdomain] = useState(false);
+  const [manageIntent, setManageIntent] = useState("manage"); // "manage" | "retro"
   const [showSubnameSearch, setShowSubnameSearch] = useState(false);
 
   const handleNameSelected = async (nameData) => {
@@ -89,6 +90,22 @@ function AppContent() {
       console.error("Network switch failed:", err);
       return;
     }
+    setManageIntent("manage");
+    setShowManageSubdomain(true);
+  };
+
+  const handleRetroRegister = async () => {
+    if (!wallet.isConnected) {
+      await wallet.connectWallet();
+      return;
+    }
+    try {
+      await wallet.ensureCorrectNetwork();
+    } catch (err) {
+      console.error("Network switch failed:", err);
+      return;
+    }
+    setManageIntent("retro");
     setShowManageSubdomain(true);
   };
 
@@ -160,6 +177,15 @@ function AppContent() {
                 Get a Subname
               </NeonButton>
             </div>
+            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px" }}>
+              <NeonButton
+                variant="dark"
+                onClick={handleRetroRegister}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                Retro Register your Subdomain (earn fees on subnames)
+              </NeonButton>
+            </div>
           </>
         ) : selectedName ? (
           <RegistrationFlow
@@ -172,6 +198,7 @@ function AppContent() {
           <ManageSubdomain
             wallet={wallet}
             onBack={handleBackFromManage}
+            intent={manageIntent}
           />
         ) : (
           <SubnameSearch

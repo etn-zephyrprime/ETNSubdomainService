@@ -2,8 +2,8 @@ import React from "react";
 import { Wallet } from "lucide-react";
 
 import NeonButton from "./NeonButton.jsx";
-import { green, panel, border } from "../styles/theme.js";
-import { PlanetZephyrosLogo, PlanetZephyrosText, electroneumnameservicetext, SimplifyYourWallet } from "../../backend/assets/media.js";
+import { green, greenGlow, panel, border } from "../styles/theme.js";
+import { PlanetZephyrosLogo, PlanetZephyrosText, SimplifyYourWallet } from "../../backend/assets/media.js";
 
 function shortAddress(address) {
   if (!address) return "";
@@ -155,21 +155,20 @@ export default function Header({
 </div>
 
 {/* Service Text */}
-{electroneumnameservicetext && (
-  <img
-    src={electroneumnameservicetext}
-    alt="Electroneum Name Service"
-    style={{
-      width: isMobile ? "200px" : "300px",
-      maxWidth: "100%",
-      height: "auto",
-      filter: "drop-shadow(0 0 16px rgba(0,255,140,0.35))",
-      animation: "vaultPulse 2.2s infinite",
-      objectFit: "contain",
-      marginBottom: 12,
-    }}
-  />
-)}
+<div
+  style={{
+    fontFamily: '"Orbitron", sans-serif',
+    fontWeight: 700,
+    fontSize: isMobile ? 16 : 22,
+    letterSpacing: 1,
+    color: "#fff",
+    textShadow: `0 0 16px ${greenGlow}`,
+    textAlign: "center",
+    marginBottom: 12,
+  }}
+>
+  Subdomain Name Service
+</div>
 
 {/* Tagline */}
 {SimplifyYourWallet && (

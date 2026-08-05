@@ -10,7 +10,10 @@ import { DEFAULT_DURATION_SECONDS } from "../config.js";
 
 // "Your Names" — look up a name you own, view its expiry, renew it, and set a price for
 // self-serve subname registration under it (activation/approval handled inline as needed).
-export default function ManageSubdomain({ wallet, onBack = null }) {
+// intent="retro" is the same flow, entered from the "Retro Register" CTA aimed at names
+// registered directly through Electroneum (bypassing this marketplace) — just different framing
+// copy, since activation is the first step of the flow regardless of how someone got here.
+export default function ManageSubdomain({ wallet, onBack = null, intent = "manage" }) {
   const [nameInput, setNameInput] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState(null);
@@ -232,7 +235,7 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
           color: muted,
           marginBottom: 10,
         }}>
-          Manage
+          {intent === "retro" ? "Retro Register" : "Manage"}
         </div>
         <h2 style={{
           fontSize: 28,
@@ -241,7 +244,7 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
           color: "#fff",
           textShadow: `0 0 16px ${greenGlow}`,
         }}>
-          Your Names
+          {intent === "retro" ? "Earn Fees on Subnames" : "Your Names"}
         </h2>
         <div style={{
           width: 40,
@@ -251,6 +254,13 @@ export default function ManageSubdomain({ wallet, onBack = null }) {
           borderRadius: 2,
           boxShadow: `0 0 8px ${greenGlow}`,
         }} />
+        {intent === "retro" && (
+          <p style={{ fontSize: 12, color: mutedLight, marginTop: 14, lineHeight: 1.6 }}>
+            Already registered your name directly through Electroneum? Look it up below to
+            activate it in the marketplace, then set a price and start earning fees whenever
+            someone registers a subname under it.
+          </p>
+        )}
       </div>
 
       {/* Lookup */}
