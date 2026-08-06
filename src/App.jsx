@@ -183,7 +183,7 @@ function AppContent() {
                 onClick={handleRetroRegister}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                Retro Register your Subdomain (earn fees on subnames)
+                Register your Subdomain | Set Subname Pricing
               </NeonButton>
             </div>
           </>

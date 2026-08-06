@@ -23,8 +23,18 @@ export const NAME_WRAPPER_ADDRESS = import.meta.env.VITE_NAME_WRAPPER_ADDRESS ||
 // ENSRegistry.owner(this node) returns exactly BaseRegistrarImplementation's address.
 export const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
 
-// Default registration/renewal duration — 1 year flat, no duration picker in V1.
+// Default renewal duration — 1 year flat, matching the real registrar's own year-based pricing.
 export const DEFAULT_DURATION_SECONDS = 365 * 24 * 60 * 60;
+
+// Preset registration lengths, priced the same way the real ETHRegistrarController does — a flat
+// per-second rate, so N years just costs N times the 1-year price.
+const YEAR_SECONDS = 365 * 24 * 60 * 60;
+export const DURATION_OPTIONS = [
+  { label: "1 year", seconds: YEAR_SECONDS },
+  { label: "2 years", seconds: 2 * YEAR_SECONDS },
+  { label: "3 years", seconds: 3 * YEAR_SECONDS },
+  { label: "5 years", seconds: 5 * YEAR_SECONDS },
+];
 
 // Reown
 export const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID || "146ee334d324044083b6427d4bbf9202";

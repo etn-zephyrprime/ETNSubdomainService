@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useRegistration } from "../hooks/useRegistration.js";
 import NeonButton from "./NeonButton.jsx";
-import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS } from "../config.js";
+import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
 // Registration is commit-reveal: commit() on the real registrar, wait minCommitmentAge, then
 // registerName() on the marketplace. Two separate wallet confirmations plus a wait in between.
@@ -38,7 +38,8 @@ export default function RegistrationFlow({
 
   const label = nameData.name;
   const displayName = `${label}.etn`;
-  const duration = DEFAULT_DURATION_SECONDS;
+  const [duration, setDuration] = useState(DEFAULT_DURATION_SECONDS);
+  const selectedOption = DURATION_OPTIONS.find((o) => o.seconds === duration) ?? DURATION_OPTIONS[0];
 
   // Holds the in-flight commitment's details across the async handleRegister sequence.
   const pendingRef = useRef({ secret: null, referrer: null, commitTimestamp: null, minAge: null, maxAge: null });
@@ -269,6 +270,46 @@ export default function RegistrationFlow({
             }} />
           </div>
 
+          {/* Duration picker — only changeable before the commitment is locked in */}
+          {step === "choose" && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                color: muted,
+                marginBottom: 10,
+                textAlign: "center",
+              }}>
+                Registration Length
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {DURATION_OPTIONS.map((option) => (
+                  <button
+                    key={option.seconds}
+                    onClick={() => setDuration(option.seconds)}
+                    disabled={quoteLoading}
+                    style={{
+                      flex: 1,
+                      padding: "10px 8px",
+                      borderRadius: 10,
+                      border: `1px solid ${option.seconds === duration ? green : border}`,
+                      background: option.seconds === duration ? "rgba(24,187,26,0.12)" : panel2,
+                      color: option.seconds === duration ? green : mutedLight,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: quoteLoading ? "not-allowed" : "pointer",
+                      opacity: quoteLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Price breakdown */}
           <div style={{
             padding: 16,
@@ -282,7 +323,7 @@ export default function RegistrationFlow({
             ) : (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: mutedLight, marginBottom: 6 }}>
-                  <span>Registration (1 year) paid to Electroneum</span>
+                  <span>Registration ({selectedOption.label}) paid to Electroneum</span>
                   <span>{basePriceEth} ETN</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: mutedLight, marginBottom: 10 }}>
