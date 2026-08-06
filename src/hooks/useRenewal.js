@@ -112,6 +112,8 @@ export function useRenewal() {
   return {
     getCurrentExpiry,
     getOwner,
+    getOwnerByNode,
+    getNameWrapperExpiry,
     quoteRenewal,
     renewName,
     loading,
