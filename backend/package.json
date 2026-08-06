@@ -6,15 +6,16 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:local": "node start-local.js",
     "dev": "node --watch index.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "ethers": "^6.13.0",
-    "cors": "^2.8.5",
-    "canvas": "^2.11.2",
     "@aws-sdk/client-s3": "^3.600.0",
-    "dotenv": "^16.4.5"
+    "canvas": "^3.2.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "express": "^4.19.2"
   },
   "engines": {
     "node": ">=18.0.0"

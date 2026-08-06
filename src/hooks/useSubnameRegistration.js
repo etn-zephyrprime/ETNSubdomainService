@@ -5,6 +5,36 @@ import { computeSubnode, decodeFirstLabel } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 
+// The public RPC's actual eth_getLogs block-range cap isn't fixed — it's tolerated ~8,300 blocks
+// once, then started rejecting ranges over ~1,000 a couple of days later with no code change on
+// our end (shared/load-balanced gateway, likely per-node or load-dependent policy). Querying the
+// whole MARKETPLACE_DEPLOY_BLOCK-to-latest range in one shot is therefore not reliable long-term
+// regardless of what size is hardcoded, so this chunks the scan and halves the window on a
+// range-rejection instead of assuming any fixed size will keep working.
+async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, minChunkSize = 50) {
+  const events = [];
+  let start = fromBlock;
+
+  while (start <= toBlock) {
+    const end = Math.min(start + chunkSize - 1, toBlock);
+    try {
+      const chunk = await contract.queryFilter(filter, start, end);
+      events.push(...chunk);
+      start = end + 1;
+    } catch (err) {
+      const message = err?.info?.error?.message || err?.shortMessage || err?.message || "";
+      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+      if (isRangeError && chunkSize > minChunkSize) {
+        chunkSize = Math.max(minChunkSize, Math.floor(chunkSize / 2));
+        continue; // retry the same `start` with the smaller window
+      }
+      throw err;
+    }
+  }
+
+  return events;
+}
+
 export function useSubnameRegistration() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -31,16 +61,19 @@ export function useSubnameRegistration() {
 
   // No indexer exists yet, so this scans SubnamePriceSet events directly — cheap while the
   // marketplace is young (a few hundred blocks/events), scoped to MARKETPLACE_DEPLOY_BLOCK since
-  // the public RPC rejects unscoped fromBlock queries ("Block range is too large"). Labels come
-  // from NameWrapper.names(node) (the same on-chain source the contract itself trusts), not from
-  // the event — SubnamePriceSet only carries the hashed node.
+  // the public RPC rejects unscoped fromBlock queries ("Block range is too large"), and chunked
+  // (see queryLogsChunked) since even a scoped range isn't reliably small enough on its own.
+  // Labels come from NameWrapper.names(node) (the same on-chain source the contract itself
+  // trusts), not from the event — SubnamePriceSet only carries the hashed node.
   const getAvailableParentDomains = useCallback(async () => {
     const { marketplace, nameWrapper } = getReadContracts();
 
-    const events = await marketplace.queryFilter(
+    const latestBlock = await marketplace.runner.getBlockNumber();
+    const events = await queryLogsChunked(
+      marketplace,
       marketplace.filters.SubnamePriceSet(),
       MARKETPLACE_DEPLOY_BLOCK,
-      "latest"
+      latestBlock
     );
 
     // queryFilter returns events in ascending block order, so a plain overwrite keeps each
