@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useRegistration } from "../hooks/useRegistration.js";
+import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
@@ -332,9 +333,9 @@ export default function RegistrationFlow({
     }
   };
 
-  const basePriceEth = quote ? parseFloat(ethers.formatEther(quote.basePrice)).toFixed(2) : "0.00";
-  const brokerageFeeEth = quote ? parseFloat(ethers.formatEther(quote.brokerageFee)).toFixed(2) : "0.00";
-  const totalPriceEth = quote ? parseFloat(ethers.formatEther(quote.totalPrice)).toFixed(2) : "0.00";
+  const basePriceEth = quote ? formatEth(quote.basePrice) : "0.00";
+  const brokerageFeeEth = quote ? formatEth(quote.brokerageFee) : "0.00";
+  const totalPriceEth = quote ? formatEth(quote.totalPrice) : "0.00";
 
   return (
     <div style={{ width: "100%", maxWidth: 600, margin: "0 auto", padding: "0 16px" }}>

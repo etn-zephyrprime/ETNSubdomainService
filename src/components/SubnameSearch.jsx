@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { computeNode } from "../utils/ens.js";
+import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
@@ -189,7 +190,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   };
 
   const displayName = checked ? `${checked.subLabel}.${checked.parentLabel}.etn` : "";
-  const priceEth = checked ? ethers.formatEther(selectedPrice) : "0";
+  const priceEth = checked ? formatEth(selectedPrice) : "0.00";
 
   if (success) {
     return (
@@ -409,7 +410,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
               >
                 {label}.etn
                 <span style={{ fontSize: 11, fontWeight: 600, color: mutedLight }}>
-                  {ethers.formatEther(pricePerYear)} ETN/year
+                  {formatEth(pricePerYear)} ETN/year
                 </span>
               </button>
             ))}

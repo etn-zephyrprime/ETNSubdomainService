@@ -5,6 +5,7 @@ import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../s
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { computeNode, computeSubnode } from "../utils/ens.js";
+import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
 import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN } from "../config.js";
 
@@ -379,15 +380,15 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 4 }}>
                       <span>Renewal (1 year) paid to Electroneum</span>
-                      <span>{ethers.formatEther(renewQuote.basePrice)} ETN</span>
+                      <span>{formatEth(renewQuote.basePrice)} ETN</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 8 }}>
                       <span>Brokerage fee</span>
-                      <span>{ethers.formatEther(renewQuote.brokerageFee)} ETN</span>
+                      <span>{formatEth(renewQuote.brokerageFee)} ETN</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
                       <span>Total</span>
-                      <span>{ethers.formatEther(renewQuote.totalPrice)} ETN</span>
+                      <span>{formatEth(renewQuote.totalPrice)} ETN</span>
                     </div>
                   </>
                 ) : (
@@ -418,7 +419,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 {renewLoading
                   ? "Renewing..."
                   : renewQuote
-                  ? `Renew (1 year) for ${ethers.formatEther(renewQuote.totalPrice)} ETN`
+                  ? `Renew (1 year) for ${formatEth(renewQuote.totalPrice)} ETN`
                   : "Renew (1 year)"}
               </NeonButton>
 
@@ -465,7 +466,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   {activationLoading
                     ? "Activating..."
                     : activationFee
-                    ? `Activate (${ethers.formatEther(activationFee)} ETN)`
+                    ? `Activate (${formatEth(activationFee)} ETN)`
                     : "Loading fee..."}
                 </NeonButton>
               </div>
@@ -496,7 +497,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               <div>
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                   {currentPrice && currentPrice > 0n
-                    ? `Currently selling subnames for ${ethers.formatEther(currentPrice)} ETN/year.`
+                    ? `Currently selling subnames for ${formatEth(currentPrice)} ETN/year.`
                     : "Not currently selling subnames."}
                 </div>
                 <input
