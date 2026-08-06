@@ -10,7 +10,7 @@ import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
 
 function AppContent() {
-  const SUSPENDED = true; // flip to false to restore access
+  const SUSPENDED = false; // flip to false to restore access
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
 
   useEffect(() => {

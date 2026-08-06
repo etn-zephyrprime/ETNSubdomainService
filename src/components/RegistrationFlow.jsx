@@ -194,7 +194,9 @@ export default function RegistrationFlow({
       const res = await fetch(`${BACKEND_IMAGE_URL}/api/generate-nft`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, nodeHex }),
+        // "namespace" is the gold template — reserved for top-level parent names, distinct from
+        // the blue "default" template subnames get (see SubnameSearch.jsx).
+        body: JSON.stringify({ fullName, nodeHex, template: "namespace" }),
       });
       const data = await res.json();
       if (data.success) {

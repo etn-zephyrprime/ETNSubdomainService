@@ -114,7 +114,10 @@ export default function SubnameSearch({ wallet, onBack = null }) {
       const res = await fetch(`${BACKEND_IMAGE_URL}/api/generate-nft`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, nodeHex }),
+        // "default" is the blue template — subnames get this, top-level parent names get the
+        // gold "namespace" template (see RegistrationFlow.jsx). Explicit here even though the
+        // backend already defaults to it, so the mapping is visible from either file.
+        body: JSON.stringify({ fullName, nodeHex, template: "default" }),
       });
       const data = await res.json();
       if (data.success) {
