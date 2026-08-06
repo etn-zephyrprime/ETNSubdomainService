@@ -65,7 +65,10 @@ export function useRenewal() {
 
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.renewName(label, duration, referrer, { value: totalPrice });
+      // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
+      // this app (registerName ran out of gas at its auto-estimated limit), so writes use a
+      // fixed generous limit instead of trusting the wallet's estimate.
+      const tx = await marketplace.renewName(label, duration, referrer, { value: totalPrice, gasLimit: 350000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Renewal failed");
 

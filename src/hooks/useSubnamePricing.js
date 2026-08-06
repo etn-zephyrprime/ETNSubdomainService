@@ -38,7 +38,9 @@ export function useSubnamePricing() {
     setError(null);
     try {
       const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NameWrapperABI, signer);
-      const tx = await nameWrapper.setApprovalForAll(MARKETPLACE_ADDRESS, true);
+      // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
+      // this app, so writes use a fixed generous limit instead of trusting the wallet's estimate.
+      const tx = await nameWrapper.setApprovalForAll(MARKETPLACE_ADDRESS, true, { gasLimit: 120000 });
       await tx.wait();
       return { success: true, txHash: tx.hash };
     } catch (err) {
@@ -72,7 +74,7 @@ export function useSubnamePricing() {
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.activateDomain(node, label, { value: fee });
+      const tx = await marketplace.activateDomain(node, label, { value: fee, gasLimit: 350000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Activation failed");
       return { success: true, txHash: tx.hash };
@@ -90,7 +92,7 @@ export function useSubnamePricing() {
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.setSubnamePrice(node, priceWei);
+      const tx = await marketplace.setSubnamePrice(node, priceWei, { gasLimit: 180000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Setting price failed");
       return { success: true, txHash: tx.hash };

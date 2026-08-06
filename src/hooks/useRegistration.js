@@ -61,7 +61,11 @@ export function useRegistration() {
     setError(null);
     try {
       const controller = new ethers.Contract(REGISTRAR_CONTROLLER_ADDRESS, ETHRegistrarControllerABI, signer);
-      const tx = await controller.commit(commitment);
+      // Explicit gas limit — this chain's eth_estimateGas has proven unreliable (an earlier
+      // registerName() call ran out of gas at its auto-estimated limit despite prior successful
+      // calls using meaningfully less), so every write here sets its own generous fixed limit
+      // rather than trusting the wallet's estimate.
+      const tx = await controller.commit(commitment, { gasLimit: 120000 });
       const receipt = await tx.wait();
       return { success: true, txHash: tx.hash, blockTimestamp: (await receipt.getBlock())?.timestamp ?? null };
     } catch (err) {
@@ -112,7 +116,7 @@ export function useRegistration() {
         wrappedOwner,
         0, // ownerControlledFuses — no restrictions by default
         expectedNode,
-        { value: totalPrice }
+        { value: totalPrice, gasLimit: 600000 }
       );
 
       const receipt = await tx.wait();

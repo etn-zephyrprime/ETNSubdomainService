@@ -282,7 +282,7 @@ export default function RegistrationFlow({
             ) : (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: mutedLight, marginBottom: 6 }}>
-                  <span>Registration (1 year)</span>
+                  <span>Registration (1 year) paid to Electroneum</span>
                   <span>{basePriceEth} ETN</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: mutedLight, marginBottom: 10 }}>
@@ -389,7 +389,7 @@ export default function RegistrationFlow({
         <div style={{ textAlign: "center", padding: "40px 20px" }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
           <h2 style={{ fontSize: 28, fontWeight: 900, color: green, marginBottom: 8 }}>
-            Name Registered!
+            Subdomain Registered - You are now eligible to earn fees!
           </h2>
 
           {nftImage ? (

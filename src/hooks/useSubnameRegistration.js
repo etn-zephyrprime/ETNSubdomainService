@@ -68,7 +68,10 @@ export function useSubnameRegistration() {
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.registerSubname(parentNode, label, { value: priceWei });
+      // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
+      // this app (registerName ran out of gas at its auto-estimated limit), so writes use a
+      // fixed generous limit instead of trusting the wallet's estimate.
+      const tx = await marketplace.registerSubname(parentNode, label, { value: priceWei, gasLimit: 450000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Registration failed");
 

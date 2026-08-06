@@ -29,5 +29,5 @@ export const DEFAULT_DURATION_SECONDS = 365 * 24 * 60 * 60;
 // Reown
 export const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID || "146ee334d324044083b6427d4bbf9202";
 
-// Backend
-export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "https://your-render-service.onrender.com";
+// Backend — NFT image generation + R2 upload (see backend/index.js)
+export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "https://electroneumnameservice.onrender.com";
