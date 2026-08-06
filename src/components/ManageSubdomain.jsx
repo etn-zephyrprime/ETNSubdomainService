@@ -28,6 +28,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [renewError, setRenewError] = useState(null);
   const [renewSuccess, setRenewSuccess] = useState(false);
   const [renewTxHash, setRenewTxHash] = useState(null);
+  const [renewQuote, setRenewQuote] = useState(null);
+  const [renewQuoteLoading, setRenewQuoteLoading] = useState(false);
 
   const [activated, setActivated] = useState(null);
   const [activationFee, setActivationFee] = useState(null);
@@ -73,6 +75,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setIsSubname(false);
     setRenewSuccess(false);
     setRenewError(null);
+    setRenewQuote(null);
     setActivated(null);
     setActivationFee(null);
     setActivationError(null);
@@ -116,6 +119,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       } else {
         const currentExpiry = await getCurrentExpiry(parentLabel);
         setExpiry(currentExpiry);
+
+        setRenewQuoteLoading(true);
+        quoteRenewal(parentLabel, DEFAULT_DURATION_SECONDS)
+          .then(setRenewQuote)
+          .catch((err) => console.error("Failed to fetch renewal quote:", err))
+          .finally(() => setRenewQuoteLoading(false));
       }
 
       const isActivated = await isDomainActivated(domainNode);
@@ -357,6 +366,37 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
           {!isSubname && (
             <>
+              <div style={{
+                padding: 14,
+                borderRadius: 10,
+                background: "rgba(0,0,0,0.2)",
+                border: `1px solid ${border}`,
+                marginBottom: 14,
+              }}>
+                {renewQuoteLoading ? (
+                  <div style={{ fontSize: 12, color: muted, textAlign: "center" }}>Loading price...</div>
+                ) : renewQuote ? (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 4 }}>
+                      <span>Renewal (1 year) paid to Electroneum</span>
+                      <span>{ethers.formatEther(renewQuote.basePrice)} ETN</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 8 }}>
+                      <span>Brokerage fee</span>
+                      <span>{ethers.formatEther(renewQuote.brokerageFee)} ETN</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+                      <span>Total</span>
+                      <span>{ethers.formatEther(renewQuote.totalPrice)} ETN</span>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: error, textAlign: "center" }}>
+                    Couldn't load renewal price
+                  </div>
+                )}
+              </div>
+
               {renewError && (
                 <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
                   {renewError}
@@ -371,11 +411,15 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               <NeonButton
                 variant="green"
                 onClick={handleRenew}
-                disabled={renewLoading}
+                disabled={renewLoading || renewQuoteLoading || !renewQuote}
                 loading={renewLoading}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                {renewLoading ? "Renewing..." : "Renew (1 year)"}
+                {renewLoading
+                  ? "Renewing..."
+                  : renewQuote
+                  ? `Renew (1 year) for ${ethers.formatEther(renewQuote.totalPrice)} ETN`
+                  : "Renew (1 year)"}
               </NeonButton>
 
               {renewTxHash && renewSuccess && (
