@@ -4,9 +4,11 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
-import { computeNode } from "../utils/ens.js";
+import { computeNode, computeSubnode } from "../utils/ens.js";
 import NeonButton from "./NeonButton.jsx";
-import { DEFAULT_DURATION_SECONDS } from "../config.js";
+import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN } from "../config.js";
+
+const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
 
 // "Your Names" — look up a name you own, view its expiry, renew it, and set a price for
 // self-serve subname registration under it (activation/approval handled inline as needed).
@@ -20,6 +22,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [verifiedName, setVerifiedName] = useState(null);
   const [node, setNode] = useState(null);
   const [expiry, setExpiry] = useState(null);
+  const [isSubname, setIsSubname] = useState(false);
 
   const [renewLoading, setRenewLoading] = useState(false);
   const [renewError, setRenewError] = useState(null);
@@ -41,15 +44,15 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [priceError, setPriceError] = useState(null);
   const [priceSuccess, setPriceSuccess] = useState(false);
 
-  const { getOwner, getCurrentExpiry, quoteRenewal, renewName } = useRenewal();
+  const { getOwner, getOwnerByNode, getCurrentExpiry, getNameWrapperExpiry, quoteRenewal, renewName } = useRenewal();
   const {
     isDomainActivated,
     getActivationFee,
     activateDomain,
     isMarketplaceApproved,
     approveMarketplace,
-    getSubnamePrice,
-    setSubnamePrice,
+    getSubnamePricePerYear,
+    setSubnamePricePerYear,
   } = useSubnamePricing();
 
   const handleLookup = async () => {
@@ -66,6 +69,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setLookupError(null);
     setVerifiedName(null);
     setNode(null);
+    setExpiry(null);
+    setIsSubname(false);
     setRenewSuccess(false);
     setRenewError(null);
     setActivated(null);
@@ -78,8 +83,18 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPriceError(null);
     setPriceSuccess(false);
 
+    // Subnames (e.g. "hi.test6") aren't tracked by BaseRegistrar at all — only their parent's
+    // top-level label is. Their node is computeSubnode(parentNode, subLabel), not computeNode of
+    // the whole dotted string, and their expiry has to come from NameWrapper directly since
+    // there's no independent renewal to look up.
+    const dotIndex = nameInput.indexOf(".");
+    const subname = dotIndex !== -1;
+    const subLabel = subname ? nameInput.slice(0, dotIndex) : null;
+    const parentLabel = subname ? nameInput.slice(dotIndex + 1) : nameInput;
+
     try {
-      const owner = await getOwner(nameInput);
+      const domainNode = subname ? computeSubnode(computeNode(parentLabel), subLabel) : computeNode(parentLabel);
+      const owner = subname ? await getOwnerByNode(domainNode) : await getOwner(parentLabel);
 
       if (owner === ethers.ZeroAddress) {
         setLookupError(`"${nameInput}.etn" doesn't exist`);
@@ -91,12 +106,17 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         return;
       }
 
-      const currentExpiry = await getCurrentExpiry(nameInput);
-      setExpiry(currentExpiry);
+      setIsSubname(subname);
       setVerifiedName(nameInput);
-
-      const domainNode = computeNode(nameInput);
       setNode(domainNode);
+
+      if (subname) {
+        const subExpiry = await getNameWrapperExpiry(domainNode);
+        setExpiry(subExpiry);
+      } else {
+        const currentExpiry = await getCurrentExpiry(parentLabel);
+        setExpiry(currentExpiry);
+      }
 
       const isActivated = await isDomainActivated(domainNode);
       setActivated(isActivated);
@@ -104,7 +124,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       if (isActivated) {
         const [isApproved, price] = await Promise.all([
           isMarketplaceApproved(wallet.account),
-          getSubnamePrice(domainNode),
+          getSubnamePricePerYear(domainNode),
         ]);
         setApproved(isApproved);
         setCurrentPrice(price);
@@ -130,7 +150,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
       const [isApproved, price] = await Promise.all([
         isMarketplaceApproved(wallet.account),
-        getSubnamePrice(node),
+        getSubnamePricePerYear(node),
       ]);
       setApproved(isApproved);
       setCurrentPrice(price);
@@ -160,11 +180,17 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const submitPrice = async (turnOff = false) => {
     setPriceError(null);
     setPriceSuccess(false);
+
+    const priceWei = turnOff ? 0n : ethers.parseEther(priceInput || "0");
+    if (!turnOff && priceWei < MIN_SUBNAME_PRICE_PER_YEAR_WEI) {
+      setPriceError(`Minimum price is ${MIN_SUBNAME_PRICE_PER_YEAR_ETN} ETN/year`);
+      return;
+    }
+
     setPriceLoading(true);
     try {
-      const priceWei = turnOff ? 0n : ethers.parseEther(priceInput || "0");
       const signer = await wallet.getSigner();
-      await setSubnamePrice(node, priceWei, signer);
+      await setSubnamePricePerYear(node, priceWei, signer);
       setCurrentPrice(priceWei);
       setPriceSuccess(true);
       if (turnOff) setPriceInput("");
@@ -320,34 +346,44 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               <div style={{ fontSize: 16, fontWeight: 700, color: daysRemaining < 30 ? "#ffb366" : "#fff" }}>
                 {expiryDate.toLocaleDateString()} ({daysRemaining} days remaining)
               </div>
+              {isSubname && (
+                <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
+                  Set when this subname was registered, capped by the parent name's own expiry.
+                  Subnames aren't renewed independently — renew the parent name instead.
+                </div>
+              )}
             </div>
           )}
 
-          {renewError && (
-            <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
-              {renewError}
-            </div>
-          )}
-          {renewSuccess && (
-            <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
-              ✓ Renewed successfully
-            </div>
-          )}
+          {!isSubname && (
+            <>
+              {renewError && (
+                <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
+                  {renewError}
+                </div>
+              )}
+              {renewSuccess && (
+                <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
+                  ✓ Renewed successfully
+                </div>
+              )}
 
-          <NeonButton
-            variant="green"
-            onClick={handleRenew}
-            disabled={renewLoading}
-            loading={renewLoading}
-            style={{ width: "100%", justifyContent: "center" }}
-          >
-            {renewLoading ? "Renewing..." : "Renew (1 year)"}
-          </NeonButton>
+              <NeonButton
+                variant="green"
+                onClick={handleRenew}
+                disabled={renewLoading}
+                loading={renewLoading}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                {renewLoading ? "Renewing..." : "Renew (1 year)"}
+              </NeonButton>
 
-          {renewTxHash && renewSuccess && (
-            <div style={{ marginTop: 12, textAlign: "center", fontSize: 11, color: mutedLight }}>
-              tx: {renewTxHash.slice(0, 10)}...{renewTxHash.slice(-8)}
-            </div>
+              {renewTxHash && renewSuccess && (
+                <div style={{ marginTop: 12, textAlign: "center", fontSize: 11, color: mutedLight }}>
+                  tx: {renewTxHash.slice(0, 10)}...{renewTxHash.slice(-8)}
+                </div>
+              )}
+            </>
           )}
 
           <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
@@ -359,7 +395,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               color: muted,
               marginBottom: 12,
             }}>
-              Subname Pricing
+              {isSubname ? "Sub-subname Pricing" : "Subname Pricing"}
             </div>
 
             {activated === null && (
@@ -416,13 +452,13 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               <div>
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                   {currentPrice && currentPrice > 0n
-                    ? `Currently selling subnames for ${ethers.formatEther(currentPrice)} ETN each.`
+                    ? `Currently selling subnames for ${ethers.formatEther(currentPrice)} ETN/year.`
                     : "Not currently selling subnames."}
                 </div>
                 <input
                   type="text"
                   inputMode="decimal"
-                  placeholder="Price in ETN (e.g. 0.1)"
+                  placeholder={`Price per year in ETN (min ${MIN_SUBNAME_PRICE_PER_YEAR_ETN})`}
                   value={priceInput}
                   onChange={(e) => setPriceInput(e.target.value)}
                   style={{
@@ -436,9 +472,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     fontWeight: 600,
                     boxSizing: "border-box",
                     outline: "none",
-                    marginBottom: 10,
+                    marginBottom: 6,
                   }}
                 />
+                <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+                  Minimum {MIN_SUBNAME_PRICE_PER_YEAR_ETN} ETN/year, or 0 to turn sales off.
+                </div>
                 {priceError && (
                   <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{priceError}</div>
                 )}

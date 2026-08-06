@@ -4,14 +4,14 @@ export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/ele
 export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://testnet-blockexplorer.electroneum.com";
 
 // Contract addresses
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x09194a12fd71eC420449cc6709E3991a5103C69A";
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x9cDFC0b2c5eB90E5AD00d0781d3e19Ad61fDF454";
 // Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
 // unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
 // have a subname price set) start here instead of from genesis. Must be updated alongside
 // MARKETPLACE_ADDRESS on every redeploy.
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 14667390;
+  : 14679888;
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5BFb2958062Ac12d2019Ac1E69243DDbafCCc2c5";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x7b787b31Ad58D563D7B3938b4bbfAB2c588624C5";
 // registerName() always wraps — the raw ERC721 ends up owned by NameWrapper itself, so
@@ -35,6 +35,11 @@ export const DURATION_OPTIONS = [
   { label: "3 years", seconds: 3 * YEAR_SECONDS },
   { label: "5 years", seconds: 5 * YEAR_SECONDS },
 ];
+
+// UI-only floor on what a domain owner can set their subname price to — not enforced on-chain,
+// just keeps the "Set Price" form from accepting an accidentally-tiny value (e.g. a misplaced
+// decimal). Setting price to 0 (turning sales off entirely) is exempt from this minimum.
+export const MIN_SUBNAME_PRICE_PER_YEAR_ETN = "1000";
 
 // Reown
 export const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID || "146ee334d324044083b6427d4bbf9202";

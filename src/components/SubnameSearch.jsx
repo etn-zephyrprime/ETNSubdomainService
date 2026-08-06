@@ -6,7 +6,9 @@ import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { computeNode } from "../utils/ens.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
 import NeonButton from "./NeonButton.jsx";
-import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL } from "../config.js";
+import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
+
+const YEAR_SECONDS = 365 * 24 * 60 * 60;
 
 // Buyer picks their own label under a domain the owner has set a price for — single-level
 // subnames only (e.g. "shop.alice" -> shop.alice.etn), no commit-reveal, one transaction.
@@ -14,13 +16,15 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   const [rawInput, setRawInput] = useState("");
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkError, setCheckError] = useState(null);
-  const [checked, setChecked] = useState(null); // { subLabel, parentLabel, parentNode, price }
+  const [checked, setChecked] = useState(null); // { subLabel, parentLabel, parentNode, pricePerYear, availableDurations }
+  const [selectedDuration, setSelectedDuration] = useState(null);
 
   const [registerLoading, setRegisterLoading] = useState(false);
   const [registerError, setRegisterError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [txHash, setTxHash] = useState(null);
   const [nftImage, setNftImage] = useState(null);
+  const [nftStorageUrl, setNftStorageUrl] = useState(null);
 
   const [parentDomains, setParentDomains] = useState([]);
   const [domainsLoading, setDomainsLoading] = useState(true);
@@ -28,8 +32,13 @@ export default function SubnameSearch({ wallet, onBack = null }) {
 
   const inputRef = useRef(null);
 
-  const { getSubnamePrice, checkSubnameAvailable, getAvailableParentDomains, registerSubname } =
-    useSubnameRegistration();
+  const {
+    getSubnamePricePerYear,
+    getParentExpiry,
+    checkSubnameAvailable,
+    getAvailableParentDomains,
+    registerSubname,
+  } = useSubnameRegistration();
 
   useEffect(() => {
     (async () => {
@@ -49,6 +58,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   const handleSelectParent = (label) => {
     setRawInput(`.${label}`);
     setChecked(null);
+    setSelectedDuration(null);
     setCheckError(null);
     const el = inputRef.current;
     if (el) {
@@ -70,6 +80,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   const handleCheck = async () => {
     setCheckError(null);
     setChecked(null);
+    setSelectedDuration(null);
     setRegisterError(null);
 
     const parsed = parseInput(rawInput);
@@ -87,9 +98,9 @@ export default function SubnameSearch({ wallet, onBack = null }) {
     setCheckLoading(true);
     try {
       const parentNode = computeNode(parentLabel);
-      const price = await getSubnamePrice(parentNode);
+      const pricePerYear = await getSubnamePricePerYear(parentNode);
 
-      if (price === 0n) {
+      if (pricePerYear === 0n) {
         setCheckError(`"${parentLabel}.etn" isn't selling subnames`);
         return;
       }
@@ -100,7 +111,22 @@ export default function SubnameSearch({ wallet, onBack = null }) {
         return;
       }
 
-      setChecked({ subLabel, parentLabel, parentNode, price });
+      // A subname can never outlive its parent — only offer presets that fit within whatever
+      // time the parent domain actually has left.
+      const parentExpiry = await getParentExpiry(parentNode);
+      const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+      const remaining = parentExpiry - nowSeconds;
+      const availableDurations = DURATION_OPTIONS.filter((o) => BigInt(o.seconds) <= remaining);
+
+      if (availableDurations.length === 0) {
+        setCheckError(
+          `"${parentLabel}.etn" doesn't have enough time left (${Math.max(0, Number(remaining) / 86400).toFixed(0)} days) for any subname length — ask the owner to renew it first.`
+        );
+        return;
+      }
+
+      setChecked({ subLabel, parentLabel, parentNode, pricePerYear, availableDurations });
+      setSelectedDuration(availableDurations[0].seconds);
     } catch (err) {
       console.error("Subname check failed:", err);
       setCheckError(err?.reason || err?.message || "Check failed");
@@ -122,11 +148,20 @@ export default function SubnameSearch({ wallet, onBack = null }) {
       const data = await res.json();
       if (data.success) {
         setNftImage(data.image);
+        setNftStorageUrl(data.storageUrl || null);
       }
     } catch (err) {
       console.error("NFT generation request failed:", err);
     }
   };
+
+  // Mirrors the contract's own quoteSubname math exactly (pricePerYear * duration / 365 days) —
+  // computed client-side so the price updates instantly as the buyer changes the duration
+  // picker, without a round trip per click.
+  const selectedPrice =
+    checked && selectedDuration != null
+      ? (checked.pricePerYear * BigInt(selectedDuration)) / BigInt(YEAR_SECONDS)
+      : 0n;
 
   const handleRegister = async () => {
     if (!wallet.isConnected) {
@@ -139,8 +174,8 @@ export default function SubnameSearch({ wallet, onBack = null }) {
     try {
       await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
-      const { subLabel, parentLabel, parentNode, price } = checked;
-      const result = await registerSubname(parentNode, subLabel, price, signer);
+      const { subLabel, parentLabel, parentNode } = checked;
+      const result = await registerSubname(parentNode, subLabel, selectedDuration, selectedPrice, signer);
 
       setTxHash(result.txHash);
       setSuccess(true);
@@ -154,7 +189,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   };
 
   const displayName = checked ? `${checked.subLabel}.${checked.parentLabel}.etn` : "";
-  const priceEth = checked ? ethers.formatEther(checked.price) : "0";
+  const priceEth = checked ? ethers.formatEther(selectedPrice) : "0";
 
   if (success) {
     return (
@@ -201,22 +236,45 @@ export default function SubnameSearch({ wallet, onBack = null }) {
             <strong>{displayName}</strong> is now yours.
           </p>
 
-          {txHash && (
-            <a
-              href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                display: "inline-block",
-                fontSize: 12,
-                color: green,
-                textDecoration: "none",
-                marginBottom: 24,
-                borderBottom: `1px solid ${green}`,
-              }}
-            >
-              View Transaction →
-            </a>
+          {(txHash || nftStorageUrl) && (
+            <div style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: 16,
+              flexWrap: "wrap",
+              marginBottom: 24,
+            }}>
+              {txHash && (
+                <a
+                  href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: 12,
+                    color: green,
+                    textDecoration: "none",
+                    borderBottom: `1px solid ${green}`,
+                  }}
+                >
+                  View Transaction →
+                </a>
+              )}
+              {nftStorageUrl && (
+                <a
+                  href={nftStorageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: 12,
+                    color: green,
+                    textDecoration: "none",
+                    borderBottom: `1px solid ${green}`,
+                  }}
+                >
+                  View Stored Image →
+                </a>
+              )}
+            </div>
           )}
 
           <NeonButton variant="green" onClick={() => window.location.reload()} style={{ width: "100%" }}>
@@ -290,6 +348,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
           onChange={(e) => {
             setRawInput(e.target.value.toLowerCase().trim());
             setChecked(null);
+            setSelectedDuration(null);
             setCheckError(null);
           }}
           style={{
@@ -328,7 +387,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
             Domains selling subnames
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {parentDomains.map(({ label, price }) => (
+            {parentDomains.map(({ label, pricePerYear }) => (
               <button
                 key={label}
                 onClick={() => handleSelectParent(label)}
@@ -350,7 +409,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
               >
                 {label}.etn
                 <span style={{ fontSize: 11, fontWeight: 600, color: mutedLight }}>
-                  {ethers.formatEther(price)} ETN
+                  {ethers.formatEther(pricePerYear)} ETN/year
                 </span>
               </button>
             ))}
@@ -383,6 +442,44 @@ export default function SubnameSearch({ wallet, onBack = null }) {
           <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 12 }}>
             {displayName}
           </div>
+
+          <div style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: 1,
+            textTransform: "uppercase",
+            color: muted,
+            marginBottom: 10,
+          }}>
+            Length
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            {checked.availableDurations.map((option) => (
+              <button
+                key={option.seconds}
+                onClick={() => setSelectedDuration(option.seconds)}
+                style={{
+                  flex: 1,
+                  padding: "10px 8px",
+                  borderRadius: 10,
+                  border: `1px solid ${option.seconds === selectedDuration ? green : border}`,
+                  background: option.seconds === selectedDuration ? "rgba(24,187,26,0.12)" : panel2,
+                  color: option.seconds === selectedDuration ? green : mutedLight,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {checked.availableDurations.length < DURATION_OPTIONS.length && (
+            <div style={{ fontSize: 11, color: mutedLight, marginBottom: 16, textAlign: "center" }}>
+              Longer lengths aren't offered — "{checked.parentLabel}.etn" doesn't have that much time left.
+            </div>
+          )}
+
           <div style={{
             display: "flex",
             justifyContent: "space-between",

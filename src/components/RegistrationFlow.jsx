@@ -6,6 +6,115 @@ import { useRegistration } from "../hooks/useRegistration.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
+const COMMIT_WAIT_MESSAGES = [
+  "Broadcasting your commitment to the Electroneum network...",
+  "Locking in your name before anyone else can grab it...",
+  "This short wait keeps registrations fair — no front-running bots allowed...",
+  "Charging up the NameWrapper...",
+  "Give it a moment — good things take a few seconds...",
+];
+
+// Circular countdown ring — drains as the commitment wait elapses, with an orbiting particle and
+// a pulse that intensifies in the final stretch. Pure inline-SVG + CSS animation, no libraries.
+function CommitmentRing({ countdown, totalWait }) {
+  const size = 160;
+  const radius = 68;
+  const circumference = 2 * Math.PI * radius;
+  const progress = totalWait > 0 ? Math.min(1, Math.max(0, 1 - countdown / totalWait)) : 1;
+  const ready = countdown <= 0;
+  const finalStretch = !ready && countdown <= 10;
+
+  return (
+    <div style={{ position: "relative", width: size, height: size, margin: "0 auto 20px" }}>
+      <style>{`
+        @keyframes rfw-orbit { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes rfw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+        @keyframes rfw-ready-pulse { 0%, 100% { box-shadow: 0 0 20px ${greenGlow}; } 50% { box-shadow: 0 0 40px ${greenGlow}; } }
+      `}</style>
+
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={border} strokeWidth="6" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={green}
+          strokeWidth="6"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - progress)}
+          style={{
+            transition: "stroke-dashoffset 1s linear",
+            filter: `drop-shadow(0 0 ${ready ? 10 : 6}px ${greenGlow})`,
+          }}
+        />
+      </svg>
+
+      {!ready && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            animation: `rfw-orbit ${finalStretch ? 1.2 : 3}s linear infinite`,
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: -2,
+              left: "50%",
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: green,
+              boxShadow: `0 0 10px ${greenGlow}`,
+              transform: "translateX(-50%)",
+            }}
+          />
+        </div>
+      )}
+
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: "50%",
+          animation: ready ? "rfw-ready-pulse 1.6s ease-in-out infinite" : "none",
+        }}
+      >
+        <div
+          style={{
+            fontSize: ready ? 34 : 40,
+            fontWeight: 900,
+            fontFamily: '"Orbitron", sans-serif',
+            color: green,
+            textShadow: `0 0 20px ${greenGlow}`,
+            animation: finalStretch ? "rfw-pulse 1s ease-in-out infinite" : "none",
+            lineHeight: 1,
+          }}
+        >
+          {ready ? "✓" : countdown}
+        </div>
+        {!ready && (
+          <div style={{ fontSize: 11, color: mutedLight, marginTop: 6, letterSpacing: 1 }}>
+            SECONDS
+          </div>
+        )}
+        {ready && (
+          <div style={{ fontSize: 11, color: green, marginTop: 6, letterSpacing: 1, fontWeight: 700 }}>
+            READY
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Registration is commit-reveal: commit() on the real registrar, wait minCommitmentAge, then
 // registerName() on the marketplace. Two separate wallet confirmations plus a wait in between.
 export default function RegistrationFlow({
@@ -19,10 +128,12 @@ export default function RegistrationFlow({
   const [step, setStep] = useState("choose"); // choose | committing | waiting | registering | success | error
   const [countdown, setCountdown] = useState(0);
   const [expired, setExpired] = useState(false);
+  const [waitMessageIndex, setWaitMessageIndex] = useState(0);
   const [txHash, setTxHash] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
   const [errorStage, setErrorStage] = useState(null); // "commit" | "register"
   const [nftImage, setNftImage] = useState(null);
+  const [nftStorageUrl, setNftStorageUrl] = useState(null);
 
   const {
     quoteRegistration,
@@ -95,6 +206,18 @@ export default function RegistrationFlow({
 
     tick();
     const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [step]);
+
+  // Cycles the flavor text under the commitment ring so the wait doesn't feel static.
+  useEffect(() => {
+    if (step !== "waiting") {
+      setWaitMessageIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setWaitMessageIndex((i) => (i + 1) % COMMIT_WAIT_MESSAGES.length);
+    }, 3000);
     return () => clearInterval(interval);
   }, [step]);
 
@@ -202,6 +325,7 @@ export default function RegistrationFlow({
       const data = await res.json();
       if (data.success) {
         setNftImage(data.image);
+        setNftStorageUrl(data.storageUrl || null);
       }
     } catch (err) {
       console.error("NFT generation request failed:", err);
@@ -382,11 +506,18 @@ export default function RegistrationFlow({
 
           {step === "waiting" && !expired && (
             <div style={{ textAlign: "center", padding: "20px 0" }}>
-              <div style={{ fontSize: 13, color: mutedLight, marginBottom: 12 }}>
-                Commitment confirmed. Waiting before registration can proceed...
-              </div>
-              <div style={{ fontSize: 32, fontWeight: 900, color: green, marginBottom: 20 }}>
-                {countdown > 0 ? `${countdown}s` : "Ready"}
+              <CommitmentRing countdown={countdown} totalWait={pendingRef.current.minAge || 60} />
+              <div
+                style={{
+                  fontSize: 12,
+                  color: mutedLight,
+                  marginBottom: 20,
+                  minHeight: 32,
+                  padding: "0 12px",
+                  lineHeight: 1.5,
+                }}
+              >
+                {countdown > 0 ? COMMIT_WAIT_MESSAGES[waitMessageIndex] : `${displayName} is ready to claim.`}
               </div>
               <NeonButton
                 variant="green"
@@ -475,22 +606,45 @@ export default function RegistrationFlow({
             )}
           </p>
 
-          {txHash && (
-            <a
-              href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                display: "inline-block",
-                fontSize: 12,
-                color: green,
-                textDecoration: "none",
-                marginBottom: 24,
-                borderBottom: `1px solid ${green}`,
-              }}
-            >
-              View Transaction →
-            </a>
+          {(txHash || nftStorageUrl) && (
+            <div style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: 16,
+              flexWrap: "wrap",
+              marginBottom: 24,
+            }}>
+              {txHash && (
+                <a
+                  href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: 12,
+                    color: green,
+                    textDecoration: "none",
+                    borderBottom: `1px solid ${green}`,
+                  }}
+                >
+                  View Transaction →
+                </a>
+              )}
+              {nftStorageUrl && (
+                <a
+                  href={nftStorageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: 12,
+                    color: green,
+                    textDecoration: "none",
+                    borderBottom: `1px solid ${green}`,
+                  }}
+                >
+                  View Stored Image →
+                </a>
+              )}
+            </div>
           )}
 
           <NeonButton variant="green" onClick={() => window.location.reload()} style={{ width: "100%" }}>

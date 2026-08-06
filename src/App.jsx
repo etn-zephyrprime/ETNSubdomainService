@@ -5,6 +5,7 @@ import SearchBar from "./components/SearchBar.jsx";
 import RegistrationFlow from "./components/RegistrationFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
 import SubnameSearch from "./components/SubnameSearch.jsx";
+import HowItWorks from "./components/HowItWorks.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
@@ -186,6 +187,8 @@ function AppContent() {
                 Register your Subdomain | Set Subname Pricing
               </NeonButton>
             </div>
+
+            <HowItWorks />
           </>
         ) : selectedName ? (
           <RegistrationFlow

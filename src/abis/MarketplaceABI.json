@@ -116,7 +116,7 @@
   },
   {
     "inputs": [{ "internalType": "bytes32", "name": "parentNode", "type": "bytes32" }],
-    "name": "subnamePrice",
+    "name": "subnamePricePerYear",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
     "type": "function"
@@ -124,9 +124,9 @@
   {
     "inputs": [
       { "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
-      { "internalType": "uint256", "name": "price", "type": "uint256" }
+      { "internalType": "uint256", "name": "pricePerYear", "type": "uint256" }
     ],
-    "name": "setSubnamePrice",
+    "name": "setSubnamePricePerYear",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -134,7 +134,18 @@
   {
     "inputs": [
       { "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
-      { "internalType": "string", "name": "label", "type": "string" }
+      { "internalType": "uint256", "name": "duration", "type": "uint256" }
+    ],
+    "name": "quoteSubname",
+    "outputs": [{ "internalType": "uint256", "name": "price", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
+      { "internalType": "string", "name": "label", "type": "string" },
+      { "internalType": "uint256", "name": "duration", "type": "uint256" }
     ],
     "name": "registerSubname",
     "outputs": [{ "internalType": "bytes32", "name": "subNode", "type": "bytes32" }],
@@ -155,9 +166,9 @@
     "anonymous": false,
     "inputs": [
       { "indexed": true, "internalType": "bytes32", "name": "parentNode", "type": "bytes32" },
-      { "indexed": false, "internalType": "uint256", "name": "price", "type": "uint256" }
+      { "indexed": false, "internalType": "uint256", "name": "pricePerYear", "type": "uint256" }
     ],
-    "name": "SubnamePriceSet",
+    "name": "SubnamePricePerYearSet",
     "type": "event"
   },
   {

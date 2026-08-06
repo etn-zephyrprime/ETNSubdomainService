@@ -47,9 +47,22 @@ export function useSubnameRegistration() {
     };
   }, []);
 
-  const getSubnamePrice = useCallback(async (parentNode) => {
+  const getSubnamePricePerYear = useCallback(async (parentNode) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.subnamePrice(parentNode);
+    return await marketplace.subnamePricePerYear(parentNode);
+  }, [getReadContracts]);
+
+  const quoteSubname = useCallback(async (parentNode, duration) => {
+    const { marketplace } = getReadContracts();
+    return await marketplace.quoteSubname(parentNode, duration);
+  }, [getReadContracts]);
+
+  // A subname's expiry can never exceed its parent's — used to filter which duration presets are
+  // even offerable for a given parent.
+  const getParentExpiry = useCallback(async (parentNode) => {
+    const { nameWrapper } = getReadContracts();
+    const data = await nameWrapper.getData(parentNode);
+    return data.expiry;
   }, [getReadContracts]);
 
   const checkSubnameAvailable = useCallback(async (parentNode, label) => {
@@ -59,44 +72,44 @@ export function useSubnameRegistration() {
     return owner === ethers.ZeroAddress;
   }, [getReadContracts]);
 
-  // No indexer exists yet, so this scans SubnamePriceSet events directly — cheap while the
+  // No indexer exists yet, so this scans SubnamePricePerYearSet events directly — cheap while the
   // marketplace is young (a few hundred blocks/events), scoped to MARKETPLACE_DEPLOY_BLOCK since
   // the public RPC rejects unscoped fromBlock queries ("Block range is too large"), and chunked
   // (see queryLogsChunked) since even a scoped range isn't reliably small enough on its own.
   // Labels come from NameWrapper.names(node) (the same on-chain source the contract itself
-  // trusts), not from the event — SubnamePriceSet only carries the hashed node.
+  // trusts), not from the event — SubnamePricePerYearSet only carries the hashed node.
   const getAvailableParentDomains = useCallback(async () => {
     const { marketplace, nameWrapper } = getReadContracts();
 
     const latestBlock = await marketplace.runner.getBlockNumber();
     const events = await queryLogsChunked(
       marketplace,
-      marketplace.filters.SubnamePriceSet(),
+      marketplace.filters.SubnamePricePerYearSet(),
       MARKETPLACE_DEPLOY_BLOCK,
       latestBlock
     );
 
     // queryFilter returns events in ascending block order, so a plain overwrite keeps each
-    // node's latest price — including 0 for domains that turned subname sales back off.
+    // node's latest rate — including 0 for domains that turned subname sales back off.
     const latestPriceByNode = new Map();
     for (const event of events) {
-      latestPriceByNode.set(event.args.parentNode, event.args.price);
+      latestPriceByNode.set(event.args.parentNode, event.args.pricePerYear);
     }
 
-    const activeNodes = [...latestPriceByNode.entries()].filter(([, price]) => price > 0n);
+    const activeNodes = [...latestPriceByNode.entries()].filter(([, pricePerYear]) => pricePerYear > 0n);
 
     const domains = await Promise.all(
-      activeNodes.map(async ([node, price]) => {
+      activeNodes.map(async ([node, pricePerYear]) => {
         const encoded = await nameWrapper.names(node);
         const label = decodeFirstLabel(encoded);
-        return label ? { label, node, price } : null;
+        return label ? { label, node, pricePerYear } : null;
       })
     );
 
     return domains.filter(Boolean);
   }, [getReadContracts]);
 
-  const registerSubname = useCallback(async (parentNode, label, priceWei, signer) => {
+  const registerSubname = useCallback(async (parentNode, label, duration, priceWei, signer) => {
     setLoading(true);
     setError(null);
     try {
@@ -104,7 +117,7 @@ export function useSubnameRegistration() {
       // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
       // this app (registerName ran out of gas at its auto-estimated limit), so writes use a
       // fixed generous limit instead of trusting the wallet's estimate.
-      const tx = await marketplace.registerSubname(parentNode, label, { value: priceWei, gasLimit: 450000 });
+      const tx = await marketplace.registerSubname(parentNode, label, duration, { value: priceWei, gasLimit: 450000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Registration failed");
 
@@ -120,7 +133,9 @@ export function useSubnameRegistration() {
   }, []);
 
   return {
-    getSubnamePrice,
+    getSubnamePricePerYear,
+    quoteSubname,
+    getParentExpiry,
     checkSubnameAvailable,
     getAvailableParentDomains,
     registerSubname,

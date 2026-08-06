@@ -46,6 +46,33 @@ export function useRenewal() {
     }
   }, [getReadContracts]);
 
+  // Node-based variant for callers that have already resolved a node themselves (e.g. a subname,
+  // where the node isn't computeNode(label) — it's computeSubnode(parentNode, label), and there's
+  // no single "label" to hand to getOwner at all).
+  const getOwnerByNode = useCallback(async (node) => {
+    try {
+      const { nameWrapper } = getReadContracts();
+      return await nameWrapper.ownerOf(node);
+    } catch (err) {
+      console.error("Failed to fetch name owner:", err);
+      throw err;
+    }
+  }, [getReadContracts]);
+
+  // Subnames have no entry in the raw BaseRegistrar at all (that only tracks top-level
+  // registrations) — their expiry lives solely in NameWrapper, inherited/capped from the parent
+  // at creation time. Read-only info for a subname; there's no independent subname renewal.
+  const getNameWrapperExpiry = useCallback(async (node) => {
+    try {
+      const { nameWrapper } = getReadContracts();
+      const data = await nameWrapper.getData(node);
+      return data.expiry;
+    } catch (err) {
+      console.error("Failed to fetch NameWrapper expiry:", err);
+      throw err;
+    }
+  }, [getReadContracts]);
+
   const quoteRenewal = useCallback(async (label, duration) => {
     try {
       const { marketplace } = getReadContracts();

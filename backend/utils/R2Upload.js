@@ -18,10 +18,9 @@ function getClient() {
 }
 
 /**
- * Uploads a PNG buffer to R2 and returns its public URL.
- * Intended to be called fire-and-forget (not awaited by the
- * request handler that responds to the frontend) — callers should
- * attach a .catch() to log failures, since nothing else will.
+ * Uploads a PNG buffer to R2 and returns its public URL. Throws if R2 env vars aren't
+ * configured or the upload fails — callers that don't want a failed/unconfigured upload to break
+ * the whole request (e.g. GenerateNft.js) should catch this themselves.
  */
 export async function uploadNftToR2(buffer, filename) {
   const BUCKET_NAME = process.env.R2_BUCKET_NAME;

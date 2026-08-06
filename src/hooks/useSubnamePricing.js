@@ -18,9 +18,9 @@ export function useSubnamePricing() {
     };
   }, []);
 
-  const getSubnamePrice = useCallback(async (parentNode) => {
+  const getSubnamePricePerYear = useCallback(async (parentNode) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.subnamePrice(parentNode);
+    return await marketplace.subnamePricePerYear(parentNode);
   }, [getReadContracts]);
 
   const isDomainActivated = useCallback(async (node) => {
@@ -87,12 +87,12 @@ export function useSubnamePricing() {
     }
   }, []);
 
-  const setSubnamePrice = useCallback(async (node, priceWei, signer) => {
+  const setSubnamePricePerYear = useCallback(async (node, pricePerYearWei, signer) => {
     setLoading(true);
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.setSubnamePrice(node, priceWei, { gasLimit: 180000 });
+      const tx = await marketplace.setSubnamePricePerYear(node, pricePerYearWei, { gasLimit: 180000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Setting price failed");
       return { success: true, txHash: tx.hash };
@@ -106,13 +106,13 @@ export function useSubnamePricing() {
   }, []);
 
   return {
-    getSubnamePrice,
+    getSubnamePricePerYear,
     isDomainActivated,
     isMarketplaceApproved,
     approveMarketplace,
     getActivationFee,
     activateDomain,
-    setSubnamePrice,
+    setSubnamePricePerYear,
     loading,
     error,
   };
