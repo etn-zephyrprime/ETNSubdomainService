@@ -184,7 +184,7 @@ function AppContent() {
                 onClick={handleRetroRegister}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                Register your Subdomain | Set Subname Pricing
+                Register Subdomain | Set Subname Pricing
               </NeonButton>
             </div>
 
@@ -211,7 +211,7 @@ function AppContent() {
         )}
       </div>
 
-      <Footer />
+      <Footer isMobile={isMobile} />
     </div>
   );
 }

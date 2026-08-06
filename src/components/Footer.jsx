@@ -1,8 +1,18 @@
 import React from "react";
-import { PlanetZephyrosLogo } from "../../backend/assets/media.js";
+import { PlanetZephyrosLogo, CoreClashLogo, ElectroSwap, TelegramLogo, XLogo } from "../../backend/assets/media.js";
 import { muted, mutedLight } from "../styles/theme.js";
+import EcosystemBanner from "./EcosystemBanner.jsx";
 
-export default function Footer() {
+const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
+const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
+const TELEGRAM_URL = "https://t.me/PlanetZephyros";
+const X_URL = "https://x.com/PlanetZephyros";
+
+function openLink(url) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+export default function Footer({ isMobile = false }) {
   return (
     <div
       style={{
@@ -55,6 +65,44 @@ export default function Footer() {
           margin: "4px auto",
         }}
       />
+
+      <div style={{
+        display: "flex",
+        flexDirection: isMobile ? "column" : "row",
+        gap: 12,
+        width: isMobile ? "100%" : "auto",
+        justifyContent: "center",
+        alignItems: "center",
+        flexWrap: "wrap",
+      }}>
+        <EcosystemBanner
+          onClick={() => openLink(CORECLASH_URL)}
+          imageSrc={CoreClashLogo}
+          alt="CoreClash"
+          isMobile={isMobile}
+        />
+        <EcosystemBanner
+          onClick={() => openLink(ELECTROSWAP_URL)}
+          imageSrc={ElectroSwap}
+          alt="ElectroSwap"
+          isMobile={isMobile}
+        />
+      </div>
+
+      <div style={{ display: "flex", gap: 16, alignItems: "center", marginTop: 4 }}>
+        <img
+          src={TelegramLogo}
+          alt="Telegram"
+          onClick={() => openLink(TELEGRAM_URL)}
+          style={{ height: 26, width: 26, objectFit: "contain", cursor: "pointer", borderRadius: 6 }}
+        />
+        <img
+          src={XLogo}
+          alt="X"
+          onClick={() => openLink(X_URL)}
+          style={{ height: 26, width: 26, objectFit: "contain", cursor: "pointer", borderRadius: 6 }}
+        />
+      </div>
 
 <div style={{ marginTop: 20, fontSize: 11, color: muted, textAlign: "center", lineHeight: 1.6 }}>
   <div style={{ marginBottom: 8, fontWeight: 600, color: mutedLight }}>
