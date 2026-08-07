@@ -55,6 +55,34 @@ export function useSubnamePricing() {
     }
   }, []);
 
+  // A separate approval from isMarketplaceApproved/approveMarketplace above — that one is
+  // NameWrapper-level (needed for registerSubname/setSubnodeRecord on an already-wrapped name).
+  // This one is BaseRegistrar-level: only relevant for a name that isn't wrapped yet, since
+  // activateDomain now wraps it as part of activation — pulling the raw ERC721 registration into
+  // its own custody first (see PlanetZephyrosSubdomainNameServiceV2's _wrapDirectRegistration),
+  // which needs this operator approval or it reverts "Approve BaseRegistrar first".
+  const isBaseRegistrarApproved = useCallback(async (ownerAddress) => {
+    const { baseRegistrar } = getReadContracts();
+    return await baseRegistrar.isApprovedForAll(ownerAddress, MARKETPLACE_ADDRESS);
+  }, [getReadContracts]);
+
+  const approveBaseRegistrar = useCallback(async (signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const baseRegistrar = new ethers.Contract(BASE_REGISTRAR_ADDRESS, BaseRegistrarABI, signer);
+      const tx = await baseRegistrar.setApprovalForAll(MARKETPLACE_ADDRESS, true, { gasLimit: 120000 });
+      await tx.wait();
+      return { success: true, txHash: tx.hash };
+    } catch (err) {
+      console.error("BaseRegistrar approval failed:", err);
+      setError(err?.reason || err?.message || "Approval failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Replicates the contract's own _activationFee math (brokerageBps of what the registrar would
   // charge today to register this name for however much time is actually left on it, read from
   // NameWrapper) plus a 5% buffer — mirrors scripts/testActivateDomain2_remix.ts's estimate,
@@ -89,7 +117,10 @@ export function useSubnamePricing() {
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.activateDomain(node, label, { value: fee, gasLimit: 350000 });
+      // Bumped from 350000 — for an unwrapped name, this now also does an ERC721 transferFrom +
+      // approve + NameWrapper.wrapETH2LD internally (PlanetZephyrosSubdomainNameServiceV2's
+      // _wrapDirectRegistration), not just a storage flag flip.
+      const tx = await marketplace.activateDomain(node, label, { value: fee, gasLimit: 600000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Activation failed");
       return { success: true, txHash: tx.hash };
@@ -125,6 +156,8 @@ export function useSubnamePricing() {
     isDomainActivated,
     isMarketplaceApproved,
     approveMarketplace,
+    isBaseRegistrarApproved,
+    approveBaseRegistrar,
     getActivationFee,
     activateDomain,
     setSubnamePricePerYear,

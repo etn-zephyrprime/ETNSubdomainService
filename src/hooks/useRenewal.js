@@ -72,6 +72,22 @@ export function useRenewal() {
     }
   }, [getReadContracts]);
 
+  // Whether a (top-level) name has actually been wrapped into NameWrapper yet — distinct from
+  // ownership. A name registered directly through Electroneum can be genuinely owned (per
+  // getOwner's BaseRegistrar fallback above) while still being unwrapped; activateDomain now
+  // wraps it as part of activation, so this determines whether that step (and its prerequisite
+  // BaseRegistrar approval) is still needed, or already done.
+  const isWrapped = useCallback(async (node) => {
+    try {
+      const { nameWrapper } = getReadContracts();
+      const owner = await nameWrapper.ownerOf(node);
+      return owner !== ethers.ZeroAddress;
+    } catch (err) {
+      console.error("Failed to check wrapped status:", err);
+      throw err;
+    }
+  }, [getReadContracts]);
+
   // Subnames have no entry in the raw BaseRegistrar at all (that only tracks top-level
   // registrations) — their expiry lives solely in NameWrapper, inherited/capped from the parent
   // at creation time. Read-only info for a subname; there's no independent subname renewal.
@@ -127,6 +143,7 @@ export function useRenewal() {
     getOwner,
     getOwnerByNode,
     getNameWrapperExpiry,
+    isWrapped,
     quoteRenewal,
     renewName,
     loading,

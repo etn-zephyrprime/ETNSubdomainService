@@ -38,6 +38,13 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [activationLoading, setActivationLoading] = useState(false);
   const [activationError, setActivationError] = useState(null);
 
+  // Only relevant for a top-level name that's registered but not yet wrapped — activateDomain
+  // now wraps it as part of activation, which needs this approval first. null = not applicable
+  // (subname, or the name's already wrapped) / not checked yet.
+  const [baseRegistrarApproved, setBaseRegistrarApproved] = useState(null);
+  const [baseRegistrarApproveLoading, setBaseRegistrarApproveLoading] = useState(false);
+  const [baseRegistrarApproveError, setBaseRegistrarApproveError] = useState(null);
+
   const [approved, setApproved] = useState(null);
   const [approveLoading, setApproveLoading] = useState(false);
   const [approveError, setApproveError] = useState(null);
@@ -54,13 +61,23 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [setPrimaryError, setSetPrimaryError] = useState(null);
   const [setPrimarySuccess, setSetPrimarySuccess] = useState(false);
 
-  const { getOwner, getOwnerByNode, getCurrentExpiry, getNameWrapperExpiry, quoteRenewal, renewName } = useRenewal();
+  const {
+    getOwner,
+    getOwnerByNode,
+    getCurrentExpiry,
+    getNameWrapperExpiry,
+    isWrapped,
+    quoteRenewal,
+    renewName,
+  } = useRenewal();
   const {
     isDomainActivated,
     getActivationFee,
     activateDomain,
     isMarketplaceApproved,
     approveMarketplace,
+    isBaseRegistrarApproved,
+    approveBaseRegistrar,
     getSubnamePricePerYear,
     setSubnamePricePerYear,
   } = useSubnamePricing();
@@ -88,6 +105,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setActivated(null);
     setActivationFee(null);
     setActivationError(null);
+    setBaseRegistrarApproved(null);
+    setBaseRegistrarApproveError(null);
     setApproved(null);
     setApproveError(null);
     setCurrentPrice(null);
@@ -167,6 +186,18 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       } else {
         const fee = await getActivationFee(normalizedInput, domainNode);
         setActivationFee(fee);
+
+        // Only top-level names ever hit this path unwrapped — a subname is always created
+        // already-wrapped via registerSubname, so it'd never reach "not activated" in the first
+        // place unless something else is very wrong, in which case skip this check rather than
+        // asserting anything about it.
+        if (!subname) {
+          const alreadyWrapped = await isWrapped(domainNode);
+          if (!alreadyWrapped) {
+            const isApproved = await isBaseRegistrarApproved(wallet.account);
+            setBaseRegistrarApproved(isApproved);
+          }
+        }
       }
     } catch (err) {
       console.error("Name lookup failed:", err);
@@ -195,6 +226,21 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setActivationError(err?.reason || err?.message || "Activation failed");
     } finally {
       setActivationLoading(false);
+    }
+  };
+
+  const handleApproveBaseRegistrar = async () => {
+    setBaseRegistrarApproveError(null);
+    setBaseRegistrarApproveLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await approveBaseRegistrar(signer);
+      setBaseRegistrarApproved(true);
+    } catch (err) {
+      console.error("BaseRegistrar approval failed:", err);
+      setBaseRegistrarApproveError(err?.reason || err?.message || "Approval failed");
+    } finally {
+      setBaseRegistrarApproveLoading(false);
     }
   };
 
@@ -548,13 +594,36 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   This name was registered outside the marketplace and needs to be activated before
                   you can price subnames.
                 </div>
+
+                {baseRegistrarApproved === false && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                      This name hasn't been wrapped yet — activating wraps it for you, but first
+                      approve the marketplace to move it into NameWrapper on your behalf. One-time,
+                      applies to all names you own.
+                    </div>
+                    {baseRegistrarApproveError && (
+                      <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{baseRegistrarApproveError}</div>
+                    )}
+                    <NeonButton
+                      variant="dark"
+                      onClick={handleApproveBaseRegistrar}
+                      disabled={baseRegistrarApproveLoading}
+                      loading={baseRegistrarApproveLoading}
+                      style={{ width: "100%", justifyContent: "center" }}
+                    >
+                      {baseRegistrarApproveLoading ? "Approving..." : "Approve BaseRegistrar"}
+                    </NeonButton>
+                  </div>
+                )}
+
                 {activationError && (
                   <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{activationError}</div>
                 )}
                 <NeonButton
                   variant="dark"
                   onClick={handleActivate}
-                  disabled={activationLoading || !activationFee}
+                  disabled={activationLoading || !activationFee || baseRegistrarApproved === false}
                   loading={activationLoading}
                   style={{ width: "100%", justifyContent: "center" }}
                 >
