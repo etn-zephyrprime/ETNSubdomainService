@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
+import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { computeNode, computeSubnode } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
@@ -47,6 +48,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [priceError, setPriceError] = useState(null);
   const [priceSuccess, setPriceSuccess] = useState(false);
 
+  const [primaryName, setPrimaryNameState] = useState(null);
+  const [primaryNameLoading, setPrimaryNameLoading] = useState(false);
+  const [setPrimaryLoading, setSetPrimaryLoading] = useState(false);
+  const [setPrimaryError, setSetPrimaryError] = useState(null);
+  const [setPrimarySuccess, setSetPrimarySuccess] = useState(false);
+
   const { getOwner, getOwnerByNode, getCurrentExpiry, getNameWrapperExpiry, quoteRenewal, renewName } = useRenewal();
   const {
     isDomainActivated,
@@ -57,6 +64,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     getSubnamePricePerYear,
     setSubnamePricePerYear,
   } = useSubnamePricing();
+  const { getPrimaryName, setName: setReverseName } = useReverseRecord();
 
   const handleLookup = async () => {
     if (!wallet.isConnected) {
@@ -86,6 +94,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPriceInput("");
     setPriceError(null);
     setPriceSuccess(false);
+    setPrimaryNameState(null);
+    setSetPrimaryError(null);
+    setSetPrimarySuccess(false);
 
     // Subnames (e.g. "hi.test6") aren't tracked by BaseRegistrar at all — only their parent's
     // top-level label is. Their node is computeSubnode(parentNode, subLabel), not computeNode of
@@ -113,6 +124,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setIsSubname(subname);
       setVerifiedName(nameInput);
       setNode(domainNode);
+
+      // Non-blocking — the rest of this lookup (expiry, activation, pricing) still needs to work
+      // even when ReverseRegistrar isn't configured for this deployment (see config.js).
+      setPrimaryNameLoading(true);
+      getPrimaryName(wallet.account)
+        .then(setPrimaryNameState)
+        .catch((err) => console.error("Failed to fetch primary name:", err))
+        .finally(() => setPrimaryNameLoading(false));
 
       if (subname) {
         const subExpiry = await getNameWrapperExpiry(domainNode);
@@ -209,6 +228,24 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setPriceError(err?.reason || err?.message || "Setting price failed");
     } finally {
       setPriceLoading(false);
+    }
+  };
+
+  const handleSetPrimaryName = async () => {
+    setSetPrimaryError(null);
+    setSetPrimarySuccess(false);
+    setSetPrimaryLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      const fullName = `${verifiedName}.etn`;
+      await setReverseName(fullName, signer);
+      setPrimaryNameState(fullName);
+      setSetPrimarySuccess(true);
+    } catch (err) {
+      console.error("Setting primary name failed:", err);
+      setSetPrimaryError(err?.reason || err?.message || "Setting primary name failed");
+    } finally {
+      setSetPrimaryLoading(false);
     }
   };
 
@@ -430,6 +467,52 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               )}
             </>
           )}
+
+          <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+            <div style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 1,
+              textTransform: "uppercase",
+              color: muted,
+              marginBottom: 12,
+            }}>
+              Primary Name
+            </div>
+
+            <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+              {primaryNameLoading
+                ? "Checking your current primary name..."
+                : primaryName === `${verifiedName}.etn`
+                ? `This is your wallet's primary name — it's what apps show for your address.`
+                : primaryName
+                ? `Your wallet's primary name is currently "${primaryName}".`
+                : "Your wallet doesn't have a primary name set yet."}
+            </div>
+
+            {setPrimaryError && (
+              <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{setPrimaryError}</div>
+            )}
+            {setPrimarySuccess && (
+              <div style={{ fontSize: 12, color: green, marginBottom: 10 }}>
+                ✓ Set as your primary name
+              </div>
+            )}
+
+            <NeonButton
+              variant="green"
+              onClick={handleSetPrimaryName}
+              disabled={setPrimaryLoading || primaryNameLoading || primaryName === `${verifiedName}.etn`}
+              loading={setPrimaryLoading}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              {setPrimaryLoading
+                ? "Setting..."
+                : primaryName === `${verifiedName}.etn`
+                ? "Already Your Primary Name"
+                : `Set as Primary Name`}
+            </NeonButton>
+          </div>
 
           <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
             <div style={{
