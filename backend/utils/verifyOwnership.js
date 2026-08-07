@@ -4,9 +4,12 @@ import { ethers } from "ethers";
 // itself, treated as uint256 (NameWrapper is ERC1155-style; the token id is the node).
 const NAME_WRAPPER_ABI = ["function ownerOf(uint256 id) view returns (address owner)"];
 
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum_testnet/";
+// Must point at the same chain the frontend actually registers names on (see RPC_URL /
+// NAME_WRAPPER_ADDRESS in src/config.js) — otherwise every legitimate request gets rejected
+// because ownerOf() is being checked on the wrong chain entirely.
+const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const NAME_WRAPPER_ADDRESS =
-  process.env.NAME_WRAPPER_ADDRESS || "0x388f495A886644883F41a5958C11382e7c0D23F5";
+  process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 
 // Bounds how long a captured signature could be replayed for. Wide enough for normal request
 // latency, narrow enough to matter.

@@ -32,14 +32,27 @@ export function useRenewal() {
     }
   }, [getReadContracts]);
 
-  // registerName() always wraps, so the raw ERC721 lives in NameWrapper's own custody once
-  // registered — real ownership must be read from NameWrapper.ownerOf(node), not
-  // BaseRegistrar.ownerOf(tokenId) (that would just return NameWrapper's address).
+  // registerName() (via this app) always wraps, so the raw ERC721 lives in NameWrapper's own
+  // custody once registered that way — real ownership for those names must be read from
+  // NameWrapper.ownerOf(node), not BaseRegistrar.ownerOf(tokenId) (that would just return
+  // NameWrapper's own address). But names registered directly through Electroneum, outside this
+  // app (the "Retro Register" case — see ManageSubdomain.jsx), are never wrapped at all, so
+  // NameWrapper.ownerOf(node) for those just returns the zero address, even though the name is
+  // genuinely owned. Fall back to the raw BaseRegistrar.ownerOf(tokenId) in that case — it
+  // reverts for a name that was never registered at all, which we treat the same as "no owner".
   const getOwner = useCallback(async (label) => {
     try {
-      const { nameWrapper } = getReadContracts();
+      const { nameWrapper, baseRegistrar } = getReadContracts();
       const node = computeNode(label);
-      return await nameWrapper.ownerOf(node);
+      const wrappedOwner = await nameWrapper.ownerOf(node);
+      if (wrappedOwner !== ethers.ZeroAddress) return wrappedOwner;
+
+      const tokenId = computeTokenId(label);
+      try {
+        return await baseRegistrar.ownerOf(tokenId);
+      } catch {
+        return ethers.ZeroAddress;
+      }
     } catch (err) {
       console.error("Failed to fetch name owner:", err);
       throw err;
