@@ -83,10 +83,17 @@ export function useSubnamePricing() {
     }
   }, []);
 
-  // Replicates the contract's own _activationFee math (brokerageBps of what the registrar would
-  // charge today to register this name for however much time is actually left on it, read from
-  // NameWrapper) plus a 5% buffer — mirrors scripts/testActivateDomain2_remix.ts's estimate,
-  // since a few seconds pass before the tx mines. Excess is always refunded on-chain regardless.
+  // Replicates the contract's own _activationFee math — whichever is larger, the bps-based fee
+  // or the minBrokerageFeePerYear floor scaled to however much time is actually left on the name
+  // (read from NameWrapper), same as _brokerageFeeFor — plus a 5% buffer — mirrors
+  // scripts/testActivateDomain2_remix.ts's estimate, since a few seconds pass before the tx
+  // mines. Excess is always refunded on-chain regardless.
+  //
+  // Was bps-only (no floor) until 2026-08-08 — silently under-quoted every activation where the
+  // floor should have dominated (i.e. every one with any meaningful remaining duration), matching
+  // the exact bug fixed in PlanetZephyrosSubdomainNameServiceV3's _activationFee. Left stale here
+  // after that contract fix meant every quote kept using the old formula, so the "Activate"
+  // button sent a value the contract would then reject as insufficient.
   const getActivationFee = useCallback(async (label, node) => {
     const { marketplace, nameWrapper, controller, baseRegistrar } = getReadContracts();
     const data = await nameWrapper.getData(node);
@@ -108,8 +115,14 @@ export function useSubnamePricing() {
 
     const price = await controller.rentPrice(label, remaining);
     const basePrice = price.base + price.premium;
-    const brokerageBps = await marketplace.brokerageBps();
-    return (basePrice * brokerageBps / 10000n) * 105n / 100n;
+    const [brokerageBps, minBrokerageFeePerYear] = await Promise.all([
+      marketplace.brokerageBps(),
+      marketplace.minBrokerageFeePerYear(),
+    ]);
+    const pctFee = (basePrice * brokerageBps) / 10000n;
+    const minFee = (minBrokerageFeePerYear * remaining) / (365n * 24n * 60n * 60n);
+    const fee = pctFee > minFee ? pctFee : minFee;
+    return (fee * 105n) / 100n;
   }, [getReadContracts]);
 
   const activateDomain = useCallback(async (node, label, fee, signer) => {
