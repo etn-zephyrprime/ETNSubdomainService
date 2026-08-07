@@ -43,6 +43,16 @@ export const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b
 export const REVERSE_REGISTRAR_ADDRESS =
   import.meta.env.VITE_REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 
+// The real ENS Registry (confirmed via BaseRegistrar.ens() / NameWrapper.ens() both returning
+// this exact address) — source of truth for which resolver is actually assigned to a given node,
+// so forward-record reads/writes (setAddr) always target whatever resolver a name is genuinely
+// pointed at, not an assumed default. Every wrapped name in this app currently resolves through
+// Electroneum's own PublicResolver, 0xDb4A3Abb6703232e20a118a104e7f4EbB3e2738D (not something we
+// deploy/control), but reading it dynamically means this keeps working if that ever changes for
+// a given name (e.g. via NameWrapper.setResolver).
+export const ENS_REGISTRY_ADDRESS =
+  import.meta.env.VITE_ENS_REGISTRY_ADDRESS || "0x6F311F2212593165988Dff84977e24C1005dBb85";
+
 // Default renewal duration — 1 year flat, matching the real registrar's own year-based pricing.
 export const DEFAULT_DURATION_SECONDS = 365 * 24 * 60 * 60;
 

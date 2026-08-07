@@ -5,6 +5,7 @@ import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../s
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
+import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { computeNode, computeSubnode } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
@@ -61,6 +62,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [setPrimaryError, setSetPrimaryError] = useState(null);
   const [setPrimarySuccess, setSetPrimarySuccess] = useState(false);
 
+  // Forward record — opposite direction from Primary Name above (that's "what name does my
+  // wallet show as", this is "what address does this name point to").
+  const [resolvedAddress, setResolvedAddress] = useState(null);
+  const [resolvedAddressLoading, setResolvedAddressLoading] = useState(false);
+  const [setAddrLoading, setSetAddrLoading] = useState(false);
+  const [setAddrError, setSetAddrError] = useState(null);
+  const [setAddrSuccess, setSetAddrSuccess] = useState(false);
+
   const {
     getOwner,
     getOwnerByNode,
@@ -82,6 +91,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setSubnamePricePerYear,
   } = useSubnamePricing();
   const { getPrimaryName, setName: setReverseName } = useReverseRecord();
+  const { getResolvedAddress, setAddr } = useAddressRecord();
 
   const handleLookup = async () => {
     if (!wallet.isConnected) {
@@ -116,6 +126,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPrimaryNameState(null);
     setSetPrimaryError(null);
     setSetPrimarySuccess(false);
+    setResolvedAddress(null);
+    setSetAddrError(null);
+    setSetAddrSuccess(false);
 
     // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
     // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
@@ -158,6 +171,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         .then(setPrimaryNameState)
         .catch((err) => console.error("Failed to fetch primary name:", err))
         .finally(() => setPrimaryNameLoading(false));
+
+      // Also non-blocking, and independent of ownership/wrapped state — a name's forward record
+      // reads through whatever resolver it's actually assigned, resolved fresh each time.
+      setResolvedAddressLoading(true);
+      getResolvedAddress(domainNode)
+        .then(setResolvedAddress)
+        .catch((err) => console.error("Failed to fetch resolved address:", err))
+        .finally(() => setResolvedAddressLoading(false));
 
       if (subname) {
         const subExpiry = await getNameWrapperExpiry(domainNode);
@@ -299,6 +320,23 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setSetPrimaryError(err?.reason || err?.message || "Setting primary name failed");
     } finally {
       setSetPrimaryLoading(false);
+    }
+  };
+
+  const handleSetAddr = async () => {
+    setSetAddrError(null);
+    setSetAddrSuccess(false);
+    setSetAddrLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await setAddr(node, wallet.account, signer);
+      setResolvedAddress(wallet.account);
+      setSetAddrSuccess(true);
+    } catch (err) {
+      console.error("Setting address failed:", err);
+      setSetAddrError(err?.reason || err?.message || "Setting address failed");
+    } finally {
+      setSetAddrLoading(false);
     }
   };
 
@@ -569,6 +607,56 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 : primaryName === `${verifiedName}.etn`
                 ? "Already Your Primary Name"
                 : `Set as Primary Name`}
+            </NeonButton>
+          </div>
+
+          <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+            <div style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 1,
+              textTransform: "uppercase",
+              color: muted,
+              marginBottom: 12,
+            }}>
+              Wallet Address
+            </div>
+
+            <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+              {resolvedAddressLoading
+                ? "Checking what address this name currently resolves to..."
+                : resolvedAddress && resolvedAddress.toLowerCase() === wallet.account.toLowerCase()
+                ? `This name resolves to your connected wallet — apps/wallets looking up "${verifiedName}.etn" will find you.`
+                : resolvedAddress
+                ? `This name currently resolves to ${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}.`
+                : "This name doesn't resolve to any address yet."}
+            </div>
+
+            {setAddrError && (
+              <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{setAddrError}</div>
+            )}
+            {setAddrSuccess && (
+              <div style={{ fontSize: 12, color: green, marginBottom: 10 }}>
+                ✓ Now resolves to your wallet
+              </div>
+            )}
+
+            <NeonButton
+              variant="green"
+              onClick={handleSetAddr}
+              disabled={
+                setAddrLoading ||
+                resolvedAddressLoading ||
+                (resolvedAddress && resolvedAddress.toLowerCase() === wallet.account.toLowerCase())
+              }
+              loading={setAddrLoading}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              {setAddrLoading
+                ? "Setting..."
+                : resolvedAddress && resolvedAddress.toLowerCase() === wallet.account.toLowerCase()
+                ? "Already Resolves to Your Wallet"
+                : "Assign to My Wallet"}
             </NeonButton>
           </div>
 
