@@ -1,24 +1,26 @@
-// Chain — Electroneum MAINNET (52014). PlanetZephyrosSubdomainNameService is now deployed here
+// Chain — Electroneum MAINNET (52014). PlanetZephyrosSubdomainNameServiceV2 is now deployed here
 // too; testnet (5201420) is reachable via the env var overrides below if needed.
 export const CHAIN_ID = import.meta.env.VITE_CHAIN_ID ? parseInt(import.meta.env.VITE_CHAIN_ID, 10) : 52014;
 export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/electroneum";
 export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 
 // Contract addresses
-// Redeployed 2026-08-07 as PlanetZephyrosSubdomainNameService (renamed from
-// PlanetZephyrosNameMarketplace) to fix activateDomain, which could never succeed for a name
-// registered directly through Electroneum and never wrapped — exactly the "Retro Register" case
-// it exists for — because every check inside it only ever read NameWrapper data (all-zero for an
-// unwrapped name). The prior deployment (0x1191C7c0558F52a7282C00Bc477aA16187C1fE64, block
-// 15188489) is left live on-chain with the old bug, not pointed at anymore.
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x775c9BF1516811349915fC50E471875252Bb5Ef3";
+// Redeployed 2026-08-07 as PlanetZephyrosSubdomainNameServiceV2 — activateDomain now actually
+// wraps a genuinely-unwrapped name as part of activation (requires the caller to have called
+// baseRegistrar.setApprovalForAll(marketplace, true) first — see ManageSubdomain.jsx), instead of
+// just flipping a flag that unlocked nothing real (setSubnamePricePerYear/registerSubname/resale
+// all read NameWrapper directly, which stayed empty for a never-wrapped name either way). Both
+// prior deployments (0x775c9BF1516811349915fC50E471875252Bb5Ef3 block 15201936;
+// 0x1191C7c0558F52a7282C00Bc477aA16187C1fE64 block 15188489) are left live on-chain, not pointed
+// at anymore.
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0xd9BC87b41c8011c9CaEeda91167cacfFD91Cd22c";
 // Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
 // unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
 // have a subname price set) start here instead of from genesis. Must be updated alongside
 // MARKETPLACE_ADDRESS on every redeploy.
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15201936;
+  : 15204649;
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
 // registerName() (via this app) always wraps — the raw ERC721 ends up owned by NameWrapper
