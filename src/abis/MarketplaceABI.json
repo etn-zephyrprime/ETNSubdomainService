@@ -105,6 +105,13 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "minBrokerageFeePerYear",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       { "internalType": "bytes32", "name": "node", "type": "bytes32" },
       { "internalType": "string", "name": "label", "type": "string" }
