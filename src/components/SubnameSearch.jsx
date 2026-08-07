@@ -6,6 +6,7 @@ import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { computeNode } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
+import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
 
@@ -136,15 +137,19 @@ export default function SubnameSearch({ wallet, onBack = null }) {
     }
   };
 
-  const generateNftAndLink = async (fullName, nodeHex) => {
+  const generateNftAndLink = async (fullName, nodeHex, signer) => {
     try {
+      // Proves to the backend we actually own this node before it'll generate/store art for
+      // it — see backend/utils/verifyOwnership.js.
+      const { timestamp, signature } = await signNftGenerationRequest(signer, nodeHex);
+
       const res = await fetch(`${BACKEND_IMAGE_URL}/api/generate-nft`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // "default" is the blue template — subnames get this, top-level parent names get the
         // gold "namespace" template (see RegistrationFlow.jsx). Explicit here even though the
         // backend already defaults to it, so the mapping is visible from either file.
-        body: JSON.stringify({ fullName, nodeHex, template: "default" }),
+        body: JSON.stringify({ fullName, nodeHex, template: "default", timestamp, signature }),
       });
       const data = await res.json();
       if (data.success) {
@@ -180,7 +185,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
 
       setTxHash(result.txHash);
       setSuccess(true);
-      generateNftAndLink(`${subLabel}.${parentLabel}.etn`, result.subNode);
+      generateNftAndLink(`${subLabel}.${parentLabel}.etn`, result.subNode, signer);
     } catch (err) {
       console.error("Subname registration failed:", err);
       setRegisterError(err?.reason || err?.message || "Registration failed");

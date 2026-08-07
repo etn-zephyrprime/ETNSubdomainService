@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useRegistration } from "../hooks/useRegistration.js";
 import { formatEth } from "../utils/format.js";
+import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
@@ -265,7 +266,7 @@ export default function RegistrationFlow({
     onSuccess?.(result);
 
     if (result.node) {
-      generateNftAndLink(result.name, result.node);
+      generateNftAndLink(result.name, result.node, signer);
     }
   };
 
@@ -314,14 +315,18 @@ export default function RegistrationFlow({
     setStep("choose");
   };
 
-  const generateNftAndLink = async (fullName, nodeHex) => {
+  const generateNftAndLink = async (fullName, nodeHex, signer) => {
     try {
+      // Proves to the backend we actually own this node before it'll generate/store art for
+      // it — see backend/utils/verifyOwnership.js.
+      const { timestamp, signature } = await signNftGenerationRequest(signer, nodeHex);
+
       const res = await fetch(`${BACKEND_IMAGE_URL}/api/generate-nft`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // "namespace" is the gold template — reserved for top-level parent names, distinct from
         // the blue "default" template subnames get (see SubnameSearch.jsx).
-        body: JSON.stringify({ fullName, nodeHex, template: "namespace" }),
+        body: JSON.stringify({ fullName, nodeHex, template: "namespace", timestamp, signature }),
       });
       const data = await res.json();
       if (data.success) {

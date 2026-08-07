@@ -1,14 +1,28 @@
 import express from "express";
 import { generateNftImage } from "../utils/imageGenerator.js";
 import { uploadNftToR2 } from "../utils/R2Upload.js";
+import { verifyOwnership, OwnershipVerificationError } from "../utils/verifyOwnership.js";
 
 const router = express.Router();
 
 router.post("/generate-nft", async (req, res) => {
-  const { fullName, nodeHex, template } = req.body;
+  const { fullName, nodeHex, template, timestamp, signature } = req.body;
 
-  if (!fullName || !nodeHex) {
-    return res.status(400).json({ error: "fullName and nodeHex are required" });
+  if (!fullName || !nodeHex || timestamp == null || !signature) {
+    return res.status(400).json({ error: "fullName, nodeHex, timestamp, and signature are required" });
+  }
+
+  // Proves the caller actually owns nodeHex on-chain (via NameWrapper) before letting them
+  // generate/overwrite that name's stored NFT art. Without this, anyone could POST any node's
+  // (publicly-computable, non-secret) hash to deface an already-registered name's artwork.
+  try {
+    await verifyOwnership({ nodeHex, timestamp, signature });
+  } catch (err) {
+    if (err instanceof OwnershipVerificationError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    console.error("Ownership verification failed unexpectedly:", err);
+    return res.status(500).json({ error: "Verification failed" });
   }
 
   try {
@@ -37,8 +51,10 @@ router.post("/generate-nft", async (req, res) => {
       storageUrl,
     });
   } catch (err) {
+    // Full detail stays server-side only — the raw message can include internal filesystem
+    // paths (e.g. imageGenerator.js's "Missing template image: <absolute path>").
     console.error("NFT generation failed:", err);
-    res.status(500).json({ error: "Image generation failed", details: err.message });
+    res.status(500).json({ error: "Image generation failed" });
   }
 });
 
