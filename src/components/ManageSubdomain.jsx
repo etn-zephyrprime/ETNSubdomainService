@@ -411,6 +411,11 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
           {!isSubname && (
             <>
+              <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+                Optional — extends your current expiry by another year, on top of whatever time
+                you already have left. You don't need to do this until you're actually close to
+                expiring.
+              </div>
               <div style={{
                 padding: 14,
                 borderRadius: 10,
@@ -423,7 +428,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 ) : renewQuote ? (
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 4 }}>
-                      <span>Renewal (1 year) paid to Electroneum</span>
+                      <span>Extend by 1 year — paid to Electroneum</span>
                       <span>{formatEth(renewQuote.basePrice)} ETN</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 8 }}>
@@ -463,8 +468,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 {renewLoading
                   ? "Renewing..."
                   : renewQuote
-                  ? `Renew (1 year) for ${formatEth(renewQuote.totalPrice)} ETN`
-                  : "Renew (1 year)"}
+                  ? `Renew Early (+1 year) for ${formatEth(renewQuote.totalPrice)} ETN`
+                  : "Renew Early (+1 year)"}
               </NeonButton>
 
               {renewTxHash && renewSuccess && (
