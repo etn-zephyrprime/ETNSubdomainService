@@ -1,34 +1,39 @@
-// Chain — Electroneum Testnet (PlanetZephyrosNameMarketplace isn't deployed on mainnet yet)
-export const CHAIN_ID = import.meta.env.VITE_CHAIN_ID ? parseInt(import.meta.env.VITE_CHAIN_ID, 10) : 5201420;
-export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/electroneum_testnet/";
-export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://testnet-blockexplorer.electroneum.com";
+// Chain — Electroneum MAINNET (52014). PlanetZephyrosNameMarketplace is now deployed here too;
+// testnet (5201420) is reachable via the env var overrides below if needed.
+export const CHAIN_ID = import.meta.env.VITE_CHAIN_ID ? parseInt(import.meta.env.VITE_CHAIN_ID, 10) : 52014;
+export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/electroneum";
+export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 
 // Contract addresses
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x9cDFC0b2c5eB90E5AD00d0781d3e19Ad61fDF454";
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x1191C7c0558F52a7282C00Bc477aA16187C1fE64";
 // Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
 // unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
 // have a subname price set) start here instead of from genesis. Must be updated alongside
 // MARKETPLACE_ADDRESS on every redeploy.
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 14679888;
-export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5BFb2958062Ac12d2019Ac1E69243DDbafCCc2c5";
-export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x7b787b31Ad58D563D7B3938b4bbfAB2c588624C5";
-// registerName() always wraps — the raw ERC721 ends up owned by NameWrapper itself, so
-// ownership lookups for any registered name must query NameWrapper.ownerOf(node), not
-// BaseRegistrar.ownerOf(tokenId) (which just returns NameWrapper's own address post-wrap).
-export const NAME_WRAPPER_ADDRESS = import.meta.env.VITE_NAME_WRAPPER_ADDRESS || "0x388f495A886644883F41a5958C11382e7c0D23F5";
+  : 15188489;
+export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C";
+export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
+// registerName() (via this app) always wraps — the raw ERC721 ends up owned by NameWrapper
+// itself, so ownership lookups for names registered *through this app* must query
+// NameWrapper.ownerOf(node), not BaseRegistrar.ownerOf(tokenId) (which just returns
+// NameWrapper's own address post-wrap). Names registered directly through Electroneum, outside
+// this app, are NOT wrapped — see useRenewal.js's getOwner(), which falls back to
+// BaseRegistrar.ownerOf(tokenId) for exactly that case.
+export const NAME_WRAPPER_ADDRESS = import.meta.env.VITE_NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 
 // namehash("etn") — Electroneum's ENS fork uses its own TLD, not "eth". Confirmed on-chain:
-// ENSRegistry.owner(this node) returns exactly BaseRegistrarImplementation's address.
+// ENSRegistry.owner(this node) returns exactly BaseRegistrarImplementation's address. Same value
+// on every chain — it's just a hash, not a deployed address.
 export const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
 
 // ReverseRegistrar — lets a wallet set/read its primary ("reverse") name via setName /
-// setNameForAddr. Confirmed testnet address (matches this app's default chain above, 5201420).
-// Electroneum MAINNET uses a different address (0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A) —
-// override via the env var if you point this app at mainnet.
+// setNameForAddr. Electroneum TESTNET uses a different address
+// (0x470680Df59dB243409F67ec7EaC78D8e6f834047) — override via the env var if you point this app
+// at testnet.
 export const REVERSE_REGISTRAR_ADDRESS =
-  import.meta.env.VITE_REVERSE_REGISTRAR_ADDRESS || "0x470680Df59dB243409F67ec7EaC78D8e6f834047";
+  import.meta.env.VITE_REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 
 // Default renewal duration — 1 year flat, matching the real registrar's own year-based pricing.
 export const DEFAULT_DURATION_SECONDS = 365 * 24 * 60 * 60;
