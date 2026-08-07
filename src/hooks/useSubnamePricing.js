@@ -1,9 +1,11 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
+import { computeTokenId } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import ETHRegistrarControllerABI from "../abis/ETHRegistrarControllerABI.json";
+import BaseRegistrarABI from "../abis/BaseRegistrarABI.json";
 
 export function useSubnamePricing() {
   const [loading, setLoading] = useState(false);
@@ -15,6 +17,7 @@ export function useSubnamePricing() {
       marketplace: new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, provider),
       nameWrapper: new ethers.Contract(NAME_WRAPPER_ADDRESS, NameWrapperABI, provider),
       controller: new ethers.Contract(REGISTRAR_CONTROLLER_ADDRESS, ETHRegistrarControllerABI, provider),
+      baseRegistrar: new ethers.Contract(BASE_REGISTRAR_ADDRESS, BaseRegistrarABI, provider),
     };
   }, []);
 
@@ -57,10 +60,22 @@ export function useSubnamePricing() {
   // NameWrapper) plus a 5% buffer — mirrors scripts/testActivateDomain2_remix.ts's estimate,
   // since a few seconds pass before the tx mines. Excess is always refunded on-chain regardless.
   const getActivationFee = useCallback(async (label, node) => {
-    const { marketplace, nameWrapper, controller } = getReadContracts();
+    const { marketplace, nameWrapper, controller, baseRegistrar } = getReadContracts();
     const data = await nameWrapper.getData(node);
+    let expiry = data.expiry;
+
+    // Names registered directly through Electroneum, outside this app — exactly the case this
+    // whole activation flow exists for — are never wrapped, so NameWrapper.getData() for them
+    // returns all-zero, including expiry. That would make every one of them look already-expired
+    // even when the real registration has decades left. Fall back to the real registrar expiry
+    // for top-level names (BaseRegistrar doesn't track subnames at all — only their parent's
+    // label is — so this only applies when label has no dot).
+    if (expiry === 0n && !label.includes(".")) {
+      expiry = await baseRegistrar.nameExpires(computeTokenId(label));
+    }
+
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const remaining = data.expiry - BigInt(nowSeconds);
+    const remaining = expiry - BigInt(nowSeconds);
     if (remaining <= 0n) throw new Error("Name has expired");
 
     const price = await controller.rentPrice(label, remaining);
