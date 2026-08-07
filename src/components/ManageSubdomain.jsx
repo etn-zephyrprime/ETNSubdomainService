@@ -98,21 +98,28 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setSetPrimaryError(null);
     setSetPrimarySuccess(false);
 
+    // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
+    // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
+    // dot-based subname split below would misparse it as subname "planetzephyros" under parent
+    // "etn" (the literal TLD), silently computing a different, genuinely nonexistent node
+    // instead of the intended top-level name — surfacing as a false "doesn't exist".
+    const normalizedInput = nameInput.replace(/\.etn$/i, "");
+
     // Subnames (e.g. "hi.test6") aren't tracked by BaseRegistrar at all — only their parent's
     // top-level label is. Their node is computeSubnode(parentNode, subLabel), not computeNode of
     // the whole dotted string, and their expiry has to come from NameWrapper directly since
     // there's no independent renewal to look up.
-    const dotIndex = nameInput.indexOf(".");
+    const dotIndex = normalizedInput.indexOf(".");
     const subname = dotIndex !== -1;
-    const subLabel = subname ? nameInput.slice(0, dotIndex) : null;
-    const parentLabel = subname ? nameInput.slice(dotIndex + 1) : nameInput;
+    const subLabel = subname ? normalizedInput.slice(0, dotIndex) : null;
+    const parentLabel = subname ? normalizedInput.slice(dotIndex + 1) : normalizedInput;
 
     try {
       const domainNode = subname ? computeSubnode(computeNode(parentLabel), subLabel) : computeNode(parentLabel);
       const owner = subname ? await getOwnerByNode(domainNode) : await getOwner(parentLabel);
 
       if (owner === ethers.ZeroAddress) {
-        setLookupError(`"${nameInput}.etn" doesn't exist`);
+        setLookupError(`"${normalizedInput}.etn" doesn't exist`);
         return;
       }
 
@@ -122,7 +129,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       }
 
       setIsSubname(subname);
-      setVerifiedName(nameInput);
+      setVerifiedName(normalizedInput);
       setNode(domainNode);
 
       // Non-blocking — the rest of this lookup (expiry, activation, pricing) still needs to work
@@ -158,7 +165,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         setApproved(isApproved);
         setCurrentPrice(price);
       } else {
-        const fee = await getActivationFee(nameInput, domainNode);
+        const fee = await getActivationFee(normalizedInput, domainNode);
         setActivationFee(fee);
       }
     } catch (err) {
