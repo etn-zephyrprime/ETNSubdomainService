@@ -24,12 +24,11 @@ export const NAME_WRAPPER_ADDRESS = import.meta.env.VITE_NAME_WRAPPER_ADDRESS ||
 export const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
 
 // ReverseRegistrar — lets a wallet set/read its primary ("reverse") name via setName /
-// setNameForAddr. No hardcoded default: the only address confirmed so far is on Electroneum
-// MAINNET (0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A), while this app's default chain above is
-// TESTNET (5201420) — falling back to the mainnet address here would make every reverse-record
-// call silently target a contract that doesn't exist on testnet. Must be set explicitly per
-// deployment via the env var until the testnet address is confirmed.
-export const REVERSE_REGISTRAR_ADDRESS = import.meta.env.VITE_REVERSE_REGISTRAR_ADDRESS || null;
+// setNameForAddr. Confirmed testnet address (matches this app's default chain above, 5201420).
+// Electroneum MAINNET uses a different address (0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A) —
+// override via the env var if you point this app at mainnet.
+export const REVERSE_REGISTRAR_ADDRESS =
+  import.meta.env.VITE_REVERSE_REGISTRAR_ADDRESS || "0x470680Df59dB243409F67ec7EaC78D8e6f834047";
 
 // Default renewal duration — 1 year flat, matching the real registrar's own year-based pricing.
 export const DEFAULT_DURATION_SECONDS = 365 * 24 * 60 * 60;
