@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useRegistration } from "../hooks/useRegistration.js";
+import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { formatEth } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
@@ -136,6 +137,7 @@ export default function RegistrationFlow({
   const [errorStage, setErrorStage] = useState(null); // "commit" | "register"
   const [nftImage, setNftImage] = useState(null);
   const [nftStorageUrl, setNftStorageUrl] = useState(null);
+  const [addrStatus, setAddrStatus] = useState(null); // null | "pending" | "success" | "error"
 
   const {
     quoteRegistration,
@@ -148,6 +150,7 @@ export default function RegistrationFlow({
     loadPendingCommitment,
     clearPendingCommitment,
   } = useRegistration();
+  const { setAddr } = useAddressRecord();
 
   const label = nameData.name;
   const displayName = `${label}.etn`;
@@ -267,6 +270,7 @@ export default function RegistrationFlow({
 
     if (result.node) {
       generateNftAndLink(result.name, result.node, signer);
+      assignAddress(result.node, signer);
     }
   };
 
@@ -335,6 +339,23 @@ export default function RegistrationFlow({
       }
     } catch (err) {
       console.error("NFT generation request failed:", err);
+    }
+  };
+
+  // Newly-registered names are wrapped straight to the buyer, so they're immediately recognized
+  // as the real owner by the resolver's own NameWrapper-aware authorization — no separate
+  // approval step needed here (unlike activating a retro-registered name). Fire-and-forget, same
+  // as generateNftAndLink above: a failure here doesn't mean the registration itself failed, just
+  // that the name won't resolve to a wallet yet — the owner can still set it later from "Your
+  // Names" (see ManageSubdomain.jsx's "Wallet Address" section).
+  const assignAddress = async (nodeHex, signer) => {
+    setAddrStatus("pending");
+    try {
+      await setAddr(nodeHex, wallet.account, signer);
+      setAddrStatus("success");
+    } catch (err) {
+      console.error("Setting address record failed:", err);
+      setAddrStatus("error");
     }
   };
 
@@ -611,6 +632,19 @@ export default function RegistrationFlow({
               </>
             )}
           </p>
+
+          {addrStatus && (
+            <p style={{
+              fontSize: 12,
+              color: addrStatus === "error" ? error : addrStatus === "success" ? green : orange,
+              marginTop: -12,
+              marginBottom: 24,
+            }}>
+              {addrStatus === "pending" && "Confirm in your wallet to point this name at your address..."}
+              {addrStatus === "success" && `✓ ${displayName} now resolves to your wallet`}
+              {addrStatus === "error" && "Couldn't set your wallet address — you can do this later from \"Your Names\"."}
+            </p>
+          )}
 
           {(txHash || nftStorageUrl) && (
             <div style={{

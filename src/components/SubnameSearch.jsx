@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
+import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { computeNode } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
@@ -27,6 +28,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
   const [txHash, setTxHash] = useState(null);
   const [nftImage, setNftImage] = useState(null);
   const [nftStorageUrl, setNftStorageUrl] = useState(null);
+  const [addrStatus, setAddrStatus] = useState(null); // null | "pending" | "success" | "error"
 
   const [parentDomains, setParentDomains] = useState([]);
   const [domainsLoading, setDomainsLoading] = useState(true);
@@ -41,6 +43,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
     getAvailableParentDomains,
     registerSubname,
   } = useSubnameRegistration();
+  const { setAddr } = useAddressRecord();
 
   useEffect(() => {
     (async () => {
@@ -161,6 +164,23 @@ export default function SubnameSearch({ wallet, onBack = null }) {
     }
   };
 
+  // Newly-registered subnames are wrapped straight to the buyer, so they're immediately
+  // recognized as the real owner by the resolver's own NameWrapper-aware authorization — no
+  // separate approval step needed here (unlike activating a retro-registered name).
+  // Fire-and-forget, same as generateNftAndLink above: a failure here doesn't mean the
+  // registration itself failed, just that the subname won't resolve to a wallet yet — the owner
+  // can still set it later from "Your Names" (see ManageSubdomain.jsx's "Wallet Address" section).
+  const assignAddress = async (nodeHex, signer) => {
+    setAddrStatus("pending");
+    try {
+      await setAddr(nodeHex, wallet.account, signer);
+      setAddrStatus("success");
+    } catch (err) {
+      console.error("Setting address record failed:", err);
+      setAddrStatus("error");
+    }
+  };
+
   // Mirrors the contract's own quoteSubname math exactly (pricePerYear * duration / 365 days) —
   // computed client-side so the price updates instantly as the buyer changes the duration
   // picker, without a round trip per click.
@@ -186,6 +206,7 @@ export default function SubnameSearch({ wallet, onBack = null }) {
       setTxHash(result.txHash);
       setSuccess(true);
       generateNftAndLink(`${subLabel}.${parentLabel}.etn`, result.subNode, signer);
+      assignAddress(result.subNode, signer);
     } catch (err) {
       console.error("Subname registration failed:", err);
       setRegisterError(err?.reason || err?.message || "Registration failed");
@@ -241,6 +262,19 @@ export default function SubnameSearch({ wallet, onBack = null }) {
           <p style={{ fontSize: 13, color: mutedLight, marginBottom: 24, lineHeight: 1.6 }}>
             <strong>{displayName}</strong> is now yours.
           </p>
+
+          {addrStatus && (
+            <p style={{
+              fontSize: 12,
+              color: addrStatus === "error" ? error : addrStatus === "success" ? green : orange,
+              marginTop: -12,
+              marginBottom: 24,
+            }}>
+              {addrStatus === "pending" && "Confirm in your wallet to point this name at your address..."}
+              {addrStatus === "success" && `✓ ${displayName} now resolves to your wallet`}
+              {addrStatus === "error" && "Couldn't set your wallet address — you can do this later from \"Your Names\"."}
+            </p>
+          )}
 
           {(txHash || nftStorageUrl) && (
             <div style={{
