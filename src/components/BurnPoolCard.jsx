@@ -71,7 +71,7 @@ export default function BurnPoolCard({ wallet }) {
   };
 
   return (
-    <Panel style={{ width: "100%", maxWidth: 600, margin: "16px auto 0", boxSizing: "border-box" }}>
+    <Panel style={{ width: "100%", maxWidth: 600, margin: "40px auto 0", boxSizing: "border-box" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <Flame size={18} color={green} />
         <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
