@@ -1,8 +1,9 @@
 import React from "react";
-import { PlanetZephyrosLogo, CoreClashLogo, ElectroSwap, TelegramLogo, XLogo } from "../../backend/assets/media.js";
+import { PlanetZephyrosLogo, ElectroneumLogo, CoreClashLogo, ElectroSwap, TelegramLogo, XLogo } from "../../backend/assets/media.js";
 import { muted, mutedLight } from "../styles/theme.js";
 import EcosystemBanner from "./EcosystemBanner.jsx";
 
+const ELECTRONEUM_URL = "https://electroneum.com";
 const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
 const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
 const TELEGRAM_URL = "https://t.me/PlanetZephyros";
@@ -75,6 +76,12 @@ export default function Footer({ isMobile = false }) {
         alignItems: "center",
         flexWrap: "wrap",
       }}>
+        <EcosystemBanner
+          onClick={() => openLink(ELECTRONEUM_URL)}
+          imageSrc={ElectroneumLogo}
+          alt="Electroneum"
+          isMobile={isMobile}
+        />
         <EcosystemBanner
           onClick={() => openLink(CORECLASH_URL)}
           imageSrc={CoreClashLogo}

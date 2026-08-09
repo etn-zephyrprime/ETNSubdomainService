@@ -2,7 +2,7 @@ import React from "react";
 import { Wallet } from "lucide-react";
 
 import NeonButton from "./NeonButton.jsx";
-import { green, greenGlow, panel, border } from "../styles/theme.js";
+import { green, panel, border } from "../styles/theme.js";
 import { TransparentSubdomainLogo, SimplifyYourWallet } from "../../backend/assets/media.js";
 
 function shortAddress(address) {
@@ -111,13 +111,12 @@ export default function Header({
     src={TransparentSubdomainLogo}
     alt="Subdomain Name Service"
     style={{
-      height: isMobile ? 90 : 140,
+      height: isMobile ? 135 : 210,
       width: "auto",
       maxWidth: "100%",
       display: "block",
       pointerEvents: "none",
       objectFit: "contain",
-      filter: `drop-shadow(0 0 16px ${greenGlow})`,
       marginBottom: 12,
     }}
   />
