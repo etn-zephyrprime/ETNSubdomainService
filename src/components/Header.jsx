@@ -3,7 +3,7 @@ import { Wallet } from "lucide-react";
 
 import NeonButton from "./NeonButton.jsx";
 import { green, greenGlow, panel, border } from "../styles/theme.js";
-import { PlanetZephyrosLogo, PlanetZephyrosText, SimplifyYourWallet } from "../../backend/assets/media.js";
+import { TransparentSubdomainLogo, SimplifyYourWallet } from "../../backend/assets/media.js";
 
 function shortAddress(address) {
   if (!address) return "";
@@ -105,70 +105,23 @@ export default function Header({
     order: isMobile ? 1 : 1,
   }}
 >
-{/* Logo + Text (tight) */}
-<div
-  style={{
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 4,
-    justifyContent: "center",
-    marginBottom: 8,
-    width: "100%",
-    maxWidth: "100%",
-    boxSizing: "border-box",
-    padding: isMobile ? "0 12px" : 0,
-  }}
->
-  {PlanetZephyrosLogo && (
-    <img
-      src={PlanetZephyrosLogo}
-      alt="Planet Zephyros"
-      style={{
-        height: isMobile ? 52 : 72,
-        width: "auto",
-        display: "block",
-        pointerEvents: "none",
-        animation: "logoPulse 2.4s ease-in-out infinite",
-        filter: "drop-shadow(0 0 14px rgba(0,255,140,0.18))",
-        borderRadius: 8,
-        objectFit: "contain",
-        flexShrink: 0,
-      }}
-    />
-  )}
-  {PlanetZephyrosText && (
-    <img
-      src={PlanetZephyrosText}
-      alt="Planet Zephyros"
-      style={{
-        height: isMobile ? 52 : 72,
-        width: "auto",
-        display: "block",
-        filter: "drop-shadow(0 0 12px rgba(0,255,140,0.25))",
-        animation: "vaultPulse 2.2s infinite",
-        objectFit: "contain",
-        flexShrink: 0,
-      }}
-    />
-  )}
-</div>
-
-{/* Service Text */}
-<div
-  style={{
-    fontFamily: '"Orbitron", sans-serif',
-    fontWeight: 700,
-    fontSize: isMobile ? 16 : 22,
-    letterSpacing: 1,
-    color: "#fff",
-    textShadow: `0 0 16px ${greenGlow}`,
-    textAlign: "center",
-    marginBottom: 12,
-  }}
->
-  Subdomain Name Service
-</div>
+{/* Branding */}
+{TransparentSubdomainLogo && (
+  <img
+    src={TransparentSubdomainLogo}
+    alt="Subdomain Name Service"
+    style={{
+      height: isMobile ? 90 : 140,
+      width: "auto",
+      maxWidth: "100%",
+      display: "block",
+      pointerEvents: "none",
+      objectFit: "contain",
+      filter: `drop-shadow(0 0 16px ${greenGlow})`,
+      marginBottom: 12,
+    }}
+  />
+)}
 
 {/* Tagline */}
 {SimplifyYourWallet && (

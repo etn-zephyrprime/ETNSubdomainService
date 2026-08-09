@@ -8,6 +8,7 @@ import PlanetZephyrosLogoImg from "./PlanetZephyrosLogo.png";
 import PlanetZephyrosTextImg from "./PlanetZephyrosText.png";
 import electroneumnameservicetextImg from "./electroneumnameservicetext.png"
 import SimplifyYourWalletImg from "./SimplifyYourWallet.png"
+import TransparentSubdomainLogoImg from "./TransparentSubdomainLogo.png"
 
 export const CoreClashLogo = CoreClashLogoImg;
 export const PlanetZephyrosAE = PlanetZephyrosAEVideo;
@@ -19,3 +20,4 @@ export const PlanetZephyrosLogo = PlanetZephyrosLogoImg;
 export const PlanetZephyrosText = PlanetZephyrosTextImg;
 export const electroneumnameservicetext = electroneumnameservicetextImg
 export const SimplifyYourWallet = SimplifyYourWalletImg
+export const TransparentSubdomainLogo = TransparentSubdomainLogoImg
