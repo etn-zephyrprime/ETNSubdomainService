@@ -148,8 +148,6 @@ function AppContent() {
     }}>
       <Header wallet={wallet} isMobile={isMobile} />
 
-      <BurnPoolCard wallet={wallet} />
-
       <div style={{ width: "100%", marginBottom: 40 }}>
         {showingMainSearch ? (
           <>
@@ -192,6 +190,7 @@ function AppContent() {
             </div>
 
             <HowItWorks />
+            <BurnPoolCard wallet={wallet} />
           </>
         ) : selectedName ? (
           <RegistrationFlow
