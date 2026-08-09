@@ -7,7 +7,7 @@ const ELECTRONEUM_URL = "https://electroneum.com";
 const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
 const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
 const TELEGRAM_URL = "https://t.me/PlanetZephyros";
-const X_URL = "https://x.com/PlanetZephyros";
+const X_URL = "https://x.com/ETNSubdomain";
 
 function openLink(url) {
   window.open(url, "_blank", "noopener,noreferrer");
