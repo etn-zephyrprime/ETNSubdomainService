@@ -22,6 +22,11 @@ export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
+// Marketplace contract owner — confirmed 2026-08-09 via eth_call to owner() on
+// MARKETPLACE_ADDRESS. Gates the buyBackAndBurn button in BurnPoolCard: that function is
+// onlyOwner on-chain, so anyone else's wallet would just get a revert. Must be kept in sync if
+// ownership is ever transferred (transferOwnership) or the contract is redeployed.
+export const MARKETPLACE_OWNER_ADDRESS = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099";
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
 // registerName() (via this app) always wraps — the raw ERC721 ends up owned by NameWrapper
@@ -77,3 +82,10 @@ export const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID || "146ee3
 
 // Backend — NFT image generation + R2 upload (see backend/index.js)
 export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "https://electroneumnameservice.onrender.com";
+
+// Public (no-auth) base URL for the R2 bucket NFT images are uploaded to — the bucket's
+// "Enable public access" r2.dev subdomain, not the Cloudflare account/dashboard itself. Safe to
+// ship in the frontend bundle: it only serves what's already meant to be publicly readable.
+// See backend/utils/R2Upload.js (same value, as R2_PUBLIC_URL) and utils/ens.js's
+// computeNftImageUrl for how a name's object key is derived.
+export const R2_PUBLIC_URL = import.meta.env.VITE_R2_PUBLIC_URL || "https://pub-deada542de8447159d3f31e49afa0b23.r2.dev";
