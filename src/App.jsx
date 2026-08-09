@@ -9,6 +9,7 @@ import HowItWorks from "./components/HowItWorks.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
+import BurnPoolCard from "./components/BurnPoolCard.jsx";
 
 function AppContent() {
   const SUSPENDED = false; // flip to false to restore access
@@ -146,6 +147,8 @@ function AppContent() {
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }}>
       <Header wallet={wallet} isMobile={isMobile} />
+
+      <BurnPoolCard wallet={wallet} />
 
       <div style={{ width: "100%", marginBottom: 40 }}>
         {showingMainSearch ? (

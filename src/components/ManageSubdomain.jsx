@@ -6,10 +6,11 @@ import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
-import { computeNode, computeSubnode } from "../utils/ens.js";
+import { computeNode, computeSubnode, computeNftImageUrl } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
+import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
-import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN } from "../config.js";
+import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE_URL } from "../config.js";
 
 const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
 
@@ -70,12 +71,21 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [setAddrError, setSetAddrError] = useState(null);
   const [setAddrSuccess, setSetAddrSuccess] = useState(false);
 
+  // Send subname — transfers ownership away entirely, so kept as its own confirm-and-commit
+  // flow rather than folded into any of the read/write pairs above.
+  const [sendAddress, setSendAddress] = useState("");
+  const [sendLoading, setSendLoading] = useState(false);
+  const [sendError, setSendError] = useState(null);
+  const [sendSuccess, setSendSuccess] = useState(false);
+  const [sendTxHash, setSendTxHash] = useState(null);
+
   const {
     getOwner,
     getOwnerByNode,
     getCurrentExpiry,
     getNameWrapperExpiry,
     isWrapped,
+    transferSubname,
     quoteRenewal,
     renewName,
   } = useRenewal();
@@ -129,6 +139,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setResolvedAddress(null);
     setSetAddrError(null);
     setSetAddrSuccess(false);
+    setSendAddress("");
+    setSendError(null);
+    setSendSuccess(false);
+    setSendTxHash(null);
 
     // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
     // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
@@ -228,6 +242,25 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     }
   };
 
+  // Only reachable for top-level names (see the "Only top-level names ever hit this path
+  // unwrapped" comment in handleLookup below) — always the gold "namespace" template, same as
+  // RegistrationFlow.jsx's generateNftAndLink for a fresh registration. Fire-and-forget: a
+  // failure here doesn't mean activation itself failed, just that the image isn't generated yet
+  // (the "View NFT Image" link will 404 until it is — can be recovered later via
+  // backend/scripts/backfillNftImages.js).
+  const generateNftAndLink = async (fullName, nodeHex, signer) => {
+    try {
+      const { timestamp, signature } = await signNftGenerationRequest(signer, nodeHex);
+      await fetch(`${BACKEND_IMAGE_URL}/api/generate-nft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fullName, nodeHex, template: "namespace", timestamp, signature }),
+      });
+    } catch (err) {
+      console.error("NFT generation request failed:", err);
+    }
+  };
+
   const handleActivate = async () => {
     setActivationError(null);
     setActivationLoading(true);
@@ -235,6 +268,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       const signer = await wallet.getSigner();
       await activateDomain(node, verifiedName, activationFee, signer);
       setActivated(true);
+      generateNftAndLink(`${verifiedName}.etn`, node, signer);
 
       const [isApproved, price] = await Promise.all([
         isMarketplaceApproved(wallet.account),
@@ -337,6 +371,34 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setSetAddrError(err?.reason || err?.message || "Setting address failed");
     } finally {
       setSetAddrLoading(false);
+    }
+  };
+
+  const handleSendSubname = async () => {
+    setSendError(null);
+    setSendSuccess(false);
+
+    const trimmedAddress = sendAddress.trim();
+    if (!ethers.isAddress(trimmedAddress)) {
+      setSendError("Enter a valid wallet address");
+      return;
+    }
+    if (trimmedAddress.toLowerCase() === wallet.account.toLowerCase()) {
+      setSendError("That's already your own wallet");
+      return;
+    }
+
+    setSendLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      const result = await transferSubname(node, wallet.account, trimmedAddress, signer);
+      setSendTxHash(result.txHash);
+      setSendSuccess(true);
+    } catch (err) {
+      console.error("Sending subname failed:", err);
+      setSendError(err?.reason || err?.message || "Sending subname failed");
+    } finally {
+      setSendLoading(false);
     }
   };
 
@@ -474,8 +536,36 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
           background: panel2,
           border: `1px solid ${border}`,
         }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 12 }}>
-            {verifiedName}.etn
+          {sendSuccess ? (
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: green, marginBottom: 10 }}>
+                ✓ {verifiedName}.etn sent
+              </div>
+              <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
+                Now owned by {sendAddress.slice(0, 6)}...{sendAddress.slice(-4)} — you no longer
+                control this subname.
+              </div>
+              {sendTxHash && (
+                <div style={{ fontSize: 11, color: mutedLight }}>
+                  tx: {sendTxHash.slice(0, 10)}...{sendTxHash.slice(-8)}
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>
+              {verifiedName}.etn
+            </div>
+            <a
+              href={computeNftImageUrl(node)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11, fontWeight: 700, color: green, whiteSpace: "nowrap" }}
+              title="Only resolves if this name's NFT image was generated during registration"
+            >
+              View NFT Image ↗
+            </a>
           </div>
 
           {expiryDate && (
@@ -805,6 +895,63 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
             )}
           </div>
+
+          {isSubname && (
+            <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                color: muted,
+                marginBottom: 12,
+              }}>
+                Send Subname
+              </div>
+
+              <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+                Transfer {verifiedName}.etn to another wallet. This is irreversible — the
+                recipient becomes the new owner and you lose all control over it, including
+                pricing or managing its own sub-subnames.
+              </div>
+
+              <input
+                type="text"
+                placeholder="Recipient wallet address (0x...)"
+                value={sendAddress}
+                onChange={(e) => setSendAddress(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  border: `1px solid ${border}`,
+                  background: panel2,
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  boxSizing: "border-box",
+                  outline: "none",
+                  marginBottom: 10,
+                }}
+              />
+
+              {sendError && (
+                <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{sendError}</div>
+              )}
+
+              <NeonButton
+                variant="danger"
+                onClick={handleSendSubname}
+                disabled={sendLoading || !sendAddress.trim()}
+                loading={sendLoading}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                {sendLoading ? "Sending..." : "Send Subname"}
+              </NeonButton>
+            </div>
+          )}
+          </>
+          )}
         </div>
       )}
     </div>

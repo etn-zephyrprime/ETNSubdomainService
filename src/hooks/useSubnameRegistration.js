@@ -22,7 +22,7 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
       events.push(...chunk);
       start = end + 1;
     } catch (err) {
-      const message = err?.info?.error?.message || err?.shortMessage || err?.message || "";
+      const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
       const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
       if (isRangeError && chunkSize > minChunkSize) {
         chunkSize = Math.max(minChunkSize, Math.floor(chunkSize / 2));
