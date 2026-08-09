@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import { ETN_NODE } from "../config.js";
+import { ETN_NODE, R2_PUBLIC_URL } from "../config.js";
 
 /**
  * Computes the ENS-style node (namehash) for a top-level ".etn" name.
@@ -21,6 +21,18 @@ export function computeTokenId(label) {
 export function computeSubnode(parentNode, label) {
   const labelHash = ethers.keccak256(ethers.toUtf8Bytes(label));
   return ethers.keccak256(ethers.concat([parentNode, labelHash]));
+}
+
+/**
+ * Public URL of a name's generated NFT image, if one has been generated — backend/utils/
+ * imageGenerator.js uploads to R2 under exactly this key (the node, 0x-stripped, + ".png"),
+ * the same node passed to NameWrapper.ownerOf/safeTransferFrom elsewhere in this app. Not every
+ * name has one: image generation only happens as part of registering through this app (see
+ * RegistrationFlow.jsx / SubnameSearch.jsx), so a name registered directly through Electroneum,
+ * or one whose generation request failed/was skipped, will 404 here.
+ */
+export function computeNftImageUrl(node) {
+  return `${R2_PUBLIC_URL}/${node.replace(/^0x/, "")}.png`;
 }
 
 /**

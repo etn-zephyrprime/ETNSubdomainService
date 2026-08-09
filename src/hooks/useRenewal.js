@@ -102,6 +102,31 @@ export function useRenewal() {
     }
   }, [getReadContracts]);
 
+  // NameWrapper is ERC1155-style — a name's token id is just its node used as a uint256, and
+  // each id has a total supply of 1, so amount is always 1. Scoped to subnames (always wrapped,
+  // per isWrapped's comment above) rather than top-level names in general: an unwrapped
+  // top-level name has no NameWrapper token at all yet — sending one would need
+  // BaseRegistrar.transferFrom (ERC721) instead, a separate path this doesn't attempt.
+  const transferSubname = useCallback(async (node, fromAddress, toAddress, signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NameWrapperABI, signer);
+      // Explicit gas limit, same reasoning as elsewhere in this app — this chain's
+      // eth_estimateGas has proven unreliable, so writes use a generous fixed limit instead.
+      const tx = await nameWrapper.safeTransferFrom(fromAddress, toAddress, node, 1n, "0x", { gasLimit: 150000 });
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error("Transfer failed");
+      return { success: true, txHash: tx.hash };
+    } catch (err) {
+      console.error("Subname transfer failed:", err);
+      setError(err?.reason || err?.message || "Transfer failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const quoteRenewal = useCallback(async (label, duration) => {
     try {
       const { marketplace } = getReadContracts();
@@ -144,6 +169,7 @@ export function useRenewal() {
     getOwnerByNode,
     getNameWrapperExpiry,
     isWrapped,
+    transferSubname,
     quoteRenewal,
     renewName,
     loading,
