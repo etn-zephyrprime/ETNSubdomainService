@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 
 let cachedClient = null;
 
@@ -47,4 +47,25 @@ export async function uploadNftToR2(buffer, filename) {
   console.log(`✅ Uploaded to R2: ${publicUrl}`);
 
   return publicUrl;
+}
+
+/**
+ * Whether `filename` already exists in the bucket — lets a bulk job (e.g.
+ * scripts/backfillNftImages.js) skip names that already have an image instead of
+ * unconditionally re-generating and overwriting every one of them.
+ */
+export async function objectExistsInR2(filename) {
+  const BUCKET_NAME = process.env.R2_BUCKET_NAME;
+  if (!BUCKET_NAME) {
+    throw new Error("R2 env vars not configured (R2_BUCKET_NAME)");
+  }
+
+  const r2 = getClient();
+  try {
+    await r2.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: filename }));
+    return true;
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NotFound") return false;
+    throw err;
+  }
 }
