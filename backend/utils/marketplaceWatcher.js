@@ -7,6 +7,9 @@ import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js"
 // scripts/backfillNftImages.js), overridable via env for a different deployment.
 const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 // Same bucket the frontend links to (computeNftImageUrl in src/utils/ens.js) and
@@ -15,6 +18,17 @@ const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
 const POLL_INTERVAL_MS = process.env.WATCHER_POLL_INTERVAL_MS
   ? parseInt(process.env.WATCHER_POLL_INTERVAL_MS, 10)
   : 60000;
+// How far back to look when there's no saved lastProcessedBlock — covers both the genuine first
+// run AND, critically, every cold start on a host with ephemeral storage (e.g. Render's free
+// tier wipes local disk — including state/data/state.json — on every spin-down/spin-up cycle).
+// Without this, a registration that wakes a sleeping instance via its own fire-and-forget
+// /api/generate-nft call would find no saved state, "start watching from now", and miss the
+// exact event that woke it up, since that event is already in the past by the time this runs.
+// ~5s/block on this chain -> 50,000 blocks is ~3 days, generous enough for a quiet weekend on a
+// low-traffic instance without replaying the contract's entire history on a truly fresh deploy.
+const WATCHER_LOOKBACK_BLOCKS = process.env.WATCHER_LOOKBACK_BLOCKS
+  ? parseInt(process.env.WATCHER_LOOKBACK_BLOCKS, 10)
+  : 50000;
 
 // indexed-ness must match src/abis/MarketplaceABI.json exactly, same lesson learned building
 // scripts/backfillNftImages.js — get it wrong and ethers silently fails to decode every log.
@@ -155,14 +169,14 @@ async function poll(marketplace, nameWrapper) {
   isPolling = true;
   try {
     const latestBlock = await marketplace.runner.getBlockNumber();
-    let fromBlock = getLastProcessedBlock();
+    let fromBlock = await getLastProcessedBlock();
 
     if (fromBlock === null) {
-      // First ever run — don't replay the contract's whole history into the chat, just start
-      // watching from here forward.
-      setLastProcessedBlock(latestBlock);
-      console.log(`📡 Marketplace watcher initialized at block ${latestBlock}`);
-      return;
+      // No saved state — either a genuine first run, or state was wiped out from under us (see
+      // WATCHER_LOOKBACK_BLOCKS above). Look back a bounded window rather than either replaying
+      // the whole contract history or skipping straight to "latest" and missing anything.
+      fromBlock = Math.max(MARKETPLACE_DEPLOY_BLOCK, latestBlock - WATCHER_LOOKBACK_BLOCKS) - 1;
+      console.log(`📡 Marketplace watcher initialized — no saved state, looking back to block ${fromBlock + 1}`);
     }
 
     if (latestBlock <= fromBlock) return; // nothing new
@@ -192,7 +206,7 @@ async function poll(marketplace, nameWrapper) {
       }
     }
 
-    setLastProcessedBlock(latestBlock);
+    await setLastProcessedBlock(latestBlock);
   } catch (err) {
     console.error("⚠️  Marketplace watcher poll failed:", err.message);
   } finally {
