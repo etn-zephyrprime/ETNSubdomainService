@@ -21,6 +21,7 @@ const POLL_INTERVAL_MS = process.env.WATCHER_POLL_INTERVAL_MS
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "function burnPool() view returns (uint256)",
 ];
 const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
 
@@ -116,12 +117,23 @@ async function notifyDomainActivated(event, nameWrapper) {
   );
 }
 
-async function notifySubnameRegistered(event, nameWrapper) {
-  const { parentNode, label, buyer, price } = event.args;
+async function notifySubnameRegistered(event, nameWrapper, marketplace) {
+  const { parentNode, label, buyer, price, burnAmount } = event.args;
   const domain = decodeDnsName(await nameWrapper.names(parentNode)) || "(unknown)";
   const subname = `${label}.${domain}`;
   const subNode = computeSubnode(parentNode, label);
   const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
+
+  // Queried as of this event's own block (not just "latest") so it reads as the running total
+  // right after *this* sale specifically, even if a later poll cycle picks up several
+  // registrations at once. Goes back to ~0 whenever buyBackAndBurn is called, same as the
+  // frontend's BurnPoolCard.
+  let burnPoolTotal;
+  try {
+    burnPoolTotal = await marketplace.burnPool({ blockTag: event.blockNumber });
+  } catch (err) {
+    console.warn("⚠️  Couldn't read burnPool() total:", err.message);
+  }
 
   await sendWithImage(
     subNode,
@@ -130,6 +142,8 @@ async function notifySubnameRegistered(event, nameWrapper) {
     `Subname: \`${subname}\`\n` +
     `Buyer: \`${shortAddress(buyer)}\`\n` +
     `Price Paid: \`${formatEtn(price)} ETN\`\n` +
+    `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
+    (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
     `[View Transaction](${txUrl})`
   );
 }
@@ -168,7 +182,7 @@ async function poll(marketplace, nameWrapper) {
         if (event.eventName === "DomainActivated") {
           await notifyDomainActivated(event, nameWrapper);
         } else if (event.eventName === "SubnameRegistered") {
-          await notifySubnameRegistered(event, nameWrapper);
+          await notifySubnameRegistered(event, nameWrapper, marketplace);
         }
       } catch (err) {
         // One bad event (e.g. a transient Telegram API error) shouldn't stop the rest, and
