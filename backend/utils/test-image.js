@@ -8,8 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 async function run() {
   try {
     const { buffer, filename } = await generateNftImage(
-      "etn-villain.planetzephyros.etn",
-      "8607034444057300214419640742371266237737643979798175560172819860381375338986"
+      "planetzephyros.etn",
+      "8607034444057300214419640742371266237737643979798175560172819860381375338987"
     );
 
     const outputDir = path.join(__dirname, "..", "generated");
