@@ -13,9 +13,16 @@ const readOnlyProvider = new ethers.JsonRpcProvider(RPC_URL);
 
 // Platform fee on ETN/token sends through the Pay flow — 0.3%, charged *on top* of the amount
 // the sender enters (the recipient always gets the full amount they were sent; the sender pays
-// amount + fee in total). No fee-splitting contract is deployed for this, so it's two separate
-// transfers per send — the recipient's, then the fee's — rather than one atomic tx. Reuses the
-// same treasury address the Marketplace contract's buyBackAndBurn is gated to (see config.js).
+// amount + fee in total). No fee-splitting contract is deployed for this (this repo has no
+// Solidity/Hardhat setup to build/deploy one), so it's two separate transfers per send rather
+// than one atomic tx — and the fee is sent FIRST, deliberately: if it went second, a sender could
+// let the recipient's transfer through and then just cancel/reject the fee prompt in their
+// wallet, keeping the fee for free. Fee-first flips the incentive — skipping the fee now means
+// cancelling the payment they actually want, which defeats their own purpose. The one edge case
+// this doesn't fully cover is the fee succeeding and the *main* transfer then failing for
+// unrelated reasons (e.g. a dropped tx) — sendEtn/sendToken below surface that case with the fee
+// tx hash included in the thrown error, rather than silently losing track of it. Reuses the same
+// treasury address the Marketplace contract's buyBackAndBurn is gated to (see config.js).
 const FEE_BPS = 30n; // 30 / 10000 = 0.3%
 const FEE_DENOMINATOR = 10000n;
 const FEE_ADDRESS = MARKETPLACE_OWNER_ADDRESS;
@@ -66,44 +73,45 @@ export function usePayment() {
     return address;
   }, [getResolvedAddress]);
 
-  // Plain native-currency transfer, plus the 0.3% platform fee as a second transfer. gasLimit is
-  // set explicitly on both (same reasoning as the rest of this app — this chain's
-  // eth_estimateGas has proven unreliable) at a small buffer over the standard 21000 an
-  // EOA-to-EOA send costs; a name resolved to a contract wallet could need more, but that's
-  // outside what this flow targets.
-  //
-  // The recipient's transfer is sent first and is what determines success/failure — the fee
-  // transfer is best-effort after that: the recipient already has their full amount regardless
-  // of whether it succeeds, so a failure there is logged and surfaced via feeError rather than
-  // thrown, instead of leaving the sender thinking their payment itself failed.
+  // Plain native-currency transfer, plus the 0.3% platform fee sent FIRST as its own transfer —
+  // see the fee-ordering comment above. gasLimit is set explicitly on both (same reasoning as the
+  // rest of this app — this chain's eth_estimateGas has proven unreliable) at a small buffer over
+  // the standard 21000 an EOA-to-EOA send costs; a name resolved to a contract wallet could need
+  // more, but that's outside what this flow targets.
   const sendEtn = useCallback(async (toAddress, amountEtn, signer) => {
     setLoading(true);
     setError(null);
+    let feeTxHash = null;
     try {
       const mainValue = ethers.parseEther(amountEtn);
-      const tx = await signer.sendTransaction({ to: toAddress, value: mainValue, gasLimit: 30000 });
-      const receipt = await tx.wait();
-      if (!receipt) throw new Error("Send failed");
-
-      let feeTxHash = null;
-      let feeError = null;
       const feeValue = feeFor(mainValue);
+
       if (feeValue > 0n) {
-        try {
-          const feeTx = await signer.sendTransaction({ to: FEE_ADDRESS, value: feeValue, gasLimit: 30000 });
-          await feeTx.wait();
-          feeTxHash = feeTx.hash;
-        } catch (err) {
-          console.warn("Platform fee transfer failed (recipient still received their full amount):", err.message);
-          feeError = err?.reason || err?.message || "Fee transfer failed";
-        }
+        const feeTx = await signer.sendTransaction({ to: FEE_ADDRESS, value: feeValue, gasLimit: 30000 });
+        const feeReceipt = await feeTx.wait();
+        if (!feeReceipt) throw new Error("Platform fee payment failed");
+        feeTxHash = feeTx.hash;
       }
 
-      return { success: true, txHash: tx.hash, feeTxHash, feeError };
+      const tx = await signer.sendTransaction({ to: toAddress, value: mainValue, gasLimit: 30000 });
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error(
+          feeTxHash
+            ? `The platform fee was sent (tx ${feeTxHash}) but the payment to the recipient failed. Contact support with that tx hash.`
+            : "Send failed"
+        );
+      }
+
+      return { success: true, txHash: tx.hash, feeTxHash };
     } catch (err) {
       console.error("ETN send failed:", err);
-      setError(err?.reason || err?.message || "Send failed");
-      throw err;
+      const message =
+        err?.message?.startsWith("The platform fee was sent")
+          ? err.message
+          : err?.reason || err?.message || "Send failed";
+      setError(message);
+      throw new Error(message);
     } finally {
       setLoading(false);
     }
@@ -121,37 +129,44 @@ export function usePayment() {
     return { symbol, decimals: Number(decimals) };
   }, []);
 
-  // Same recipient-first, fee-best-effort structure as sendEtn above — two separate transfer()
-  // calls (no fee-splitting contract deployed), where only the first one determines success.
+  // Same fee-first structure as sendEtn above — two separate transfer() calls (no fee-splitting
+  // contract deployed), fee before recipient so cancelling out of paying it means cancelling the
+  // payment itself, not getting it for free.
   const sendToken = useCallback(async (tokenAddress, toAddress, amount, decimals, signer) => {
     setLoading(true);
     setError(null);
+    let feeTxHash = null;
     try {
       const token = new ethers.Contract(tokenAddress, ERC20ABI, signer);
       const mainValue = ethers.parseUnits(amount, decimals);
-      const tx = await token.transfer(toAddress, mainValue, { gasLimit: 100000 });
-      const receipt = await tx.wait();
-      if (!receipt) throw new Error("Token transfer failed");
-
-      let feeTxHash = null;
-      let feeError = null;
       const feeValue = feeFor(mainValue);
+
       if (feeValue > 0n) {
-        try {
-          const feeTx = await token.transfer(FEE_ADDRESS, feeValue, { gasLimit: 100000 });
-          await feeTx.wait();
-          feeTxHash = feeTx.hash;
-        } catch (err) {
-          console.warn("Platform fee transfer failed (recipient still received their full amount):", err.message);
-          feeError = err?.reason || err?.message || "Fee transfer failed";
-        }
+        const feeTx = await token.transfer(FEE_ADDRESS, feeValue, { gasLimit: 100000 });
+        const feeReceipt = await feeTx.wait();
+        if (!feeReceipt) throw new Error("Platform fee payment failed");
+        feeTxHash = feeTx.hash;
       }
 
-      return { success: true, txHash: tx.hash, feeTxHash, feeError };
+      const tx = await token.transfer(toAddress, mainValue, { gasLimit: 100000 });
+      const receipt = await tx.wait();
+      if (!receipt) {
+        throw new Error(
+          feeTxHash
+            ? `The platform fee was sent (tx ${feeTxHash}) but the payment to the recipient failed. Contact support with that tx hash.`
+            : "Token transfer failed"
+        );
+      }
+
+      return { success: true, txHash: tx.hash, feeTxHash };
     } catch (err) {
       console.error("Token transfer failed:", err);
-      setError(err?.reason || err?.message || "Token transfer failed");
-      throw err;
+      const message =
+        err?.message?.startsWith("The platform fee was sent")
+          ? err.message
+          : err?.reason || err?.message || "Token transfer failed";
+      setError(message);
+      throw new Error(message);
     } finally {
       setLoading(false);
     }

@@ -63,7 +63,6 @@ export default function PayFlow({ wallet, onBack = null }) {
   const [sendError, setSendError] = useState(null);
   const [txHash, setTxHash] = useState(null);
   const [feeTxHash, setFeeTxHash] = useState(null);
-  const [feeError, setFeeError] = useState(null);
   const [success, setSuccess] = useState(false);
 
   const { resolveName, sendEtn, getTokenInfo, sendToken, getNftOwner, sendNft } = usePayment();
@@ -183,7 +182,6 @@ export default function PayFlow({ wallet, onBack = null }) {
 
       setTxHash(result.txHash);
       setFeeTxHash(result.feeTxHash ?? null);
-      setFeeError(result.feeError ?? null);
       setSuccess(true);
     } catch (err) {
       console.error("Payment failed:", err);
@@ -197,7 +195,6 @@ export default function PayFlow({ wallet, onBack = null }) {
     setSuccess(false);
     setTxHash(null);
     setFeeTxHash(null);
-    setFeeError(null);
     setSendError(null);
     resetAssetFields();
   };
@@ -214,13 +211,9 @@ export default function PayFlow({ wallet, onBack = null }) {
             {tab === "nft" && <>Sent token id <strong>{nftTokenId}</strong> to <strong>{recipientInput.replace(/\.etn$/, "")}.etn</strong></>}
           </p>
 
-          {(tab === "etn" || tab === "token") && (
+          {feeTxHash && (
             <p style={{ fontSize: 11, color: mutedLight, marginTop: -16, marginBottom: 24 }}>
-              {feeTxHash
-                ? "Platform fee (0.3%, on top of the amount above) sent as a second transaction."
-                : feeError
-                ? "Payment sent — the platform fee transfer didn't go through, but that doesn't affect what the recipient received."
-                : null}
+              Platform fee (0.3%, on top of the amount above) sent as a separate transaction.
             </p>
           )}
 
