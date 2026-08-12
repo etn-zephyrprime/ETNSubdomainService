@@ -66,6 +66,21 @@ function AppContent() {
   const [manageIntent, setManageIntent] = useState("manage"); // "manage" | "retro"
   const [showSubnameSearch, setShowSubnameSearch] = useState(false);
   const [showPay, setShowPay] = useState(false);
+  const [payPrefillName, setPayPrefillName] = useState(null);
+
+  // Deep link: /pay/alice.etn (or /pay/shop.alice.etn, /pay/alice with no suffix) opens straight
+  // to the Pay screen with that name pre-filled — e.g. for a payment request shared in Telegram.
+  // Requires vercel.json's catch-all rewrite so a direct hit on this path serves index.html
+  // instead of 404ing before React ever loads. Unlike the "Pay" button below, this doesn't gate
+  // on connecting a wallet first — someone opening a payment link should see who/what it's for
+  // before being asked to connect; PayFlow's own Send button handles that when they act on it.
+  useEffect(() => {
+    const match = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/i);
+    if (match) {
+      setPayPrefillName(decodeURIComponent(match[1]));
+      setShowPay(true);
+    }
+  }, []);
 
   const handleNameSelected = async (nameData) => {
     if (!wallet.isConnected) {
@@ -145,7 +160,15 @@ function AppContent() {
     setShowPay(true);
   };
 
-  const handleBackFromPay = () => setShowPay(false);
+  const handleBackFromPay = () => {
+    setShowPay(false);
+    setPayPrefillName(null);
+    // Drop back to "/" so the deep link doesn't reopen Pay on a refresh, and so a shared link's
+    // name doesn't linger for whatever the user does next.
+    if (window.location.pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  };
 
   const handleRegistrationSuccess = (result) => {
     console.log("Registration successful:", result);
@@ -212,7 +235,7 @@ function AppContent() {
                 onClick={handlePay}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                Pay
+                Pay / Receive
               </NeonButton>
             </div>
 
@@ -241,6 +264,7 @@ function AppContent() {
           <PayFlow
             wallet={wallet}
             onBack={handleBackFromPay}
+            initialRecipient={payPrefillName}
           />
         )}
       </div>

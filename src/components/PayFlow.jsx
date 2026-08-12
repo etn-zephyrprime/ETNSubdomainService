@@ -1,10 +1,16 @@
 import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Copy, Check } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
+import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL } from "../config.js";
+
+const MODES = [
+  { id: "send", label: "Send" },
+  { id: "receive", label: "Receive" },
+];
 
 const TABS = [
   { id: "etn", label: "Send ETN" },
@@ -37,10 +43,13 @@ const labelStyle = {
 // First-of-its-kind on Electroneum: pay a .etn name directly instead of a raw address, for
 // native ETN, any ERC-20 token, or any ERC-721 NFT. Recipient resolution is shared across all
 // three tabs; the asset-specific fields (amount / contract address / token id) are not.
-export default function PayFlow({ wallet, onBack = null }) {
+export default function PayFlow({ wallet, onBack = null, initialRecipient = null }) {
+  const [mode, setMode] = useState("send");
   const [tab, setTab] = useState("etn");
 
-  const [recipientInput, setRecipientInput] = useState("");
+  const [recipientInput, setRecipientInput] = useState(
+    () => (initialRecipient || "").toLowerCase().trim()
+  );
   const [resolvedAddress, setResolvedAddress] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
@@ -66,6 +75,44 @@ export default function PayFlow({ wallet, onBack = null }) {
   const [success, setSuccess] = useState(false);
 
   const { resolveName, sendEtn, getTokenInfo, sendToken, getNftOwner, sendNft } = usePayment();
+  const { getPrimaryName } = useReverseRecord();
+
+  // Receive tab — the connected wallet's own primary name (same record Header.jsx and
+  // ManageSubdomain.jsx's "Primary Name" section use) is what a /pay/<name> link is built from,
+  // since that's the one name that's unambiguously "yours" without a fresh on-chain ownership
+  // lookup for whatever else the wallet might hold.
+  const [primaryName, setPrimaryName] = useState(null);
+  const [primaryNameLoading, setPrimaryNameLoading] = useState(false);
+  const [copyLinkStatus, setCopyLinkStatus] = useState(null); // null | "copied" | "error"
+
+  useEffect(() => {
+    let cancelled = false;
+    if (mode !== "receive" || !wallet.account) return;
+
+    setPrimaryNameLoading(true);
+    getPrimaryName(wallet.account)
+      .then((name) => { if (!cancelled) setPrimaryName(name); })
+      .catch((err) => {
+        console.error("Failed to fetch primary name:", err);
+        if (!cancelled) setPrimaryName(null);
+      })
+      .finally(() => { if (!cancelled) setPrimaryNameLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [mode, wallet.account, getPrimaryName]);
+
+  const payLinkFor = (name) => `${window.location.origin}/pay/${name}`;
+
+  const handleCopyPayLink = async () => {
+    try {
+      await navigator.clipboard.writeText(payLinkFor(primaryName));
+      setCopyLinkStatus("copied");
+      setTimeout(() => setCopyLinkStatus(null), 2000);
+    } catch (err) {
+      console.error("Copying pay link failed:", err);
+      setCopyLinkStatus("error");
+    }
+  };
 
   // Debounced recipient resolution — same 500ms pattern as SearchBar's availability check.
   useEffect(() => {
@@ -279,11 +326,96 @@ export default function PayFlow({ wallet, onBack = null }) {
           Pay
         </div>
         <h2 style={{ fontSize: 28, fontWeight: 900, margin: "0 0 12px 0", color: "#fff", textShadow: `0 0 16px ${greenGlow}` }}>
-          Send to a Name
+          {mode === "send" ? "Send to a Name" : "Get Paid to a Name"}
         </h2>
         <div style={{ width: 40, height: 2, background: green, margin: "0 auto", borderRadius: 2, boxShadow: `0 0 8px ${greenGlow}` }} />
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setMode(m.id)}
+            style={{
+              flex: 1,
+              padding: "12px 8px",
+              borderRadius: 10,
+              border: `1px solid ${m.id === mode ? green : border}`,
+              background: m.id === mode ? "rgba(24,187,26,0.12)" : panel2,
+              color: m.id === mode ? green : mutedLight,
+              fontSize: 14,
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "receive" ? (
+        <div style={{
+          padding: 20,
+          borderRadius: 12,
+          background: panel2,
+          border: `1px solid ${border}`,
+          textAlign: "center",
+        }}>
+          {!wallet.isConnected ? (
+            <>
+              <div style={{ fontSize: 13, color: mutedLight, marginBottom: 16 }}>
+                Connect your wallet to get your personal Pay link.
+              </div>
+              <NeonButton variant="green" onClick={wallet.connectWallet} style={{ width: "100%", justifyContent: "center" }}>
+                Connect Wallet
+              </NeonButton>
+            </>
+          ) : primaryNameLoading ? (
+            <div style={{ fontSize: 13, color: mutedLight }}>Checking your primary name...</div>
+          ) : primaryName ? (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+                Your Pay Link
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 6 }}>
+                {primaryName}
+              </div>
+              <div style={{
+                fontSize: 12,
+                color: mutedLight,
+                marginBottom: 16,
+                wordBreak: "break-all",
+                fontFamily: "monospace",
+              }}>
+                {payLinkFor(primaryName)}
+              </div>
+              <NeonButton
+                variant="green"
+                onClick={handleCopyPayLink}
+                style={{ width: "100%", justifyContent: "center", display: "flex", alignItems: "center", gap: 8 }}
+              >
+                {copyLinkStatus === "copied" ? <Check size={16} /> : <Copy size={16} />}
+                {copyLinkStatus === "copied" ? "Copied!" : "Copy Pay Link"}
+              </NeonButton>
+              {copyLinkStatus === "error" && (
+                <div style={{ fontSize: 12, color: error, marginTop: 8 }}>
+                  Couldn't copy automatically — copy the link above manually.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: mutedLight, marginTop: 16, lineHeight: 1.6 }}>
+                Anyone who opens this link lands straight on the Send screen with{" "}
+                <strong>{primaryName}</strong> as the recipient.
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: mutedLight, lineHeight: 1.6 }}>
+              You don't have a primary name set yet — set one from "Your Names" on the home
+              screen to get a personal Pay link.
+            </div>
+          )}
+        </div>
+      ) : (
+      <>
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         {TABS.map((t) => (
           <button
@@ -444,6 +576,8 @@ export default function PayFlow({ wallet, onBack = null }) {
           ? "Send Token"
           : "Send NFT"}
       </NeonButton>
+      </>
+      )}
     </div>
   );
 }
