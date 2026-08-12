@@ -24,6 +24,26 @@ export function computeSubnode(parentNode, label) {
 }
 
 /**
+ * Computes the node for an arbitrary dotted name — "alice", "alice.etn", or a subname like
+ * "shop.alice"/"shop.alice.etn" — by folding labels onto ETN_NODE right-to-left, same algorithm
+ * as computeNode/computeSubnode above just generalized to any depth (the Pay flow needs to
+ * resolve names that may be top-level or a subname, unlike the callers of computeNode/
+ * computeSubnode, which each already know which one they have). Returns null for empty input.
+ */
+export function computeNodeForName(fullName) {
+  let name = fullName.trim().toLowerCase();
+  if (name.endsWith(".etn")) name = name.slice(0, -".etn".length);
+  const labels = name.split(".").filter(Boolean);
+  if (labels.length === 0) return null;
+
+  let node = ETN_NODE;
+  for (let i = labels.length - 1; i >= 0; i--) {
+    node = computeSubnode(node, labels[i]);
+  }
+  return node;
+}
+
+/**
  * Public URL of a name's generated NFT image, if one has been generated — backend/utils/
  * imageGenerator.js uploads to R2 under exactly this key (the node, 0x-stripped, + ".png"),
  * the same node passed to NameWrapper.ownerOf/safeTransferFrom elsewhere in this app. Not every
