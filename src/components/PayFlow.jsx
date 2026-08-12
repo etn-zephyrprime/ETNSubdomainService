@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
-import { usePayment } from "../hooks/usePayment.js";
+import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL } from "../config.js";
 
@@ -62,6 +62,8 @@ export default function PayFlow({ wallet, onBack = null }) {
   const [sendLoading, setSendLoading] = useState(false);
   const [sendError, setSendError] = useState(null);
   const [txHash, setTxHash] = useState(null);
+  const [feeTxHash, setFeeTxHash] = useState(null);
+  const [feeError, setFeeError] = useState(null);
   const [success, setSuccess] = useState(false);
 
   const { resolveName, sendEtn, getTokenInfo, sendToken, getNftOwner, sendNft } = usePayment();
@@ -144,6 +146,9 @@ export default function PayFlow({ wallet, onBack = null }) {
     resetAssetFields();
   };
 
+  const etnFee = tab === "etn" ? calculateFeeDisplay(etnAmount) : null;
+  const tokenFee = tab === "token" && tokenInfo ? calculateFeeDisplay(tokenAmount, tokenInfo.decimals) : null;
+
   const nftOwnedByWallet =
     nftOwner && wallet.account && nftOwner.toLowerCase() === wallet.account.toLowerCase();
 
@@ -177,6 +182,8 @@ export default function PayFlow({ wallet, onBack = null }) {
       }
 
       setTxHash(result.txHash);
+      setFeeTxHash(result.feeTxHash ?? null);
+      setFeeError(result.feeError ?? null);
       setSuccess(true);
     } catch (err) {
       console.error("Payment failed:", err);
@@ -189,6 +196,8 @@ export default function PayFlow({ wallet, onBack = null }) {
   const handleSendAnother = () => {
     setSuccess(false);
     setTxHash(null);
+    setFeeTxHash(null);
+    setFeeError(null);
     setSendError(null);
     resetAssetFields();
   };
@@ -205,16 +214,38 @@ export default function PayFlow({ wallet, onBack = null }) {
             {tab === "nft" && <>Sent token id <strong>{nftTokenId}</strong> to <strong>{recipientInput.replace(/\.etn$/, "")}.etn</strong></>}
           </p>
 
-          {txHash && (
-            <div style={{ marginBottom: 24 }}>
-              <a
-                href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
-                target="_blank"
-                rel="noreferrer"
-                style={{ fontSize: 12, color: green, textDecoration: "none", borderBottom: `1px solid ${green}` }}
-              >
-                View Transaction →
-              </a>
+          {(tab === "etn" || tab === "token") && (
+            <p style={{ fontSize: 11, color: mutedLight, marginTop: -16, marginBottom: 24 }}>
+              {feeTxHash
+                ? "Platform fee (0.3%, on top of the amount above) sent as a second transaction."
+                : feeError
+                ? "Payment sent — the platform fee transfer didn't go through, but that doesn't affect what the recipient received."
+                : null}
+            </p>
+          )}
+
+          {(txHash || feeTxHash) && (
+            <div style={{ display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+              {txHash && (
+                <a
+                  href={`${EXPLORER_BASE_URL}/tx/${txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: 12, color: green, textDecoration: "none", borderBottom: `1px solid ${green}` }}
+                >
+                  View Transaction →
+                </a>
+              )}
+              {feeTxHash && (
+                <a
+                  href={`${EXPLORER_BASE_URL}/tx/${feeTxHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: 12, color: green, textDecoration: "none", borderBottom: `1px solid ${green}` }}
+                >
+                  View Fee Transaction →
+                </a>
+              )}
             </div>
           )}
 
@@ -319,6 +350,11 @@ export default function PayFlow({ wallet, onBack = null }) {
             onChange={(e) => setEtnAmount(e.target.value)}
             style={inputStyle}
           />
+          {etnFee && (
+            <div style={{ fontSize: 12, color: mutedLight, marginTop: 8 }}>
+              +0.3% platform fee: {etnFee.fee} ETN — total {etnFee.total} ETN
+            </div>
+          )}
         </div>
       )}
 
@@ -351,6 +387,11 @@ export default function PayFlow({ wallet, onBack = null }) {
             disabled={!tokenInfo}
             style={{ ...inputStyle, opacity: tokenInfo ? 1 : 0.5 }}
           />
+          {tokenFee && (
+            <div style={{ fontSize: 12, color: mutedLight, marginTop: 8 }}>
+              +0.3% platform fee: {tokenFee.fee} {tokenInfo.symbol} — total {tokenFee.total} {tokenInfo.symbol}
+            </div>
+          )}
         </div>
       )}
 
