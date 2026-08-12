@@ -235,7 +235,7 @@ function AppContent() {
                 onClick={handlePay}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                Pay
+                Pay / Receive
               </NeonButton>
             </div>
 
