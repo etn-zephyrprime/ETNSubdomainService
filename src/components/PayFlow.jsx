@@ -37,10 +37,12 @@ const labelStyle = {
 // First-of-its-kind on Electroneum: pay a .etn name directly instead of a raw address, for
 // native ETN, any ERC-20 token, or any ERC-721 NFT. Recipient resolution is shared across all
 // three tabs; the asset-specific fields (amount / contract address / token id) are not.
-export default function PayFlow({ wallet, onBack = null }) {
+export default function PayFlow({ wallet, onBack = null, initialRecipient = null }) {
   const [tab, setTab] = useState("etn");
 
-  const [recipientInput, setRecipientInput] = useState("");
+  const [recipientInput, setRecipientInput] = useState(
+    () => (initialRecipient || "").toLowerCase().trim()
+  );
   const [resolvedAddress, setResolvedAddress] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
