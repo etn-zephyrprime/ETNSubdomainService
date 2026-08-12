@@ -5,6 +5,7 @@ import SearchBar from "./components/SearchBar.jsx";
 import RegistrationFlow from "./components/RegistrationFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
 import SubnameSearch from "./components/SubnameSearch.jsx";
+import PayFlow from "./components/PayFlow.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
@@ -64,6 +65,7 @@ function AppContent() {
   const [showManageSubdomain, setShowManageSubdomain] = useState(false);
   const [manageIntent, setManageIntent] = useState("manage"); // "manage" | "retro"
   const [showSubnameSearch, setShowSubnameSearch] = useState(false);
+  const [showPay, setShowPay] = useState(false);
 
   const handleNameSelected = async (nameData) => {
     if (!wallet.isConnected) {
@@ -129,11 +131,27 @@ function AppContent() {
 
   const handleBackFromSubnameSearch = () => setShowSubnameSearch(false);
 
+  const handlePay = async () => {
+    if (!wallet.isConnected) {
+      await wallet.connectWallet();
+      return;
+    }
+    try {
+      await wallet.ensureCorrectNetwork();
+    } catch (err) {
+      console.error("Network switch failed:", err);
+      return;
+    }
+    setShowPay(true);
+  };
+
+  const handleBackFromPay = () => setShowPay(false);
+
   const handleRegistrationSuccess = (result) => {
     console.log("Registration successful:", result);
   };
 
-  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch;
+  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay;
 
   return (
     <div style={{
@@ -188,6 +206,15 @@ function AppContent() {
                 Register Subdomain | Set Subname Pricing
               </NeonButton>
             </div>
+            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px" }}>
+              <NeonButton
+                variant="green"
+                onClick={handlePay}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                Pay
+              </NeonButton>
+            </div>
 
             <HowItWorks />
             <BurnPoolCard wallet={wallet} />
@@ -205,10 +232,15 @@ function AppContent() {
             onBack={handleBackFromManage}
             intent={manageIntent}
           />
-        ) : (
+        ) : showSubnameSearch ? (
           <SubnameSearch
             wallet={wallet}
             onBack={handleBackFromSubnameSearch}
+          />
+        ) : (
+          <PayFlow
+            wallet={wallet}
+            onBack={handleBackFromPay}
           />
         )}
       </div>
