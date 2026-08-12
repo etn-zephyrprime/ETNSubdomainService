@@ -29,6 +29,9 @@ const POLL_INTERVAL_MS = process.env.WATCHER_POLL_INTERVAL_MS
 const WATCHER_LOOKBACK_BLOCKS = process.env.WATCHER_LOOKBACK_BLOCKS
   ? parseInt(process.env.WATCHER_LOOKBACK_BLOCKS, 10)
   : 50000;
+// Appended to every notification so readers can click straight through to the marketplace.
+const SITE_URL = process.env.SITE_URL || "https://nameservice.planetzephyros.xyz";
+const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 
 // indexed-ness must match src/abis/MarketplaceABI.json exactly, same lesson learned building
 // scripts/backfillNftImages.js — get it wrong and ethers silently fails to decode every log.
@@ -127,7 +130,8 @@ async function notifyDomainActivated(event, nameWrapper) {
     `Domain: \`${domain}\`\n` +
     `Buyer: \`${shortAddress(payer)}\`\n` +
     `Price Paid: \`${formatEtn(feePaid)} ETN\`\n` +
-    `[View Transaction](${txUrl})`
+    `[View Transaction](${txUrl})\n` +
+    SITE_LINK_LINE
   );
 }
 
@@ -158,7 +162,8 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace) {
     `Price Paid: \`${formatEtn(price)} ETN\`\n` +
     `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
     (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
-    `[View Transaction](${txUrl})`
+    `[View Transaction](${txUrl})\n` +
+    SITE_LINK_LINE
   );
 }
 
