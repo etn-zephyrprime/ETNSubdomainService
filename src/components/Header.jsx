@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
 
 import NeonButton from "./NeonButton.jsx";
 import { green, panel, border } from "../styles/theme.js";
 import { TransparentSubdomainLogo, SimplifyYourWallet } from "../../backend/assets/media.js";
+import { useReverseRecord } from "../hooks/useReverseRecord.js";
 
 function shortAddress(address) {
   if (!address) return "";
@@ -15,6 +16,31 @@ export default function Header({
   isMobile,
   hideWallet = false,
 }) {
+  // Shows the connected wallet's primary (reverse) name once it has one — e.g. "alice.etn"
+  // instead of "0x1234...abcd" — the same record ManageSubdomain.jsx lets an owner set. Note:
+  // this is our own header chip only. The Reown/WalletConnect connect modal itself is a separate
+  // widget from that library and only knows mainnet ENS, so it can't be made to show .etn names.
+  const { getPrimaryName } = useReverseRecord();
+  const [primaryName, setPrimaryName] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!wallet?.account) {
+      setPrimaryName(null);
+      return;
+    }
+    (async () => {
+      try {
+        const name = await getPrimaryName(wallet.account);
+        if (!cancelled) setPrimaryName(name);
+      } catch (err) {
+        console.error("Failed to fetch primary name for header:", err);
+        if (!cancelled) setPrimaryName(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [wallet?.account, getPrimaryName]);
+
   return (
 <div
   style={{
@@ -64,7 +90,7 @@ export default function Header({
                   letterSpacing: 0.4,
                 }}
               >
-                {shortAddress(wallet.account)}
+                {primaryName || shortAddress(wallet.account)}
               </span>
               <div style={{ width: 1, height: 16, background: "#333" }} />
               <button
