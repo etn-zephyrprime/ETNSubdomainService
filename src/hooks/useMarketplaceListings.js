@@ -4,6 +4,7 @@ import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL } from "../config.js
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import { decodeDnsName } from "../utils/ens.js";
+import { useReverseRecord } from "./useReverseRecord.js";
 
 // Always points directly at Electroneum RPC — same convention as the rest of this app's
 // read-only hooks — for reads that shouldn't depend on whatever chain the connected wallet
@@ -17,6 +18,7 @@ const readOnlyProvider = new ethers.JsonRpcProvider(RPC_URL);
 export function useMarketplaceListings() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const { getPrimaryName } = useReverseRecord();
 
   const getReadContracts = useCallback(() => ({
     marketplace: new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, readOnlyProvider),
@@ -56,9 +58,19 @@ export function useMarketplaceListings() {
       } catch (err) {
         console.error(`Failed to decode name for listing ${l.listingId}:`, err);
       }
-      return { ...l, node, name };
+
+      // Same reverse-record lookup Header.jsx shows for the connected wallet — falls back to the
+      // raw address in the UI when the seller hasn't set one.
+      let sellerName = null;
+      try {
+        sellerName = await getPrimaryName(l.seller);
+      } catch (err) {
+        console.error(`Failed to fetch primary name for seller ${l.seller}:`, err);
+      }
+
+      return { ...l, node, name, sellerName };
     }));
-  }, [getReadContracts]);
+  }, [getReadContracts, getPrimaryName]);
 
   // Whether `tokenId` (a name's node, as a uint256) currently has an active listing — used by
   // ManageSubdomain's per-name "Resell" section to show "List for Resale" vs. the existing

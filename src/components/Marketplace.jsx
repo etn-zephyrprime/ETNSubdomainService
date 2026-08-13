@@ -66,7 +66,7 @@ export default function Marketplace({ wallet, onBack = null }) {
           <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
           <h2 style={{ fontSize: 28, fontWeight: 900, color: green, marginBottom: 8 }}>Purchased!</h2>
           <p style={{ fontSize: 13, color: mutedLight, marginBottom: 24, lineHeight: 1.6 }}>
-            <strong>{success.name}.etn</strong> is now yours, for <strong>{formatEth(success.price)} ETN</strong>.
+            <strong>{success.name}</strong> is now yours, for <strong>{formatEth(success.price)} ETN</strong>.
           </p>
           {success.txHash && (
             <div style={{ marginBottom: 24 }}>
@@ -166,10 +166,10 @@ export default function Marketplace({ wallet, onBack = null }) {
               >
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {listing.name ? `${listing.name}.etn` : "(unknown name)"}
+                    {listing.name || "(unknown name)"}
                   </div>
                   <div style={{ fontSize: 12, color: mutedLight, marginTop: 2 }}>
-                    Seller {listing.seller.slice(0, 6)}...{listing.seller.slice(-4)}
+                    Seller {listing.sellerName || `${listing.seller.slice(0, 6)}...${listing.seller.slice(-4)}`}
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
