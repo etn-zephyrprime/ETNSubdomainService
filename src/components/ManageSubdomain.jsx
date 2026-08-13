@@ -6,6 +6,7 @@ import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
+import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { computeNode, computeSubnode, computeNftImageUrl } from "../utils/ens.js";
 import { formatEth } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
@@ -79,6 +80,16 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [sendSuccess, setSendSuccess] = useState(false);
   const [sendTxHash, setSendTxHash] = useState(null);
 
+  // Resale listing (see useMarketplaceListings.js) — null while checking, or once confirmed not
+  // listed; { listingId, price } once confirmed listed.
+  const [listing, setListing] = useState(null);
+  const [listingLoading, setListingLoading] = useState(false);
+  const [resellPriceInput, setResellPriceInput] = useState("");
+  const [resellLoading, setResellLoading] = useState(false);
+  const [resellError, setResellError] = useState(null);
+  const [cancelListingLoading, setCancelListingLoading] = useState(false);
+  const [cancelListingError, setCancelListingError] = useState(null);
+
   const {
     getOwner,
     getOwnerByNode,
@@ -102,6 +113,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   } = useSubnamePricing();
   const { getPrimaryName, setName: setReverseName } = useReverseRecord();
   const { getResolvedAddress, setAddr } = useAddressRecord();
+  const { getListingForToken, listName, cancelListing } = useMarketplaceListings();
 
   const handleLookup = async () => {
     if (!wallet.isConnected) {
@@ -143,6 +155,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setSendError(null);
     setSendSuccess(false);
     setSendTxHash(null);
+    setListing(null);
+    setResellPriceInput("");
+    setResellError(null);
+    setCancelListingError(null);
 
     // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
     // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
@@ -218,6 +234,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         ]);
         setApproved(isApproved);
         setCurrentPrice(price);
+
+        // Non-blocking, same pattern as primaryName/resolvedAddress above — resale listing status
+        // doesn't need to hold up the rest of the lookup.
+        setListingLoading(true);
+        getListingForToken(BigInt(domainNode))
+          .then(setListing)
+          .catch((err) => console.error("Failed to fetch listing status:", err))
+          .finally(() => setListingLoading(false));
       } else {
         const fee = await getActivationFee(normalizedInput, domainNode);
         setActivationFee(fee);
@@ -399,6 +423,49 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setSendError(err?.reason || err?.message || "Sending subname failed");
     } finally {
       setSendLoading(false);
+    }
+  };
+
+  // Lists the currently-looked-up name for resale. Requires domain activation + marketplace
+  // approval (same NameWrapper.setApprovalForAll the Subname Pricing section above already gets
+  // the owner to grant), both already gated by this section only rendering when
+  // activated && approved are true.
+  const handleListForResale = async () => {
+    setResellError(null);
+
+    const priceWei = ethers.parseEther(resellPriceInput || "0");
+    if (priceWei <= 0n) {
+      setResellError("Enter a price greater than 0");
+      return;
+    }
+
+    setResellLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await listName(BigInt(node), priceWei, signer);
+      setResellPriceInput("");
+      const updated = await getListingForToken(BigInt(node));
+      setListing(updated);
+    } catch (err) {
+      console.error("Listing for resale failed:", err);
+      setResellError(err?.reason || err?.message || "Listing failed");
+    } finally {
+      setResellLoading(false);
+    }
+  };
+
+  const handleCancelListing = async () => {
+    setCancelListingError(null);
+    setCancelListingLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await cancelListing(listing.listingId, signer);
+      setListing(null);
+    } catch (err) {
+      console.error("Cancelling listing failed:", err);
+      setCancelListingError(err?.reason || err?.message || "Cancelling failed");
+    } finally {
+      setCancelListingLoading(false);
     }
   };
 
@@ -895,6 +962,85 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
             )}
           </div>
+
+          {activated === true && approved === true && (
+            <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                color: muted,
+                marginBottom: 12,
+              }}>
+                Resell
+              </div>
+
+              {listingLoading ? (
+                <div style={{ fontSize: 12, color: mutedLight }}>Checking listing status...</div>
+              ) : listing ? (
+                <div>
+                  <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                    Listed for sale at <strong style={{ color: green }}>{formatEth(listing.price)} ETN</strong>.
+                    A buyer who pays this receives the name immediately — 80% goes to you, 20% into
+                    the burn pool.
+                  </div>
+                  {cancelListingError && (
+                    <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{cancelListingError}</div>
+                  )}
+                  <NeonButton
+                    variant="danger"
+                    onClick={handleCancelListing}
+                    disabled={cancelListingLoading}
+                    loading={cancelListingLoading}
+                    style={{ width: "100%", justifyContent: "center" }}
+                  >
+                    {cancelListingLoading ? "Cancelling..." : "Cancel Listing"}
+                  </NeonButton>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                    List {verifiedName}.etn for sale. A buyer who pays your price receives it
+                    immediately — 80% goes to you, 20% into the burn pool, same split as subname
+                    sales.
+                  </div>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Price in ETN"
+                    value={resellPriceInput}
+                    onChange={(e) => setResellPriceInput(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      border: `1px solid ${border}`,
+                      background: panel2,
+                      color: "#fff",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      boxSizing: "border-box",
+                      outline: "none",
+                      marginBottom: 10,
+                    }}
+                  />
+                  {resellError && (
+                    <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{resellError}</div>
+                  )}
+                  <NeonButton
+                    variant="green"
+                    onClick={handleListForResale}
+                    disabled={resellLoading || !resellPriceInput}
+                    loading={resellLoading}
+                    style={{ width: "100%", justifyContent: "center" }}
+                  >
+                    {resellLoading ? "Listing..." : "List for Resale"}
+                  </NeonButton>
+                </div>
+              )}
+            </div>
+          )}
 
           {isSubname && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
