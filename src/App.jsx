@@ -217,7 +217,7 @@ function AppContent() {
                 onClick={handleManageSubdomain}
                 style={{ flex: 1, justifyContent: "center" }}
               >
-                Your Names
+                Manage & Resell
               </NeonButton>
               <NeonButton
                 variant="dark"
