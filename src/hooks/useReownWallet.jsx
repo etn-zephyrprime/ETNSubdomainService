@@ -45,9 +45,9 @@ export const electroneum = defineChain({
 
 const metadata = {
   name: "Planet Zephyros - Electroneum Name Service",
-  description: "Simplify you wallet - Register your ENS-style name on Electroneum Smart Chain",
+  description: "Simplify your wallet - Register your ENS-style name on Electroneum Smart Chain",
   url: window.location.origin,
-  icons: [`${window.location.origin}/logo.png`],
+  icons: [`${window.location.origin}/TransparentSubdomainLogo.png`],
 };
 
 export const appKitModal = createAppKit({
