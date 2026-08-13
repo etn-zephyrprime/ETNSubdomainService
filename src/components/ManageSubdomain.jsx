@@ -440,7 +440,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             fontSize: 13,
             fontWeight: 600,
             color: green,
-            background: "rgba(0, 255, 140, 0.06)",
+            background: "rgba(18,86,131,0.06)",
             border: `1px solid ${border}`,
             borderRadius: 10,
             cursor: "pointer",
