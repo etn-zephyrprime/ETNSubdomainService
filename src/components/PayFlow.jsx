@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
+import { QRCodeSVG } from "qrcode.react";
 import { ArrowLeft, Copy, Check } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL } from "../config.js";
+
+// Centered inside the Receive QR code below — public/ so Vite serves it at this exact path in
+// both dev and the built site, no import/bundling needed. Square (186x186 viewBox) and high
+// contrast, which is what keeps a logo-in-QR readable: qrcode.react's excavate option clears the
+// modules directly behind it and level="H" (30% error correction, the max the spec allows)
+// covers the loss, but a busy/low-contrast image would still degrade scans.
+const QR_LOGO_SRC = "/electroneum-logo-symbol.svg";
 
 const MODES = [
   { id: "send", label: "Send" },
@@ -377,9 +385,35 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                 Your Pay Link
               </div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 6 }}>
+              <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 16 }}>
                 {primaryName}
               </div>
+
+              {/* White card — QR scanners rely on high contrast, and this panel's own dark
+                  background isn't reliably that regardless of module color. */}
+              <div style={{
+                display: "inline-block",
+                padding: 16,
+                borderRadius: 16,
+                background: "#fff",
+                boxShadow: `0 0 20px ${greenGlow}`,
+                marginBottom: 16,
+              }}>
+                <QRCodeSVG
+                  value={payLinkFor(primaryName)}
+                  size={200}
+                  level="H"
+                  bgColor="#ffffff"
+                  fgColor="#0a0a0a"
+                  imageSettings={{
+                    src: QR_LOGO_SRC,
+                    height: 40,
+                    width: 40,
+                    excavate: true,
+                  }}
+                />
+              </div>
+
               <div style={{
                 fontSize: 12,
                 color: mutedLight,
