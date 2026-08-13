@@ -6,6 +6,7 @@ import RegistrationFlow from "./components/RegistrationFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
 import SubnameSearch from "./components/SubnameSearch.jsx";
 import PayFlow from "./components/PayFlow.jsx";
+import Marketplace from "./components/Marketplace.jsx";
 import HowItWorks from "./components/HowItWorks.jsx";
 import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
@@ -67,6 +68,7 @@ function AppContent() {
   const [showSubnameSearch, setShowSubnameSearch] = useState(false);
   const [showPay, setShowPay] = useState(false);
   const [payPrefillName, setPayPrefillName] = useState(null);
+  const [showMarketplace, setShowMarketplace] = useState(false);
 
   // Deep link: /pay/alice.etn (or /pay/shop.alice.etn, /pay/alice with no suffix) opens straight
   // to the Pay screen with that name pre-filled — e.g. for a payment request shared in Telegram.
@@ -170,11 +172,16 @@ function AppContent() {
     }
   };
 
+  // Browsing listings is read-only, so — unlike every other button here — this doesn't gate on
+  // connecting a wallet first; Marketplace's own Buy button handles that when someone acts on it.
+  const handleMarketplace = () => setShowMarketplace(true);
+  const handleBackFromMarketplace = () => setShowMarketplace(false);
+
   const handleRegistrationSuccess = (result) => {
     console.log("Registration successful:", result);
   };
 
-  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay;
+  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay && !showMarketplace;
 
   return (
     <div style={{
@@ -229,13 +236,20 @@ function AppContent() {
                 Register Subdomain | Set Subname Pricing
               </NeonButton>
             </div>
-            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px" }}>
+            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px", display: "flex", gap: 12 }}>
               <NeonButton
                 variant="green"
                 onClick={handlePay}
-                style={{ width: "100%", justifyContent: "center" }}
+                style={{ flex: 1, justifyContent: "center" }}
               >
                 Pay / Receive
+              </NeonButton>
+              <NeonButton
+                variant="dark"
+                onClick={handleMarketplace}
+                style={{ flex: 1, justifyContent: "center" }}
+              >
+                Marketplace
               </NeonButton>
             </div>
 
@@ -260,11 +274,16 @@ function AppContent() {
             wallet={wallet}
             onBack={handleBackFromSubnameSearch}
           />
-        ) : (
+        ) : showPay ? (
           <PayFlow
             wallet={wallet}
             onBack={handleBackFromPay}
             initialRecipient={payPrefillName}
+          />
+        ) : (
+          <Marketplace
+            wallet={wallet}
+            onBack={handleBackFromMarketplace}
           />
         )}
       </div>

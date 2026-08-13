@@ -67,3 +67,25 @@ export function decodeFirstLabel(dnsEncodedHex) {
   if (bytes.length < 1 + len) return null;
   return ethers.toUtf8String(bytes.slice(1, 1 + len));
 }
+
+/**
+ * Decodes a full DNS-wire-encoded name into dotted form — e.g. "\x03shop\x05alice\x03etn\x00" ->
+ * "shop.alice.etn" — unlike decodeFirstLabel above (which only needs/returns the leftmost label).
+ * Same walk backend/utils/marketplaceWatcher.js's decodeDnsName does server-side; duplicated
+ * rather than shared since that one runs in the Node backend, not the browser bundle. Used by the
+ * resale marketplace to show a listing's actual name, since a listed tokenId alone doesn't say
+ * whether it's a top-level name or a subname.
+ */
+export function decodeDnsName(dnsEncodedHex) {
+  const bytes = ethers.getBytes(dnsEncodedHex);
+  const labels = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const len = bytes[i];
+    if (len === 0) break;
+    if (i + 1 + len > bytes.length) break;
+    labels.push(ethers.toUtf8String(bytes.slice(i + 1, i + 1 + len)));
+    i += 1 + len;
+  }
+  return labels.join(".");
+}
