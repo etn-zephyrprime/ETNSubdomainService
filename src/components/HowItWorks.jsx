@@ -58,7 +58,7 @@ export default function HowItWorks() {
               width: 36,
               height: 36,
               borderRadius: 10,
-              background: "rgba(24,187,26,0.12)",
+              background: "rgba(18,86,131,0.12)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -83,7 +83,7 @@ export default function HowItWorks() {
         marginTop: 24,
         padding: 18,
         borderRadius: 14,
-        background: "rgba(24,187,26,0.06)",
+        background: "rgba(18,86,131,0.06)",
         border: `1px solid ${border}`,
         textAlign: "center",
       }}>

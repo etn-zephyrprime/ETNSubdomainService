@@ -90,7 +90,7 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
                 fontSize: 13,
                 fontWeight: 600,
                 color: green,
-                background: "rgba(0, 255, 140, 0.06)",
+                background: "rgba(18,86,131,0.06)",
                 border: `1px solid ${border}`,
                 borderRadius: 10,
                 cursor: "pointer",
@@ -162,7 +162,7 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
             <div style={{
               padding: 14,
               borderRadius: 10,
-              background: blockedWord ? `rgba(255,107,107,0.1)` : availability ? `rgba(24,187,26,0.1)` : `rgba(255,107,107,0.1)`,
+              background: blockedWord ? `rgba(255,107,107,0.1)` : availability ? `rgba(18,86,131,0.1)` : `rgba(255,107,107,0.1)`,
               border: `1px solid ${blockedWord ? error : availability ? green : error}`,
               marginBottom: 16,
               fontSize: 13,

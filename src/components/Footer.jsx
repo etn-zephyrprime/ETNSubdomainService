@@ -37,7 +37,7 @@ export default function Footer({ isMobile = false }) {
           color: "#888",
           letterSpacing: 1,
           textTransform: "uppercase",
-          textShadow: "0 0 8px rgba(24,187,26,0.4)",
+          textShadow: "0 0 8px rgba(18,86,131,0.4)",
           flexWrap: "wrap",
         }}
       >
@@ -48,7 +48,7 @@ export default function Footer({ isMobile = false }) {
             height: 24,
             width: "auto",
             objectFit: "contain",
-            filter: "drop-shadow(0 0 6px rgba(24,187,26,0.5))",
+            filter: "drop-shadow(0 0 6px rgba(18,86,131,0.5))",
           }}
         />
 

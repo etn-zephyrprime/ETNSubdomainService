@@ -49,8 +49,8 @@ input:focus {
 
 /* Reown wallet button styling */
 w3m-connect-button {
-  --w3m-accent-color: #18bb1a;
-  --w3m-accent-sidetab: #18bb1a;
+  --w3m-accent-color: #125683;
+  --w3m-accent-sidetab: #125683;
   --w3m-z-index: 1000;
 }
 
