@@ -15,8 +15,9 @@ import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE
 
 const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
 
-// "Your Names" — look up a name you own, view its expiry, renew it, and set a price for
-// self-serve subname registration under it (activation/approval handled inline as needed).
+// "Manage & Resell" — look up a name you own, view its expiry, renew it, set a price for
+// self-serve subname registration under it, or list it for resale (activation/approval handled
+// inline as needed).
 // intent="retro" is the same flow, entered from the "Retro Register" CTA aimed at names
 // registered directly through Electroneum (bypassing this marketplace) — just different framing
 // copy, since activation is the first step of the flow regardless of how someone got here.
@@ -495,6 +496,22 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const expiryDate = expiry ? new Date(Number(expiry) * 1000) : null;
   const daysRemaining = expiry ? Math.floor((Number(expiry) * 1000 - Date.now()) / (1000 * 60 * 60 * 24)) : null;
 
+  // Live 80/20 seller/burn-pool breakdown as the resell price is typed — mirrors the contract's
+  // own SELLER_BPS/BURN_BPS split exactly (_settleSale), not just descriptive copy. null while the
+  // input is empty/invalid so the preview only shows once there's a real number to split.
+  let resellSplit = null;
+  if (resellPriceInput) {
+    try {
+      const priceWei = ethers.parseEther(resellPriceInput);
+      if (priceWei > 0n) {
+        const sellerAmount = (priceWei * 8000n) / 10000n;
+        resellSplit = { sellerAmount, burnAmount: priceWei - sellerAmount };
+      }
+    } catch {
+      // Invalid/incomplete number while typing — no preview, not an error.
+    }
+  }
+
   return (
     <div style={{ width: "100%", maxWidth: 600, margin: "0 auto", padding: "0 16px" }}>
       <div style={{ marginBottom: 20 }}>
@@ -537,7 +554,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
           color: "#fff",
           textShadow: `0 0 16px ${greenGlow}`,
         }}>
-          {intent === "retro" ? "Earn Fees on Subnames" : "Your Names"}
+          {intent === "retro" ? "Earn Fees on Subnames" : "Manage & Resell"}
         </h2>
         <div style={{
           width: 40,
@@ -963,7 +980,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             )}
           </div>
 
-          {activated === true && approved === true && (
+          {activated === true && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{
                 fontSize: 11,
@@ -982,8 +999,24 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 <div>
                   <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                     Listed for sale at <strong style={{ color: green }}>{formatEth(listing.price)} ETN</strong>.
-                    A buyer who pays this receives the name immediately — 80% goes to you, 20% into
-                    the burn pool.
+                    A buyer who pays this receives the name immediately.
+                  </div>
+                  <div style={{
+                    padding: 10,
+                    borderRadius: 8,
+                    background: "rgba(0,0,0,0.2)",
+                    border: `1px solid ${border}`,
+                    marginBottom: 10,
+                    fontSize: 12,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight, marginBottom: 4 }}>
+                      <span>You receive (80%)</span>
+                      <span style={{ color: green, fontWeight: 700 }}>{formatEth((listing.price * 8000n) / 10000n)} ETN</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight }}>
+                      <span>Burn pool (20%)</span>
+                      <span>{formatEth(listing.price - (listing.price * 8000n) / 10000n)} ETN</span>
+                    </div>
                   </div>
                   {cancelListingError && (
                     <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{cancelListingError}</div>
@@ -998,12 +1031,32 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     {cancelListingLoading ? "Cancelling..." : "Cancel Listing"}
                   </NeonButton>
                 </div>
+              ) : !approved ? (
+                <div>
+                  <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                    Approve the marketplace to list this name for resale — same one-time approval
+                    Subname Pricing above needs, so you only need to do this once. Every resale
+                    splits 80% to you, 20% into the burn pool.
+                  </div>
+                  {approveError && (
+                    <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{approveError}</div>
+                  )}
+                  <NeonButton
+                    variant="dark"
+                    onClick={handleApprove}
+                    disabled={approveLoading}
+                    loading={approveLoading}
+                    style={{ width: "100%", justifyContent: "center" }}
+                  >
+                    {approveLoading ? "Approving..." : "Approve Marketplace"}
+                  </NeonButton>
+                </div>
               ) : (
                 <div>
                   <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                     List {verifiedName}.etn for sale. A buyer who pays your price receives it
-                    immediately — 80% goes to you, 20% into the burn pool, same split as subname
-                    sales.
+                    immediately — every resale splits 80% to you, 20% into the burn pool, same
+                    split as subname sales.
                   </div>
                   <input
                     type="text"
@@ -1025,6 +1078,25 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                       marginBottom: 10,
                     }}
                   />
+                  {resellSplit && (
+                    <div style={{
+                      padding: 10,
+                      borderRadius: 8,
+                      background: "rgba(0,0,0,0.2)",
+                      border: `1px solid ${border}`,
+                      marginBottom: 10,
+                      fontSize: 12,
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight, marginBottom: 4 }}>
+                        <span>You'd receive (80%)</span>
+                        <span style={{ color: green, fontWeight: 700 }}>{formatEth(resellSplit.sellerAmount)} ETN</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight }}>
+                        <span>Burn pool (20%)</span>
+                        <span>{formatEth(resellSplit.burnAmount)} ETN</span>
+                      </div>
+                    </div>
+                  )}
                   {resellError && (
                     <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{resellError}</div>
                   )}
