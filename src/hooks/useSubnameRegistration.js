@@ -15,6 +15,16 @@ import NameWrapperABI from "../abis/NameWrapperABI.json";
 // getAvailableParentDomains below), but still meaningfully faster than sequential when it does run
 // (confirmed ~112 chunks needed as of writing for the full history). Results are reassembled in
 // chunk (= block) order before being returned, regardless of which chunk's request finishes first.
+//
+// Each worker's inner loop must fully WALK its assigned [rangeStart, rangeEnd] — advancing a
+// cursor after every successful sub-fetch and only shrinking the sub-fetch size (never `end`) on a
+// range-rejection. An earlier version shrunk `end` on rejection and broke out after the first
+// (now-smaller) fetch succeeded, silently discarding whatever blocks that left uncovered between
+// the shrunk end and the original one — confirmed live: a whole domain's SubnamePricePerYearSet
+// events (community.etn) went missing from the "domains selling subnames" list this way, since
+// they happened to sit past a rejected chunk's shrink point. Fixed by tracking cursor/rangeEnd
+// separately from the sub-fetch size, so a shrink retries forward from where it left off instead
+// of abandoning the remainder.
 async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, concurrency = 8) {
   const ranges = [];
   for (let start = fromBlock; start <= toBlock; start += chunkSize) {
@@ -28,24 +38,29 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
     while (true) {
       const i = nextIndex++;
       if (i >= ranges.length) return;
-      let [start, end] = ranges[i];
-      let size = end - start + 1;
+      const [rangeStart, rangeEnd] = ranges[i];
+      const events = [];
+      let cursor = rangeStart;
+      let size = rangeEnd - rangeStart + 1;
 
-      while (true) {
+      while (cursor <= rangeEnd) {
+        const end = Math.min(cursor + size - 1, rangeEnd);
         try {
-          results[i] = await contract.queryFilter(filter, start, end);
-          break;
+          const chunk = await contract.queryFilter(filter, cursor, end);
+          events.push(...chunk);
+          cursor = end + 1;
         } catch (err) {
           const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
           const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
           if (isRangeError && size > 50) {
             size = Math.max(50, Math.floor(size / 2));
-            end = Math.min(start + size - 1, ranges[i][1]);
-            continue;
+            continue; // retry the same `cursor` with the smaller window
           }
           throw err;
         }
       }
+
+      results[i] = events;
     }
   }
 

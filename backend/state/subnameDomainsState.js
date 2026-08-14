@@ -52,12 +52,14 @@ export async function getSubnameDomainsCache() {
 }
 
 /**
- * Publishes `{ domains, lastScannedBlock, updatedAt }`. Short cache lifetime (unlike NFT images'
- * immutable 1-year one in R2Upload.js) — this changes every time an owner sets/changes a subname
- * price, so a stale CDN copy would show wrong prices or miss new domains for however long it's
- * cached.
+ * Publishes `{ domains, lastScannedBlock, schemaVersion, updatedAt }`. Short cache lifetime
+ * (unlike NFT images' immutable 1-year one in R2Upload.js) — this changes every time an owner
+ * sets/changes a subname price, so a stale CDN copy would show wrong prices or miss new domains
+ * for however long it's cached. schemaVersion is opaque here — subnameDomainsCache.js is what
+ * actually interprets it (to force a full rescan when it doesn't match the current build's
+ * expectation) — this just persists whatever it's given.
  */
-export async function setSubnameDomainsCache(domains, lastScannedBlock) {
+export async function setSubnameDomainsCache(domains, lastScannedBlock, schemaVersion) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -65,7 +67,7 @@ export async function setSubnameDomainsCache(domains, lastScannedBlock) {
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ domains, lastScannedBlock, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ domains, lastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })

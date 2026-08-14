@@ -21,6 +21,14 @@ const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
   ? parseInt(process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS, 10)
   : 300000;
 
+// Bumped once, deliberately, to force every deployed instance's next tick to do a full fresh
+// rescan from MARKETPLACE_DEPLOY_BLOCK instead of trusting a previously-published cache's
+// lastScannedBlock — the chunked scan had a bug (see queryLogsChunked below) that could silently
+// drop a domain's events, so a cache published before this fix may already be missing entries
+// (confirmed: community.etn) that scanning forward from its lastScannedBlock would never revisit.
+// Not meant to be bumped routinely — only when a past scan's correctness is actually in question.
+const CACHE_SCHEMA_VERSION = 2;
+
 const MARKETPLACE_ABI = [
   "event SubnamePricePerYearSet(bytes32 indexed parentNode, uint256 pricePerYear)",
 ];
@@ -40,6 +48,15 @@ function decodeFirstLabel(hex) {
 // "fine to drift independently" reasoning marketplaceWatcher.js already gives for its own copy.
 // Concurrency is safe for the fold in scanAndPublish below because results are reassembled in
 // chunk (= block) order before being applied, regardless of which chunk's request finishes first.
+//
+// Each worker's inner loop must fully WALK its assigned [rangeStart, rangeEnd] — advancing a
+// cursor after every successful sub-fetch and only shrinking the sub-fetch size (never `end`) on a
+// range-rejection. An earlier version shrunk `end` on rejection and broke out after the first
+// (now-smaller) fetch succeeded, silently discarding whatever blocks that left uncovered between
+// the shrunk end and the original one — confirmed live: community.etn's SubnamePricePerYearSet
+// events went missing from the published cache this way, since they happened to sit past a
+// rejected chunk's shrink point. Fixed by tracking cursor/rangeEnd separately from the sub-fetch
+// size, so a shrink retries forward from where it left off instead of abandoning the remainder.
 async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, concurrency = 8) {
   const ranges = [];
   for (let start = fromBlock; start <= toBlock; start += chunkSize) {
@@ -53,24 +70,29 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
     while (true) {
       const i = nextIndex++;
       if (i >= ranges.length) return;
-      let [start, end] = ranges[i];
-      let size = end - start + 1;
+      const [rangeStart, rangeEnd] = ranges[i];
+      const events = [];
+      let cursor = rangeStart;
+      let size = rangeEnd - rangeStart + 1;
 
-      while (true) {
+      while (cursor <= rangeEnd) {
+        const end = Math.min(cursor + size - 1, rangeEnd);
         try {
-          results[i] = await contract.queryFilter(filter, start, end);
-          break;
+          const chunk = await contract.queryFilter(filter, cursor, end);
+          events.push(...chunk);
+          cursor = end + 1;
         } catch (err) {
           const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
           const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
           if (isRangeError && size > 50) {
             size = Math.max(50, Math.floor(size / 2));
-            end = Math.min(start + size - 1, ranges[i][1]);
-            continue;
+            continue; // retry the same `cursor` with the smaller window
           }
           throw err;
         }
       }
+
+      results[i] = events;
     }
   }
 
@@ -84,7 +106,9 @@ async function scanAndPublish(provider, marketplace, nameWrapper) {
   if (isRunning) return; // previous run still in flight (e.g. a slow cold-start scan) — skip this tick
   isRunning = true;
   try {
-    const cached = await getSubnameDomainsCache();
+    const rawCache = await getSubnameDomainsCache();
+    // Discard anything published under an older schema version — see CACHE_SCHEMA_VERSION above.
+    const cached = rawCache?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCache : null;
     const domainByNode = new Map((cached?.domains || []).map((d) => [d.node, d]));
     const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
 
@@ -119,7 +143,7 @@ async function scanAndPublish(provider, marketplace, nameWrapper) {
       domainByNode.set(parentNode, { label, node: parentNode, pricePerYear: pricePerYear.toString() });
     }
 
-    await setSubnameDomainsCache([...domainByNode.values()], latestBlock);
+    await setSubnameDomainsCache([...domainByNode.values()], latestBlock, CACHE_SCHEMA_VERSION);
     console.log(`📡 Subname domains cache updated — ${domainByNode.size} domain(s) selling subnames, scanned to block ${latestBlock}`);
   } catch (err) {
     console.error("⚠️  Subname domains cache scan failed:", err.message);
