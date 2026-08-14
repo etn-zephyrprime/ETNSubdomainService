@@ -2,10 +2,15 @@ import "dotenv/config";
 import { ethers } from "ethers";
 import { generateNftImage } from "../utils/imageGenerator.js";
 import { uploadNftToR2, objectExistsInR2 } from "../utils/R2Upload.js";
+import { sendTelegramPhoto, telegramConfigured } from "../utils/telegramNotifier.js";
 
 // Retroactively generates + uploads NFT images for names that were registered/activated before
-// image generation existed (or whose /api/generate-nft request never happened/failed) — anything
-// on-chain today that isn't already sitting in R2 under its node's key.
+// image generation existed (or whose /api/generate-nft request never happened/failed — the free
+// Render instance spinning down mid-registration is the common case, see .github/workflows/) —
+// anything on-chain today that isn't already sitting in R2 under its node's key. Also posts a
+// Telegram "image ready" notification for each one actually generated (skipped in --dry-run,
+// and silently a no-op if Telegram isn't configured) — a backfilled image's original on-chain
+// event already got its own notification live, just without the image attached.
 //
 // Usage:
 //   node scripts/backfillNftImages.js              # generate + upload everything missing
@@ -21,6 +26,11 @@ const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
+// Same default + notification-link style as marketplaceWatcher.js — a backfilled image gets its
+// own "ready" notification since the original live one (if any) went out as text-only, having
+// raced the image that didn't exist in R2 yet at the time.
+const SITE_URL = process.env.SITE_URL || "https://nameservice.planetzephyros.xyz";
+const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 // namehash("etn") — same value as ETN_NODE in src/config.js, needed here to derive a node from
 // an event's plain label (events don't carry the node itself for top-level registrations).
 const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
@@ -185,9 +195,25 @@ async function main() {
 
     try {
       const { buffer } = await generateNftImage(fullName, node, template);
-      await uploadNftToR2(buffer, filename);
+      const publicUrl = await uploadNftToR2(buffer, filename);
       console.log(`✅ ${fullName} -> ${filename}`);
       generated++;
+
+      // Best-effort — a name only reaches here because its image was genuinely missing (already
+      // filtered above), meaning the on-chain event's own live notification either never fired or
+      // went out text-only for lack of an image (see marketplaceWatcher.js's sendWithImage). This
+      // is the follow-up. Never fails the run itself: one missed Telegram post shouldn't block
+      // backfilling the rest.
+      if (telegramConfigured()) {
+        try {
+          await sendTelegramPhoto(
+            publicUrl,
+            `🖼️ *NFT Image Ready*\nName: \`${fullName}\`\n${SITE_LINK_LINE}`
+          );
+        } catch (err) {
+          console.warn(`⚠️  ${fullName}: image backfilled but Telegram notification failed: ${err.message}`);
+        }
+      }
     } catch (err) {
       console.error(`❌ ${fullName}: ${err.message}`);
       failed++;

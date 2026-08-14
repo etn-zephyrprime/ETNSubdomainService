@@ -1,0 +1,29 @@
+name: Keep-alive ping
+
+# Render's free-tier instance spins down after ~15 min with no inbound HTTP traffic, which cost
+# us both a Telegram notification and an NFT image on a real registration (main.zypto.etn,
+# 2026-08-14) — the instance was asleep at the moment it happened, so nothing was there to catch
+# the on-chain event live. This can't keep the instance awake at all times (hourly is longer than
+# the ~15 min idle window, so it still spins down between pings) — that needs a paid instance
+# instead. What it does do: bound how long a missed event sits unsent, since the marketplace
+# watcher persists its last-scanned block and catches up on whatever it missed as soon as
+# something wakes it — see backend/utils/marketplaceWatcher.js and backend/state/state.js.
+#
+# Deliberately just a plain GET — index.js's "/" route does no DB/RPC work, so this is the
+# cheapest possible way to wake the instance.
+#
+# NFT images aren't covered by this — see backfill-nft-images.yml.
+
+on:
+  schedule:
+    - cron: "0 * * * *" # every hour, on the hour (UTC)
+  workflow_dispatch: {} # allows a manual run from the Actions tab, for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: |
+          curl -sS --max-time 90 -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
+            https://electroneumnameservice.onrender.com/
