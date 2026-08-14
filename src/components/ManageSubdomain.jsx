@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ethers } from "ethers";
-import { ArrowLeft, Copy, Check } from "lucide-react";
+import { ArrowLeft, Copy, Check, QrCode } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
@@ -14,6 +15,12 @@ import NeonButton from "./NeonButton.jsx";
 import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE_URL } from "../config.js";
 
 const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
+
+// Centered inside the subname-link QR code below — same asset/settings as PayFlow.jsx's Receive
+// QR (see its comment for why: public/ so Vite serves it at this exact path with no
+// import/bundling needed, square + high-contrast so it stays readable once excavated into the
+// code). Duplicated rather than shared since the two screens' QR codes are otherwise unrelated.
+const QR_LOGO_SRC = "/electroneum-logo-symbol.svg";
 
 // "Manage & Resell" — look up a name you own, view its expiry, renew it, set a price for
 // self-serve subname registration under it, or list it for resale (activation/approval handled
@@ -93,6 +100,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
   // "Copy Subname Link" — null | "copied" | "error", reset per lookup below.
   const [copySubnameLinkStatus, setCopySubnameLinkStatus] = useState(null);
+  const [showSubnameLinkQr, setShowSubnameLinkQr] = useState(false);
 
   const {
     getOwner,
@@ -164,6 +172,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setResellError(null);
     setCancelListingError(null);
     setCopySubnameLinkStatus(null);
+    setShowSubnameLinkQr(false);
 
     // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
     // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
@@ -483,8 +492,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   // cases where the link is genuinely usable (gated at the call site below).
   const handleCopySubnameLink = async () => {
     try {
-      const url = `${window.location.origin}/subnames/${verifiedName}.etn`;
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(subnameLink);
       setCopySubnameLinkStatus("copied");
       setTimeout(() => setCopySubnameLinkStatus(null), 2000);
     } catch (err) {
@@ -518,6 +526,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
   const expiryDate = expiry ? new Date(Number(expiry) * 1000) : null;
   const daysRemaining = expiry ? Math.floor((Number(expiry) * 1000 - Date.now()) / (1000 * 60 * 60 * 24)) : null;
+
+  // Shared by the Copy button and the QR code below it — one source of truth for the actual link.
+  const subnameLink = verifiedName ? `${window.location.origin}/subnames/${verifiedName}.etn` : null;
 
   // Live 80/20 seller/burn-pool breakdown as the resell price is typed — mirrors the contract's
   // own SELLER_BPS/BURN_BPS split exactly (_settleSale), not just descriptive copy. null while the
@@ -1002,14 +1013,23 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
                 {!isSubname && currentPrice > 0n && (
                   <div style={{ marginTop: 12 }}>
-                    <NeonButton
-                      variant="dark"
-                      onClick={handleCopySubnameLink}
-                      style={{ width: "100%", justifyContent: "center", display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      {copySubnameLinkStatus === "copied" ? <Check size={14} /> : <Copy size={14} />}
-                      {copySubnameLinkStatus === "copied" ? "Copied!" : "Copy Subname Link"}
-                    </NeonButton>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <NeonButton
+                        variant="dark"
+                        onClick={handleCopySubnameLink}
+                        style={{ flex: 1, justifyContent: "center", display: "flex", alignItems: "center", gap: 8 }}
+                      >
+                        {copySubnameLinkStatus === "copied" ? <Check size={14} /> : <Copy size={14} />}
+                        {copySubnameLinkStatus === "copied" ? "Copied!" : "Copy Subname Link"}
+                      </NeonButton>
+                      <NeonButton
+                        variant="dark"
+                        onClick={() => setShowSubnameLinkQr((v) => !v)}
+                        style={{ padding: "12px 14px", display: "flex", alignItems: "center" }}
+                      >
+                        <QrCode size={14} />
+                      </NeonButton>
+                    </div>
                     {copySubnameLinkStatus === "error" && (
                       <div style={{ fontSize: 11, color: error, marginTop: 6, textAlign: "center" }}>
                         Couldn't copy automatically — your browser may be blocking clipboard access.
@@ -1018,6 +1038,34 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 6, textAlign: "center" }}>
                       Sends people straight to Get a Subname with {verifiedName}.etn pre-filled.
                     </div>
+
+                    {showSubnameLinkQr && (
+                      // White card — same reasoning as PayFlow.jsx's Receive QR: scanners rely on
+                      // high contrast, which this panel's own dark background isn't reliably.
+                      <div style={{
+                        display: "flex",
+                        justifyContent: "center",
+                        padding: 16,
+                        borderRadius: 16,
+                        background: "#fff",
+                        boxShadow: `0 0 20px ${greenGlow}`,
+                        marginTop: 12,
+                      }}>
+                        <QRCodeSVG
+                          value={subnameLink}
+                          size={160}
+                          level="H"
+                          bgColor="#ffffff"
+                          fgColor="#0a0a0a"
+                          imageSettings={{
+                            src: QR_LOGO_SRC,
+                            height: 32,
+                            width: 32,
+                            excavate: true,
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
