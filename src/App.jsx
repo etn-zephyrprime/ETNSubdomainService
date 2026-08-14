@@ -204,14 +204,39 @@ function AppContent() {
               wallet={wallet}
               onNameSelected={handleNameSelected}
             />
+            <div style={{ width: "100%", maxWidth: 600, margin: "16px auto 0", padding: "0 16px" }}>
+              <NeonButton
+                variant="green"
+                onClick={handleRetroRegister}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                Register Subdomain | Set Subname Pricing
+              </NeonButton>
+            </div>
             <div style={{
               width: "100%",
               maxWidth: 600,
-              margin: "16px auto 0",
+              margin: "12px auto 0",
               padding: "0 16px",
               display: "flex",
               gap: 12,
             }}>
+              <NeonButton
+                variant="dark"
+                onClick={handleSubnameSearch}
+                style={{ flex: 1, justifyContent: "center" }}
+              >
+                Get a Subname
+              </NeonButton>
+              <NeonButton
+                variant="dark"
+                onClick={handleMarketplace}
+                style={{ flex: 1, justifyContent: "center" }}
+              >
+                Marketplace
+              </NeonButton>
+            </div>
+            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px", display: "flex", gap: 12 }}>
               <NeonButton
                 variant="dark"
                 onClick={handleManageSubdomain}
@@ -221,35 +246,10 @@ function AppContent() {
               </NeonButton>
               <NeonButton
                 variant="dark"
-                onClick={handleSubnameSearch}
-                style={{ flex: 1, justifyContent: "center" }}
-              >
-                Get a Subname
-              </NeonButton>
-            </div>
-            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px" }}>
-              <NeonButton
-                variant="dark"
-                onClick={handleRetroRegister}
-                style={{ width: "100%", justifyContent: "center" }}
-              >
-                Register Subdomain | Set Subname Pricing
-              </NeonButton>
-            </div>
-            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px", display: "flex", gap: 12 }}>
-              <NeonButton
-                variant="green"
                 onClick={handlePay}
                 style={{ flex: 1, justifyContent: "center" }}
               >
                 Pay / Receive
-              </NeonButton>
-              <NeonButton
-                variant="dark"
-                onClick={handleMarketplace}
-                style={{ flex: 1, justifyContent: "center" }}
-              >
-                Marketplace
               </NeonButton>
             </div>
 
