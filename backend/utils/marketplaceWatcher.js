@@ -2,9 +2,10 @@ import { ethers } from "ethers";
 import { sendTelegramMessage, sendTelegramPhoto, telegramConfigured } from "./telegramNotifier.js";
 import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js";
 
-// Polls the Marketplace contract for DomainActivated / SubnameRegistered events and posts a
-// Telegram notification for each — same chain/contract defaults as the rest of the backend (see
-// scripts/backfillNftImages.js), overridable via env for a different deployment.
+// Polls the Marketplace contract for DomainActivated / SubnameRegistered / ExistingNameListed /
+// ListingSold events and posts a Telegram notification for each — same chain/contract defaults
+// as the rest of the backend (see scripts/backfillNftImages.js), overridable via env for a
+// different deployment.
 const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
@@ -38,7 +39,10 @@ const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
+  "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "function burnPool() view returns (uint256)",
+  "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
 const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
 
@@ -70,6 +74,14 @@ function shortAddress(address) {
 function computeSubnode(parentNode, label) {
   const labelHash = ethers.keccak256(ethers.toUtf8Bytes(label));
   return ethers.keccak256(ethers.concat([parentNode, labelHash]));
+}
+
+// A listing's tokenId is just its node cast to uint256 — same convention NameWrapper uses
+// everywhere else in this app (see src/hooks/useMarketplaceListings.js's identical conversion).
+// Works for either a top-level name's node or a subname's, since listExistingName doesn't
+// distinguish between them.
+function tokenIdToNode(tokenId) {
+  return ethers.toBeHex(tokenId, 32);
 }
 
 function nftImageUrl(node) {
@@ -167,6 +179,54 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace) {
   );
 }
 
+async function notifyNameListed(event, nameWrapper) {
+  const { seller, tokenId, price } = event.args;
+  const node = tokenIdToNode(tokenId);
+  const name = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
+
+  await sendWithImage(
+    node,
+    `🏪 *Name Listed for Resale*\n` +
+    `Name: \`${name}\`\n` +
+    `Seller: \`${shortAddress(seller)}\`\n` +
+    `Price: \`${formatEtn(price)} ETN\`\n` +
+    `[View Transaction](${txUrl})\n` +
+    SITE_LINK_LINE
+  );
+}
+
+async function notifyListingSold(event, nameWrapper, marketplace) {
+  const { buyer, seller, price, burnAmount } = event.args;
+  // ListingSold doesn't carry tokenId itself — re-read the listing by its id for the node, same
+  // way ExistingNameListed's own listener resolves a name. Queried as of this event's block so a
+  // once-active listing already flipped inactive by a later poll still resolves correctly.
+  const listing = await marketplace.listings(event.args.listingId, { blockTag: event.blockNumber });
+  const node = tokenIdToNode(listing.tokenId);
+  const name = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
+
+  let burnPoolTotal;
+  try {
+    burnPoolTotal = await marketplace.burnPool({ blockTag: event.blockNumber });
+  } catch (err) {
+    console.warn("⚠️  Couldn't read burnPool() total:", err.message);
+  }
+
+  await sendWithImage(
+    node,
+    `💰 *Name Sold*\n` +
+    `Name: \`${name}\`\n` +
+    `Seller: \`${shortAddress(seller)}\`\n` +
+    `Buyer: \`${shortAddress(buyer)}\`\n` +
+    `Price Paid: \`${formatEtn(price)} ETN\`\n` +
+    `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
+    (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
+    `[View Transaction](${txUrl})\n` +
+    SITE_LINK_LINE
+  );
+}
+
 let isPolling = false;
 
 async function poll(marketplace, nameWrapper) {
@@ -186,13 +246,15 @@ async function poll(marketplace, nameWrapper) {
 
     if (latestBlock <= fromBlock) return; // nothing new
 
-    const [activated, subnamesRegistered] = await Promise.all([
+    const [activated, subnamesRegistered, nameListed, listingSold] = await Promise.all([
       queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock + 1, latestBlock),
       queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock + 1, latestBlock),
+      queryLogsChunked(marketplace, marketplace.filters.ExistingNameListed(), fromBlock + 1, latestBlock),
+      queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock + 1, latestBlock),
     ]);
 
     // Merge and process in on-chain order, not per-event-type order.
-    const events = [...activated, ...subnamesRegistered].sort(
+    const events = [...activated, ...subnamesRegistered, ...nameListed, ...listingSold].sort(
       (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
     );
 
@@ -202,6 +264,10 @@ async function poll(marketplace, nameWrapper) {
           await notifyDomainActivated(event, nameWrapper);
         } else if (event.eventName === "SubnameRegistered") {
           await notifySubnameRegistered(event, nameWrapper, marketplace);
+        } else if (event.eventName === "ExistingNameListed") {
+          await notifyNameListed(event, nameWrapper);
+        } else if (event.eventName === "ListingSold") {
+          await notifyListingSold(event, nameWrapper, marketplace);
         }
       } catch (err) {
         // One bad event (e.g. a transient Telegram API error) shouldn't stop the rest, and
