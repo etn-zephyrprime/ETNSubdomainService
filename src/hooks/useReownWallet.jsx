@@ -50,6 +50,19 @@ const metadata = {
   icons: [`${window.location.origin}/TransparentSubdomainLogo.png`],
 };
 
+// Pins these to the top of the wallet list, in this order, ahead of AppKit's default
+// popularity-based ranking — MetaMask/SafePal already rank highly there on their own, but Zypto
+// (zypto.com), a wallet many Electroneum users specifically rely on via its in-app browser to
+// reach this site, doesn't have the general-purpose popularity to surface near the top otherwise.
+// IDs are each wallet's WalletConnect Explorer listing id (found via
+// https://explorer-api.walletconnect.com/v3/wallets?search=<name>), not something derivable from
+// the wallet's name/site itself.
+const FEATURED_WALLET_IDS = [
+  "482779b01ffd93b70c1f62e7905658ca1a6b02799f498b07cce423f7841aed75", // Zypto
+  "c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96", // MetaMask
+  "0b415a746fb9ee99cce155c2ceca0c6f6061b1dbca2d722b3ba16381d0562150", // SafePal
+];
+
 export const appKitModal = createAppKit({
   adapters: [new EthersAdapter()],
   networks: [electroneum],
@@ -58,6 +71,7 @@ export const appKitModal = createAppKit({
   metadata,
   enableInjected: false,
   allowUnsupportedChain: false,
+  featuredWalletIds: FEATURED_WALLET_IDS,
   features: {
     analytics: true,
     email: false,
