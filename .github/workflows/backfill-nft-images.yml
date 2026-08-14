@@ -1,0 +1,45 @@
+name: Backfill missing NFT images
+
+# Catches names whose NFT image never got generated — the common cause is the free Render
+# instance being asleep at the exact moment someone registered/activated a name, so the
+# frontend's fire-and-forget POST /api/generate-nft never landed (see keep-alive-ping.yml for the
+# spin-down side of this). Safe to run unconditionally on a schedule: backend/scripts/
+# backfillNftImages.js only touches names that genuinely don't have an image in R2 yet (skips
+# everything else), and posts a Telegram "image ready" follow-up for each one it fills in.
+#
+# Runs independently of keep-alive-ping.yml on purpose — this talks directly to the public RPC
+# and R2, not through the Render backend, so it doesn't need (or wait on) the instance being awake.
+
+on:
+  schedule:
+    - cron: "15 * * * *" # every hour, 15 min past (offset from keep-alive-ping.yml for clarity in logs)
+  workflow_dispatch: {} # allows a manual run from the Actions tab, for testing
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Generate + upload any missing NFT images
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+        run: npm run backfill:images
