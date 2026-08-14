@@ -16,8 +16,14 @@ const YEAR_SECONDS = 365 * 24 * 60 * 60;
 
 // Buyer picks their own label under a domain the owner has set a price for — single-level
 // subnames only (e.g. "shop.alice" -> shop.alice.etn), no commit-reveal, one transaction.
-export default function SubnameSearch({ wallet, onBack = null }) {
-  const [rawInput, setRawInput] = useState("");
+export default function SubnameSearch({ wallet, onBack = null, initialParent = null }) {
+  // Pre-fills the same way clicking a domain chip does (handleSelectParent below) — just the
+  // parent typed in for you, cursor left at the start so typing a subname prepends it before the
+  // dot. Comes from App.jsx's /subnames/<parent> deep link (see ManageSubdomain.jsx's "Copy
+  // Subname Link").
+  const [rawInput, setRawInput] = useState(
+    () => (initialParent ? `.${initialParent.replace(/\.etn$/i, "").toLowerCase().trim()}` : "")
+  );
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkError, setCheckError] = useState(null);
   const [checked, setChecked] = useState(null); // { subLabel, parentLabel, parentNode, pricePerYear, availableDurations }
@@ -60,6 +66,18 @@ export default function SubnameSearch({ wallet, onBack = null }) {
       }
     })();
   }, [getAvailableParentDomains]);
+
+  // Same focus/cursor-placement handleSelectParent gives a manually-clicked domain chip, applied
+  // once on mount for a deep-linked parent so the experience matches either way.
+  useEffect(() => {
+    if (!initialParent) return;
+    const el = inputRef.current;
+    if (el) {
+      el.focus();
+      requestAnimationFrame(() => el.setSelectionRange(0, 0));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSelectParent = (label) => {
     setRawInput(`.${label}`);

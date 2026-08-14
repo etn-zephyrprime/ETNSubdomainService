@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ethers } from "ethers";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Copy, Check } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
@@ -91,6 +91,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [cancelListingLoading, setCancelListingLoading] = useState(false);
   const [cancelListingError, setCancelListingError] = useState(null);
 
+  // "Copy Subname Link" — null | "copied" | "error", reset per lookup below.
+  const [copySubnameLinkStatus, setCopySubnameLinkStatus] = useState(null);
+
   const {
     getOwner,
     getOwnerByNode,
@@ -160,6 +163,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setResellPriceInput("");
     setResellError(null);
     setCancelListingError(null);
+    setCopySubnameLinkStatus(null);
 
     // Strip a trailing ".etn" if typed — a natural, common thing to enter even though the
     // placeholder just asks for "your-name" (e.g. "planetzephyros.etn"). Without this, the
@@ -467,6 +471,25 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setCancelListingError(err?.reason || err?.message || "Cancelling failed");
     } finally {
       setCancelListingLoading(false);
+    }
+  };
+
+  // /subnames/<parent> deep link (see App.jsx) — opens straight to Get a Subname with this
+  // domain pre-filled as the parent, so an owner can share a direct link instead of expecting
+  // people to find and type it in themselves. Only meaningful for a top-level domain that's
+  // actually selling subnames — SubnameSearch.jsx's own parseInput rejects a multi-level parent
+  // (e.g. a subname pricing its own sub-subnames), and a domain with no price set would just land
+  // the visitor on a "isn't selling subnames" error — so this button only appears in the two
+  // cases where the link is genuinely usable (gated at the call site below).
+  const handleCopySubnameLink = async () => {
+    try {
+      const url = `${window.location.origin}/subnames/${verifiedName}.etn`;
+      await navigator.clipboard.writeText(url);
+      setCopySubnameLinkStatus("copied");
+      setTimeout(() => setCopySubnameLinkStatus(null), 2000);
+    } catch (err) {
+      console.error("Copying subname link failed:", err);
+      setCopySubnameLinkStatus("error");
     }
   };
 
@@ -976,6 +999,27 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     </NeonButton>
                   )}
                 </div>
+
+                {!isSubname && currentPrice > 0n && (
+                  <div style={{ marginTop: 12 }}>
+                    <NeonButton
+                      variant="dark"
+                      onClick={handleCopySubnameLink}
+                      style={{ width: "100%", justifyContent: "center", display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      {copySubnameLinkStatus === "copied" ? <Check size={14} /> : <Copy size={14} />}
+                      {copySubnameLinkStatus === "copied" ? "Copied!" : "Copy Subname Link"}
+                    </NeonButton>
+                    {copySubnameLinkStatus === "error" && (
+                      <div style={{ fontSize: 11, color: error, marginTop: 6, textAlign: "center" }}>
+                        Couldn't copy automatically — your browser may be blocking clipboard access.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: mutedLight, marginTop: 6, textAlign: "center" }}>
+                      Sends people straight to Get a Subname with {verifiedName}.etn pre-filled.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
