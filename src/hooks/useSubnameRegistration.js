@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, MARKETPLACE_DEPLOY_BLOCK, NAME_WRAPPER_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, MARKETPLACE_DEPLOY_BLOCK, NAME_WRAPPER_ADDRESS, RPC_URL, R2_PUBLIC_URL } from "../config.js";
 import { computeSubnode, decodeFirstLabel } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
@@ -10,29 +10,84 @@ import NameWrapperABI from "../abis/NameWrapperABI.json";
 // our end (shared/load-balanced gateway, likely per-node or load-dependent policy). Querying the
 // whole MARKETPLACE_DEPLOY_BLOCK-to-latest range in one shot is therefore not reliable long-term
 // regardless of what size is hardcoded, so this chunks the scan and halves the window on a
-// range-rejection instead of assuming any fixed size will keep working.
-async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, minChunkSize = 50) {
-  const events = [];
-  let start = fromBlock;
+// range-rejection instead of assuming any fixed size will keep working. Chunks run concurrently
+// (bounded) rather than one at a time — this is only ever the fallback path now (see
+// getAvailableParentDomains below), but still meaningfully faster than sequential when it does run
+// (confirmed ~112 chunks needed as of writing for the full history). Results are reassembled in
+// chunk (= block) order before being returned, regardless of which chunk's request finishes first.
+async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, concurrency = 8) {
+  const ranges = [];
+  for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+    ranges.push([start, Math.min(start + chunkSize - 1, toBlock)]);
+  }
 
-  while (start <= toBlock) {
-    const end = Math.min(start + chunkSize - 1, toBlock);
-    try {
-      const chunk = await contract.queryFilter(filter, start, end);
-      events.push(...chunk);
-      start = end + 1;
-    } catch (err) {
-      const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
-      if (isRangeError && chunkSize > minChunkSize) {
-        chunkSize = Math.max(minChunkSize, Math.floor(chunkSize / 2));
-        continue; // retry the same `start` with the smaller window
+  const results = new Array(ranges.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= ranges.length) return;
+      let [start, end] = ranges[i];
+      let size = end - start + 1;
+
+      while (true) {
+        try {
+          results[i] = await contract.queryFilter(filter, start, end);
+          break;
+        } catch (err) {
+          const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
+          const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+          if (isRangeError && size > 50) {
+            size = Math.max(50, Math.floor(size / 2));
+            end = Math.min(start + size - 1, ranges[i][1]);
+            continue;
+          }
+          throw err;
+        }
       }
-      throw err;
     }
   }
 
-  return events;
+  await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+  return results.flat();
+}
+
+// Scans SubnamePricePerYearSet events directly, scoped to MARKETPLACE_DEPLOY_BLOCK since the
+// public RPC rejects unscoped fromBlock queries ("Block range is too large"), and chunked (see
+// queryLogsChunked) since even a scoped range isn't reliably small enough on its own. Labels come
+// from NameWrapper.names(node) (the same on-chain source the contract itself trusts), not from
+// the event — SubnamePricePerYearSet only carries the hashed node. Only reached as a fallback now
+// (see getAvailableParentDomains) — the normal path fetches backend/utils/subnameDomainsCache.js's
+// published result instead of running this scan in every visitor's browser.
+async function scanAvailableParentDomainsOnChain({ marketplace, nameWrapper }) {
+  const latestBlock = await marketplace.runner.getBlockNumber();
+  const events = await queryLogsChunked(
+    marketplace,
+    marketplace.filters.SubnamePricePerYearSet(),
+    MARKETPLACE_DEPLOY_BLOCK,
+    latestBlock
+  );
+
+  // Ascending (block, logIndex) order — queryLogsChunked's chunks are reassembled in block order
+  // regardless of completion timing, so a plain overwrite keeps each node's latest rate, including
+  // 0 for domains that turned subname sales back off.
+  const latestPriceByNode = new Map();
+  for (const event of events) {
+    latestPriceByNode.set(event.args.parentNode, event.args.pricePerYear);
+  }
+
+  const activeNodes = [...latestPriceByNode.entries()].filter(([, pricePerYear]) => pricePerYear > 0n);
+
+  const domains = await Promise.all(
+    activeNodes.map(async ([node, pricePerYear]) => {
+      const encoded = await nameWrapper.names(node);
+      const label = decodeFirstLabel(encoded);
+      return label ? { label, node, pricePerYear } : null;
+    })
+  );
+
+  return domains.filter(Boolean);
 }
 
 export function useSubnameRegistration() {
@@ -72,41 +127,29 @@ export function useSubnameRegistration() {
     return owner === ethers.ZeroAddress;
   }, [getReadContracts]);
 
-  // No indexer exists yet, so this scans SubnamePricePerYearSet events directly — cheap while the
-  // marketplace is young (a few hundred blocks/events), scoped to MARKETPLACE_DEPLOY_BLOCK since
-  // the public RPC rejects unscoped fromBlock queries ("Block range is too large"), and chunked
-  // (see queryLogsChunked) since even a scoped range isn't reliably small enough on its own.
-  // Labels come from NameWrapper.names(node) (the same on-chain source the contract itself
-  // trusts), not from the event — SubnamePricePerYearSet only carries the hashed node.
+  // backend/utils/subnameDomainsCache.js keeps a small public JSON file in R2 with exactly this —
+  // scanned server-side on a timer instead of by every visitor's browser on every page load (that
+  // full-history scan is ~112 chunked RPC round trips as of writing, and grows by roughly one more
+  // every day, forever). One plain fetch here instead. Falls back to scanning on-chain directly —
+  // scanAvailableParentDomainsOnChain below, unchanged in substance from before this cache existed
+  // — if R2_PUBLIC_URL isn't configured, the cache hasn't been published yet, or the fetch fails
+  // for any reason (network hiccup, stale deploy, etc.): slower in that case, but never broken.
   const getAvailableParentDomains = useCallback(async () => {
-    const { marketplace, nameWrapper } = getReadContracts();
-
-    const latestBlock = await marketplace.runner.getBlockNumber();
-    const events = await queryLogsChunked(
-      marketplace,
-      marketplace.filters.SubnamePricePerYearSet(),
-      MARKETPLACE_DEPLOY_BLOCK,
-      latestBlock
-    );
-
-    // queryFilter returns events in ascending block order, so a plain overwrite keeps each
-    // node's latest rate — including 0 for domains that turned subname sales back off.
-    const latestPriceByNode = new Map();
-    for (const event of events) {
-      latestPriceByNode.set(event.args.parentNode, event.args.pricePerYear);
+    if (R2_PUBLIC_URL) {
+      try {
+        const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/subname-domains.json`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.domains)) {
+            return data.domains.map((d) => ({ ...d, pricePerYear: BigInt(d.pricePerYear) }));
+          }
+        }
+      } catch (err) {
+        console.warn("Subname domains cache fetch failed, falling back to on-chain scan:", err.message);
+      }
     }
 
-    const activeNodes = [...latestPriceByNode.entries()].filter(([, pricePerYear]) => pricePerYear > 0n);
-
-    const domains = await Promise.all(
-      activeNodes.map(async ([node, pricePerYear]) => {
-        const encoded = await nameWrapper.names(node);
-        const label = decodeFirstLabel(encoded);
-        return label ? { label, node, pricePerYear } : null;
-      })
-    );
-
-    return domains.filter(Boolean);
+    return scanAvailableParentDomainsOnChain(getReadContracts());
   }, [getReadContracts]);
 
   const registerSubname = useCallback(async (parentNode, label, duration, priceWei, signer) => {
