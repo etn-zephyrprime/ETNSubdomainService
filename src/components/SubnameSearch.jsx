@@ -9,6 +9,7 @@ import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
+import Spinner from "./Spinner.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
@@ -457,7 +458,16 @@ export default function SubnameSearch({ wallet, onBack = null }) {
         </div>
       )}
       {domainsLoading && (
-        <div style={{ fontSize: 12, color: mutedLight, marginBottom: 24, textAlign: "center" }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          fontSize: 12,
+          color: mutedLight,
+          marginBottom: 24,
+        }}>
+          <Spinner size={14} />
           Loading domains selling subnames...
         </div>
       )}
