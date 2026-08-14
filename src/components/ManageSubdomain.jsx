@@ -652,92 +652,6 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             </a>
           </div>
 
-          {expiryDate && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Expires</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: daysRemaining < 30 ? "#ffb366" : "#fff" }}>
-                {expiryDate.toLocaleDateString()} ({daysRemaining} days remaining)
-              </div>
-              {isSubname && (
-                <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
-                  Set when this subname was registered, capped by the parent name's own expiry.
-                  Subnames aren't renewed independently — renew the parent name instead.
-                </div>
-              )}
-            </div>
-          )}
-
-          {!isSubname && (
-            <>
-              <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-                Optional — extends your current expiry by another year, on top of whatever time
-                you already have left. You don't need to do this until you're actually close to
-                expiring.
-              </div>
-              <div style={{
-                padding: 14,
-                borderRadius: 10,
-                background: "rgba(0,0,0,0.2)",
-                border: `1px solid ${border}`,
-                marginBottom: 14,
-              }}>
-                {renewQuoteLoading ? (
-                  <div style={{ fontSize: 12, color: muted, textAlign: "center" }}>Loading price...</div>
-                ) : renewQuote ? (
-                  <>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 4 }}>
-                      <span>Extend by 1 year — paid to Electroneum</span>
-                      <span>{formatEth(renewQuote.basePrice)} ETN</span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 8 }}>
-                      <span>Brokerage fee</span>
-                      <span>{formatEth(renewQuote.brokerageFee)} ETN</span>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
-                      <span>Total</span>
-                      <span>{formatEth(renewQuote.totalPrice)} ETN</span>
-                    </div>
-                  </>
-                ) : (
-                  <div style={{ fontSize: 12, color: error, textAlign: "center" }}>
-                    Couldn't load renewal price
-                  </div>
-                )}
-              </div>
-
-              {renewError && (
-                <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
-                  {renewError}
-                </div>
-              )}
-              {renewSuccess && (
-                <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
-                  ✓ Renewed successfully
-                </div>
-              )}
-
-              <NeonButton
-                variant="green"
-                onClick={handleRenew}
-                disabled={renewLoading || renewQuoteLoading || !renewQuote}
-                loading={renewLoading}
-                style={{ width: "100%", justifyContent: "center" }}
-              >
-                {renewLoading
-                  ? "Renewing..."
-                  : renewQuote
-                  ? `Renew Early (+1 year) for ${formatEth(renewQuote.totalPrice)} ETN`
-                  : "Renew Early (+1 year)"}
-              </NeonButton>
-
-              {renewTxHash && renewSuccess && (
-                <div style={{ marginTop: 12, textAlign: "center", fontSize: 11, color: mutedLight }}>
-                  tx: {renewTxHash.slice(0, 10)}...{renewTxHash.slice(-8)}
-                </div>
-              )}
-            </>
-          )}
-
           <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
             <div style={{
               fontSize: 11,
@@ -843,7 +757,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               color: muted,
               marginBottom: 12,
             }}>
-              {isSubname ? "Sub-subname Pricing" : "Subname Pricing"}
+              Subname Pricing
             </div>
 
             {activated === null && (
@@ -979,6 +893,105 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
             )}
           </div>
+
+          {expiryDate && (
+            <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                color: muted,
+                marginBottom: 12,
+              }}>
+                Renewal
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Expires</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: daysRemaining < 30 ? "#ffb366" : "#fff" }}>
+                  {expiryDate.toLocaleDateString()} ({daysRemaining} days remaining)
+                </div>
+                {isSubname && (
+                  <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
+                    Set when this subname was registered, capped by the parent name's own expiry.
+                    Subnames aren't renewed independently — renew the parent name instead.
+                  </div>
+                )}
+              </div>
+
+              {!isSubname && (
+                <>
+                  <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+                    Optional — extends your current expiry by another year, on top of whatever time
+                    you already have left. You don't need to do this until you're actually close to
+                    expiring.
+                  </div>
+                  <div style={{
+                    padding: 14,
+                    borderRadius: 10,
+                    background: "rgba(0,0,0,0.2)",
+                    border: `1px solid ${border}`,
+                    marginBottom: 14,
+                  }}>
+                    {renewQuoteLoading ? (
+                      <div style={{ fontSize: 12, color: muted, textAlign: "center" }}>Loading price...</div>
+                    ) : renewQuote ? (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 4 }}>
+                          <span>Extend by 1 year — paid to Electroneum</span>
+                          <span>{formatEth(renewQuote.basePrice)} ETN</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: mutedLight, marginBottom: 8 }}>
+                          <span>Brokerage fee</span>
+                          <span>{formatEth(renewQuote.brokerageFee)} ETN</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+                          <span>Total</span>
+                          <span>{formatEth(renewQuote.totalPrice)} ETN</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 12, color: error, textAlign: "center" }}>
+                        Couldn't load renewal price
+                      </div>
+                    )}
+                  </div>
+
+                  {renewError && (
+                    <div style={{ fontSize: 12, color: error, marginBottom: 12 }}>
+                      {renewError}
+                    </div>
+                  )}
+                  {renewSuccess && (
+                    <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
+                      ✓ Renewed successfully
+                    </div>
+                  )}
+
+                  <NeonButton
+                    variant="green"
+                    onClick={handleRenew}
+                    disabled={renewLoading || renewQuoteLoading || !renewQuote}
+                    loading={renewLoading}
+                    style={{ width: "100%", justifyContent: "center" }}
+                  >
+                    {renewLoading
+                      ? "Renewing..."
+                      : renewQuote
+                      ? `Renew Early (+1 year) for ${formatEth(renewQuote.totalPrice)} ETN`
+                      : "Renew Early (+1 year)"}
+                  </NeonButton>
+
+                  {renewTxHash && renewSuccess && (
+                    <div style={{ marginTop: 12, textAlign: "center", fontSize: 11, color: mutedLight }}>
+                      tx: {renewTxHash.slice(0, 10)}...{renewTxHash.slice(-8)}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {activated === true && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
