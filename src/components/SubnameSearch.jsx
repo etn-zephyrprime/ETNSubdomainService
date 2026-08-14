@@ -13,6 +13,22 @@ import Spinner from "./Spinner.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
+const DAY_SECONDS = 24 * 60 * 60;
+// Below this, a parent's remaining life isn't worth selling as a subname — avoids a near-zero
+// quote for a domain that's about to expire anyway. Doesn't need to match anything on-chain;
+// registerSubname accepts any duration in seconds (see remainingTimeOption below), this is
+// purely a "not worth offering" cutoff.
+const MIN_REMAINING_SUBNAME_SECONDS = 14 * DAY_SECONDS;
+
+// Label for the synthetic "exactly what's left on the parent" duration option — see
+// remainingTimeOption below. Months are approximate (days / 30) since there's no calendar-aware
+// way to say "6 months" from a raw second count; days stays exact for anything shorter, since a
+// rounded "1 month" would be misleading this close.
+function formatRemainingLabel(seconds) {
+  const days = Math.floor(seconds / DAY_SECONDS);
+  if (days >= 60) return `~${Math.round(days / 30)} mo left`;
+  return `${days} day${days === 1 ? "" : "s"} left`;
+}
 
 // Buyer picks their own label under a domain the owner has set a price for — single-level
 // subnames only (e.g. "shop.alice" -> shop.alice.etn), no commit-reveal, one transaction.
@@ -141,6 +157,17 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
       const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
       const remaining = parentExpiry - nowSeconds;
       const availableDurations = DURATION_OPTIONS.filter((o) => BigInt(o.seconds) <= remaining);
+
+      // A parent that's mid-lease shouldn't block subname sales just because none of the
+      // whole-year presets fit (or refuse to sell the last little bit beyond a preset that does)
+      // — offer exactly what's left too, priced by the same linear per-second rate as everything
+      // else (see selectedPrice below), same as buying a full year costs a year's price. Skipped
+      // if a preset already lands on the exact same remaining time (nothing to add), or if what's
+      // left is under MIN_REMAINING_SUBNAME_SECONDS (not worth selling).
+      const remainingMatchesPreset = availableDurations.some((o) => BigInt(o.seconds) === remaining);
+      if (remaining >= BigInt(MIN_REMAINING_SUBNAME_SECONDS) && !remainingMatchesPreset) {
+        availableDurations.push({ label: formatRemainingLabel(Number(remaining)), seconds: Number(remaining), isRemaining: true });
+      }
 
       if (availableDurations.length === 0) {
         setCheckError(
@@ -545,6 +572,12 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
           {checked.availableDurations.length < DURATION_OPTIONS.length && (
             <div style={{ fontSize: 11, color: mutedLight, marginBottom: 16, textAlign: "center" }}>
               Longer lengths aren't offered — "{checked.parentLabel}.etn" doesn't have that much time left.
+            </div>
+          )}
+          {checked.availableDurations.find((o) => o.seconds === selectedDuration)?.isRemaining && (
+            <div style={{ fontSize: 11, color: mutedLight, marginBottom: 16, textAlign: "center" }}>
+              Priced for exactly the time left on "{checked.parentLabel}.etn" — this subname will
+              expire the same day and won't renew independently of it.
             </div>
           )}
 
