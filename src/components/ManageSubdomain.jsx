@@ -627,7 +627,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
                 Now owned by {sendAddress.slice(0, 6)}...{sendAddress.slice(-4)} — you no longer
-                control this subname.
+                control this {isSubname ? "subname" : "name"}.
               </div>
               {sendTxHash && (
                 <div style={{ fontSize: 11, color: mutedLight }}>
@@ -1114,7 +1114,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             </div>
           )}
 
-          {isSubname && (
+          {activated === true && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{
                 fontSize: 11,
@@ -1124,13 +1124,13 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 color: muted,
                 marginBottom: 12,
               }}>
-                Send Subname
+                Send {isSubname ? "Subname" : "Name"}
               </div>
 
               <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
                 Transfer {verifiedName}.etn to another wallet. This is irreversible — the
                 recipient becomes the new owner and you lose all control over it, including
-                pricing or managing its own sub-subnames.
+                pricing or managing its own {isSubname ? "sub-subnames" : "subnames"}.
               </div>
 
               <input
@@ -1164,7 +1164,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 loading={sendLoading}
                 style={{ width: "100%", justifyContent: "center" }}
               >
-                {sendLoading ? "Sending..." : "Send Subname"}
+                {sendLoading ? "Sending..." : `Send ${isSubname ? "Subname" : "Name"}`}
               </NeonButton>
             </div>
           )}
