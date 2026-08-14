@@ -67,6 +67,7 @@ function AppContent() {
   const [showManageSubdomain, setShowManageSubdomain] = useState(false);
   const [manageIntent, setManageIntent] = useState("manage"); // "manage" | "retro"
   const [showSubnameSearch, setShowSubnameSearch] = useState(false);
+  const [subnamesPrefillParent, setSubnamesPrefillParent] = useState(null);
   const [showPay, setShowPay] = useState(false);
   const [payPrefillName, setPayPrefillName] = useState(null);
   const [showMarketplace, setShowMarketplace] = useState(false);
@@ -77,11 +78,23 @@ function AppContent() {
   // instead of 404ing before React ever loads. Unlike the "Pay" button below, this doesn't gate
   // on connecting a wallet first — someone opening a payment link should see who/what it's for
   // before being asked to connect; PayFlow's own Send button handles that when they act on it.
+  //
+  // Deep link: /subnames/community.etn opens straight to Get a Subname with that parent
+  // pre-filled — e.g. shared by a domain owner to drive registrations under their own name (see
+  // ManageSubdomain.jsx's "Copy Subname Link"). Same reasoning as /pay/ for not gating on wallet
+  // connect: SubnameSearch's own Check/Register buttons handle that when acted on.
   useEffect(() => {
-    const match = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/i);
-    if (match) {
-      setPayPrefillName(decodeURIComponent(match[1]));
+    const payMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/i);
+    if (payMatch) {
+      setPayPrefillName(decodeURIComponent(payMatch[1]));
       setShowPay(true);
+      return;
+    }
+
+    const subnamesMatch = window.location.pathname.match(/^\/subnames\/([^/]+)\/?$/i);
+    if (subnamesMatch) {
+      setSubnamesPrefillParent(decodeURIComponent(subnamesMatch[1]));
+      setShowSubnameSearch(true);
     }
   }, []);
 
@@ -147,7 +160,13 @@ function AppContent() {
     setShowSubnameSearch(true);
   };
 
-  const handleBackFromSubnameSearch = () => setShowSubnameSearch(false);
+  const handleBackFromSubnameSearch = () => {
+    setShowSubnameSearch(false);
+    setSubnamesPrefillParent(null);
+    if (window.location.pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  };
 
   const handlePay = async () => {
     if (!wallet.isConnected) {
@@ -275,6 +294,7 @@ function AppContent() {
           <SubnameSearch
             wallet={wallet}
             onBack={handleBackFromSubnameSearch}
+            initialParent={subnamesPrefillParent}
           />
         ) : showPay ? (
           <PayFlow
