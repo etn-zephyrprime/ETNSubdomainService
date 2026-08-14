@@ -24,6 +24,14 @@ export function useBurnPool() {
     return await marketplace.burnPool();
   }, [getReadContract]);
 
+  // Lifetime total of CORE (wei, 18 decimals like ETN) actually burned via buyBackAndBurn — the
+  // contract's own running counter (totalCoreBurned), incremented by the real amount received
+  // from each swap. Unlike burnPool (current balance awaiting a burn), this only ever goes up.
+  const getTotalCoreBurned = useCallback(async () => {
+    const marketplace = getReadContract();
+    return await marketplace.totalCoreBurned();
+  }, [getReadContract]);
+
   // minCoreOut is in CORE's smallest unit (wei, 18 decimals) — the caller is responsible for
   // converting from a human-entered CORE amount via ethers.parseUnits before calling this.
   // Passing 0 disables slippage protection entirely (the swap accepts whatever the pool gives),
@@ -52,6 +60,7 @@ export function useBurnPool() {
 
   return {
     getBurnPool,
+    getTotalCoreBurned,
     buyBackAndBurn,
     loading,
     error,

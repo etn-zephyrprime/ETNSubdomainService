@@ -12,6 +12,7 @@ import Header from "./components/Header.jsx";
 import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
 import BurnPoolCard from "./components/BurnPoolCard.jsx";
+import CoreBurnedCard from "./components/CoreBurnedCard.jsx";
 
 function AppContent() {
   const SUSPENDED = false; // flip to false to restore access
@@ -255,6 +256,7 @@ function AppContent() {
 
             <HowItWorks />
             <BurnPoolCard wallet={wallet} />
+            <CoreBurnedCard />
           </>
         ) : selectedName ? (
           <RegistrationFlow
