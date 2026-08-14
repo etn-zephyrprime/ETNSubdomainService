@@ -1,0 +1,149 @@
+import { ethers } from "ethers";
+import { getSubnameDomainsCache, setSubnameDomainsCache } from "../state/subnameDomainsState.js";
+
+// Keeps a small public JSON cache of "domains currently selling subnames" fresh in R2, so the
+// frontend's SubnameSearch screen can fetch it with one plain HTTPS request instead of scanning
+// SubnamePricePerYearSet events all the way back to MARKETPLACE_DEPLOY_BLOCK on every single page
+// load (confirmed: ~111k blocks -> ~112 sequential chunked eth_getLogs round trips as of writing,
+// and it only grows — every day adds another ~17k blocks/~17 round trips to that scan, forever,
+// for every visitor). Same chain/contract defaults as marketplaceWatcher.js, overridable via env
+// for a different deployment.
+const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15207471;
+const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
+// Deliberately coarser than WATCHER_POLL_INTERVAL_MS (60s) — subname pricing changes far less
+// often than domain activations/registrations, and after the first run this only ever scans the
+// handful of blocks since lastScannedBlock, so there's little to gain from polling as tightly.
+const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
+  ? parseInt(process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS, 10)
+  : 300000;
+
+const MARKETPLACE_ABI = [
+  "event SubnamePricePerYearSet(bytes32 indexed parentNode, uint256 pricePerYear)",
+];
+// Same minimal signature as marketplaceWatcher.js's own copy.
+const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
+
+function decodeFirstLabel(hex) {
+  const bytes = ethers.getBytes(hex);
+  if (bytes.length < 1) return null;
+  const len = bytes[0];
+  if (bytes.length < 1 + len) return null;
+  return ethers.toUtf8String(bytes.slice(1, 1 + len));
+}
+
+// Same range-adaptive chunking as marketplaceWatcher.js's queryLogsChunked, plus running chunks
+// concurrently (bounded) instead of one at a time — duplicated rather than shared for the same
+// "fine to drift independently" reasoning marketplaceWatcher.js already gives for its own copy.
+// Concurrency is safe for the fold in scanAndPublish below because results are reassembled in
+// chunk (= block) order before being applied, regardless of which chunk's request finishes first.
+async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, concurrency = 8) {
+  const ranges = [];
+  for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+    ranges.push([start, Math.min(start + chunkSize - 1, toBlock)]);
+  }
+
+  const results = new Array(ranges.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= ranges.length) return;
+      let [start, end] = ranges[i];
+      let size = end - start + 1;
+
+      while (true) {
+        try {
+          results[i] = await contract.queryFilter(filter, start, end);
+          break;
+        } catch (err) {
+          const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
+          const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+          if (isRangeError && size > 50) {
+            size = Math.max(50, Math.floor(size / 2));
+            end = Math.min(start + size - 1, ranges[i][1]);
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+  return results.flat();
+}
+
+let isRunning = false;
+
+async function scanAndPublish(provider, marketplace, nameWrapper) {
+  if (isRunning) return; // previous run still in flight (e.g. a slow cold-start scan) — skip this tick
+  isRunning = true;
+  try {
+    const cached = await getSubnameDomainsCache();
+    const domainByNode = new Map((cached?.domains || []).map((d) => [d.node, d]));
+    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
+
+    const latestBlock = await provider.getBlockNumber();
+    if (fromBlock > latestBlock) return; // already caught up
+
+    const events = await queryLogsChunked(marketplace, marketplace.filters.SubnamePricePerYearSet(), fromBlock, latestBlock);
+    // Ascending (block, logIndex) order so "latest price wins" folds correctly regardless of
+    // which chunk's request happened to finish first.
+    events.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+
+    for (const event of events) {
+      const { parentNode, pricePerYear } = event.args;
+      if (pricePerYear === 0n) {
+        domainByNode.delete(parentNode);
+        continue;
+      }
+
+      // Reuse the already-known label if we've seen this node active before — a name's label
+      // never changes once set, so no need to re-decode it on every price update.
+      let label = domainByNode.get(parentNode)?.label;
+      if (!label) {
+        try {
+          label = decodeFirstLabel(await nameWrapper.names(parentNode));
+        } catch (err) {
+          console.error(`⚠️  Failed to decode label for ${parentNode}:`, err.message);
+          continue; // don't publish a domain we can't show a name for
+        }
+        if (!label) continue;
+      }
+
+      domainByNode.set(parentNode, { label, node: parentNode, pricePerYear: pricePerYear.toString() });
+    }
+
+    await setSubnameDomainsCache([...domainByNode.values()], latestBlock);
+    console.log(`📡 Subname domains cache updated — ${domainByNode.size} domain(s) selling subnames, scanned to block ${latestBlock}`);
+  } catch (err) {
+    console.error("⚠️  Subname domains cache scan failed:", err.message);
+  } finally {
+    isRunning = false;
+  }
+}
+
+/**
+ * Starts the background cache refresher. No-op if R2 isn't configured — there'd be nowhere public
+ * to publish to, and nothing for the frontend to fetch, so it's not worth running at all (unlike
+ * the Telegram watcher, this has no other job to do).
+ */
+export function startSubnameDomainsCache() {
+  if (!process.env.R2_ENDPOINT || !process.env.R2_BUCKET_NAME || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
+    console.log("ℹ️  R2 not configured — subname domains cache disabled (frontend will fall back to scanning on-chain directly)");
+    return;
+  }
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
+
+  console.log(`📡 Subname domains cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
+  scanAndPublish(provider, marketplace, nameWrapper); // run once immediately rather than waiting a full interval
+  setInterval(() => scanAndPublish(provider, marketplace, nameWrapper), CACHE_INTERVAL_MS);
+}

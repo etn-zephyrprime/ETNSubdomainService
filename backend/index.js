@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
+import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 
 dotenv.config();
 
@@ -39,4 +40,5 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   startMarketplaceWatcher();
+  startSubnameDomainsCache();
 });
