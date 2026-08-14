@@ -25,6 +25,20 @@ import NameWrapperABI from "../abis/NameWrapperABI.json";
 // they happened to sit past a rejected chunk's shrink point. Fixed by tracking cursor/rangeEnd
 // separately from the sub-fetch size, so a shrink retries forward from where it left off instead
 // of abandoning the remainder.
+//
+// Once shrunk to the floor, a further rejection gets a few backoff-and-retry attempts before
+// finally giving up — confirmed live: Ankr's public RPC returned "Block range is too large" for a
+// 25-block range, which can't genuinely be too large, so a rejection at the floor reads as
+// transient rate-limiting mislabeled with a range-flavored message rather than a real signal to
+// shrink further (there's nowhere smaller to go anyway).
+const MIN_CHUNK_SIZE = 50;
+const MAX_FLOOR_RETRIES = 6;
+const FLOOR_RETRY_BASE_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, concurrency = 8) {
   const ranges = [];
   for (let start = fromBlock; start <= toBlock; start += chunkSize) {
@@ -42,6 +56,7 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
       const events = [];
       let cursor = rangeStart;
       let size = rangeEnd - rangeStart + 1;
+      let floorRetries = 0;
 
       while (cursor <= rangeEnd) {
         const end = Math.min(cursor + size - 1, rangeEnd);
@@ -49,14 +64,21 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
           const chunk = await contract.queryFilter(filter, cursor, end);
           events.push(...chunk);
           cursor = end + 1;
+          floorRetries = 0; // reset backoff once any fetch succeeds
         } catch (err) {
           const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
           const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
-          if (isRangeError && size > 50) {
-            size = Math.max(50, Math.floor(size / 2));
+          if (!isRangeError) throw err;
+
+          if (size > MIN_CHUNK_SIZE) {
+            size = Math.max(MIN_CHUNK_SIZE, Math.floor(size / 2));
             continue; // retry the same `cursor` with the smaller window
           }
-          throw err;
+
+          floorRetries++;
+          if (floorRetries > MAX_FLOOR_RETRIES) throw err;
+          await sleep(FLOOR_RETRY_BASE_DELAY_MS * floorRetries);
+          continue;
         }
       }
 
