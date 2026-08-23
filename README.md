@@ -165,6 +165,40 @@ far more reliable for a service that needs to run unattended for months.
 
 ---
 
+## Core Clash Telegram bots
+
+`backend/utils/coreClash*.js` are burn/swap/NFT-mint/NFT-sale alerts, the
+advert rotation, and the CORE drip bot, ported from
+[etn-zephyrprime/CoreClashGame](https://github.com/etn-zephyrprime/CoreClashGame).
+That backend also runs on Render's free tier, and its own background
+listeners only fire while that instance happens to be awake — moved here
+so they run alongside this service's own watchers, on the same
+poll-with-R2-backed-cursor pattern as `marketplaceWatcher.js` above.
+
+Each one starts independently and no-ops (logs and returns) if its
+required env vars aren't set — see `backend/.env.example`'s "Core Clash
+Telegram bots" section for the full list. Two things worth knowing:
+
+- **Two different bots, one chat.** CoreClashGame posts via two separate
+  Telegram bot identities into the same group (`COREBOT_ZEPHYROS_BOT_TOKEN`
+  for burn/swap/NFT/drip alerts, `COREBOT_TELEGRAM_BOT_TOKEN` for the
+  advert rotation) — all prefixed `COREBOT_` so they can't collide with
+  this repo's own `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
+- **The drip bot signs real transactions.** Unlike the others, which only
+  read chain state and notify, `coreClashDripBot.js` calls the drip
+  contract's `drip()` with `CORE_CLASH_BACKEND_PRIVATE_KEY` (Core Clash's
+  treasury/admin wallet) whenever the contract's own timer says it's due.
+  Treat that key with the same care you would in CoreClashGame's own
+  `.env`.
+
+Simplifications from the originals (documented in each file's own header
+comment): the swap watcher only tracks the one CORE/WETN pool that's
+actually live today rather than porting the general multi-token engine,
+and NFT mint/sale alerts are text-only (no attached image) rather than
+depending on CoreClashGame's own metadata cache.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),
