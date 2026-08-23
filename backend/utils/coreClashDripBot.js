@@ -2,21 +2,22 @@
 //
 // Ported from CoreClashGame/backend/utils/dripBot.js. Unlike the other Core Clash watchers, this
 // one doesn't just watch and notify — every CHECK_INTERVAL_MS it checks the drip contract's own
-// timer and, when due, SIGNS AND SENDS an on-chain transaction with BACKEND_PRIVATE_KEY (the
-// Core Clash treasury/admin wallet) to release the next scheduled CORE drip to staking rewards.
-// The Telegram message is just a report on what already happened on-chain.
+// timer and, when due, SIGNS AND SENDS an on-chain transaction with CORE_CLASH_BACKEND_PRIVATE_KEY
+// (the Core Clash treasury/admin wallet — a *different* wallet from this repo's own
+// BACKEND_PRIVATE_KEY, hence the distinct name) to release the next scheduled CORE drip to
+// staking rewards. The Telegram message is just a report on what already happened on-chain.
 //
-// This means BACKEND_PRIVATE_KEY now needs to be set here too — see coreClashConfig.js's
-// DRIP_FUNDER_ADDRESS. Moving this was a deliberate choice (not the default "just move the
-// Telegram part" option) because leaving execution in CoreClashGame means drips silently stop
-// firing at all whenever that Render free-tier instance is asleep, not just a stale
-// notification — see the PR description for the decision.
+// This means CORE_CLASH_BACKEND_PRIVATE_KEY now needs to be set here too — see
+// coreClashConfig.js's DRIP_FUNDER_ADDRESS. Moving this was a deliberate choice (not the default
+// "just move the Telegram part" option) because leaving execution in CoreClashGame means drips
+// silently stop firing at all whenever that Render free-tier instance is asleep, not just a
+// stale notification — see the PR description for the decision.
 //
 // Safe to run alongside CoreClashGame's own dripBot.js during a transition: the contract's
 // nextDripIn() gate means only one caller can actually succeed per interval regardless of how
 // many processes are polling it, so this doesn't risk a double-drip. Disable/remove
-// startDripBot() in CoreClashGame once this is confirmed working so only one process holds
-// BACKEND_PRIVATE_KEY long-term.
+// startDripBot() in CoreClashGame once this is confirmed working so only one process holds that
+// key long-term.
 import { ethers } from "ethers";
 import { sendZephyrosMessage, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
 import { RPC_URL, EXPLORER_BASE_URL, DRIP_FUNDER_ADDRESS } from "./coreClashConfig.js";
@@ -51,8 +52,8 @@ async function sendDripNotification(contract, txHash) {
 }
 
 export async function startCoreClashDripBot() {
-  if (!process.env.BACKEND_PRIVATE_KEY) {
-    console.log("ℹ️  BACKEND_PRIVATE_KEY not set — Core Clash drip bot disabled");
+  if (!process.env.CORE_CLASH_BACKEND_PRIVATE_KEY) {
+    console.log("ℹ️  CORE_CLASH_BACKEND_PRIVATE_KEY not set — Core Clash drip bot disabled");
     return;
   }
   if (!zephyrosBotConfigured()) {
@@ -61,7 +62,7 @@ export async function startCoreClashDripBot() {
   }
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(process.env.BACKEND_PRIVATE_KEY, provider);
+  const wallet = new ethers.Wallet(process.env.CORE_CLASH_BACKEND_PRIVATE_KEY, provider);
   const contract = new ethers.Contract(DRIP_FUNDER_ADDRESS, DRIP_ABI, provider);
   const contractWithSigner = contract.connect(wallet);
 

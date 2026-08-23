@@ -186,7 +186,7 @@ Telegram bots" section for the full list. Two things worth knowing:
   this repo's own `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`.
 - **The drip bot signs real transactions.** Unlike the others, which only
   read chain state and notify, `coreClashDripBot.js` calls the drip
-  contract's `drip()` with `BACKEND_PRIVATE_KEY` (Core Clash's
+  contract's `drip()` with `CORE_CLASH_BACKEND_PRIVATE_KEY` (Core Clash's
   treasury/admin wallet) whenever the contract's own timer says it's due.
   Treat that key with the same care you would in CoreClashGame's own
   `.env`.

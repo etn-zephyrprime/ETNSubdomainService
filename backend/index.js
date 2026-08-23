@@ -46,7 +46,7 @@ const PORT = process.env.PORT || 3001;
 // Unlike startMarketplaceWatcher()/startSubnameDomainsCache() above (plain sync functions), the
 // Core Clash start functions are async — they do awaited setup (reading token metadata, checking
 // contract state) before entering their poll loop. Called bare with no await/catch, a startup
-// failure (e.g. a malformed BACKEND_PRIVATE_KEY) would become an unhandled promise rejection,
+// failure (e.g. a malformed CORE_CLASH_BACKEND_PRIVATE_KEY) would become an unhandled promise rejection,
 // which can crash the entire process on newer Node — taking the unrelated NFT-image backend down
 // with it over what should be one disabled bot. This keeps a bad one from affecting the rest.
 function safeStart(name, startFn) {
