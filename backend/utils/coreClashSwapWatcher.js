@@ -35,6 +35,10 @@ const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
 const REORG_BUFFER_BLOCKS = 2;
 const COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price?ids=electroneum&vs_currencies=usd";
+// Same cadence as priceEngine.js's PRICE_REFRESH_MS — independent of swap activity, so CORE/WETN
+// pricing stays current even through a quiet period with no trades, and so a burst of swaps in
+// one poll tick doesn't hit CoinGecko once per trade.
+const PRICE_REFRESH_MS = 5 * 60 * 1000;
 // CoreClashGame's swapsConfig.js "zephyrosAnimationFileId" for CORE — same reasoning as the burn
 // watcher's file_id: bot-scoped, still valid via the same Zephyros bot token.
 const BUY_ANIMATION_FILE_ID = "CgACAgQAAxkBAAMFageBD-eZV-B_uGg2Y72GurOfNFoAApgeAAL9hyhTCD9skqLLhrY7BA";
@@ -42,6 +46,7 @@ const BUY_ANIMATION_FILE_ID = "CgACAgQAAxkBAAMFageBD-eZV-B_uGg2Y72GurOfNFoAApgeA
 const PAIR_ABI = [
   "function token0() view returns (address)",
   "function token1() view returns (address)",
+  "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
 ];
 const ERC20_ABI = [
@@ -71,6 +76,39 @@ async function fetchWetnUsd() {
     console.warn("⚠️  [SwapWatcher] CoinGecko fetch failed, using fallback price:", err.message);
   }
   return 0.00103; // same fallback priceEngine.js used
+}
+
+// Cached, periodically-refreshed prices — same design as priceEngine.js: both the trade's own
+// USD-value estimate and the "CORE Price" line in the message read from this cache rather than
+// hitting CoinGecko/RPC on every single swap.
+let cachedWetnUsd = null;
+let cachedCorePriceUsd = null;
+let lastPriceRefreshMs = 0;
+
+async function refreshPrices(pair, coreIsToken0, coreDecimals) {
+  const wetnUsd = await fetchWetnUsd();
+  cachedWetnUsd = wetnUsd;
+
+  try {
+    const [reserve0, reserve1] = await pair.getReserves();
+    const coreReserveRaw = coreIsToken0 ? reserve0 : reserve1;
+    const wetnReserveRaw = coreIsToken0 ? reserve1 : reserve0;
+
+    const coreReserve = Number(ethers.formatUnits(coreReserveRaw, coreDecimals));
+    const wetnReserve = Number(ethers.formatUnits(wetnReserveRaw, 18));
+
+    if (coreReserve > 0 && wetnReserve > 0) {
+      cachedCorePriceUsd = (wetnReserve / coreReserve) * wetnUsd;
+    }
+  } catch (err) {
+    console.warn("⚠️  [SwapWatcher] Failed to read pool reserves for CORE price:", err.message);
+  }
+
+  lastPriceRefreshMs = Date.now();
+  console.log(
+    `💱 Prices refreshed — WETN $${wetnUsd.toFixed(6)}` +
+      (cachedCorePriceUsd != null ? `, CORE $${cachedCorePriceUsd.toFixed(6)}` : ", CORE price unavailable")
+  );
 }
 
 // Reads the actual CORE amount transferred to/from the trader in this tx's receipt — CORE taxes
@@ -107,6 +145,15 @@ async function poll(ctx) {
 
   try {
     const { provider, pair, coreIsToken0, coreDecimals, coreSymbol } = ctx;
+
+    // Runs every poll tick regardless of swap activity — same as priceEngine.js's placement
+    // outside the log-scanning block, so a quiet period doesn't leave prices stale.
+    if (Date.now() - lastPriceRefreshMs > PRICE_REFRESH_MS) {
+      await refreshPrices(pair, coreIsToken0, coreDecimals).catch((err) =>
+        console.error("⚠️  [SwapWatcher] Price refresh failed:", err.message)
+      );
+    }
+
     const latestBlock = await provider.getBlockNumber();
     const safeBlock = Math.max(0, latestBlock - REORG_BUFFER_BLOCKS);
 
@@ -120,8 +167,7 @@ async function poll(ctx) {
 
     if (safeBlock <= fromBlock) return;
 
-    // Refresh WETN/USD at most once per poll — cheap enough, and swaps are infrequent.
-    const wetnUsd = await fetchWetnUsd();
+    const wetnUsd = cachedWetnUsd ?? (await fetchWetnUsd());
 
     let start = fromBlock + 1;
     while (start <= safeBlock) {
@@ -150,10 +196,12 @@ async function poll(ctx) {
           const corrected = actualTaxedAmount(receipt, trader, isSell ? "SELL" : "BUY");
           const coreAmountRaw = corrected ?? rawCoreAmount;
 
-          const coreAmountFloat = Number(ethers.formatUnits(coreAmountRaw, coreDecimals));
           const wetnAmountFloat = Number(ethers.formatUnits(rawWetnAmount, 18));
           const usdValue = wetnAmountFloat * wetnUsd;
-          const corePriceUsd = coreAmountFloat > 0 ? usdValue / coreAmountFloat : null;
+          // The maintained reference price (refreshed every PRICE_REFRESH_MS from pool
+          // reserves), not derived from this specific trade — matches priceEngine.js's
+          // getTokenUsd(), which is what the original's "CORE Price:" line reads from.
+          const corePriceUsd = cachedCorePriceUsd;
 
           const shouldSend = isSell ? usdValue > 20 : usdValue > 5 && usdValue < 50;
           if (!shouldSend) continue;
