@@ -4,6 +4,12 @@ import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
+import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
+import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
+import { startCoreClashNftMintWatcher } from "./utils/coreClashNftMintWatcher.js";
+import { startCoreClashNftSaleWatcher } from "./utils/coreClashNftSaleWatcher.js";
+import { startCoreClashAdvertScheduler } from "./utils/coreClashAdvertScheduler.js";
+import { startCoreClashDripBot } from "./utils/coreClashDripBot.js";
 
 dotenv.config();
 
@@ -37,8 +43,30 @@ app.use("/api", generateNftRouter);
 
 const PORT = process.env.PORT || 3001;
 
+// Unlike startMarketplaceWatcher()/startSubnameDomainsCache() above (plain sync functions), the
+// Core Clash start functions are async — they do awaited setup (reading token metadata, checking
+// contract state) before entering their poll loop. Called bare with no await/catch, a startup
+// failure (e.g. a malformed BACKEND_PRIVATE_KEY) would become an unhandled promise rejection,
+// which can crash the entire process on newer Node — taking the unrelated NFT-image backend down
+// with it over what should be one disabled bot. This keeps a bad one from affecting the rest.
+function safeStart(name, startFn) {
+  Promise.resolve()
+    .then(() => startFn())
+    .catch((err) => console.error(`❌ ${name} failed to start:`, err.message || err));
+}
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   startMarketplaceWatcher();
   startSubnameDomainsCache();
+
+  // Telegram bots ported from etn-zephyrprime/CoreClashGame — see
+  // backend/utils/coreClashConfig.js for why. Each one no-ops (logs and returns) if its required
+  // env vars aren't set, same as startMarketplaceWatcher() above.
+  safeStart("Core Clash burn watcher", startCoreClashBurnWatcher);
+  safeStart("Core Clash swap watcher", startCoreClashSwapWatcher);
+  safeStart("Core Clash NFT mint watcher", startCoreClashNftMintWatcher);
+  safeStart("Core Clash NFT sale watcher", startCoreClashNftSaleWatcher);
+  safeStart("Core Clash advert scheduler", startCoreClashAdvertScheduler);
+  safeStart("Core Clash drip bot", startCoreClashDripBot);
 });
