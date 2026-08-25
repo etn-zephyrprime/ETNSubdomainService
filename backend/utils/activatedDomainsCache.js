@@ -30,6 +30,20 @@ const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFB
 const CACHE_INTERVAL_MS = process.env.ACTIVATED_DOMAINS_CACHE_INTERVAL_MS
   ? parseInt(process.env.ACTIVATED_DOMAINS_CACHE_INTERVAL_MS, 10)
   : 300000;
+// Caps how many blocks of event history a single cycle scans, rather than always racing straight
+// to the current chain tip. On a cold cache (fresh deploy, or R2 wiped) that gap is the entire
+// history back to MARKETPLACE_DEPLOY_BLOCK — ~300k blocks as of writing — and this cache does far
+// more per result (getData() + primary-name resolution for every domain *and* subname) than
+// subnameDomainsCache.js. Scanning + verifying all of that in one pass before publishing anything
+// was the actual bug behind "Couldn't load activated domains" never going away: nothing gets
+// checkpointed until setActivatedDomainsCache() at the very end, so a single rate-limit hiccup
+// anywhere in that whole pass discarded ALL progress, and the next cycle started over from
+// MARKETPLACE_DEPLOY_BLOCK again — a cache that could fail to ever complete its first publish.
+// Bounding each cycle's range means a large backlog is consumed gradually across several cycles
+// instead, with real (if partial) progress checkpointed and published after every one of them.
+const MAX_BLOCKS_PER_CYCLE = process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE
+  ? parseInt(process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE, 10)
+  : 50000;
 const CACHE_SCHEMA_VERSION = 1;
 
 // How many getData()/primary-name lookups run at once during the re-verification pass — bounded
@@ -202,11 +216,17 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
 
     const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
     const latestBlock = await provider.getBlockNumber();
+    // This cycle's target — the real chain tip, or less if there's more backlog than
+    // MAX_BLOCKS_PER_CYCLE allows in one pass (see that constant's comment). Checkpointed as
+    // lastScannedBlock below instead of latestBlock, so a capped cycle correctly resumes from
+    // here next time rather than either re-scanning what it just did or skipping ahead.
+    const toBlock = Math.min(fromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
+    const blocksRemainingAfterThisCycle = latestBlock - toBlock;
 
     if (fromBlock <= latestBlock) {
       const [activatedEvents, subnameEvents] = await Promise.all([
-        queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, latestBlock),
-        queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, latestBlock),
+        queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock),
+        queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock),
       ]);
 
       // Ascending order so processing reflects on-chain sequence, though it only matters here for
@@ -302,10 +322,13 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
       })),
     }));
 
-    await setActivatedDomainsCache(domains, latestBlock, CACHE_SCHEMA_VERSION);
+    await setActivatedDomainsCache(domains, toBlock, CACHE_SCHEMA_VERSION);
 
     const subnameCount = domains.reduce((sum, d) => sum + d.subnames.length, 0);
-    console.log(`📡 Activated domains cache updated — ${domains.length} domain(s), ${subnameCount} subname(s), scanned to block ${latestBlock}`);
+    const backlogNote = blocksRemainingAfterThisCycle > 0
+      ? ` (${blocksRemainingAfterThisCycle} block(s) of backlog left — continues next cycle)`
+      : "";
+    console.log(`📡 Activated domains cache updated — ${domains.length} domain(s), ${subnameCount} subname(s), scanned to block ${toBlock}${backlogNote}`);
   } catch (err) {
     console.error("⚠️  Activated domains cache scan failed:", err.message);
   } finally {
