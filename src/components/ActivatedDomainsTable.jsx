@@ -4,6 +4,27 @@ import Panel from "./Panel.jsx";
 import { useActivatedDomains } from "../hooks/useActivatedDomains.js";
 import { formatTimeLeft, isExpired, shortAddress } from "../utils/format.js";
 import { green, mutedLight, muted, error as errorColor, panel2, border } from "../styles/theme.js";
+import { EXPLORER_BASE_URL } from "../config.js";
+
+function nameExplorerUrl(fullName) {
+  return `${EXPLORER_BASE_URL}/name-domains/${fullName}`;
+}
+
+function addressExplorerUrl(address) {
+  return `${EXPLORER_BASE_URL}/address/${address}`;
+}
+
+// Same "inherit the surrounding text's color, underline to signal clickable" treatment for both
+// links below — these sit inline in a dense table cell, not as standalone CTAs (contrast
+// Marketplace.jsx's "View Transaction" link, which gets its own line and brand-green color), so a
+// link color swap would be a lot louder than the row itself calls for.
+const inlineLinkStyle = { color: "inherit", textDecoration: "underline", textDecorationColor: mutedLight };
+
+// Row's onClick (expand/collapse) is on the whole row — links inside it need to stop that click
+// from also bubbling up and toggling the row.
+function stopRowToggle(e) {
+  e.stopPropagation();
+}
 
 // Just a fresh re-fetch of the small published JSON, not an RPC poll — the underlying data only
 // actually changes as often as activatedDomainsCache.js's own refresh cycle (5 min by default), so
@@ -14,7 +35,7 @@ function ownerLabel(node) {
   return node.ownerPrimaryName || shortAddress(node.owner);
 }
 
-function Row({ label, timeLeft, ownerText, expired, depth, expandable, expanded, onToggle, childCount }) {
+function Row({ label, ownerAddress, ownerText, timeLeft, expired, depth, expandable, expanded, onToggle, childCount }) {
   return (
     <div
       onClick={expandable ? onToggle : undefined}
@@ -41,10 +62,14 @@ function Row({ label, timeLeft, ownerText, expired, depth, expandable, expanded,
         )}
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: depth === 0 ? 14 : 13, fontWeight: depth === 0 ? 700 : 500, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {label}
+            <a href={nameExplorerUrl(label)} target="_blank" rel="noreferrer" onClick={stopRowToggle} style={inlineLinkStyle}>
+              {label}
+            </a>
           </div>
           <div style={{ fontSize: 11, color: mutedLight, marginTop: 1 }}>
-            {ownerText}
+            <a href={addressExplorerUrl(ownerAddress)} target="_blank" rel="noreferrer" onClick={stopRowToggle} style={inlineLinkStyle}>
+              {ownerText}
+            </a>
             {expandable ? ` · ${childCount} subname${childCount === 1 ? "" : "s"}` : ""}
           </div>
         </div>
@@ -144,8 +169,9 @@ export default function ActivatedDomainsTable() {
               <div key={domain.node}>
                 <Row
                   label={`${domain.label}.etn`}
-                  timeLeft={formatTimeLeft(domain.expiry)}
+                  ownerAddress={domain.owner}
                   ownerText={ownerLabel(domain)}
+                  timeLeft={formatTimeLeft(domain.expiry)}
                   expired={isExpired(domain.expiry)}
                   depth={0}
                   expandable
@@ -164,8 +190,9 @@ export default function ActivatedDomainsTable() {
                         <Row
                           key={sub.node}
                           label={`${sub.label}.${domain.label}.etn`}
-                          timeLeft={formatTimeLeft(sub.expiry)}
+                          ownerAddress={sub.owner}
                           ownerText={ownerLabel(sub)}
+                          timeLeft={formatTimeLeft(sub.expiry)}
                           expired={isExpired(sub.expiry)}
                           depth={1}
                         />
