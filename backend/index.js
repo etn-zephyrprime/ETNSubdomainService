@@ -5,6 +5,7 @@ import generateNftRouter from "./utils/GenerateNft.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
+import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
 import { startCoreClashNftMintWatcher } from "./utils/coreClashNftMintWatcher.js";
@@ -61,6 +62,7 @@ app.listen(PORT, () => {
   startMarketplaceWatcher();
   startSubnameDomainsCache();
   startActivatedDomainsCache();
+  startMarketplaceSellersCache();
 
   // Telegram bots ported from etn-zephyrprime/CoreClashGame — see
   // backend/utils/coreClashConfig.js for why. Each one no-ops (logs and returns) if its required
