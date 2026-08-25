@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
-import { ArrowLeft, Copy, Check, QrCode } from "lucide-react";
+import { ArrowLeft, Copy, Check, QrCode, ChevronDown, ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
@@ -8,8 +8,9 @@ import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
+import { useOwnedNames } from "../hooks/useOwnedNames.js";
 import { computeNode, computeSubnode, computeNftImageUrl } from "../utils/ens.js";
-import { formatEth } from "../utils/format.js";
+import { formatEth, formatTimeLeft, isExpired } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE_URL } from "../config.js";
@@ -21,6 +22,60 @@ const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_Y
 // import/bundling needed, square + high-contrast so it stays readable once excavated into the
 // code). Duplicated rather than shared since the two screens' QR codes are otherwise unrelated.
 const QR_LOGO_SRC = "/electroneum-logo-symbol.svg";
+
+// A single row in the owned-names list below — either a top-level domain (optionally expandable
+// to reveal its subnames) or a subname/standalone entry. The chevron (if present) is its own
+// click target for expand/collapse, separate from the rest of the row, which always selects this
+// name for management — unlike ActivatedDomainsTable's equivalent row, a domain here needs both
+// actions available at once (expand to browse its subnames, or manage the domain itself).
+function OwnedNameRow({ name, depth = 0, expandable = false, expanded = false, onToggle, onSelect }) {
+  const expired = isExpired(name.expiry);
+
+  return (
+    <div
+      onClick={onSelect}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "10px 12px",
+        paddingLeft: 12 + depth * 20,
+        borderRadius: depth === 0 ? 10 : 0,
+        background: depth === 0 ? panel2 : "transparent",
+        border: depth === 0 ? `1px solid ${border}` : "none",
+        borderBottom: depth > 0 ? `1px solid ${border}` : undefined,
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {expandable ? (
+          <span
+            onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            style={{ display: "flex", padding: 2, margin: -2 }}
+          >
+            {expanded ? <ChevronDown size={14} color={mutedLight} /> : <ChevronRight size={14} color={mutedLight} />}
+          </span>
+        ) : (
+          <span style={{ width: 14, display: "inline-block" }} />
+        )}
+        <div style={{ fontSize: depth === 0 ? 14 : 13, fontWeight: depth === 0 ? 700 : 500, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {name.name}
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        {!name.isSubname && !name.activated && (
+          <div style={{ fontSize: 10, fontWeight: 700, color: green, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            Not activated
+          </div>
+        )}
+        <div style={{ fontSize: 12, fontWeight: 600, color: expired ? error : mutedLight, whiteSpace: "nowrap" }}>
+          {expired ? "Expired" : formatTimeLeft(name.expiry)}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // "Manage & Resell" — look up a name you own, view its expiry, renew it, set a price for
 // self-serve subname registration under it, or list it for resale (activation/approval handled
@@ -126,13 +181,72 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const { getPrimaryName, setName: setReverseName } = useReverseRecord();
   const { getResolvedAddress, setAddr } = useAddressRecord();
   const { getListingForToken, listName, cancelListing } = useMarketplaceListings();
+  const { getNamesOwnedBy } = useOwnedNames();
 
-  const handleLookup = async () => {
+  // Owned-names list — the primary way to pick a name to manage now, replacing "type a name and
+  // hope you remember it exactly". null = loading, [] = loaded but empty. A genuinely unwrapped
+  // ("retro") name can never appear here (see useOwnedNames.js for why) — showManualLookup below
+  // is the escape hatch for that, defaulted open once loading finishes with nothing to show so
+  // that case isn't a dead end.
+  const [ownedNames, setOwnedNames] = useState(null);
+  const [ownedNamesError, setOwnedNamesError] = useState(null);
+  const [showManualLookup, setShowManualLookup] = useState(false);
+  const [expandedOwnedDomains, setExpandedOwnedDomains] = useState(() => new Set());
+
+  useEffect(() => {
+    if (!wallet.isConnected || !wallet.account) {
+      setOwnedNames([]);
+      return;
+    }
+
+    let cancelled = false;
+    setOwnedNames(null);
+    setOwnedNamesError(null);
+
+    getNamesOwnedBy(wallet.account)
+      .then((names) => {
+        if (!cancelled) setOwnedNames(names);
+      })
+      .catch((err) => {
+        console.error("Failed to load owned names:", err);
+        if (!cancelled) {
+          setOwnedNamesError("Couldn't load your names — you can still look one up manually below.");
+          setOwnedNames([]);
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [wallet.isConnected, wallet.account, getNamesOwnedBy]);
+
+  // "Register Subdomain | Set Subname Pricing" only ever acts on a top-level domain (subname
+  // pricing is a domain-level setting — a subname can't itself sell subnames), so subnames are
+  // filtered out of that intent's list entirely rather than shown as unselectable clutter.
+  const selectableOwnedNames = intent === "retro"
+    ? (ownedNames || []).filter((n) => !n.isSubname)
+    : (ownedNames || []);
+
+  const toggleOwnedDomain = (node) => {
+    setExpandedOwnedDomains((prev) => {
+      const next = new Set(prev);
+      if (next.has(node)) next.delete(node);
+      else next.add(node);
+      return next;
+    });
+  };
+
+  // `explicitName` lets selecting a name from the owned-names list below trigger a lookup
+  // immediately — `setNameInput` + calling this in the same handler would otherwise still see the
+  // old nameInput here, since state updates aren't applied until the next render. Guarded to a
+  // string so this stays a plain no-arg lookup when wired straight to a button's onClick (which
+  // would otherwise pass the DOM click event as the first argument).
+  const handleLookup = async (explicitName) => {
+    const lookupInput = typeof explicitName === "string" ? explicitName : nameInput;
+
     if (!wallet.isConnected) {
       setLookupError("Connect your wallet first");
       return;
     }
-    if (!nameInput) {
+    if (!lookupInput) {
       setLookupError("Enter a name");
       return;
     }
@@ -179,7 +293,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     // dot-based subname split below would misparse it as subname "planetzephyros" under parent
     // "etn" (the literal TLD), silently computing a different, genuinely nonexistent node
     // instead of the intended top-level name — surfacing as a false "doesn't exist".
-    const normalizedInput = nameInput.replace(/\.etn$/i, "");
+    const normalizedInput = lookupInput.replace(/\.etn$/i, "");
 
     // Subnames (e.g. "hi.test6") aren't tracked by BaseRegistrar at all — only their parent's
     // top-level label is. Their node is computeSubnode(parentNode, subLabel), not computeNode of
@@ -279,6 +393,11 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setLookupLoading(false);
     }
   };
+
+  const selectOwnedName = useCallback((fullName) => {
+    setNameInput(fullName);
+    handleLookup(fullName);
+  }, [handleLookup]);
 
   // Only reachable for top-level names (see the "Only top-level names ever hit this path
   // unwrapped" comment in handleLookup below) — always the gold "namespace" template, same as
@@ -607,45 +726,171 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         )}
       </div>
 
-      {/* Lookup */}
-      <div style={{ marginBottom: 24 }}>
-        <input
-          type="text"
-          placeholder="your-name"
-          value={nameInput}
-          onChange={(e) => {
-            setNameInput(e.target.value.toLowerCase().trim());
-            setVerifiedName(null);
-          }}
-          style={{
-            width: "100%",
-            padding: "14px 16px",
-            borderRadius: 12,
-            border: `1px solid ${border}`,
-            background: panel2,
-            color: "#fff",
-            fontSize: 16,
-            fontWeight: 600,
-            boxSizing: "border-box",
-            outline: "none",
-            marginBottom: 12,
-          }}
-        />
-        <NeonButton
-          variant="green"
-          onClick={handleLookup}
-          disabled={lookupLoading || !nameInput}
-          loading={lookupLoading}
-          style={{ width: "100%", justifyContent: "center" }}
-        >
-          {lookupLoading ? "Checking..." : "Look Up"}
-        </NeonButton>
-        {lookupError && (
-          <div style={{ fontSize: 12, color: error, marginTop: 8, textAlign: "center" }}>
-            {lookupError}
+      {/* Pick a name — the primary flow now: your own owned-names list, cached server-side (see
+          useOwnedNames.js) instead of typing a name and hoping you remember it exactly. Falls
+          back to the original manual lookup box below, either by choice (the toggle link) or
+          automatically once loading finishes with nothing selectable to show — a genuinely
+          unwrapped ("retro") name can never appear in this list at all (see
+          backend/utils/ownedNamesCache.js's header comment for why), so that fallback has to stay
+          reachable no matter what. */}
+      {(() => {
+        const namesLoaded = ownedNames !== null;
+        const effectiveShowManual = showManualLookup || (namesLoaded && selectableOwnedNames.length === 0);
+
+        if (!effectiveShowManual) {
+          const domains = selectableOwnedNames.filter((n) => !n.isSubname);
+          const domainNodes = new Set(domains.map((d) => d.node));
+          const subnamesByParent = new Map();
+          const standaloneSubnames = [];
+
+          for (const n of selectableOwnedNames) {
+            if (!n.isSubname) continue;
+            if (domainNodes.has(n.parentNode)) {
+              if (!subnamesByParent.has(n.parentNode)) subnamesByParent.set(n.parentNode, []);
+              subnamesByParent.get(n.parentNode).push(n);
+            } else {
+              // A subname owned by this wallet under a domain someone else owns — nothing to
+              // nest it under, so it gets its own row instead.
+              standaloneSubnames.push(n);
+            }
+          }
+
+          return (
+            <div style={{ marginBottom: 24 }}>
+              {ownedNamesError && (
+                <div style={{ fontSize: 12, color: error, marginBottom: 12, textAlign: "center" }}>
+                  {ownedNamesError}
+                </div>
+              )}
+
+              {!namesLoaded ? (
+                <div style={{ fontSize: 13, color: mutedLight, textAlign: "center", padding: "20px 0" }}>
+                  Loading your names...
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                  {domains.map((domain) => {
+                    const subnames = subnamesByParent.get(domain.node) || [];
+                    const expanded = expandedOwnedDomains.has(domain.node);
+                    const expandable = intent === "manage" && subnames.length > 0;
+
+                    return (
+                      <div key={domain.node}>
+                        <OwnedNameRow
+                          name={domain}
+                          expandable={expandable}
+                          expanded={expanded}
+                          onToggle={expandable ? () => toggleOwnedDomain(domain.node) : undefined}
+                          onSelect={() => selectOwnedName(domain.name)}
+                        />
+                        {expandable && expanded && (
+                          <div style={{ background: panel2, border: `1px solid ${border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+                            {subnames.map((sub) => (
+                              <OwnedNameRow key={sub.node} name={sub} depth={1} onSelect={() => selectOwnedName(sub.name)} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {intent === "manage" && standaloneSubnames.map((sub) => (
+                    <OwnedNameRow key={sub.node} name={sub} onSelect={() => selectOwnedName(sub.name)} />
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={() => setShowManualLookup(true)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "center",
+                  fontSize: 12,
+                  color: mutedLight,
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  padding: "4px 0",
+                }}
+              >
+                {namesLoaded && selectableOwnedNames.length > 0
+                  ? "Don't see your name? Enter it manually"
+                  : "Enter a name manually"}
+              </button>
+            </div>
+          );
+        }
+
+        return (
+          <div style={{ marginBottom: 24 }}>
+            <input
+              type="text"
+              placeholder="your-name"
+              value={nameInput}
+              onChange={(e) => {
+                setNameInput(e.target.value.toLowerCase().trim());
+                setVerifiedName(null);
+              }}
+              style={{
+                width: "100%",
+                padding: "14px 16px",
+                borderRadius: 12,
+                border: `1px solid ${border}`,
+                background: panel2,
+                color: "#fff",
+                fontSize: 16,
+                fontWeight: 600,
+                boxSizing: "border-box",
+                outline: "none",
+                marginBottom: 12,
+              }}
+            />
+            <NeonButton
+              variant="green"
+              onClick={handleLookup}
+              disabled={lookupLoading || !nameInput}
+              loading={lookupLoading}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              {lookupLoading ? "Checking..." : "Look Up"}
+            </NeonButton>
+            {namesLoaded && selectableOwnedNames.length > 0 && (
+              <button
+                onClick={() => setShowManualLookup(false)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "center",
+                  fontSize: 12,
+                  color: mutedLight,
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  padding: "8px 0 0",
+                }}
+              >
+                ← Back to my names
+              </button>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })()}
+
+      {/* Shared with both branches above — selecting a name from the list triggers the exact same
+          handleLookup as the manual box's button, so its loading/error state needs to be visible
+          regardless of which one is currently shown. */}
+      {lookupLoading && !showManualLookup && (
+        <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16, textAlign: "center" }}>
+          Checking...
+        </div>
+      )}
+      {lookupError && (
+        <div style={{ fontSize: 12, color: error, marginBottom: 16, textAlign: "center" }}>
+          {lookupError}
+        </div>
+      )}
 
       {verifiedName && (
         <div style={{

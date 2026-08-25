@@ -233,6 +233,29 @@ server-side.
 
 ---
 
+## Owned names list ("Manage & Resell" / "Register Subdomain")
+
+Both screens are the same `ManageSubdomain.jsx` component (`intent`
+prop only changes framing copy) — previously both worked purely by
+typing a name to look up. Now they open with a list of every wrapped
+name (domain or subname, activated or not) the connected wallet owns,
+built from `backend/utils/ownedNamesCache.js` (same R2-publish pattern
+and cold-start safeguards as `activatedDomainsCache.js`) via
+`useOwnedNames.js`. Domains are expandable to show their owned
+subnames nested underneath; "Register Subdomain" only lists domains,
+since subname pricing is a domain-level setting. Selecting an entry
+runs it through the exact same lookup/verification logic the manual
+box always used — the list only changes *how* a name gets picked, not
+what happens once it's selected.
+
+The original manual-entry box stays reachable via a "Don't see your
+name?" toggle — necessary, not just a fallback: a genuinely unwrapped
+("retro") name can never appear in the list at all (see
+`ownedNamesCache.js`'s header comment for why), so typing it in by
+hand is the only way to find one.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),
