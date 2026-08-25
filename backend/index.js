@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
+import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
 import { startCoreClashNftMintWatcher } from "./utils/coreClashNftMintWatcher.js";
@@ -59,6 +60,7 @@ app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   startMarketplaceWatcher();
   startSubnameDomainsCache();
+  startActivatedDomainsCache();
 
   // Telegram bots ported from etn-zephyrprime/CoreClashGame — see
   // backend/utils/coreClashConfig.js for why. Each one no-ops (logs and returns) if its required

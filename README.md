@@ -199,6 +199,20 @@ depending on CoreClashGame's own metadata cache.
 
 ---
 
+## Activated Domains table (homepage)
+
+Shows every activated domain and the subnames registered under it —
+current owner (primary name if set, otherwise a short address) and time
+left until expiry for each, expandable per domain. Backed by
+`backend/utils/activatedDomainsCache.js`, same R2-publish-on-a-timer
+pattern as the subname domains cache above (`ActivatedDomainsTable.jsx`
++ `useActivatedDomains.js` on the frontend side) — see that file's header
+comment for why owner/expiry get re-verified for every known entry on
+every scan cycle, not just newly-discovered ones. Expired entries are
+hidden by default; a "Show expired" checkbox reveals them.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),
