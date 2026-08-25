@@ -176,18 +176,16 @@ async function readCurrentData(nameWrapper, node) {
   }
 }
 
-// Resolves an address's primary ("reverse") name, or null if none is set — same three-call chain
-// as useReverseRecord.js's getPrimaryName, just run once per unique owner here instead of once per
-// listing in every visitor's browser.
-async function resolvePrimaryName(reverseRegistrar, provider, addr) {
+// Resolves an address's primary ("reverse") name, or null if none is set — same lookup
+// useReverseRecord.js's getPrimaryName does, just run once per unique owner here instead of once
+// per listing in every visitor's browser. Takes an already-resolved `resolver` contract rather
+// than calling defaultResolver() itself — see scanAndPublish, where it's fetched once per cycle
+// instead of once per owner (it's a single global value, not address-dependent; re-fetching it
+// redundantly for every owner was half of what caused every primary name to fail to resolve, see
+// this file's header comment for the full story).
+async function resolvePrimaryName(reverseRegistrar, resolver, addr) {
   try {
-    const [node, resolverAddr] = await Promise.all([
-      reverseRegistrar.node(addr),
-      reverseRegistrar.defaultResolver(),
-    ]);
-    if (resolverAddr === ethers.ZeroAddress) return null;
-
-    const resolver = new ethers.Contract(resolverAddr, RESOLVER_ABI, provider);
+    const node = await reverseRegistrar.node(addr);
     const name = await resolver.name(node);
     return name || null;
   } catch (err) {
@@ -303,9 +301,14 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
     }
 
     const primaryNameByOwner = new Map();
-    await mapWithConcurrency([...uniqueOwners], VERIFY_CONCURRENCY, async (owner) => {
-      primaryNameByOwner.set(owner, await resolvePrimaryName(reverseRegistrar, provider, owner));
-    });
+    const defaultResolverAddr = await reverseRegistrar.defaultResolver();
+
+    if (defaultResolverAddr !== ethers.ZeroAddress) {
+      const resolver = new ethers.Contract(defaultResolverAddr, RESOLVER_ABI, provider);
+      await mapWithConcurrency([...uniqueOwners], VERIFY_CONCURRENCY, async (owner) => {
+        primaryNameByOwner.set(owner, await resolvePrimaryName(reverseRegistrar, resolver, owner));
+      });
+    }
 
     const domains = [...domainByNode.entries()].map(([node, domain]) => ({
       node,
@@ -346,7 +349,16 @@ export function startActivatedDomainsCache() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  // batchMaxCount: 1 — this file is the heaviest user of concurrent RPC calls of any cache here
+  // (VERIFY_CONCURRENCY workers, each potentially chaining 2+ calls), and ethers' default behavior
+  // coalesces concurrent calls fired in the same tick into a single JSON-RPC batch request. Ankr's
+  // public endpoint rejects large batches outright (HTTP 413 "Batch size too large", code -32062)
+  // — confirmed live, this is what silently broke every primary-name resolution (every owner
+  // showed as a raw address, never a primary name, regardless of whether one was actually set).
+  // Disabling batching sends each call as its own HTTP request instead — slightly more request
+  // overhead, but each one succeeds or fails on its own rather than one oversized batch taking
+  // every concurrent call down with it.
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const reverseRegistrar = new ethers.Contract(REVERSE_REGISTRAR_ADDRESS, REVERSE_REGISTRAR_ABI, provider);
