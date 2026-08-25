@@ -211,6 +211,26 @@ comment for why owner/expiry get re-verified for every known entry on
 every scan cycle, not just newly-discovered ones. Expired entries are
 hidden by default; a "Show expired" checkbox reveals them.
 
+Every domain/subname label links to its block explorer name-domains page,
+and every owner (primary name or address) links to that address's
+explorer page — see `ActivatedDomainsTable.jsx`.
+
+---
+
+## Marketplace seller names
+
+"Names For Sale" resolves each listing's seller to a primary name the
+same way — `backend/utils/marketplaceSellersCache.js` publishes
+`{seller address -> primary name}` for active listings' sellers to R2,
+and `useMarketplaceListings.js` fetches it once per `getActiveListings()`
+call instead of resolving each seller in the browser. The listings
+themselves are *not* cached — they stay a live on-chain read, since
+`ManageSubdomain.jsx`'s "List for Resale"/"Cancel Listing" UI needs to
+reflect a just-submitted transaction immediately, not wait out a cache
+cycle. Only the seller-name resolution (the part that was silently
+failing — see that file's header comment for the root cause) moved
+server-side.
+
 ---
 
 ## Manual regeneration endpoint

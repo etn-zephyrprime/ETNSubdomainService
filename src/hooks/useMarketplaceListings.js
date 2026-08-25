@@ -1,10 +1,35 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL, R2_PUBLIC_URL } from "../config.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import { decodeDnsName } from "../utils/ens.js";
-import { useReverseRecord } from "./useReverseRecord.js";
+
+// backend/utils/marketplaceSellersCache.js publishes {seller address -> primary name} for every
+// currently-active listing's seller to R2 on a timer — same reasoning and the same fix as
+// src/hooks/useActivatedDomains.js: resolving every seller's primary name concurrently in the
+// browser (Promise.all over every active listing) is exactly the pattern that made ethers batch
+// those calls into one oversized JSON-RPC request, which Ankr's public RPC rejects outright —
+// every seller was silently showing as a raw address. Fetched once per getActiveListings() call
+// rather than once per listing.
+//
+// No fallback to the old per-listing getPrimaryName() calls if this fetch fails — same call as
+// useActivatedDomains.js: that's the exact bug this exists to avoid reintroducing. A seller simply
+// shows as their address (which the UI already handles, see Marketplace.jsx's sellerName
+// fallback) if the cache is unreachable or hasn't indexed them yet.
+async function fetchSellerPrimaryNames() {
+  if (!R2_PUBLIC_URL) return {};
+
+  try {
+    const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/marketplace-sellers.json`);
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data?.sellers && typeof data.sellers === "object" ? data.sellers : {};
+  } catch (err) {
+    console.warn("Marketplace sellers cache fetch failed:", err.message);
+    return {};
+  }
+}
 
 // Always points directly at Electroneum RPC — same convention as the rest of this app's
 // read-only hooks — for reads that shouldn't depend on whatever chain the connected wallet
@@ -18,7 +43,6 @@ const readOnlyProvider = new ethers.JsonRpcProvider(RPC_URL);
 export function useMarketplaceListings() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const { getPrimaryName } = useReverseRecord();
 
   const getReadContracts = useCallback(() => ({
     marketplace: new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, readOnlyProvider),
@@ -50,6 +74,8 @@ export function useMarketplaceListings() {
       }))
       .filter((l) => l.active);
 
+    const sellerPrimaryNames = await fetchSellerPrimaryNames();
+
     return Promise.all(active.map(async (l) => {
       const node = ethers.toBeHex(l.tokenId, 32);
       let name = null;
@@ -59,18 +85,11 @@ export function useMarketplaceListings() {
         console.error(`Failed to decode name for listing ${l.listingId}:`, err);
       }
 
-      // Same reverse-record lookup Header.jsx shows for the connected wallet — falls back to the
-      // raw address in the UI when the seller hasn't set one.
-      let sellerName = null;
-      try {
-        sellerName = await getPrimaryName(l.seller);
-      } catch (err) {
-        console.error(`Failed to fetch primary name for seller ${l.seller}:`, err);
-      }
+      const sellerName = sellerPrimaryNames[l.seller.toLowerCase()] || null;
 
       return { ...l, node, name, sellerName };
     }));
-  }, [getReadContracts, getPrimaryName]);
+  }, [getReadContracts]);
 
   // Whether `tokenId` (a name's node, as a uint256) currently has an active listing — used by
   // ManageSubdomain's per-name "Resell" section to show "List for Resale" vs. the existing
