@@ -5,6 +5,7 @@ import { ArrowLeft, Copy, Check } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
+import { useOwnedNames } from "../hooks/useOwnedNames.js";
 import NeonButton from "./NeonButton.jsx";
 import { EXPLORER_BASE_URL } from "../config.js";
 
@@ -84,13 +85,18 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
 
   const { resolveName, sendEtn, getTokenInfo, sendToken, getNftOwner, sendNft } = usePayment();
   const { getPrimaryName } = useReverseRecord();
+  const { getNamesOwnedBy } = useOwnedNames();
 
-  // Receive tab — the connected wallet's own primary name (same record Header.jsx and
-  // ManageSubdomain.jsx's "Primary Name" section use) is what a /pay/<name> link is built from,
-  // since that's the one name that's unambiguously "yours" without a fresh on-chain ownership
-  // lookup for whatever else the wallet might hold.
+  // Receive tab — defaults to the connected wallet's primary name (same record Header.jsx and
+  // ManageSubdomain.jsx's "Primary Name" section use), same as before, but a Pay link can now be
+  // generated for ANY name the wallet owns (domain or subname, primary or not) via
+  // useOwnedNames.js — the same R2-published list "Manage & Resell"/"Register Subdomain" use to
+  // skip a manual lookup. selectedReceiveName holds whichever one is currently shown below.
   const [primaryName, setPrimaryName] = useState(null);
   const [primaryNameLoading, setPrimaryNameLoading] = useState(false);
+  const [ownedNames, setOwnedNames] = useState([]);
+  const [ownedNamesLoading, setOwnedNamesLoading] = useState(false);
+  const [selectedReceiveName, setSelectedReceiveName] = useState(null);
   const [copyLinkStatus, setCopyLinkStatus] = useState(null); // null | "copied" | "error"
 
   useEffect(() => {
@@ -109,11 +115,63 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
     return () => { cancelled = true; };
   }, [mode, wallet.account, getPrimaryName]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (mode !== "receive" || !wallet.account) return;
+
+    setOwnedNamesLoading(true);
+    getNamesOwnedBy(wallet.account)
+      .then((names) => { if (!cancelled) setOwnedNames(names); })
+      .catch((err) => {
+        console.error("Failed to fetch owned names:", err);
+        if (!cancelled) setOwnedNames([]);
+      })
+      .finally(() => { if (!cancelled) setOwnedNamesLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [mode, wallet.account, getNamesOwnedBy]);
+
+  // A different wallet may own none of the previous one's names — drop the selection so the
+  // default below re-picks once the new wallet's data has loaded, instead of showing a Pay link
+  // for a name that isn't even this wallet's to receive on.
+  useEffect(() => {
+    setSelectedReceiveName(null);
+  }, [wallet.account]);
+
+  // Defaults to the primary name once it's known; falls back to the first owned name if there
+  // isn't one. Only fires while nothing's selected yet, so it never overrides a manual pick from
+  // the dropdown below.
+  useEffect(() => {
+    if (mode !== "receive" || primaryNameLoading || ownedNamesLoading) return;
+    setSelectedReceiveName((prev) => {
+      if (prev) return prev;
+      if (primaryName) return primaryName;
+      return ownedNames[0]?.name ?? null;
+    });
+  }, [mode, primaryNameLoading, ownedNamesLoading, primaryName, ownedNames]);
+
+  // Primary name first (if set), then every other owned name — deduped, since the primary name
+  // is itself always one of the wallet's owned names.
+  const receiveNameOptions = (() => {
+    const options = [];
+    const seen = new Set();
+    if (primaryName) {
+      options.push({ name: primaryName, isPrimary: true });
+      seen.add(primaryName);
+    }
+    for (const n of ownedNames) {
+      if (seen.has(n.name)) continue;
+      seen.add(n.name);
+      options.push({ name: n.name, isPrimary: false });
+    }
+    return options;
+  })();
+
   const payLinkFor = (name) => `${window.location.origin}/pay/${name}`;
 
   const handleCopyPayLink = async () => {
     try {
-      await navigator.clipboard.writeText(payLinkFor(primaryName));
+      await navigator.clipboard.writeText(payLinkFor(selectedReceiveName));
       setCopyLinkStatus("copied");
       setTimeout(() => setCopyLinkStatus(null), 2000);
     } catch (err) {
@@ -378,16 +436,31 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
                 Connect Wallet
               </NeonButton>
             </>
-          ) : primaryNameLoading ? (
-            <div style={{ fontSize: 13, color: mutedLight }}>Checking your primary name...</div>
-          ) : primaryName ? (
+          ) : primaryNameLoading || ownedNamesLoading ? (
+            <div style={{ fontSize: 13, color: mutedLight }}>Checking your names...</div>
+          ) : selectedReceiveName ? (
             <>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                Your Pay Link
+                Receive As
               </div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 16 }}>
-                {primaryName}
-              </div>
+
+              {receiveNameOptions.length > 1 ? (
+                <select
+                  value={selectedReceiveName}
+                  onChange={(e) => { setSelectedReceiveName(e.target.value); setCopyLinkStatus(null); }}
+                  style={{ ...inputStyle, marginBottom: 16, cursor: "pointer", textAlign: "center" }}
+                >
+                  {receiveNameOptions.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.name}{opt.isPrimary ? " (Primary)" : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 16 }}>
+                  {selectedReceiveName}
+                </div>
+              )}
 
               {/* White card — QR scanners rely on high contrast, and this panel's own dark
                   background isn't reliably that regardless of module color. */}
@@ -400,7 +473,7 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
                 marginBottom: 16,
               }}>
                 <QRCodeSVG
-                  value={payLinkFor(primaryName)}
+                  value={payLinkFor(selectedReceiveName)}
                   size={200}
                   level="H"
                   bgColor="#ffffff"
@@ -421,7 +494,7 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
                 wordBreak: "break-all",
                 fontFamily: "monospace",
               }}>
-                {payLinkFor(primaryName)}
+                {payLinkFor(selectedReceiveName)}
               </div>
               <NeonButton
                 variant="green"
@@ -438,13 +511,13 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
               )}
               <div style={{ fontSize: 11, color: mutedLight, marginTop: 16, lineHeight: 1.6 }}>
                 Anyone who opens this link lands straight on the Send screen with{" "}
-                <strong>{primaryName}</strong> as the recipient.
+                <strong>{selectedReceiveName}</strong> as the recipient.
               </div>
             </>
           ) : (
             <div style={{ fontSize: 13, color: mutedLight, lineHeight: 1.6 }}>
-              You don't have a primary name set yet — set one from "Your Names" on the home
-              screen to get a personal Pay link.
+              You don't own any names yet — activate a domain or register a subname from "Your
+              Names" on the home screen to get a personal Pay link.
             </div>
           )}
         </div>
