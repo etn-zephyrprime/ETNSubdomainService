@@ -513,6 +513,50 @@ a 1:1 index match between the two arrays. Market Cap has no
 meaningful "candle" concept (nothing trades market cap directly), so
 that toggle stays the plain line/area `SparklineChart`.
 
+**Per-token price + market cap chart**: on the Tokens tab, clicking any
+token opens `TokenDetail.jsx`, which now renders `TokenPriceChart.jsx`
+— the same Price/Market Cap and 7D/30D/90D pills as the ETN price
+chart, but for that specific token's own ElectroSwap trading pair.
+
+Sourced from GeckoTerminal's public "onchain" API rather than
+CoinGecko (CoinGecko doesn't index arbitrary long-tail ElectroSwap
+tokens) or a from-scratch pool-reserve/Swap-event scanner (GeckoTerminal
+already indexes ElectroSwap's pools directly on its `electroneum`
+network — confirmed live, real pools like CORE/WETN, USDT/WETN,
+USDC/WETN, etc.). Unlike every other dashboard data source, this one
+is **not** called directly from the browser: confirmed live that
+GeckoTerminal's free API 429s after roughly half a dozen rapid
+requests, with no way for one visitor's browser to coordinate with
+another's. `backend/utils/tokenChartRouter.js` is a small
+proxy+cache (5 min TTL, keyed by `address:range`) in front of it —
+the one dashboard feature that needed backend involvement at all —
+consumed via `useTokenChart.js`.
+
+For each click, the backend looks up the token's pools, picks the one
+with the highest USD reserves (thin/dead pools shouldn't win over an
+actively-traded one), and fetches OHLCV for whichever side of that
+pool is the requested token. Market Cap isn't something GeckoTerminal
+tracks historically for an arbitrary token, so it's derived
+client-side instead: each candle's close price × the token's current
+total supply (an approximation — assumes supply hasn't materially
+changed across the shown window).
+
+Fixed a real bug found via live testing: `RANGE_PARAMS` originally
+requested just enough candles to cover each range at face value (e.g.
+42 four-hour candles for "7D"). GeckoTerminal omits candle periods
+with zero trades entirely instead of returning a flat/carried-forward
+one, so for any thinly-traded token that silently reached back much
+further than the label promised (confirmed live: a "7D" request
+for CORE/WETN returned candles spanning 47 days). Fixed by fetching
+generously (GeckoTerminal's own cap, 1000) and filtering to the real
+elapsed-time window server-side, so "7D"/"30D"/"90D" mean what they
+say regardless of a token's trading activity. When filtering leaves
+fewer than 2 candles, the response is `{ hasData: false, reason:
+"no_recent_activity", pool }` — distinct from "no pool exists at
+all" — so the UI can point the user at a longer range instead of
+implying the token has no market (confirmed live against Bananacoin,
+a real but essentially-idle pool).
+
 ---
 
 ## Manual regeneration endpoint

@@ -4,6 +4,7 @@ import { green, mutedLight, muted, panel2, border, error as errorColor } from ".
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { formatCompact, formatTokenAmount, shortHash } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
+import TokenPriceChart from "./TokenPriceChart.jsx";
 
 export default function TokenDetail({ address, onBack, onSelectAddress }) {
   const { getToken, getTokenHolders } = useBlockscout();
@@ -74,6 +75,8 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
               <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{token.type}</div>
             </div>
           </div>
+
+          <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
 
           <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
             Top Holders
