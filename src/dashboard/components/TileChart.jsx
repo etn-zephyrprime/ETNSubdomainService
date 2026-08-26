@@ -6,7 +6,7 @@ import SparklineChart from "./SparklineChart.jsx";
 // series the chart shows, rather than one static chart per metric. Used by both Overview.jsx
 // (network-wide stats) and AddressLookup.jsx (per-wallet stats); the two just feed it different
 // tiles/series.
-export default function TileChart({ tiles, activeId, onSelect, points, chartCaption, loading }) {
+export default function TileChart({ tiles, activeId, onSelect, data, formatValue, formatLabel, chartCaption, loading }) {
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -42,7 +42,7 @@ export default function TileChart({ tiles, activeId, onSelect, points, chartCapt
             Loading…
           </div>
         ) : (
-          <SparklineChart points={points} height={140} />
+          <SparklineChart data={data} height={140} formatValue={formatValue} formatLabel={formatLabel} />
         )}
       </div>
     </div>

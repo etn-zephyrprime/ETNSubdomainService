@@ -3,7 +3,7 @@ import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { usePayment } from "../../hooks/usePayment.js";
-import { formatCompact, formatTokenAmount, formatEtnBalance, shortHash, isSpamTokenName } from "../utils/format.js";
+import { formatCompact, formatTokenAmount, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { bucketDailyCounts } from "../utils/history.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
@@ -152,9 +152,15 @@ export default function AddressLookup({ initialAddress = null }) {
     return () => { cancelled = true; };
   }, [resolvedAddress, getAddressTokenTransfers]);
 
+  // Each series is `{ label, value }[]` — label is a real date from whichever source backs that
+  // metric, threaded through to SparklineChart for its axis labels + hover tooltip.
   const series = useMemo(() => ({
+    // No .reverse() here, deliberately — unlike Blockscout's other chart-ish endpoints (stats
+    // charts, main-page lists), coin-balance-history-by-day already comes back oldest-first
+    // (confirmed live: earliest date first, today's date last). Reversing it was flipping the
+    // chart's X-axis backwards (newest-to-oldest, left-to-right).
     balance: balanceHistory
-      ? [...balanceHistory].reverse().map((d) => parseFloat(ethers.formatEther(d.value)))
+      ? balanceHistory.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }))
       : [],
     transactions: txHistory ? bucketDailyCounts(txHistory, "timestamp") : [],
     tokenTransfers: transferHistory ? bucketDailyCounts(transferHistory, "timestamp") : [],
@@ -175,6 +181,12 @@ export default function AddressLookup({ initialAddress = null }) {
     balance: "ETN balance, full history by day",
     transactions: `Transactions per day (last ${Math.min(txHistory?.length ?? 0, 250)} fetched, ${MAX_HISTORY_PAGES} page(s) max)`,
     tokenTransfers: `Token transfers per day (last ${Math.min(transferHistory?.length ?? 0, 250)} fetched, ${MAX_HISTORY_PAGES} page(s) max)`,
+  };
+
+  const formatValues = {
+    balance: (v) => `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`,
+    transactions: formatInt,
+    tokenTransfers: formatInt,
   };
 
   return (
@@ -227,7 +239,9 @@ export default function AddressLookup({ initialAddress = null }) {
             ]}
             activeId={activeMetric}
             onSelect={setActiveMetric}
-            points={series[activeMetric]}
+            data={series[activeMetric]}
+            formatValue={formatValues[activeMetric]}
+            formatLabel={formatChartDate}
             chartCaption={captions[activeMetric]}
             loading={chartLoading}
           />
