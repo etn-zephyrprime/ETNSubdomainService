@@ -60,6 +60,16 @@ function formatEtn(wei) {
   return parseFloat(ethers.formatEther(wei)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Subname prices only (buildSubnamesAdvert) — a wall of "1,250.00 ETN/year" lines reads as
+// noisier/less scannable in a promo message than "1.25k ETN/year", and cents never matter at
+// these prices anyway. Marketplace listing prices (buildMarketplaceAdvert) intentionally keep
+// full precision via formatEtn above — a one-off name sale price isn't the same kind of "round
+// number, skim it fast" figure a per-year rate is.
+function formatEtnCompact(wei) {
+  const value = parseFloat(ethers.formatEther(wei));
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value).toLowerCase();
+}
+
 function tokenIdToNode(tokenId) {
   return ethers.toBeHex(tokenId, 32);
 }
@@ -107,7 +117,7 @@ async function buildSubnamesAdvert() {
   const lines = shown.map((d) => {
     const name = `${d.label}.etn`;
     const link = `${SITE_URL}/subnames/${name}`;
-    return `• [${name}](${link}) — ${formatEtn(d.pricePerYear)} ETN/year`;
+    return `• [${name}](${link}) — ${formatEtnCompact(d.pricePerYear)} ETN/year`;
   });
 
   return (
