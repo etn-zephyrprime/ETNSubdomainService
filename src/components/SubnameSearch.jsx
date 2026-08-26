@@ -10,6 +10,7 @@ import { containsBlockedWord } from "../utils/obscenity.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import Spinner from "./Spinner.jsx";
+import UsdEstimate from "./UsdEstimate.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
@@ -584,13 +585,17 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
           <div style={{
             display: "flex",
             justifyContent: "space-between",
+            alignItems: "baseline",
             fontSize: 16,
             fontWeight: 900,
             color: green,
             marginBottom: 16,
           }}>
             <span>Price</span>
-            <span>{priceEth} ETN</span>
+            <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+              {priceEth} ETN
+              <UsdEstimate etn={priceEth} />
+            </span>
           </div>
 
           {registerError && (

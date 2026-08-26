@@ -7,6 +7,7 @@ import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { formatEth } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
+import UsdEstimate from "./UsdEstimate.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
 const COMMIT_WAIT_MESSAGES = [
@@ -481,9 +482,12 @@ export default function RegistrationFlow({
                   <span>Brokerage fee</span>
                   <span>{brokerageFeeEth} ETN</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 900, color: green, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 16, fontWeight: 900, color: green, paddingTop: 10, borderTop: `1px solid ${border}` }}>
                   <span>Total</span>
-                  <span>{totalPriceEth} ETN</span>
+                  <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    {totalPriceEth} ETN
+                    <UsdEstimate etn={totalPriceEth} />
+                  </span>
                 </div>
               </>
             )}

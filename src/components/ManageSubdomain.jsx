@@ -13,6 +13,8 @@ import { computeNode, computeSubnode, computeNftImageUrl } from "../utils/ens.js
 import { formatEth, formatTimeLeft, isExpired } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
+import UsdEstimate from "./UsdEstimate.jsx";
+import TelegramAlertsCard from "./TelegramAlertsCard.jsx";
 import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE_URL } from "../config.js";
 
 const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
@@ -726,6 +728,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         )}
       </div>
 
+      <TelegramAlertsCard wallet={wallet} />
+
       {/* Pick a name — the primary flow now: your own owned-names list, cached server-side (see
           useOwnedNames.js) instead of typing a name and hoping you remember it exactly. Falls
           back to the original manual lookup box below, either by choice (the toggle link) or
@@ -1283,9 +1287,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                           <span>Brokerage fee</span>
                           <span>{formatEth(renewQuote.brokerageFee)} ETN</span>
                         </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 14, fontWeight: 900, color: green, paddingTop: 8, borderTop: `1px solid ${border}` }}>
                           <span>Total</span>
-                          <span>{formatEth(renewQuote.totalPrice)} ETN</span>
+                          <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                            {formatEth(renewQuote.totalPrice)} ETN
+                            <UsdEstimate etn={formatEth(renewQuote.totalPrice)} />
+                          </span>
                         </div>
                       </>
                     ) : (
@@ -1359,9 +1366,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     marginBottom: 10,
                     fontSize: 12,
                   }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight, marginBottom: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", color: mutedLight, marginBottom: 4 }}>
                       <span>You receive (80%)</span>
-                      <span style={{ color: green, fontWeight: 700 }}>{formatEth((listing.price * 8000n) / 10000n)} ETN</span>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                        <span style={{ color: green, fontWeight: 700 }}>{formatEth((listing.price * 8000n) / 10000n)} ETN</span>
+                        <UsdEstimate etn={formatEth((listing.price * 8000n) / 10000n)} />
+                      </span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", color: mutedLight }}>
                       <span>Burn pool (20%)</span>

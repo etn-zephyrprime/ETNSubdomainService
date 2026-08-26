@@ -4,6 +4,7 @@ import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../s
 import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
+import UsdEstimate from "./UsdEstimate.jsx";
 import { EXPLORER_BASE_URL } from "../config.js";
 
 // Browse/buy screen for the resale marketplace — every active listing on the deployed
@@ -173,8 +174,11 @@ export default function Marketplace({ wallet, onBack = null }) {
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 900, color: green, whiteSpace: "nowrap" }}>
-                    {formatEth(listing.price)} ETN
+                  <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <div style={{ fontSize: 15, fontWeight: 900, color: green }}>
+                      {formatEth(listing.price)} ETN
+                    </div>
+                    <UsdEstimate etn={formatEth(listing.price)} />
                   </div>
                   <NeonButton
                     variant={isOwnListing ? "dark" : "green"}
