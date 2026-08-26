@@ -11,8 +11,9 @@
 // its own schedule.
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
-import { sendZephyrosMessage, escapeHtml, shortAddr, zephyrosBotConfigured, NFT_THREAD_ID } from "./coreClashTelegram.js";
-import { RPC_URL, EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, NFT_COLLECTIONS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, NFT_THREAD_ID } from "./coreClashTelegram.js";
+import { RPC_URL, EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, REVERSE_REGISTRAR_ADDRESS, NFT_COLLECTIONS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 const STATE_KEY = "nft-mint-watcher";
 const MAX_BLOCK_RANGE = 500;
@@ -25,7 +26,7 @@ function tokenUrl(contractAddress, tokenId) {
 
 let isPolling = false;
 
-async function poll(provider) {
+async function poll(provider, resolveDisplayName) {
   if (isPolling) return;
   isPolling = true;
 
@@ -72,10 +73,11 @@ async function poll(provider) {
             console.warn(`⚠️  Failed to fetch tx sender for ${log.transactionHash}:`, err.message);
           }
 
+          const minterDisplay = await resolveDisplayName(minter);
           const caption =
             `🧬 <b>${escapeHtml(collection.name)} Mint</b>\n\n` +
             `Token: <b>#${escapeHtml(tokenId)}</b>\n` +
-            `Collector: <a href="${EXPLORER_BASE_URL}/address/${minter}">${escapeHtml(shortAddr(minter))}</a>\n` +
+            `Collector: <a href="${EXPLORER_BASE_URL}/address/${minter}">${escapeHtml(minterDisplay)}</a>\n` +
             `NFT: <a href="${tokenUrl(contractAddress, tokenId)}">View NFT</a>\n` +
             `Tx: <a href="${EXPLORER_BASE_URL}/tx/${log.transactionHash}">View Transaction</a>`;
 
@@ -103,9 +105,12 @@ export async function startCoreClashNftMintWatcher() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves the
+  // minter's primary name via primaryNameResolver.js.
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   console.log(`🧬 Core Clash NFT mint watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
-  poll(provider);
-  setInterval(() => poll(provider), POLL_INTERVAL_MS);
+  poll(provider, resolveDisplayName);
+  setInterval(() => poll(provider, resolveDisplayName), POLL_INTERVAL_MS);
 }

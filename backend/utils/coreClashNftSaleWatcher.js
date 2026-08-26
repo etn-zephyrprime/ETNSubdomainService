@@ -6,8 +6,9 @@
 // coreClashNftMintWatcher.js — see that file's comment for why.
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
-import { sendZephyrosMessage, escapeHtml, shortAddr, zephyrosBotConfigured, NFT_THREAD_ID } from "./coreClashTelegram.js";
-import { RPC_URL, EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, SEAPORT_ADDRESS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, NFT_THREAD_ID } from "./coreClashTelegram.js";
+import { RPC_URL, EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, REVERSE_REGISTRAR_ADDRESS, SEAPORT_ADDRESS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 const STATE_KEY = "nft-sale-watcher";
 const MAX_BLOCK_RANGE = 100;
@@ -66,20 +67,24 @@ async function resolveCurrencyMeta(provider, paymentToken, paymentItemType) {
   }
 }
 
-async function announceSale(provider, { contractAddress, tokenId, seller, buyer, offer, consideration, txHash }) {
+async function announceSale(provider, resolveDisplayName, { contractAddress, tokenId, seller, buyer, offer, consideration, txHash }) {
   const collection = NFT_COLLECTION_MAP[contractAddress];
   if (!collection) return;
 
   const payment = sumFungible(consideration);
   if (payment.amountRaw <= 0n) return;
 
-  const { symbol, decimals } = await resolveCurrencyMeta(provider, payment.paymentToken, payment.paymentItemType);
+  const [{ symbol, decimals }, sellerDisplay, buyerDisplay] = await Promise.all([
+    resolveCurrencyMeta(provider, payment.paymentToken, payment.paymentItemType),
+    resolveDisplayName(seller),
+    resolveDisplayName(buyer),
+  ]);
 
   const caption =
     `💰 <b>${escapeHtml(collection.name)} Sale</b>\n\n` +
     `Token: <b>#${escapeHtml(tokenId)}</b>\n` +
-    `Seller: <a href="${EXPLORER_BASE_URL}/address/${seller}">${escapeHtml(shortAddr(seller))}</a>\n` +
-    `Buyer: <a href="${EXPLORER_BASE_URL}/address/${buyer}">${escapeHtml(shortAddr(buyer))}</a>\n` +
+    `Seller: <a href="${EXPLORER_BASE_URL}/address/${seller}">${escapeHtml(sellerDisplay)}</a>\n` +
+    `Buyer: <a href="${EXPLORER_BASE_URL}/address/${buyer}">${escapeHtml(buyerDisplay)}</a>\n` +
     `Price: <b>${escapeHtml(ethers.formatUnits(payment.amountRaw, decimals))} ${escapeHtml(symbol)}</b>\n` +
     `NFT: <a href="${ELECTROSWAP_BASE_URL}/nfts/asset/${contractAddress}/${tokenId}">View NFT</a>\n` +
     `Tx: <a href="${EXPLORER_BASE_URL}/tx/${txHash}">View Transaction</a>`;
@@ -90,7 +95,7 @@ async function announceSale(provider, { contractAddress, tokenId, seller, buyer,
 
 let isPolling = false;
 
-async function poll(provider) {
+async function poll(provider, resolveDisplayName) {
   if (isPolling) return;
   isPolling = true;
 
@@ -122,7 +127,7 @@ async function poll(provider) {
           const inConsideration = findTrackedErc721(parsed.args.consideration);
 
           if (inOffer) {
-            await announceSale(provider, {
+            await announceSale(provider, resolveDisplayName, {
               contractAddress: inOffer.contractAddress,
               tokenId: inOffer.tokenId,
               seller: offerer,
@@ -131,7 +136,7 @@ async function poll(provider) {
               txHash: log.transactionHash,
             });
           } else if (inConsideration) {
-            await announceSale(provider, {
+            await announceSale(provider, resolveDisplayName, {
               contractAddress: inConsideration.contractAddress,
               tokenId: inConsideration.tokenId,
               seller: recipient,
@@ -162,9 +167,12 @@ export async function startCoreClashNftSaleWatcher() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves
+  // seller/buyer primary names via primaryNameResolver.js.
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   console.log(`💰 Core Clash NFT sale watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
-  poll(provider);
-  setInterval(() => poll(provider), POLL_INTERVAL_MS);
+  poll(provider, resolveDisplayName);
+  setInterval(() => poll(provider, resolveDisplayName), POLL_INTERVAL_MS);
 }

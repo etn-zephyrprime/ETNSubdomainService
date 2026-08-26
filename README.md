@@ -256,6 +256,23 @@ hand is the only way to find one.
 
 ---
 
+## Telegram bot wallet name resolution
+
+Every Telegram bot in this repo that shows a wallet address — domain
+activated/subname registered/name listed/name sold from
+`marketplaceWatcher.js`, and the Core Clash NFT sale/mint/swap alerts —
+now resolves it to that wallet's primary `.etn` name first, falling
+back to a shortened address (`0x1234...abcd`) only if it hasn't set
+one. `backend/utils/primaryNameResolver.js` centralizes this lookup;
+unlike most small helpers in this codebase (duplicated per file on
+purpose — see `queryLogsChunked`'s "fine to drift independently"
+comment), this one is shared everywhere it's used, specifically
+because getting it wrong already caused two real bugs (see
+`activatedDomainsCache.js`'s header comment) — every new call site
+gets the fix for free instead of a fresh chance to reintroduce it.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),

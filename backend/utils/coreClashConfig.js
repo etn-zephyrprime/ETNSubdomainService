@@ -13,6 +13,11 @@
 const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 const ELECTROSWAP_BASE_URL = process.env.ELECTROSWAP_BASE_URL || "https://app.electroswap.io";
+// Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — these bots trade Core Clash NFTs and
+// CORE tokens, not domains, but traders/buyers/sellers are still Electroneum wallets that may
+// have set a primary .etn name, so it's resolved the same way marketplaceWatcher.js's domain
+// notifications do (see primaryNameResolver.js).
+const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 
 // Same contracts CoreClashGame's backend/config.js and backend/nftConfig.js hardcode.
 const CORE_TOKEN_ADDRESS = process.env.CORE_TOKEN_ADDRESS;
@@ -57,6 +62,7 @@ export {
   RPC_URL,
   EXPLORER_BASE_URL,
   ELECTROSWAP_BASE_URL,
+  REVERSE_REGISTRAR_ADDRESS,
   CORE_TOKEN_ADDRESS,
   NFT_COLLECTIONS,
   NFT_COLLECTION_MAP,

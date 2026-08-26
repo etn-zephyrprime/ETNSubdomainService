@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { sendTelegramMessage, sendTelegramPhoto, telegramConfigured } from "./telegramNotifier.js";
 import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js";
+import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 // Polls the Marketplace contract for DomainActivated / SubnameRegistered / ExistingNameListed /
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
@@ -12,6 +13,9 @@ const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
+// Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed to resolve buyer/seller/payer
+// addresses to a primary name (see notifyDomainActivated etc. and primaryNameResolver.js).
+const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 // Same bucket the frontend links to (computeNftImageUrl in src/utils/ens.js) and
 // scripts/backfillNftImages.js uploads to — same node-keyed object convention.
@@ -62,10 +66,6 @@ function decodeDnsName(hex) {
 
 function formatEtn(wei) {
   return parseFloat(ethers.formatEther(wei)).toFixed(2);
-}
-
-function shortAddress(address) {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 // Same construction as src/utils/ens.js's computeSubnode — needed here because
@@ -131,27 +131,29 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
   return events;
 }
 
-async function notifyDomainActivated(event, nameWrapper) {
+async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
   const { node, payer, feePaid } = event.args;
   const domain = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const buyerDisplay = await resolveDisplayName(payer);
   const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
 
   await sendWithImage(
     node,
     `🌐 *Domain Activated*\n` +
     `Domain: \`${domain}\`\n` +
-    `Buyer: \`${shortAddress(payer)}\`\n` +
+    `Buyer: \`${buyerDisplay}\`\n` +
     `Price Paid: \`${formatEtn(feePaid)} ETN\`\n` +
     `[View Transaction](${txUrl})\n` +
     SITE_LINK_LINE
   );
 }
 
-async function notifySubnameRegistered(event, nameWrapper, marketplace) {
+async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName) {
   const { parentNode, label, buyer, price, burnAmount } = event.args;
   const domain = decodeDnsName(await nameWrapper.names(parentNode)) || "(unknown)";
   const subname = `${label}.${domain}`;
   const subNode = computeSubnode(parentNode, label);
+  const buyerDisplay = await resolveDisplayName(buyer);
   const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
 
   // Queried as of this event's own block (not just "latest") so it reads as the running total
@@ -170,7 +172,7 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace) {
     `🏷️ *Subname Registered*\n` +
     `Domain: \`${domain}\`\n` +
     `Subname: \`${subname}\`\n` +
-    `Buyer: \`${shortAddress(buyer)}\`\n` +
+    `Buyer: \`${buyerDisplay}\`\n` +
     `Price Paid: \`${formatEtn(price)} ETN\`\n` +
     `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
     (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
@@ -179,24 +181,25 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace) {
   );
 }
 
-async function notifyNameListed(event, nameWrapper) {
+async function notifyNameListed(event, nameWrapper, resolveDisplayName) {
   const { seller, tokenId, price } = event.args;
   const node = tokenIdToNode(tokenId);
   const name = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const sellerDisplay = await resolveDisplayName(seller);
   const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
 
   await sendWithImage(
     node,
     `🏪 *Name Listed for Resale*\n` +
     `Name: \`${name}\`\n` +
-    `Seller: \`${shortAddress(seller)}\`\n` +
+    `Seller: \`${sellerDisplay}\`\n` +
     `Price: \`${formatEtn(price)} ETN\`\n` +
     `[View Transaction](${txUrl})\n` +
     SITE_LINK_LINE
   );
 }
 
-async function notifyListingSold(event, nameWrapper, marketplace) {
+async function notifyListingSold(event, nameWrapper, marketplace, resolveDisplayName) {
   const { buyer, seller, price, burnAmount } = event.args;
   // ListingSold doesn't carry tokenId itself — re-read the listing by its id for the node, same
   // way ExistingNameListed's own listener resolves a name. Queried as of this event's block so a
@@ -204,6 +207,7 @@ async function notifyListingSold(event, nameWrapper, marketplace) {
   const listing = await marketplace.listings(event.args.listingId, { blockTag: event.blockNumber });
   const node = tokenIdToNode(listing.tokenId);
   const name = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const [sellerDisplay, buyerDisplay] = await Promise.all([resolveDisplayName(seller), resolveDisplayName(buyer)]);
   const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
 
   let burnPoolTotal;
@@ -217,8 +221,8 @@ async function notifyListingSold(event, nameWrapper, marketplace) {
     node,
     `💰 *Name Sold*\n` +
     `Name: \`${name}\`\n` +
-    `Seller: \`${shortAddress(seller)}\`\n` +
-    `Buyer: \`${shortAddress(buyer)}\`\n` +
+    `Seller: \`${sellerDisplay}\`\n` +
+    `Buyer: \`${buyerDisplay}\`\n` +
     `Price Paid: \`${formatEtn(price)} ETN\`\n` +
     `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
     (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
@@ -229,7 +233,7 @@ async function notifyListingSold(event, nameWrapper, marketplace) {
 
 let isPolling = false;
 
-async function poll(marketplace, nameWrapper) {
+async function poll(marketplace, nameWrapper, resolveDisplayName) {
   if (isPolling) return; // previous poll still running (e.g. a slow RPC) — skip this tick
   isPolling = true;
   try {
@@ -261,13 +265,13 @@ async function poll(marketplace, nameWrapper) {
     for (const event of events) {
       try {
         if (event.eventName === "DomainActivated") {
-          await notifyDomainActivated(event, nameWrapper);
+          await notifyDomainActivated(event, nameWrapper, resolveDisplayName);
         } else if (event.eventName === "SubnameRegistered") {
-          await notifySubnameRegistered(event, nameWrapper, marketplace);
+          await notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName);
         } else if (event.eventName === "ExistingNameListed") {
-          await notifyNameListed(event, nameWrapper);
+          await notifyNameListed(event, nameWrapper, resolveDisplayName);
         } else if (event.eventName === "ListingSold") {
-          await notifyListingSold(event, nameWrapper, marketplace);
+          await notifyListingSold(event, nameWrapper, marketplace, resolveDisplayName);
         }
       } catch (err) {
         // One bad event (e.g. a transient Telegram API error) shouldn't stop the rest, and
@@ -295,11 +299,14 @@ export function startMarketplaceWatcher() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  // batchMaxCount: 1 — same fix as activatedDomainsCache.js/marketplaceSellersCache.js; this
+  // provider now also resolves buyer/seller/payer primary names via primaryNameResolver.js.
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
+  const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   console.log(`📡 Marketplace watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
-  poll(marketplace, nameWrapper); // run once immediately rather than waiting a full interval
-  setInterval(() => poll(marketplace, nameWrapper), POLL_INTERVAL_MS);
+  poll(marketplace, nameWrapper, resolveDisplayName); // run once immediately rather than waiting a full interval
+  setInterval(() => poll(marketplace, nameWrapper, resolveDisplayName), POLL_INTERVAL_MS);
 }
