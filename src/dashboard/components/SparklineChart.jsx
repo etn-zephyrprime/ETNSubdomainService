@@ -1,5 +1,5 @@
 import React from "react";
-import { green, greenGlow } from "../../styles/theme.js";
+import { green, greenGlow } from "../theme.js";
 
 // Small hand-rolled SVG line chart — no charting library dependency for what's just a handful of
 // points (Blockscout's chart endpoints return ~30-90 daily data points at most). `points` is an

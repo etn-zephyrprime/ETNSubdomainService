@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../../styles/theme.js";
+import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { formatCompact, shortHash } from "../utils/format.js";
 import NeonButton from "../../components/NeonButton.jsx";

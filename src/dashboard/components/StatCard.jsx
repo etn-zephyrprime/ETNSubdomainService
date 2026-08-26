@@ -1,5 +1,5 @@
 import React from "react";
-import { greenGlow, muted, mutedLight, panel2, border } from "../../styles/theme.js";
+import { greenGlow, muted, mutedLight, panel2, border } from "../theme.js";
 
 export default function StatCard({ label, value, sub, children }) {
   return (

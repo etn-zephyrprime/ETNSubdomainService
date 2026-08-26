@@ -1,5 +1,5 @@
 import React from "react";
-import { green, mutedLight, panel2, border } from "../../styles/theme.js";
+import { green, mutedLight, panel2, border } from "../theme.js";
 
 const TABS = [
   { id: "overview", label: "Overview" },

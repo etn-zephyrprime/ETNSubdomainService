@@ -397,6 +397,35 @@ anywhere; the main site is completely unaffected either way.
 append `?__dashboard_test=1` to the dev server URL to force the
 dashboard branch without editing hosts files.
 
+**Own brand, own palette**: `src/dashboard/theme.js` is a Planet
+Zephyros-branded palette, deliberately separate from
+`src/styles/theme.js` (which stays exactly as-is for the ETN Subdomain
+Service site) — every dashboard file imports colors from its own copy,
+never the main site's, so a brand change on one can never leak into
+the other.
+
+**Chart tiles**: Overview and Address Lookup each have a row of
+clickable stat tiles sharing one chart underneath (`TileChart.jsx`) —
+click a tile, the chart below swaps to that metric's history:
+
+- Overview: Total Transactions is reconstructed from real ~90-day
+  daily data `/stats/charts/transactions` already provides (see
+  `reconstructCumulativeTransactions()` in `useDashboardStats.js` —
+  real arithmetic on real numbers, not an estimate). Total Addresses /
+  Total Blocks / Avg Block Time / Gas Price / Txs Today (hourly) all
+  come from the new `dashboardStatsCache.js` hourly snapshot history
+  described above — these start thin the moment this first deploys
+  and grow one point richer every hour; there's no backfilling
+  history Blockscout never recorded.
+- Address Lookup: ETN Balance uses Blockscout's real
+  `coin-balance-history-by-day` endpoint (full history, immediately).
+  Transactions/Token Transfers have no Blockscout history endpoint at
+  all, so they're derived from up to 5 pages (250 items) of the
+  address's own transaction/transfer list, bucketed by day — a bounded
+  "recent activity" view, not a claim of full history, so a genuinely
+  high-activity address doesn't mean unbounded fetching just to draw
+  a chart.
+
 ---
 
 ## Manual regeneration endpoint
