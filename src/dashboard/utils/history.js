@@ -17,7 +17,8 @@ function dayKey(isoString) {
  * last WINDOW_DAYS days, oldest first, zero-filled for days with no activity — the zero-fill
  * matters as much as the counts themselves, since SparklineChart's x-axis assumes equal time
  * steps between points; only plotting days that had activity would compress a genuinely sparse
- * history into a misleadingly busy-looking line.
+ * history into a misleadingly busy-looking line. Returns `{ label, value }` pairs — `label` is
+ * the bucket's day ("2026-08-26"), for SparklineChart's axis/tooltip date formatting.
  */
 export function bucketDailyCounts(items, timestampField = "timestamp") {
   const counts = new Map();
@@ -36,7 +37,7 @@ export function bucketDailyCounts(items, timestampField = "timestamp") {
   const series = [];
   for (let i = WINDOW_DAYS - 1; i >= 0; i--) {
     const key = dayKey(new Date(now - i * ONE_DAY_MS).toISOString());
-    series.push(counts.get(key) || 0);
+    series.push({ label: key, value: counts.get(key) || 0 });
   }
   return series;
 }

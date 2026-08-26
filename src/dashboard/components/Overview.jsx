@@ -3,10 +3,10 @@ import { CheckCircle2, AlertTriangle } from "lucide-react";
 import { green, orange, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useDashboardStats, reconstructCumulativeTransactions } from "../hooks/useDashboardStats.js";
-import { formatCompact, formatInt, shortHash, timeAgo, formatEtnBalance } from "../utils/format.js";
+import { formatCompact, formatInt, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
-import StatCard from "./StatCard.jsx";
 import TileChart from "./TileChart.jsx";
+import EtnPriceChart from "./EtnPriceChart.jsx";
 
 function IndexingBadge({ status }) {
   if (!status) return null;
@@ -76,17 +76,18 @@ function BlockRow({ block }) {
   );
 }
 
-// The 6 metrics the shared Overview chart can show, driven by clicking a tile. "totalTx" is
-// reconstructed from real existing daily data (rich immediately); the rest come from
-// dashboardStatsCache.js's hourly snapshots (thin at first, growing an hour richer every hour —
-// there's no Blockscout history to backfill from, see that file's header comment).
+// The 6 metrics the shared Overview chart can show, driven by clicking a tile, each with its own
+// value formatter (chart Y-axis + tooltip) — "totalTx" is reconstructed from real existing daily
+// data (rich immediately); the rest come from dashboardStatsCache.js's hourly snapshots (thin at
+// first, growing an hour richer every hour — there's no Blockscout history to backfill from, see
+// that file's header comment).
 const METRICS = [
-  { id: "totalTx", label: "Total Transactions" },
-  { id: "totalAddresses", label: "Total Addresses" },
-  { id: "totalBlocks", label: "Total Blocks" },
-  { id: "avgBlockTime", label: "Avg Block Time" },
-  { id: "gasPrice", label: "Gas Price" },
-  { id: "txsToday", label: "Txs Today (by hour)" },
+  { id: "totalTx", label: "Total Transactions", formatValue: formatCompact },
+  { id: "totalAddresses", label: "Total Addresses", formatValue: formatCompact },
+  { id: "totalBlocks", label: "Total Blocks", formatValue: formatCompact },
+  { id: "avgBlockTime", label: "Avg Block Time", formatValue: (v) => `${v.toFixed(1)}s` },
+  { id: "gasPrice", label: "Gas Price", formatValue: (v) => `${v.toFixed(2)} gwei` },
+  { id: "txsToday", label: "Txs Today (by hour)", formatValue: formatInt },
 ];
 
 function todayUtcKey(date = new Date()) {
@@ -133,18 +134,20 @@ export default function Overview() {
     return () => { cancelled = true; };
   }, [getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks, getSnapshots]);
 
+  // Each series is `{ label, value }[]` — label is a real date/timestamp from whichever source
+  // backs that metric, threaded through to SparklineChart for its axis labels + hover tooltip.
   const series = useMemo(() => {
     const totalTx = stats && txChart
       ? reconstructCumulativeTransactions(txChart.chart_data, Number(stats.total_transactions)).slice(-90)
       : [];
-    const totalAddresses = snapshots.map((s) => s.totalAddresses);
-    const totalBlocks = snapshots.map((s) => s.totalBlocks);
-    const avgBlockTime = snapshots.map((s) => s.averageBlockTimeMs / 1000);
-    const gasPrice = snapshots.map((s) => s.gasPriceAverage);
+    const totalAddresses = snapshots.map((s) => ({ label: s.timestamp, value: s.totalAddresses }));
+    const totalBlocks = snapshots.map((s) => ({ label: s.timestamp, value: s.totalBlocks }));
+    const avgBlockTime = snapshots.map((s) => ({ label: s.timestamp, value: s.averageBlockTimeMs / 1000 }));
+    const gasPrice = snapshots.map((s) => ({ label: s.timestamp, value: s.gasPriceAverage }));
     const todayKey = todayUtcKey();
     const txsToday = snapshots
       .filter((s) => s.timestamp.slice(0, 10) === todayKey)
-      .map((s) => s.transactionsThisHour);
+      .map((s) => ({ label: s.timestamp, value: s.transactionsThisHour }));
 
     return { totalTx, totalAddresses, totalBlocks, avgBlockTime, gasPrice, txsToday };
   }, [stats, txChart, snapshots]);
@@ -178,22 +181,23 @@ export default function Overview() {
     txsToday: "Transactions per hour, today (UTC)",
   };
 
+  const activeFormatValue = METRICS.find((m) => m.id === activeMetric).formatValue;
+
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
         <IndexingBadge status={indexingStatus} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 24 }}>
-        <StatCard label="ETN Price" value={stats ? `$${Number(stats.coin_price).toFixed(6)}` : "…"} />
-        <StatCard label="Market Cap" value={stats ? `$${formatCompact(stats.market_cap)}` : "…"} />
-      </div>
+      <EtnPriceChart />
 
       <TileChart
         tiles={tiles}
         activeId={activeMetric}
         onSelect={setActiveMetric}
-        points={series[activeMetric] || []}
+        data={series[activeMetric] || []}
+        formatValue={activeFormatValue}
+        formatLabel={formatChartDate}
         chartCaption={captions[activeMetric]}
         loading={!stats}
       />

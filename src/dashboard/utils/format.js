@@ -30,6 +30,15 @@ export function formatTokenAmount(rawValue, decimals) {
   }
 }
 
+/** ETN trades at a fraction of a cent, so a flat 2-decimal $ format would round it to "$0.00" —
+ * shows enough decimals to actually be meaningful below a cent, plain 2-decimal above it. */
+export function formatUsdPrice(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  if (Math.abs(value) < 0.01) return `$${value.toFixed(6)}`;
+  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** Native ETN balance (always 18 decimals) — same rounding as this app's own formatEth. */
 export function formatEtnBalance(wei) {
   try {
@@ -50,6 +59,26 @@ export function isSpamTokenName(name) {
 export function shortHash(hash, chars = 6) {
   if (!hash) return "";
   return `${hash.slice(0, chars)}...${hash.slice(-4)}`;
+}
+
+/**
+ * Chart axis/tooltip date formatting — `detailed` (SparklineChart's tooltip) gets a fuller
+ * string than the compact one used for axis ticks. Handles both a plain "2026-08-26" day string
+ * and a full ISO timestamp the same way (Date parses both), so the same formatter works for
+ * daily-granularity series (e.g. coin-balance-history-by-day) and hourly ones
+ * (dashboardStatsCache snapshots) alike — hourly series additionally show the hour, since a bare
+ * date would repeat across every point in the same day.
+ */
+export function formatChartDate(label, detailed = false) {
+  const date = new Date(label);
+  if (Number.isNaN(date.getTime())) return String(label);
+
+  const isHourly = typeof label === "string" && label.length > 10; // "2026-08-26" vs a full ISO timestamp
+  const datePart = date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(detailed ? { year: "numeric" } : {}) });
+  if (!isHourly) return datePart;
+
+  const timePart = date.toLocaleTimeString(undefined, { hour: "numeric", minute: detailed ? "2-digit" : undefined });
+  return `${datePart}, ${timePart}`;
 }
 
 /** "2026-08-26T19:49:14Z" -> "3m ago" / "5h ago" / "2d ago" — Blockscout timestamps are ISO. */

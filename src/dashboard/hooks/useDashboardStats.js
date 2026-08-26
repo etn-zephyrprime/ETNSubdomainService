@@ -28,7 +28,8 @@ export function useDashboardStats() {
  * all-time total (a stock metric) — Blockscout has no direct history for the stock metric
  * itself, but this derives one that's accurate as of each day's close: cumulative[day] =
  * currentTotal - (sum of every later day's new-transaction count). Real data, not a guess — just
- * arithmetic on two real numbers this app already fetches.
+ * arithmetic on two real numbers this app already fetches. Returns `{ label, value }` pairs,
+ * `label` being that day's real date from Blockscout's own chart_data.
  */
 export function reconstructCumulativeTransactions(dailyChartData, currentTotal) {
   if (!Array.isArray(dailyChartData) || !Number.isFinite(currentTotal)) return [];
@@ -39,7 +40,7 @@ export function reconstructCumulativeTransactions(dailyChartData, currentTotal) 
   const series = new Array(oldestFirst.length);
 
   for (let i = oldestFirst.length - 1; i >= 0; i--) {
-    series[i] = currentTotal - runningLaterSum;
+    series[i] = { label: oldestFirst[i].date, value: currentTotal - runningLaterSum };
     const count = Number(oldestFirst[i].transaction_count);
     runningLaterSum += Number.isFinite(count) ? count : 0;
   }
