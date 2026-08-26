@@ -358,6 +358,47 @@ warnings.
 
 ---
 
+## Electroneum dashboard (dashboard.planetzephyros.xyz)
+
+A second, completely separate app living in `src/dashboard/` — free-
+tier network stats/activity/token-leaderboard/wallet-lookup, read-only,
+no wallet connection required. Ported from a standalone build brief
+(premium tiers — tracked wallets, subscriptions, PnL — are a later,
+separate pass; not implemented yet).
+
+**Why one repo, one build, two domains**: `src/main.jsx` checks
+`window.location.hostname` and dynamically `import()`s either
+`App.jsx` (the existing ENS site) or `dashboard/DashboardApp.jsx` —
+each domain's custom-domain entry in Vercel points at the same
+project/deployment, so this is a client-side split, not two separate
+deploys. Critically, both branches are *dynamic* imports specifically
+so a dashboard visitor's bundle never pulls in the ENS site's
+Reown/WalletConnect code (`createAppKit()` runs on module load and
+talks to WalletConnect's infra) — confirmed via the build output that
+`useReownWallet.jsx`'s ~1.5MB chunk is excluded from a dashboard-only
+load.
+
+**Data source**: Electroneum's own block explorer
+(`blockexplorer.electroneum.com`) runs Blockscout, whose public v2 API
+(`/api/v2/...`) sets `access-control-allow-origin: *` — confirmed live
+— so `useBlockscout.js` calls it directly from the browser, no backend
+proxy. `AddressLookup.jsx` reuses `usePayment.js`'s existing
+`resolveName()` for `.etn` name input rather than re-implementing name
+resolution a second time.
+
+**Still needed to actually go live**: attaching
+`dashboard.planetzephyros.xyz` as an additional custom domain on the
+same Vercel project the main site already deploys to (Vercel dashboard
+→ Domains) — not something this session had access to do. Until that
+domain is attached, the dashboard code ships but isn't reachable
+anywhere; the main site is completely unaffected either way.
+
+**Testing locally**: since `localhost` doesn't match `dashboard.*`,
+append `?__dashboard_test=1` to the dev server URL to force the
+dashboard branch without editing hosts files.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),
