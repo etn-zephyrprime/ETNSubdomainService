@@ -3,7 +3,7 @@ import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { usePayment } from "../../hooks/usePayment.js";
-import { formatCompact, formatTokenAmount, formatEtnBalance, shortHash } from "../utils/format.js";
+import { formatCompact, formatTokenAmount, formatEtnBalance, shortHash, isSpamTokenName } from "../utils/format.js";
 import { bucketDailyCounts } from "../utils/history.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
@@ -47,6 +47,12 @@ const METRICS = [
   { id: "tokenTransfers", label: "Token Transfers" },
 ];
 
+const HOLDING_CATEGORIES = [
+  { id: "tokens", label: "Tokens" },
+  { id: "nfts", label: "NFT's" },
+];
+const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
+
 // Session-only single wallet lookup (free tier) — accepts either a raw 0x address or a .etn name,
 // reusing usePayment.js's existing resolveName() rather than re-implementing name resolution a
 // second time. Nothing here is persisted; re-searching starts fresh, same as the brief's "not
@@ -69,6 +75,7 @@ export default function AddressLookup({ initialAddress = null }) {
   const [txHistory, setTxHistory] = useState(null);
   const [transferHistory, setTransferHistory] = useState(null);
   const [activeMetric, setActiveMetric] = useState("balance");
+  const [holdingsCategory, setHoldingsCategory] = useState("tokens");
 
   const handleLookup = async () => {
     setResolveError(null);
@@ -155,6 +162,15 @@ export default function AddressLookup({ initialAddress = null }) {
 
   const chartLoading = { balance: balanceHistory === null, transactions: txHistory === null, tokenTransfers: transferHistory === null }[activeMetric];
 
+  const visibleHoldings = useMemo(() => {
+    const wantNft = holdingsCategory === "nfts";
+    return tokenBalances.filter((tb) => {
+      const isNft = NFT_TOKEN_TYPES.has(tb.token?.type);
+      if (isNft !== wantNft) return false;
+      return !isSpamTokenName(tb.token?.name);
+    });
+  }, [tokenBalances, holdingsCategory]);
+
   const captions = {
     balance: "ETN balance, full history by day",
     transactions: `Transactions per day (last ${Math.min(txHistory?.length ?? 0, 250)} fetched, ${MAX_HISTORY_PAGES} page(s) max)`,
@@ -216,16 +232,36 @@ export default function AddressLookup({ initialAddress = null }) {
             loading={chartLoading}
           />
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, margin: "24px 0 8px", textTransform: "uppercase", letterSpacing: 0.6 }}>
-            Token Holdings
+          <div style={{ display: "flex", gap: 8, margin: "24px 0 8px" }}>
+            {HOLDING_CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setHoldingsCategory(c.id)}
+                style={{
+                  flex: "1 1 100px",
+                  padding: "8px 8px",
+                  borderRadius: 10,
+                  border: `1px solid ${c.id === holdingsCategory ? green : border}`,
+                  background: c.id === holdingsCategory ? "rgba(24,187,26,0.12)" : panel2,
+                  color: c.id === holdingsCategory ? green : mutedLight,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {c.label}
+              </button>
+            ))}
           </div>
-          {tokenBalances.length === 0 ? (
-            <div style={{ fontSize: 12, color: muted }}>No token balances.</div>
+          {visibleHoldings.length === 0 ? (
+            <div style={{ fontSize: 12, color: muted }}>
+              {holdingsCategory === "nfts" ? "No NFTs held." : "No token balances."}
+            </div>
           ) : (
-            tokenBalances.slice(0, 25).map((tb, i) => (
+            visibleHoldings.slice(0, 25).map((tb, i) => (
               <div key={`${tb.token?.address}-${i}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
                 <span style={{ fontSize: 12, color: "#fff" }}>
-                  {tb.token?.name || "Unknown Token"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
+                  {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
                 </span>
                 <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
               </div>

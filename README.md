@@ -426,6 +426,36 @@ click a tile, the chart below swaps to that metric's history:
   high-activity address doesn't mean unbounded fetching just to draw
   a chart.
 
+**Own header/footer, dark green background**: `DashboardHeader.jsx` —
+Planet Zephyros logo + wordmark side by side — replaced reusing the
+main site's `Header.jsx` (wallet UI, ETN Subdomain Service branding,
+"Simplify your wallet" tagline, none of which belongs here). Page
+background is `theme.js`'s `background` token, a dark desaturated
+green rather than the main site's navy, chosen to actually read as
+"on brand" with the accent green rather than clash with it. The
+"Electroneum Dashboard" line is set in Orbitron (already used
+elsewhere in this app for NFT art — see `src/index.css`'s
+`@font-face`) at a size that reads as the page's real heading now that
+the old full-size logo lockup is gone.
+
+**Tokens vs NFT's**: both the Tokens tab and Address Lookup's holdings
+list split into "Tokens" (ERC-20) / "NFT's" (ERC-721 + ERC-1155) sub-
+tabs, confirmed live that Blockscout's `/tokens` supports both as a
+server-side `type=` filter (including comma-separated multi-type) so
+neither list has to over-fetch and filter client-side. Both also drop
+any token/collection whose name contains "dead", "test", or "token"
+(case-insensitive — `isSpamTokenName()` in `utils/format.js`) — this
+alone removed a wall of identical airdrop-spam "DEAD COIN" entries
+that had been dominating the top of the unfiltered list.
+
+Fixed a real bug found while wiring this up: `formatTokenAmount()`
+defaulted to 18 decimals whenever a token had none set — true for
+every NFT (`decimals` is `null` on Blockscout for ERC-721/1155) —
+which divided a real integer count like "16" down to
+"0.000000000000000016", silently displayed as "0" once rounded. NFT
+holdings and NFT collection total-supply figures were both actually
+showing wrong before this pass; both are correct now.
+
 ---
 
 ## Manual regeneration endpoint

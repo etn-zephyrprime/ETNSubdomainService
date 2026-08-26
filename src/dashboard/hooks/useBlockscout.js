@@ -21,10 +21,13 @@ export function useBlockscout() {
   const getRecentTransactions = useCallback(() => fetchJson("/main-page/transactions"), []);
   const getRecentBlocks = useCallback(() => fetchJson("/main-page/blocks"), []);
 
-  const getTokens = useCallback((nextPageParams = null) => {
-    const query = nextPageParams
-      ? `?${new URLSearchParams(nextPageParams).toString()}`
-      : "";
+  // `type` is a Blockscout token type filter, e.g. "ERC-20" or "ERC-721,ERC-1155" — confirmed
+  // live that the API supports both single and comma-separated multi-type filtering server-side,
+  // so the Tokens/NFT's split (TokenLeaderboard.jsx) doesn't need to fetch everything and filter
+  // client-side.
+  const getTokens = useCallback((type = null, nextPageParams = null) => {
+    const params = { ...(type ? { type } : {}), ...(nextPageParams || {}) };
+    const query = Object.keys(params).length ? `?${new URLSearchParams(params).toString()}` : "";
     return fetchJson(`/tokens${query}`);
   }, []);
   const getToken = useCallback((address) => fetchJson(`/tokens/${address}`), []);

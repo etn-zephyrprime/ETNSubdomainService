@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import Header from "../components/Header.jsx";
-import { muted, mutedLight } from "./theme.js";
+import DashboardHeader from "./components/DashboardHeader.jsx";
+import { greenGlow, mutedLight, background } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
 import Overview from "./components/Overview.jsx";
@@ -38,21 +38,28 @@ export default function DashboardApp() {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "#011528",
+      background,
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
       padding: "40px 16px",
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }}>
-      <Header wallet={null} isMobile={isMobile} hideWallet={true} />
+      <DashboardHeader isMobile={isMobile} />
 
       <div style={{ width: "100%", maxWidth: 900 }}>
         <div style={{ marginBottom: 24, textAlign: "center" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted }}>
+          <div style={{
+            fontFamily: "Orbitron, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+            fontWeight: 700,
+            fontSize: isMobile ? 24 : 32,
+            letterSpacing: 1,
+            color: "#fff",
+            textShadow: `0 0 16px ${greenGlow}`,
+          }}>
             Electroneum Dashboard
           </div>
-          <div style={{ fontSize: 13, color: mutedLight, marginTop: 4 }}>
+          <div style={{ fontSize: 13, color: mutedLight, marginTop: 8 }}>
             Live network stats, activity, tokens, and wallet lookup.
           </div>
         </div>
