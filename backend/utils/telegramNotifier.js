@@ -63,3 +63,35 @@ export async function sendTelegramPhoto(photoUrl, caption) {
     parse_mode: "Markdown",
   });
 }
+
+/**
+ * Sends `text` to an arbitrary chat id (a wallet owner's personal DM with this bot, via
+ * telegramLinkRouter.js) rather than the fixed TELEGRAM_CHAT_ID channel every other function
+ * here posts to. Same bot token, same Markdown formatting — just a different destination.
+ * Doesn't throw: a failed personal DM (e.g. the user blocked the bot) shouldn't take down the
+ * public channel notification callers send alongside it, so this returns null on failure instead
+ * and lets the caller decide whether/how to log it.
+ */
+export async function sendTelegramDirectMessage(chatId, text) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn("ℹ️  Telegram not configured (TELEGRAM_BOT_TOKEN) — skipping direct message");
+    return null;
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) {
+      throw new Error(`Telegram API error: ${data?.description || res.statusText}`);
+    }
+    return data;
+  } catch (err) {
+    console.warn(`⚠️  Failed to DM Telegram chat ${chatId}:`, err.message);
+    return null;
+  }
+}

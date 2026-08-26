@@ -1,7 +1,8 @@
 import { ethers } from "ethers";
-import { sendTelegramMessage, sendTelegramPhoto, telegramConfigured } from "./telegramNotifier.js";
+import { sendTelegramMessage, sendTelegramPhoto, sendTelegramDirectMessage, telegramConfigured } from "./telegramNotifier.js";
 import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
+import { getLinkedChatId } from "./telegramLinkRouter.js";
 
 // Polls the Marketplace contract for DomainActivated / SubnameRegistered / ExistingNameListed /
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
@@ -48,7 +49,10 @@ const MARKETPLACE_ABI = [
   "function burnPool() view returns (uint256)",
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
-const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
+const NAME_WRAPPER_ABI = [
+  "function names(bytes32 node) view returns (bytes)",
+  "function getData(uint256 id) view returns (address owner, uint32 fuses, uint64 expiry)",
+];
 
 function decodeDnsName(hex) {
   const bytes = ethers.getBytes(hex);
@@ -131,6 +135,20 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
   return events;
 }
 
+// DMs `address` directly if (and only if) it's linked its Telegram via telegramLinkRouter.js —
+// on top of, never instead of, the public channel post every notify* function below already
+// makes. Best-effort: sendTelegramDirectMessage already swallows its own failures (a blocked bot,
+// a bad chat id) so one owner's undeliverable DM never affects the channel post or any other
+// owner's DM.
+async function notifyOwnerDirect(address, text) {
+  try {
+    const chatId = await getLinkedChatId(address);
+    if (chatId) await sendTelegramDirectMessage(chatId, text);
+  } catch (err) {
+    console.warn(`⚠️  Failed to send personal alert to ${address}:`, err.message);
+  }
+}
+
 async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
   const { node, payer, feePaid } = event.args;
   const domain = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
@@ -179,6 +197,21 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveD
     `[View Transaction](${txUrl})\n` +
     SITE_LINK_LINE
   );
+
+  // The seller here is the parent domain's owner (they set the price, they earn 80% — see
+  // sellerAmount, unused above only because the channel message already derives it from price),
+  // not the buyer — a personal DM about a sale should go to whoever actually got paid.
+  try {
+    const parentData = await nameWrapper.getData(parentNode);
+    await notifyOwnerDirect(
+      parentData.owner,
+      `🏷️ *${subname}* just sold for *${formatEtn(price)} ETN*\n\n` +
+      `You earned *${formatEtn(event.args.sellerAmount)} ETN* (80%).\n\n` +
+      `[View Transaction](${txUrl})`
+    );
+  } catch (err) {
+    console.warn(`⚠️  Couldn't resolve parent domain owner for personal alert:`, err.message);
+  }
 }
 
 async function notifyNameListed(event, nameWrapper, resolveDisplayName) {
@@ -200,7 +233,7 @@ async function notifyNameListed(event, nameWrapper, resolveDisplayName) {
 }
 
 async function notifyListingSold(event, nameWrapper, marketplace, resolveDisplayName) {
-  const { buyer, seller, price, burnAmount } = event.args;
+  const { buyer, seller, price, sellerAmount, burnAmount } = event.args;
   // ListingSold doesn't carry tokenId itself — re-read the listing by its id for the node, same
   // way ExistingNameListed's own listener resolves a name. Queried as of this event's block so a
   // once-active listing already flipped inactive by a later poll still resolves correctly.
@@ -228,6 +261,13 @@ async function notifyListingSold(event, nameWrapper, marketplace, resolveDisplay
     (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
     `[View Transaction](${txUrl})\n` +
     SITE_LINK_LINE
+  );
+
+  await notifyOwnerDirect(
+    seller,
+    `💰 *${name}* just sold for *${formatEtn(price)} ETN*\n\n` +
+    `You received *${formatEtn(sellerAmount)} ETN* (80%).\n\n` +
+    `[View Transaction](${txUrl})`
   );
 }
 

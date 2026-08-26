@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { Flame } from "lucide-react";
 import Panel from "./Panel.jsx";
 import NeonButton from "./NeonButton.jsx";
+import UsdEstimate from "./UsdEstimate.jsx";
 import { useBurnPool } from "../hooks/useBurnPool.js";
 import { formatEth } from "../utils/format.js";
 import { MARKETPLACE_OWNER_ADDRESS } from "../config.js";
@@ -82,8 +83,11 @@ export default function BurnPoolCard({ wallet }) {
       {poolError ? (
         <div style={{ fontSize: 12, color: errorColor }}>{poolError}</div>
       ) : (
-        <div style={{ fontSize: 26, fontWeight: 900, color: green, textShadow: `0 0 12px ${greenGlow}` }}>
-          {burnPool === null ? "Loading…" : `${formatEth(burnPool)} ETN`}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <div style={{ fontSize: 26, fontWeight: 900, color: green, textShadow: `0 0 12px ${greenGlow}` }}>
+            {burnPool === null ? "Loading…" : `${formatEth(burnPool)} ETN`}
+          </div>
+          {burnPool !== null && <UsdEstimate etn={formatEth(burnPool)} />}
         </div>
       )}
       <div style={{ fontSize: 11, color: mutedLight, marginTop: 6 }}>

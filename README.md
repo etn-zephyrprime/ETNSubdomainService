@@ -297,6 +297,55 @@ gets the fix for free instead of a fresh chance to reintroduce it.
 
 ---
 
+## ETN/USD price estimates
+
+Every headline price shown on the site (registration total, subname
+price, marketplace listings, renewal quotes, resale amounts, the burn
+pool balance) shows a small "≈ $X.XX" estimate underneath, via
+`UsdEstimate.jsx` + `useEtnPrice.js`. Backed by
+`backend/utils/etnPriceCache.js`, same R2-publish-on-a-timer pattern
+as every other cache here — the live ETN/USD price (from the same
+CoinGecko endpoint `coreClashSwapWatcher.js` already uses for its own
+WETN/USD estimate) is fetched once on a timer and published to R2,
+rather than every visitor's browser hitting CoinGecko directly on
+every page load. Renders nothing if the price hasn't loaded yet or
+R2/the cache isn't configured — every price display still works, just
+without the USD line, same fallback behavior as this repo's other
+optional R2-backed features.
+
+Only wired into headline totals, not every fee-breakdown sub-line
+(e.g. the brokerage fee row) — a USD estimate next to every single
+number on a receipt reads as clutter, not clarity.
+
+---
+
+## Personal Telegram alerts
+
+Beyond the public "Subdomain Name Service" channel post
+`marketplaceWatcher.js` already makes for every sale, a wallet owner
+can opt in (from "Manage & Resell" / "Register Subdomain" — see
+`TelegramAlertsCard.jsx`) to a personal DM the moment one of their
+names or subnames actually sells. `backend/utils/telegramLinkRouter.js`
+has the full flow in its header comment; short version: the wallet
+signs a request (same pattern as `backendAuth.js`/`verifyOwnership.js`,
+just proving control of the address rather than ownership of a
+specific name) to get a one-time `t.me/<bot>?start=<code>` link,
+tapping it starts a chat with the bot which sends `/start <code>` as
+its first message automatically, and Telegram POSTs that to this
+backend's webhook — which is what finally records `{ address -> chat
+id }` and lets `marketplaceWatcher.js` DM that owner directly on every
+future `SubnameRegistered`/`ListingSold` event for their name. `/unlink`
+in the chat (or the toggle on the site) removes it again.
+
+Requires `BACKEND_PUBLIC_URL` (so Telegram has an HTTPS address to
+POST incoming messages to) on top of the `TELEGRAM_BOT_TOKEN` this
+repo's bot already uses — see `.env.example`. Without it, linking
+requests still go out but never complete (the UI just waits forever
+for a confirmation that can never arrive), and the rest of the site
+— including the public channel alerts — is completely unaffected.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),

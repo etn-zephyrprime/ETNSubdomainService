@@ -2,11 +2,13 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
+import telegramLinkRouter, { registerTelegramWebhook } from "./utils/telegramLinkRouter.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
 import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js";
 import { startOwnedNamesCache } from "./utils/ownedNamesCache.js";
+import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startSubdomainAdvertScheduler } from "./utils/subdomainAdvertScheduler.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
@@ -44,6 +46,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api", generateNftRouter);
+app.use("/api", telegramLinkRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -66,6 +69,8 @@ app.listen(PORT, () => {
   startActivatedDomainsCache();
   startMarketplaceSellersCache();
   startOwnedNamesCache();
+  startEtnPriceCache();
+  safeStart("Telegram webhook registration", registerTelegramWebhook);
   safeStart("Subdomain advert scheduler", startSubdomainAdvertScheduler);
 
   // Telegram bots ported from etn-zephyrprime/CoreClashGame — see
