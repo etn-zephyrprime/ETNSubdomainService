@@ -3,6 +3,7 @@ import { green, error as errorColor, mutedLight, muted, panel2, border } from ".
 import { useCoinGecko } from "../hooks/useCoinGecko.js";
 import { formatUsdPrice, formatCompact, formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
+import CandlestickChart, { alignVolumeToCandles } from "./CandlestickChart.jsx";
 
 const RANGES = [
   { id: "7", label: "7D", days: 7 },
@@ -37,47 +38,77 @@ function Pill({ active, onClick, children }) {
 // ETN price + basic "chart analysis" (current/high/low/change over the shown range) — via
 // CoinGecko directly (useCoinGecko.js), not Blockscout's own /stats/charts/market, whose
 // closing_price field is mostly empty on this deployment (confirmed: only the most recent day is
-// ever non-null). market_chart's response already includes both prices and market_caps in one
-// call, so the metric toggle below doesn't need a second request.
+// ever non-null). Price is real green/red OHLC candles (CandlestickChart.jsx) with volume bars
+// underneath (CoinGecko's total_volumes, aligned to each candle's own time window — a different,
+// finer granularity than the candles themselves, see alignVolumeToCandles()); Market Cap has no
+// meaningful "candle" concept (nothing trades market cap directly), so that toggle stays a plain
+// line/area chart.
 export default function EtnPriceChart() {
-  const { getMarketChart } = useCoinGecko();
+  const { getMarketChart, getOhlc } = useCoinGecko();
 
   const [range, setRange] = useState("30");
   const [metric, setMetric] = useState("price");
   const [chartData, setChartData] = useState(null);
+  const [ohlc, setOhlc] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setChartData(null);
+    setOhlc(null);
     setError(null);
     const days = RANGES.find((r) => r.id === range).days;
-    getMarketChart(days)
-      .then((res) => { if (!cancelled) setChartData(res); })
+    Promise.all([getMarketChart(days), getOhlc(days)])
+      .then(([marketRes, ohlcRes]) => {
+        if (cancelled) return;
+        setChartData(marketRes);
+        setOhlc(ohlcRes);
+      })
       .catch((err) => {
         console.error("Failed to load ETN price history:", err);
         if (!cancelled) setError("Couldn't load ETN price history — try again shortly.");
       });
     return () => { cancelled = true; };
-  }, [range, getMarketChart]);
+  }, [range, getMarketChart, getOhlc]);
 
-  const series = useMemo(() => {
-    if (!chartData) return null;
-    const source = metric === "price" ? chartData.prices : chartData.market_caps;
-    if (!Array.isArray(source)) return [];
-    return source.map(([ms, value]) => ({ label: new Date(ms).toISOString(), value }));
-  }, [chartData, metric]);
+  const candles = useMemo(() => {
+    if (!Array.isArray(ohlc)) return null;
+    return ohlc.map(([ms, open, high, low, close]) => ({
+      label: new Date(ms).toISOString(),
+      timeMs: ms,
+      open,
+      high,
+      low,
+      close,
+    }));
+  }, [ohlc]);
+
+  const volume = useMemo(() => {
+    if (!candles || !chartData?.total_volumes) return null;
+    return alignVolumeToCandles(candles, chartData.total_volumes);
+  }, [candles, chartData]);
+
+  const marketCapSeries = useMemo(() => {
+    if (!chartData?.market_caps) return [];
+    return chartData.market_caps.map(([ms, value]) => ({ label: new Date(ms).toISOString(), value }));
+  }, [chartData]);
 
   const stats = useMemo(() => {
-    if (!series || series.length === 0) return null;
-    const values = series.map((p) => p.value);
+    if (metric === "price") {
+      if (!candles || candles.length === 0) return null;
+      const current = candles[candles.length - 1].close;
+      const first = candles[0].open;
+      const high = Math.max(...candles.map((c) => c.high));
+      const low = Math.min(...candles.map((c) => c.low));
+      const changePct = first ? ((current - first) / first) * 100 : 0;
+      return { current, high, low, changePct };
+    }
+    if (marketCapSeries.length === 0) return null;
+    const values = marketCapSeries.map((p) => p.value);
     const current = values[values.length - 1];
     const first = values[0];
-    const high = Math.max(...values);
-    const low = Math.min(...values);
-    const changePct = first ? ((current - first) / first) * 100 : 0;
-    return { current, high, low, changePct };
-  }, [series]);
+    return { current, high: Math.max(...values), low: Math.min(...values), changePct: first ? ((current - first) / first) * 100 : 0 };
+  }, [metric, candles, marketCapSeries]);
 
   const formatValue = metric === "price" ? formatUsdPrice : (v) => `$${formatCompact(v)}`;
 
@@ -130,7 +161,11 @@ export default function EtnPriceChart() {
             </div>
           </div>
 
-          <SparklineChart data={series} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+          {metric === "price" ? (
+            <CandlestickChart candles={candles} volume={volume} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+          ) : (
+            <SparklineChart data={marketCapSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+          )}
         </>
       )}
     </div>

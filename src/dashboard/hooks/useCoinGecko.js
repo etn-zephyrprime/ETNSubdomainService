@@ -18,5 +18,14 @@ export function useCoinGecko() {
     return res.json(); // { prices: [[ms, usd], ...], market_caps: [[ms, usd], ...], total_volumes }
   }, []);
 
-  return { getMarketChart };
+  // Real OHLC candles — confirmed live: CoinGecko auto-picks candle width by range (30min under
+  // 2 days, 4h for 3-30 days, 4-day for 31-90 days on the free tier), same `days` param as
+  // getMarketChart above.
+  const getOhlc = useCallback(async (days = 30) => {
+    const res = await fetch(`${COINGECKO_API_BASE}/coins/electroneum/ohlc?vs_currency=usd&days=${days}`);
+    if (!res.ok) throw new Error(`CoinGecko ohlc returned ${res.status}`);
+    return res.json(); // [[ms, open, high, low, close], ...]
+  }, []);
+
+  return { getMarketChart, getOhlc };
 }

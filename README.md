@@ -457,10 +457,10 @@ holdings and NFT collection total-supply figures were both actually
 showing wrong before this pass; both are correct now.
 
 **Chart hover tooltips + dynamic axes**: every `SparklineChart.jsx`
-instance now takes `data` as `{ label, value }[]` (a real date/
-timestamp per point, not just a bare number) and renders live Y-axis
-value labels, X-axis date labels, and a hover tooltip (exact date/time
-+ value) that tracks the cursor — `formatValue`/`formatLabel` are
+instance takes `data` as `{ label, value }[]` (a real date/timestamp
+per point, not just a bare number) and renders live Y-axis value
+labels, X-axis date labels, and a hover tooltip (exact date/time +
+value) that tracks the cursor — `formatValue`/`formatLabel` are
 supplied per call site since the same chart component covers wildly
 different units (ETN, gwei, seconds, plain counts, USD) and
 granularities (daily vs. hourly). Threading real dates through meant
@@ -469,17 +469,29 @@ updating every series builder (`reconstructCumulativeTransactions()`,
 a `label` alongside each `value`, not just an add-on to the chart
 component itself.
 
-Fixed a second real bug found in the process: Address Lookup's ETN
-Balance series was calling `.reverse()` on
-`coin-balance-history-by-day`'s response, which — unlike every other
-Blockscout list endpoint used elsewhere in this dashboard — already
-comes back oldest-first. The reverse was silently flipping that one
-chart's X-axis backwards (confirmed live: labels ran newest-to-oldest,
-left-to-right) since its original z-axis-less rendering never
-surfaced this; the new date-labeled axis is what caught it.
+Axis labels and the tooltip are plain HTML, deliberately not SVG
+`<text>` — the chart SVG stretches non-uniformly to fill whatever
+width its card renders at (`preserveAspectRatio="none"`, needed so the
+line/area genuinely fills the card), and SVG text glyphs stretch right
+along with it, which is what made the axis text look oversized/
+distorted rather than a font problem per se. HTML text sitting outside
+the SVG never has that issue and just inherits the page's own font.
 
-**ETN price + basic chart analysis**: `EtnPriceChart.jsx`, at the top
-of Overview — current/high/low/% change plus a chart, with Price /
+Fixed two real bugs found in the process:
+1. Address Lookup's ETN Balance series was calling `.reverse()` on
+   `coin-balance-history-by-day`'s response, which — unlike every
+   other Blockscout list endpoint used elsewhere in this dashboard —
+   already comes back oldest-first. The reverse was silently flipping
+   that one chart's X-axis backwards (confirmed live: labels ran
+   newest-to-oldest, left-to-right); the original axis-less rendering
+   never surfaced this.
+2. The topmost Y-axis gridline/label sat exactly on the SVG's y=0, so
+   it rendered half-clipped against whatever sat directly above the
+   chart — resolved as a side effect of moving axis labels to HTML
+   (no longer inside the SVG's coordinate space at all).
+
+**ETN price + chart analysis**: `EtnPriceChart.jsx`, at the top of
+Overview — current/high/low/% change plus a chart, with Price /
 Market Cap and 7D / 30D / 90D toggles, via a new `useCoinGecko.js`
 calling CoinGecko directly (confirmed live: sets
 `access-control-allow-origin: *`, no backend proxy needed, same
@@ -489,6 +501,17 @@ dashboard prefers Blockscout-first — that endpoint's `closing_price`
 field is empty for all but the most recent day on this deployment
 (confirmed while building the original chart), so CoinGecko's actual
 complete daily history is the only real option here.
+
+Price renders as real green/red OHLC candlesticks
+(`CandlestickChart.jsx`, via CoinGecko's `/ohlc` endpoint) with a
+volume bar chart underneath, colored to match each candle's direction
+— volume comes from `/market_chart`'s `total_volumes`, a *finer*
+granularity than the OHLC candles (e.g. hourly volume points against
+4-hour candles), so `alignVolumeToCandles()` sums whichever volume
+points fall inside each candle's own time window rather than assuming
+a 1:1 index match between the two arrays. Market Cap has no
+meaningful "candle" concept (nothing trades market cap directly), so
+that toggle stays the plain line/area `SparklineChart`.
 
 ---
 
