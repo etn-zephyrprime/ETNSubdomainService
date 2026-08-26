@@ -344,6 +344,18 @@ requests still go out but never complete (the UI just waits forever
 for a confirmation that can never arrive), and the rest of the site
 — including the public channel alerts — is completely unaffected.
 
+Also covers expiry: `backend/utils/expiryAlertScheduler.js` DMs a
+linked wallet when one of its activated domains or subnames is
+getting close to expiring (30/7/1 days out by default, configurable
+via `EXPIRY_ALERT_TIER_DAYS`), reading straight from the already-
+published `ownedNamesCache.js` cache rather than re-scanning anything.
+This one is deliberately personal-only with **no public-channel
+equivalent** — broadcasting "X.etn expires in 3 days" to the shared
+group is exactly the kind of tip-off a squatter is looking for, which
+is the whole reason the linking feature above exists in the first
+place. A wallet that hasn't linked Telegram simply doesn't get expiry
+warnings.
+
 ---
 
 ## Manual regeneration endpoint
