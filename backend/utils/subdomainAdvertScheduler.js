@@ -83,7 +83,7 @@ async function mapWithConcurrency(items, concurrency, fn) {
 function buildActivateAdvert() {
   return (
     `🌐 *Activate Your .etn Domain*\n\n` +
-    `Activate your own \`.etn\` domain on the Electroneum Name Service and start renting out subnames under it — you keep *80%* of every subname sale, forever.\n\n` +
+    `Activate your own \`.etn\` domain on the ETN Subdomain Service and start renting out subnames under it — you keep *80%* of every subname sale, forever.\n\n` +
     `[ETN Subdomain Service](${SITE_URL})`
   );
 }
