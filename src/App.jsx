@@ -84,6 +84,10 @@ function AppContent() {
   // pre-filled — e.g. shared by a domain owner to drive registrations under their own name (see
   // ManageSubdomain.jsx's "Copy Subname Link"). Same reasoning as /pay/ for not gating on wallet
   // connect: SubnameSearch's own Check/Register buttons handle that when acted on.
+  //
+  // Deep link: /marketplace opens straight to the "Names For Sale" screen — no name to pre-fill,
+  // just skips the main search landing screen. Used by subdomainAdvertScheduler.js's marketplace
+  // advert to link straight to current listings instead of the homepage.
   useEffect(() => {
     const payMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/i);
     if (payMatch) {
@@ -96,6 +100,11 @@ function AppContent() {
     if (subnamesMatch) {
       setSubnamesPrefillParent(decodeURIComponent(subnamesMatch[1]));
       setShowSubnameSearch(true);
+      return;
+    }
+
+    if (/^\/marketplace\/?$/i.test(window.location.pathname)) {
+      setShowMarketplace(true);
     }
   }, []);
 
