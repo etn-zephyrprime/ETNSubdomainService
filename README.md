@@ -559,6 +559,42 @@ a real but essentially-idle pool).
 
 ---
 
+## Vercel edge request caching
+
+`vercel.json`'s catch-all rewrite (`/(.*)` → `/index.html`, needed so
+client-side routes like `/pay/`, `/subnames/`, `/marketplace` and the
+dashboard's tabs work on a hard refresh) was found live to have
+suppressed Vercel's usual automatic immutable-caching for hashed
+static assets. Confirmed by curling the actual deployed asset:
+
+```
+Cache-Control: public, max-age=0, must-revalidate
+```
+
+on a Vite output file like `/assets/index-BtPFp1G8.js` — a
+content-hashed filename that, by construction, never changes meaning
+once built (a new build always gets a new hash). `max-age=0,
+must-revalidate` means every single page load, from every visitor,
+including repeat visits, forces a fresh round-trip to Vercel's edge
+for every JS/CSS chunk instead of being served straight from the
+browser's local cache — this is likely what's behind the "sharp
+increase in edge requests" reported around the same time this
+dashboard's feature set (and chunk count) grew.
+
+Fixed with an explicit `headers` rule in `vercel.json` setting
+`Cache-Control: public, max-age=31536000, immutable` specifically on
+`/assets/(.*)` — scoped to just the hashed output directory, not
+`index.html` (which must keep revalidating on every load, since its
+content is what changes on every deploy and is what points at the
+current hashes). This is the standard, textbook-correct policy for
+content-hashed build output and carries no staleness risk: any code
+change ships under a brand new filename, so a returning visitor
+serving last week's `index-XXXX.js` from cache is only ever serving
+bytes that are still exactly what that hash represents. Pure request
+reduction, no behavior change.
+
+---
+
 ## Manual regeneration endpoint
 
 If a specific name's image generation fails (RPC hiccup, gas spike, etc.),
