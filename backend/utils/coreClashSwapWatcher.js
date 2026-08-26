@@ -20,16 +20,18 @@
 // >$20), and the same message content/formatting posted to the Zephyros bot's general topic.
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
-import { sendZephyrosAnimation, sendZephyrosMessage, escapeHtml, shortAddr, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
+import { sendZephyrosAnimation, sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
 import {
   RPC_URL,
   EXPLORER_BASE_URL,
   CORE_TOKEN_ADDRESS,
   CORE_WETN_POOL_ADDRESS,
+  REVERSE_REGISTRAR_ADDRESS,
   WETN_ADDRESS,
   POLL_INTERVAL_MS,
   LOOKBACK_BLOCKS,
 } from "./coreClashConfig.js";
+import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
@@ -144,7 +146,7 @@ async function poll(ctx) {
   isPolling = true;
 
   try {
-    const { provider, pair, coreIsToken0, coreDecimals, coreSymbol } = ctx;
+    const { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName } = ctx;
 
     // Runs every poll tick regardless of swap activity — same as priceEngine.js's placement
     // outside the log-scanning block, so a quiet period doesn't leave prices stale.
@@ -208,6 +210,7 @@ async function poll(ctx) {
 
           const txUrl = `${EXPLORER_BASE_URL}/tx/${log.transactionHash}`;
           const traderUrl = `${EXPLORER_BASE_URL}/address/${trader}`;
+          const traderDisplay = await resolveDisplayName(trader);
           const emojiSequence = isSell ? ["🌎", "🌳"] : ["🌳", "🌎"];
           const emojiCount = Math.min(Math.max(1, Math.floor(usdValue / 5)), 50);
           const emojiLine = Array.from({ length: emojiCount }, (_, i) => emojiSequence[i % emojiSequence.length]).join("");
@@ -218,7 +221,7 @@ async function poll(ctx) {
             `💰 <b>${isSell ? "Received" : "Paid"}:</b> ${formatUnitsSafe(rawWetnAmount, 18)} WETN\n` +
             `🔢 <b>Amount:</b> ${formatUnitsSafe(coreAmountRaw, coreDecimals)} ${escapeHtml(coreSymbol)}\n` +
             (corePriceUsd != null ? `💵 <b>CORE Price:</b> $${corePriceUsd.toFixed(6)}\n` : "") +
-            `\n👤 <b>Buyer:</b> <a href="${traderUrl}">${escapeHtml(shortAddr(trader))}</a>\n` +
+            `\n👤 <b>Buyer:</b> <a href="${traderUrl}">${escapeHtml(traderDisplay)}</a>\n` +
             `🔗 <a href="${txUrl}">View Transaction</a>`;
 
           if (!isSell) {
@@ -254,8 +257,11 @@ export async function startCoreClashSwapWatcher() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves the
+  // trader's primary name via primaryNameResolver.js.
+  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
   const pair = new ethers.Contract(CORE_WETN_POOL_ADDRESS, PAIR_ABI, provider);
+  const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   const [token0, token1] = await Promise.all([pair.token0(), pair.token1()]);
   const coreIsToken0 = String(token0).toLowerCase() === CORE_TOKEN_ADDRESS.toLowerCase();
@@ -280,7 +286,7 @@ export async function startCoreClashSwapWatcher() {
     console.warn("⚠️  Failed to read CORE token metadata, using defaults:", err.message);
   }
 
-  const ctx = { provider, pair, coreIsToken0, coreDecimals, coreSymbol };
+  const ctx = { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName };
 
   console.log(`💱 Core Clash swap watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
   poll(ctx);
