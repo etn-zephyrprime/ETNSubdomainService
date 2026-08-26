@@ -47,7 +47,13 @@ const CACHE_INTERVAL_MS = process.env.OWNED_NAMES_CACHE_INTERVAL_MS
 const MAX_BLOCKS_PER_CYCLE = process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE
   ? parseInt(process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE, 10)
   : 50000;
-const CACHE_SCHEMA_VERSION = 1;
+// v2: each cached entry now carries a raw `label` (single path component) separately from the
+// full dotted `name` — v1 only stored `name` and then re-loaded it as if it were the raw label on
+// every subsequent cycle, appending ".etn" on top of an already-full name each time (compounding
+// every CACHE_INTERVAL_MS forever: "x.etn" -> "x.etn.etn" -> "x.etn.etn.etn" -> ...). Bumped so
+// existing corrupted v1 cache entries get discarded and rebuilt from a clean full rescan instead
+// of carrying the corruption forward.
+const CACHE_SCHEMA_VERSION = 2;
 const VERIFY_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [
@@ -167,11 +173,12 @@ async function scanAndPublish(marketplace, nameWrapper) {
     const rawCache = await getOwnedNamesCache();
     const cached = rawCache?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCache : null;
 
-    // node -> { name, isSubname, parentNode, activated }
+    // node -> { label (raw single path component, NOT the full dotted name), isSubname,
+    // parentNode, activated }
     const nodes = new Map(
       (cached?.names || []).map((n) => [
         n.node,
-        { name: n.name, isSubname: n.isSubname, parentNode: n.parentNode || null, activated: n.activated ?? null },
+        { label: n.label, isSubname: n.isSubname, parentNode: n.parentNode || null, activated: n.activated ?? null },
       ])
     );
 
@@ -196,7 +203,7 @@ async function scanAndPublish(marketplace, nameWrapper) {
           const { label } = event.args;
           const node = computeNode(label);
           if (!nodes.has(node)) {
-            nodes.set(node, { name: label, isSubname: false, parentNode: null, activated: false });
+            nodes.set(node, { label, isSubname: false, parentNode: null, activated: false });
           }
         } else if (event.eventName === "DomainActivated") {
           const { node } = event.args;
@@ -207,13 +214,13 @@ async function scanAndPublish(marketplace, nameWrapper) {
             // A "retro" name — wrapped for the first time by this very activation, so this is the
             // only point its label ever becomes decodable. Deferred to the verification pass
             // below (needs a contract call), tracked here as a placeholder so it's not lost.
-            nodes.set(node, { name: null, isSubname: false, parentNode: null, activated: true });
+            nodes.set(node, { label: null, isSubname: false, parentNode: null, activated: true });
           }
         } else if (event.eventName === "SubnameRegistered") {
           const { parentNode, label } = event.args;
           const subNode = computeSubnode(parentNode, label);
           if (!nodes.has(subNode)) {
-            nodes.set(subNode, { name: label, isSubname: true, parentNode, activated: null });
+            nodes.set(subNode, { label, isSubname: true, parentNode, activated: null });
           }
         }
       }
@@ -221,16 +228,16 @@ async function scanAndPublish(marketplace, nameWrapper) {
       console.log("📡 Owned names cache: already caught up, re-verifying known entries only");
     }
 
-    // Decode labels for any "retro" domains discovered only via DomainActivated above (name still
+    // Decode labels for any "retro" domains discovered only via DomainActivated above (label still
     // null) — now wrapped, so NameWrapper.names(node) finally has an entry for them.
-    const needsLabel = [...nodes.entries()].filter(([, n]) => n.name === null && !n.isSubname);
+    const needsLabel = [...nodes.entries()].filter(([, n]) => n.label === null && !n.isSubname);
     if (needsLabel.length > 0) {
       await mapWithConcurrency(needsLabel, VERIFY_CONCURRENCY, async ([node, entry]) => {
         try {
           const encoded = await nameWrapper.names(node);
           const bytes = ethers.getBytes(encoded);
           const len = bytes[0];
-          entry.name = len > 0 && bytes.length >= 1 + len ? ethers.toUtf8String(bytes.slice(1, 1 + len)) : null;
+          entry.label = len > 0 && bytes.length >= 1 + len ? ethers.toUtf8String(bytes.slice(1, 1 + len)) : null;
         } catch (err) {
           console.warn(`⚠️  Failed to decode label for retro-activated domain ${node}:`, err.message);
         }
@@ -247,10 +254,14 @@ async function scanAndPublish(marketplace, nameWrapper) {
 
     const names = [];
     for (const [node, entry] of entries) {
-      if (!entry.current || !entry.name) continue; // gone (getData reverted) or label still unresolved
+      if (!entry.current || !entry.label) continue; // gone (getData reverted) or label still unresolved
       names.push({
         node,
-        name: entry.isSubname ? `${entry.name}.${resolveParentName(nodes, entry.parentNode)}.etn` : `${entry.name}.etn`,
+        // `label` is the raw single path component — persisted as-is so the next cycle's cache
+        // load reconstructs `nodes` from it, not from the full dotted `name` below (see the
+        // CACHE_SCHEMA_VERSION history comment for what goes wrong if `name` gets fed back in).
+        label: entry.label,
+        name: entry.isSubname ? `${entry.label}.${resolveParentLabel(nodes, entry.parentNode)}.etn` : `${entry.label}.etn`,
         owner: entry.current.owner,
         expiry: entry.current.expiry,
         isSubname: entry.isSubname,
@@ -272,12 +283,13 @@ async function scanAndPublish(marketplace, nameWrapper) {
   }
 }
 
-// A subname's display name needs its parent's label, which might itself still be an unresolved
-// "retro" placeholder in the same pass (rare: would need a subname registered in the very same
-// cycle its own parent was first activated) — falls back to "(unknown)" rather than a raw node.
-function resolveParentName(nodes, parentNode) {
+// A subname's display name needs its parent's raw label, which might itself still be an
+// unresolved "retro" placeholder in the same pass (rare: would need a subname registered in the
+// very same cycle its own parent was first activated) — falls back to "(unknown)" rather than a
+// raw node.
+function resolveParentLabel(nodes, parentNode) {
   const parent = nodes.get(parentNode);
-  return parent?.name || "(unknown)";
+  return parent?.label || "(unknown)";
 }
 
 /**
