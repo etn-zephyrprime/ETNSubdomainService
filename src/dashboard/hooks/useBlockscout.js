@@ -33,7 +33,16 @@ export function useBlockscout() {
   const getAddress = useCallback((address) => fetchJson(`/addresses/${address}`), []);
   const getAddressCounters = useCallback((address) => fetchJson(`/addresses/${address}/counters`), []);
   const getAddressTokenBalances = useCallback((address) => fetchJson(`/addresses/${address}/token-balances`), []);
-  const getAddressTransactions = useCallback((address) => fetchJson(`/addresses/${address}/transactions`), []);
+  const getAddressCoinBalanceHistory = useCallback((address) => fetchJson(`/addresses/${address}/coin-balance-history-by-day`), []);
+
+  const getAddressTransactions = useCallback((address, nextPageParams = null) => {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    return fetchJson(`/addresses/${address}/transactions${query}`);
+  }, []);
+  const getAddressTokenTransfers = useCallback((address, nextPageParams = null) => {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    return fetchJson(`/addresses/${address}/token-transfers${query}`);
+  }, []);
 
   return {
     getStats,
@@ -48,6 +57,8 @@ export function useBlockscout() {
     getAddress,
     getAddressCounters,
     getAddressTokenBalances,
+    getAddressCoinBalanceHistory,
     getAddressTransactions,
+    getAddressTokenTransfers,
   };
 }

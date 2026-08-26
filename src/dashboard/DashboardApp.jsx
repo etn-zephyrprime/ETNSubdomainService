@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import Header from "../components/Header.jsx";
-import { muted, mutedLight } from "../styles/theme.js";
+import { muted, mutedLight } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
 import Overview from "./components/Overview.jsx";

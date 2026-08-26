@@ -10,6 +10,7 @@ import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js
 import { startOwnedNamesCache } from "./utils/ownedNamesCache.js";
 import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
+import { startDashboardStatsCache } from "./utils/dashboardStatsCache.js";
 import { startSubdomainAdvertScheduler } from "./utils/subdomainAdvertScheduler.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
@@ -72,6 +73,7 @@ app.listen(PORT, () => {
   startOwnedNamesCache();
   startEtnPriceCache();
   startExpiryAlertScheduler();
+  startDashboardStatsCache();
   safeStart("Telegram webhook registration", registerTelegramWebhook);
   safeStart("Subdomain advert scheduler", startSubdomainAdvertScheduler);
 

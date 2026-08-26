@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../../styles/theme.js";
+import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { usePayment } from "../../hooks/usePayment.js";
 import { formatCompact, formatTokenAmount, formatEtnBalance, shortHash } from "../utils/format.js";
+import { bucketDailyCounts } from "../utils/history.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
+import TileChart from "./TileChart.jsx";
 
 const inputStyle = {
   width: "100%",
@@ -20,12 +22,37 @@ const inputStyle = {
   outline: "none",
 };
 
+// How many pages of transactions/token-transfers to fetch for the "recent activity" charts
+// below — Blockscout has no count-over-time endpoint for either, so this derives one from
+// whichever items were actually fetched (see utils/history.js). Bounded rather than "fetch
+// everything" so a genuinely high-activity address (a contract, an exchange wallet) doesn't mean
+// an unbounded number of requests just to draw a chart.
+const MAX_HISTORY_PAGES = 5;
+
+async function fetchBoundedPages(fetchFn, address, maxPages) {
+  const items = [];
+  let nextPageParams = null;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await fetchFn(address, nextPageParams);
+    items.push(...(res.items || []));
+    if (!res.next_page_params) break;
+    nextPageParams = res.next_page_params;
+  }
+  return items;
+}
+
+const METRICS = [
+  { id: "balance", label: "ETN Balance" },
+  { id: "transactions", label: "Transactions" },
+  { id: "tokenTransfers", label: "Token Transfers" },
+];
+
 // Session-only single wallet lookup (free tier) — accepts either a raw 0x address or a .etn name,
 // reusing usePayment.js's existing resolveName() rather than re-implementing name resolution a
 // second time. Nothing here is persisted; re-searching starts fresh, same as the brief's "not
 // persisted" free-tier spec.
 export default function AddressLookup({ initialAddress = null }) {
-  const { getAddress, getAddressCounters, getAddressTokenBalances } = useBlockscout();
+  const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { resolveName } = usePayment();
 
   const [input, setInput] = useState(initialAddress || "");
@@ -37,6 +64,11 @@ export default function AddressLookup({ initialAddress = null }) {
   const [counters, setCounters] = useState(null);
   const [tokenBalances, setTokenBalances] = useState([]);
   const [loadError, setLoadError] = useState(null);
+
+  const [balanceHistory, setBalanceHistory] = useState(null);
+  const [txHistory, setTxHistory] = useState(null);
+  const [transferHistory, setTransferHistory] = useState(null);
+  const [activeMetric, setActiveMetric] = useState("balance");
 
   const handleLookup = async () => {
     setResolveError(null);
@@ -61,6 +93,9 @@ export default function AddressLookup({ initialAddress = null }) {
   useEffect(() => {
     if (!resolvedAddress) return;
     let cancelled = false;
+    setBalanceHistory(null);
+    setTxHistory(null);
+    setTransferHistory(null);
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -79,6 +114,52 @@ export default function AddressLookup({ initialAddress = null }) {
     })();
     return () => { cancelled = true; };
   }, [resolvedAddress, getAddress, getAddressCounters, getAddressTokenBalances]);
+
+  // Chart data loads separately from (and doesn't block) the core address detail above — each of
+  // these is its own set of requests (balance history is one call; tx/transfer history are up to
+  // MAX_HISTORY_PAGES each), no reason to make the whole screen wait on all of them together.
+  useEffect(() => {
+    if (!resolvedAddress) return;
+    let cancelled = false;
+    getAddressCoinBalanceHistory(resolvedAddress)
+      .then((res) => { if (!cancelled) setBalanceHistory(Array.isArray(res?.items) ? res.items : []); })
+      .catch((err) => { console.error("Failed to load balance history:", err); if (!cancelled) setBalanceHistory([]); });
+    return () => { cancelled = true; };
+  }, [resolvedAddress, getAddressCoinBalanceHistory]);
+
+  useEffect(() => {
+    if (!resolvedAddress) return;
+    let cancelled = false;
+    fetchBoundedPages(getAddressTransactions, resolvedAddress, MAX_HISTORY_PAGES)
+      .then((items) => { if (!cancelled) setTxHistory(items); })
+      .catch((err) => { console.error("Failed to load transaction history:", err); if (!cancelled) setTxHistory([]); });
+    return () => { cancelled = true; };
+  }, [resolvedAddress, getAddressTransactions]);
+
+  useEffect(() => {
+    if (!resolvedAddress) return;
+    let cancelled = false;
+    fetchBoundedPages(getAddressTokenTransfers, resolvedAddress, MAX_HISTORY_PAGES)
+      .then((items) => { if (!cancelled) setTransferHistory(items); })
+      .catch((err) => { console.error("Failed to load token transfer history:", err); if (!cancelled) setTransferHistory([]); });
+    return () => { cancelled = true; };
+  }, [resolvedAddress, getAddressTokenTransfers]);
+
+  const series = useMemo(() => ({
+    balance: balanceHistory
+      ? [...balanceHistory].reverse().map((d) => parseFloat(ethers.formatEther(d.value)))
+      : [],
+    transactions: txHistory ? bucketDailyCounts(txHistory, "timestamp") : [],
+    tokenTransfers: transferHistory ? bucketDailyCounts(transferHistory, "timestamp") : [],
+  }), [balanceHistory, txHistory, transferHistory]);
+
+  const chartLoading = { balance: balanceHistory === null, transactions: txHistory === null, tokenTransfers: transferHistory === null }[activeMetric];
+
+  const captions = {
+    balance: "ETN balance, full history by day",
+    transactions: `Transactions per day (last ${Math.min(txHistory?.length ?? 0, 250)} fetched, ${MAX_HISTORY_PAGES} page(s) max)`,
+    tokenTransfers: `Token transfers per day (last ${Math.min(transferHistory?.length ?? 0, 250)} fetched, ${MAX_HISTORY_PAGES} page(s) max)`,
+  };
 
   return (
     <div>
@@ -122,26 +203,20 @@ export default function AddressLookup({ initialAddress = null }) {
             )}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 24 }}>
-            <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-              <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>ETN Balance</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: green }}>{formatEtnBalance(addressInfo.coin_balance)} ETN</div>
-            </div>
-            {counters && (
-              <>
-                <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-                  <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Transactions</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatCompact(counters.transactions_count)}</div>
-                </div>
-                <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-                  <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Token Transfers</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatCompact(counters.token_transfers_count)}</div>
-                </div>
-              </>
-            )}
-          </div>
+          <TileChart
+            tiles={[
+              { id: "balance", label: "ETN Balance", value: `${formatEtnBalance(addressInfo.coin_balance)} ETN` },
+              { id: "transactions", label: "Transactions", value: counters ? formatCompact(counters.transactions_count) : "…" },
+              { id: "tokenTransfers", label: "Token Transfers", value: counters ? formatCompact(counters.token_transfers_count) : "…" },
+            ]}
+            activeId={activeMetric}
+            onSelect={setActiveMetric}
+            points={series[activeMetric]}
+            chartCaption={captions[activeMetric]}
+            loading={chartLoading}
+          />
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, margin: "24px 0 8px", textTransform: "uppercase", letterSpacing: 0.6 }}>
             Token Holdings
           </div>
           {tokenBalances.length === 0 ? (

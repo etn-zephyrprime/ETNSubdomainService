@@ -1,6 +1,6 @@
 import React from "react";
 import { PlanetZephyrosLogo } from "../../../backend/assets/media.js";
-import { muted } from "../../styles/theme.js";
+import { muted } from "../theme.js";
 
 // Deliberately not a reuse of the main site's Footer.jsx — that one's Terms & Conditions section
 // is specific to name registration ("All registrations are final...") and would be actively
