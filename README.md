@@ -199,6 +199,30 @@ depending on CoreClashGame's own metadata cache.
 
 ---
 
+## Advert rotations
+
+Two independent rotating-advert bots, both built on the same scheduling
+engine (`backend/utils/advertScheduler.js` — randomized time within a
+cycle, a minimum gap between sends, never repeating the previous
+cycle's first pick, restart-safe persisted queue):
+
+- **Core Clash** (`coreClashAdvertScheduler.js`, via the Core Clash
+  bot/chat above) — 3 static promo messages, one per **3-day** cycle
+  (originally daily; widened on request).
+- **Subdomain Service** (`subdomainAdvertScheduler.js`, via this repo's
+  own `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`/`TELEGRAM_MESSAGE_THREAD_ID`
+  — the "Subdomain Name Service" topic) — 3 messages, one per **1-day**
+  cycle: activating a domain (links to the homepage as "ETN Subdomain
+  Service"), current domains selling subnames + price (links each into
+  `/subnames/<domain>.etn`, the same deep link `ManageSubdomain.jsx`'s
+  "Copy Subname Link" uses), and current marketplace listings (links to
+  the new `/marketplace` deep link — see `App.jsx`). Unlike the Core
+  Clash bot's static rotation, the latter two are built fresh at send
+  time from live data (the subname-domains R2 cache and a live
+  `nextListingId()`/`listings()` scan respectively), not baked in.
+
+---
+
 ## Activated Domains table (homepage)
 
 Shows every activated domain and the subnames registered under it —
