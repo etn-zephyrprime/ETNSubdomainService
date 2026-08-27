@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { R2_PUBLIC_URL } from "../config.js";
+import { r2ProxyUrl } from "../config.js";
 
 // backend/utils/ownedNamesCache.js publishes every wrapped name (top-level domain or subname,
 // activated or not) to R2 on a timer — same reasoning as useActivatedDomains.js/
@@ -14,10 +14,8 @@ import { R2_PUBLIC_URL } from "../config.js";
 // can never appear in this list at all.
 export function useOwnedNames() {
   const getOwnedNames = useCallback(async () => {
-    if (!R2_PUBLIC_URL) return [];
-
     try {
-      const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/owned-names.json`);
+      const res = await fetch(r2ProxyUrl("owned-names.json"));
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data?.names) ? data.names : [];

@@ -89,3 +89,15 @@ export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "http
 // See backend/utils/R2Upload.js (same value, as R2_PUBLIC_URL) and utils/ens.js's
 // computeNftImageUrl for how a name's object key is derived.
 export const R2_PUBLIC_URL = import.meta.env.VITE_R2_PUBLIC_URL || "https://pub-deada542de8447159d3f31e49afa0b23.r2.dev";
+
+// Every browser-side JSON cache read (dashboard stats, owned names, ETN price, etc.) goes through
+// this backend proxy (backend/utils/r2CacheProxyRouter.js) instead of hitting R2_PUBLIC_URL
+// directly. Found live: Cloudflare's r2.dev "Public Development URL" doesn't apply the bucket's
+// CORS policy at all (documented as dev-only/rate-limited; CORS is only ever mentioned for custom
+// domains, which need a paid Cloudflare plan or a DNS migration this project's domain — hosted on
+// Vercel — didn't want to do), so a real browser fetch() against it fails even though the object
+// itself is perfectly fine (confirmed via curl succeeding for the exact same URL every time). A
+// server-to-server fetch (this backend already has to R2 for the *write* side of every cache
+// anyway) never involves browser CORS at all, sidestepping the problem entirely. NFT images stay
+// a direct R2_PUBLIC_URL read (see utils/ens.js) since an <img src> never needed CORS either way.
+export const r2ProxyUrl = (filename) => `${BACKEND_IMAGE_URL}/api/r2/${filename}`;

@@ -662,6 +662,49 @@ ecosystem — 4 domains, 21 subnames at build time), not inflated ones.
 
 ---
 
+## R2 reads go through this backend, not R2 directly
+
+Every browser-side R2 JSON read (dashboard stats, owned names, ETN
+price, activated domains, marketplace sellers, subname pricing, Name
+Service stats) is fetched via `backend/utils/r2CacheProxyRouter.js`
+(`GET /api/r2/:filename`, an allowlist of the known cache filenames —
+not an arbitrary-path proxy) instead of the browser calling
+`R2_PUBLIC_URL` directly. NFT images are the one exception and stay a
+direct `R2_PUBLIC_URL` read (`utils/ens.js`) — an `<img src>` never
+needed CORS in the first place, only `fetch()` does.
+
+**Why:** confirmed live (real user report — the Name Service tab above
+worked from every angle except an actual browser) that R2's `pub-*.r2.dev`
+"Public Development URL" does not apply the bucket's CORS policy at
+all. A correctly-scoped CORS policy was added to the bucket and
+confirmed *saved*, and `curl` against the exact URL with the exact
+production `Origin` header still came back with no
+`Access-Control-Allow-Origin` header — while a plain server-to-server
+GET (no browser, no CORS enforcement) succeeded every time for the
+same URL. Cloudflare's own docs confirmed why: r2.dev is documented as
+"rate-limited... for development purposes" only, and CORS support is
+described specifically in the context of *custom domains* — never
+mentioned for r2.dev. (This also retroactively explains the
+intermittent `503`s seen earlier from r2.dev under real traffic — that
+rate limit.)
+
+The "proper" fix — a real custom domain connected to the bucket —
+needs either a paid Cloudflare Business/Enterprise plan (the
+free-plan-compatible "Partial (CNAME) Setup" isn't available on Free)
+or migrating the domain's nameservers to Cloudflare, and this
+project's domain is on Vercel with no appetite for either. Proxying
+server-to-server sidesteps the problem entirely: this backend already
+holds real R2 credentials for the *write* side of every cache here,
+and browser CORS was never an S3-SDK/server-to-server concern to begin
+with — only "a browser's `fetch()` reads this response" is.
+
+Small in-memory cache on the proxy (60s TTL, matching the `Cache-Control`
+these objects already publish with) — cuts repeat-visitor R2 reads to
+roughly once per window instead of once per page load, on top of
+whatever caching already existed R2-side.
+
+---
+
 ## Vercel edge request caching
 
 `vercel.json`'s catch-all rewrite (`/(.*)` → `/index.html`, needed so

@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL, R2_PUBLIC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL, r2ProxyUrl } from "../config.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import { decodeDnsName } from "../utils/ens.js";
@@ -18,10 +18,8 @@ import { decodeDnsName } from "../utils/ens.js";
 // shows as their address (which the UI already handles, see Marketplace.jsx's sellerName
 // fallback) if the cache is unreachable or hasn't indexed them yet.
 async function fetchSellerPrimaryNames() {
-  if (!R2_PUBLIC_URL) return {};
-
   try {
-    const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/marketplace-sellers.json`);
+    const res = await fetch(r2ProxyUrl("marketplace-sellers.json"));
     if (!res.ok) return {};
     const data = await res.json();
     return data?.sellers && typeof data.sellers === "object" ? data.sellers : {};

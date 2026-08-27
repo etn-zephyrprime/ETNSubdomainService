@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { R2_PUBLIC_URL } from "../config.js";
+import { r2ProxyUrl } from "../config.js";
 
 // backend/utils/activatedDomainsCache.js publishes exactly this shape to R2 on a timer — see that
 // file for why (scanning + resolving owner/expiry/primary-name for every activated domain and its
@@ -14,11 +14,7 @@ import { R2_PUBLIC_URL } from "../config.js";
 // this fails honestly (a clear "temporarily unavailable" message) instead.
 export function useActivatedDomains() {
   const getActivatedDomains = useCallback(async () => {
-    if (!R2_PUBLIC_URL) {
-      throw new Error("Activated domains list isn't configured for this deployment.");
-    }
-
-    const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/activated-domains.json`);
+    const res = await fetch(r2ProxyUrl("activated-domains.json"));
     if (!res.ok) {
       throw new Error(`Activated domains fetch failed (HTTP ${res.status})`);
     }

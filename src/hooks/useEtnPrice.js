@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { R2_PUBLIC_URL } from "../config.js";
+import { r2ProxyUrl } from "../config.js";
 
 // backend/utils/etnPriceCache.js publishes the live ETN/USD price to R2 on a timer (every 5
 // minutes by default) — fetched once here and shared across every component that renders a "≈
@@ -16,9 +16,8 @@ let cachedPrice = null;
 let subscribers = new Set();
 
 async function fetchAndBroadcast() {
-  if (!R2_PUBLIC_URL) return;
   try {
-    const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/etn-price.json`);
+    const res = await fetch(r2ProxyUrl("etn-price.json"));
     if (!res.ok) return;
     const data = await res.json();
     if (typeof data?.usd === "number" && Number.isFinite(data.usd) && data.usd > 0) {
