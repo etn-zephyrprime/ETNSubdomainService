@@ -1,9 +1,11 @@
 import React, { useMemo } from "react";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, blue, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useNameServiceStats } from "../hooks/useNameServiceStats.js";
 import { bucketDailyCounts } from "../utils/history.js";
-import { formatCompact, formatInt, formatChartDate, formatEtnBalance } from "../utils/format.js";
+import { formatCompact, formatInt, formatChartDate, formatEtnBalance, timeAgo } from "../utils/format.js";
+import { EXPLORER_BASE_URL, SITE_URL } from "../config.js";
 import SparklineChart from "./SparklineChart.jsx";
+import ActivityComboChart from "./ActivityComboChart.jsx";
 
 const TREND_WINDOW_DAYS = 30;
 
@@ -58,21 +60,34 @@ export default function NameServiceStats() {
     return bucketDailyCounts(relevant, "timestamp", TREND_WINDOW_DAYS);
   }, [stats]);
 
+  // Split into two series rather than one blended count — a domain activating subname-selling
+  // and a subname actually getting registered are different-enough events that folding them into
+  // a single number obscured which one was actually driving a given day's activity. Rendered as
+  // bars (activations) + an overlaid line (registrations), not stacked — stacking would imply
+  // the two sum to a meaningful total, which they don't. bucketDailyCounts always zero-fills to
+  // exactly TREND_WINDOW_DAYS entries regardless of input, so both arrays are guaranteed the same
+  // length/day-order to zip by index.
   const trendData = useMemo(() => {
     if (!stats?.events) return [];
-    const relevant = stats.events
-      .filter((e) => e.type === "domain_activated" || e.type === "subname_registered")
-      .map((e) => ({ timestamp: new Date(e.timestampMs).toISOString() }));
-    return bucketDailyCounts(relevant, "timestamp", TREND_WINDOW_DAYS);
+    const toIso = (type) =>
+      stats.events.filter((e) => e.type === type).map((e) => ({ timestamp: new Date(e.timestampMs).toISOString() }));
+    const activations = bucketDailyCounts(toIso("domain_activated"), "timestamp", TREND_WINDOW_DAYS);
+    const registrations = bucketDailyCounts(toIso("subname_registered"), "timestamp", TREND_WINDOW_DAYS);
+    return activations.map((d, i) => ({ label: d.label, a: d.value, b: registrations[i]?.value || 0 }));
+  }, [stats]);
+
+  const recentSales = useMemo(() => {
+    if (!stats?.events) return [];
+    const cutoff = Date.now() - TREND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    return stats.events
+      .filter((e) => e.type === "listing_sold" && e.timestampMs >= cutoff)
+      .sort((a, b) => b.timestampMs - a.timestampMs);
   }, [stats]);
 
   const volume30dWei = useMemo(() => {
-    if (!stats?.events) return null;
-    const cutoff = Date.now() - TREND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const sales = stats.events.filter((e) => e.type === "listing_sold" && e.timestampMs >= cutoff);
-    if (sales.length === 0) return { total: 0n, count: 0 };
-    return { total: sales.reduce((sum, e) => sum + BigInt(e.priceWei), 0n), count: sales.length };
-  }, [stats]);
+    if (recentSales.length === 0) return { total: 0n, count: 0 };
+    return { total: recentSales.reduce((sum, e) => sum + BigInt(e.priceWei), 0n), count: recentSales.length };
+  }, [recentSales]);
 
   if (error) {
     return <div style={{ fontSize: 12, color: errorColor, padding: 16, textAlign: "center" }}>{error}</div>;
@@ -122,28 +137,50 @@ export default function NameServiceStats() {
 
       <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
-          Domain activations + subname registrations per day, last {TREND_WINDOW_DAYS} days
+          Per day, last {TREND_WINDOW_DAYS} days
         </div>
-        <SparklineChart data={trendData} height={140} formatValue={formatInt} formatLabel={formatChartDate} />
+        <ActivityComboChart
+          data={trendData}
+          height={140}
+          formatLabel={formatChartDate}
+          seriesALabel="Domain Activations"
+          seriesBLabel="Subname Registrations"
+          colorA={green}
+          colorB={blue}
+        />
       </div>
 
       <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
           Marketplace Volume ({TREND_WINDOW_DAYS}D)
         </div>
-        {volume30dWei && volume30dWei.count > 0 ? (
+        {volume30dWei.count > 0 ? (
           <div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
+            <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 12 }}>
               {formatEtnBalance(volume30dWei.total)} ETN
+              <span style={{ fontSize: 12, color: mutedLight, fontWeight: 400, marginLeft: 6 }}>
+                ({volume30dWei.count} name{volume30dWei.count === 1 ? "" : "s"} resold)
+              </span>
             </div>
-            <div style={{ fontSize: 12, color: mutedLight, marginTop: 2 }}>
-              {volume30dWei.count} name{volume30dWei.count === 1 ? "" : "s"} resold
-            </div>
+            {recentSales.map((sale) => (
+              <a
+                key={sale.txHash}
+                href={`${EXPLORER_BASE_URL}/tx/${sale.txHash}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderTop: `1px solid ${border}`, textDecoration: "none" }}
+              >
+                <span style={{ fontSize: 12, color: mutedLight }}>{timeAgo(new Date(sale.timestampMs).toISOString())}</span>
+                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                  {formatEtnBalance(sale.priceWei)} ETN <span style={{ color: mutedLight, fontWeight: 400 }}>↗</span>
+                </span>
+              </a>
+            ))}
           </div>
         ) : (
           <div style={{ fontSize: 12, color: muted }}>
             No resales in the last {TREND_WINDOW_DAYS} days — the marketplace is tracked live and
-            ready to show volume the moment a name resells.
+            ready to show volume (linked to the block explorer) the moment a name resells.
           </div>
         )}
       </div>
@@ -155,15 +192,18 @@ export default function NameServiceStats() {
         <div style={{ fontSize: 12, color: muted }}>No activated domains yet.</div>
       ) : (
         sortedDomains.slice(0, 10).map((d) => (
-          <div
+          <a
             key={d.node}
-            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}
+            href={`${SITE_URL}/subnames/${d.label}.etn`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}`, textDecoration: "none" }}
           >
             <span style={{ fontSize: 12, color: "#fff" }}>{d.label}.etn</span>
             <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
               {formatInt(d.subnames?.length || 0)} subname{(d.subnames?.length || 0) === 1 ? "" : "s"}
             </span>
-          </div>
+          </a>
         ))
       )}
     </div>

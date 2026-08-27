@@ -698,6 +698,32 @@ already-published cache — whose cursor had already advanced past
 the two deploy blocks instead of silently skipping that whole range
 forever.
 
+**Chart split, domain links, sale links** (three follow-up requests
+after the tab shipped):
+
+- The "domain activations + subname registrations" line chart blended
+  both event types into one number — genuinely two different kinds of
+  event sharing a day axis, not two things that sum to a meaningful
+  total. `ActivityComboChart.jsx` (new — bars for one series, an
+  overlaid line for the other, sharing one Y-axis) replaces it;
+  `SparklineChart.jsx` stays as-is for the "All of Electroneum" trend
+  above it, which only ever had one series. An initial version stacked
+  both as bars instead — corrected to bars + line per explicit
+  follow-up ("I wanted a bar for activations and a line for subnames").
+- "Top Domains by Subnames" rows now link to
+  `${SITE_URL}/subnames/<domain>.etn` — the same deep link
+  `App.jsx`'s `/subnames/` route and the subdomain advert Telegram bot
+  already use to open "Get a Subname" pre-populated with that parent,
+  not a new route.
+- `ListingSold` events now carry `txHash`, and each sale (once any
+  exist) links straight to `${EXPLORER_BASE_URL}/tx/<hash>` — no name/
+  label available here either (`ListingSold` carries a `listingId`,
+  not a label; resolving one would mean an extra per-sale contract
+  call this cache doesn't otherwise need), so the link is the primary
+  way to see what actually sold. Untestable against real data at the
+  time this shipped (still zero real sales ever) — verified the
+  plumbing (event property name, URL construction) directly instead.
+
 ---
 
 ## R2 reads go through this backend, not R2 directly
