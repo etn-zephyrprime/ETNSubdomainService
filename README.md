@@ -726,6 +726,73 @@ after the tab shipped):
 
 ---
 
+## "Txs (Last 24h)" no longer trusts Blockscout's own daily counter
+
+Real bug hit in production: "Txs Today (by hour)" showed a flat `0`
+line for 19+ consecutive hours. Confirmed live: Blockscout's own
+`/stats` `transactions_today` field was frozen at the exact same value
+(`317366`) the entire day, while `total_transactions` (their real
+indexer output) kept growing normally the whole time — a stuck
+upstream aggregation bug, not this app's code, and not their main
+indexer being down.
+
+Rather than add a "data may be delayed" indicator for that specific
+upstream field, replaced the whole metric's data source: it no longer
+reads `transactions_today` *at all*. `dashboardStatsCache.js` now
+computes `transactionsThisHour` as a delta between each hourly
+snapshot's own `totalTransactions` (confirmed reliable) instead —
+immune to Blockscout's daily-bucket bug entirely, since it never
+touches that field. The Overview tile and chart were also switched
+from "since UTC midnight" to a genuine rolling last-24-hours window
+(user's own suggestion, mid-fix) — a second, independent improvement:
+even when Blockscout's field worked fine, "today" meant the chart only
+had 1 real hour of bars right after midnight, growing to 24 by end of
+day: a rolling window is always a consistent 24 hours regardless of
+wall-clock time. Renamed "Txs Today (by hour)" → "Txs (Last 24h)"
+accordingly.
+
+One expected, self-healing transition: historical snapshots published
+*before* this fix still carry `transactionsThisHour: 0` from the old
+buggy computation — they'll show as stale zeros in the chart for up to
+24 hours after deploy, aging out of the rolling window naturally as
+new (correctly-computed) snapshots replace them. The tile's headline
+number is unaffected by this transition — it's computed fresh
+client-side from `totalTransactions`, which was never wrong.
+
+---
+
+## ElectroSwap links + holder concentration (Tokens tab)
+
+Three follow-up requests:
+
+- Every NFT collection row (`TokenLeaderboard.jsx`) and every token's
+  own detail page (`TokenDetail.jsx`) now links to ElectroSwap — a
+  collection page (`/collection/<address>`) for NFTs, a trading page
+  (`/explore/tokens/electroneum/<address>?inputCurrency=ETN`) for
+  fungible tokens, plus a small ElectroSwap logo next to the link text
+  (already available in `backend/assets/media.js`, reused rather than
+  re-imported). The NFT leaderboard row needed restructuring from a
+  `<button>` to a `<div role="button" tabIndex={0}>` so the link could
+  nest inside it at all (a real `<a>` inside a real `<button>` is
+  invalid HTML) — `onKeyDown` added to keep Enter-to-activate working,
+  and the link's own `onClick` calls `stopPropagation()` so clicking it
+  doesn't also trigger the row's own "open token detail" navigation.
+- Each Top Holder row (`TokenDetail.jsx`) now shows what percentage of
+  total supply that holder controls, computed from the raw BigInt
+  values (basis-points precision) rather than dividing
+  `formatTokenAmount`'s already-decimal-shifted display strings, which
+  would lose precision for large supplies. `null` (row just omits the
+  percentage) when total supply is missing or zero, rather than
+  showing "NaN%"/"Infinity%".
+
+Verified live: NFT rows show the ElectroSwap logo + correct
+`/collection/` links; a real ERC-20 token page (Planet Zephyros CORE)
+shows the correct `/explore/tokens/` link; holder percentages are real
+and sum sensibly (top 14 holders of 71 ≈ 87% of supply, matching a
+genuinely concentrated small-cap token).
+
+---
+
 ## R2 reads go through this backend, not R2 directly
 
 Every browser-side R2 JSON read (dashboard stats, owned names, ETN

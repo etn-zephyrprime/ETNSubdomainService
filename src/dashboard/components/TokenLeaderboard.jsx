@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { formatCompact, shortHash, isSpamTokenName } from "../utils/format.js";
+import { ElectroSwap } from "../../../backend/assets/media.js";
 import NeonButton from "../../components/NeonButton.jsx";
 
 const CATEGORIES = [
@@ -96,9 +97,12 @@ export default function TokenLeaderboard({ onSelectToken }) {
         <div style={{ fontSize: 13, color: muted, textAlign: "center", padding: 24 }}>Nothing found.</div>
       ) : (
         visibleTokens.map((token) => (
-          <button
+          <div
             key={token.address}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelectToken(token.address)}
+            onKeyDown={(e) => { if (e.key === "Enter") onSelectToken(token.address); }}
             style={{
               display: "flex",
               alignItems: "center",
@@ -117,11 +121,23 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 {token.name || "Unnamed"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
               </div>
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(token.address)}</div>
+              {category === "nfts" && (
+                <a
+                  href={`https://app.electroswap.io/collection/${token.address}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: green, fontWeight: 700, textDecoration: "none" }}
+                >
+                  <img src={ElectroSwap} alt="" style={{ height: 12, width: 12, objectFit: "contain", borderRadius: 2 }} />
+                  View on ElectroSwap ↗
+                </a>
+              )}
             </div>
-            <div style={{ width: 100, textAlign: "right", fontSize: 13, fontWeight: 700, color: green }}>
+            <div style={{ width: 100, textAlign: "right", fontSize: 13, fontWeight: 700, color: green, flexShrink: 0 }}>
               {formatCompact(token.holders)}
             </div>
-          </button>
+          </div>
         ))
       )}
 
