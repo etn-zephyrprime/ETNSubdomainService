@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from "react";
+import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
-import { formatCompact, formatTokenAmount, shortHash } from "../utils/format.js";
+import { useTokenChart } from "../hooks/useTokenChart.js";
+import { formatCompact, formatTokenAmount, formatUsdPrice, shortHash } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import TokenPriceChart from "./TokenPriceChart.jsx";
 import NftSalesChart from "./NftSalesChart.jsx";
+import NeonButton from "../../components/NeonButton.jsx";
+
+const HOLDERS_PAGE_SIZE = 10;
+const MAX_HOLDERS_SHOWN = 25; // matches the existing fetch's own slice cap below
 
 // ElectroSwap's two different per-asset URL shapes — a trading page for fungible tokens, a
 // collection page for NFTs — same distinction TokenLeaderboard.jsx's NFT-row link uses.
@@ -32,18 +38,35 @@ function holderPercentage(value, totalSupply) {
   }
 }
 
+// A holding's USD value — null (row just omits the $ figure) whenever there's no known USD price
+// for this token yet (still loading, or no ElectroSwap trading pair at all, e.g. an NFT) rather
+// than showing "$0.00" or "$NaN".
+function holderUsdValue(value, decimals, priceUsd) {
+  if (priceUsd == null) return null;
+  try {
+    const amount = parseFloat(ethers.formatUnits(value, decimals == null ? 18 : Number(decimals)));
+    return Number.isFinite(amount) ? amount * priceUsd : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function TokenDetail({ address, onBack, onSelectAddress }) {
   const { getToken, getTokenHolders } = useBlockscout();
+  const { getTokenChart } = useTokenChart();
 
   const [token, setToken] = useState(null);
   const [holders, setHolders] = useState([]);
   const [error, setError] = useState(null);
+  const [priceUsd, setPriceUsd] = useState(null);
+  const [showAllHolders, setShowAllHolders] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setToken(null);
     setHolders([]);
     setError(null);
+    setShowAllHolders(false);
     (async () => {
       try {
         const [tokenRes, holdersRes] = await Promise.all([getToken(address), getTokenHolders(address)]);
@@ -57,6 +80,22 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
     })();
     return () => { cancelled = true; };
   }, [address, getToken, getTokenHolders]);
+
+  // Current USD price, for each holder's $ value below — the smallest range (7D) purely to get
+  // its last candle's close price cheaply, independent of TokenPriceChart's own range/metric
+  // state. Silently stays null for NFTs (no ElectroSwap trading pair — same "no chart" case
+  // TokenPriceChart already handles) or any token GeckoTerminal has no pool data for.
+  useEffect(() => {
+    let cancelled = false;
+    setPriceUsd(null);
+    getTokenChart(address, "7")
+      .then((res) => {
+        if (cancelled || !res?.hasData || !res.candles?.length) return;
+        setPriceUsd(res.candles[res.candles.length - 1].close);
+      })
+      .catch((err) => console.error("Failed to load token price for holder USD values:", err));
+    return () => { cancelled = true; };
+  }, [address, getTokenChart]);
 
   return (
     <div>
@@ -125,24 +164,40 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
           {holders.length === 0 ? (
             <div style={{ fontSize: 12, color: muted }}>No holder data available.</div>
           ) : (
-            holders.slice(0, 25).map((h) => {
-              const pct = holderPercentage(h.value, token.total_supply);
-              return (
-                <button
-                  key={h.address.hash}
-                  onClick={() => onSelectAddress(h.address.hash)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "8px 0", borderBottom: `1px solid ${border}`, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
-                >
-                  <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>
-                    {h.address.ens_domain_name || shortHash(h.address.hash)}
-                  </span>
-                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                    {formatTokenAmount(h.value, token.decimals)}
-                    {pct != null && <span style={{ color: mutedLight, fontWeight: 500 }}> ({pct.toFixed(2)}%)</span>}
-                  </span>
-                </button>
-              );
-            })
+            <>
+              {holders.slice(0, showAllHolders ? MAX_HOLDERS_SHOWN : HOLDERS_PAGE_SIZE).map((h) => {
+                const pct = holderPercentage(h.value, token.total_supply);
+                const usdValue = holderUsdValue(h.value, token.decimals, priceUsd);
+                return (
+                  <button
+                    key={h.address.hash}
+                    onClick={() => onSelectAddress(h.address.hash)}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "8px 0", borderBottom: `1px solid ${border}`, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                  >
+                    <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>
+                      {h.address.ens_domain_name || shortHash(h.address.hash)}
+                    </span>
+                    <span style={{ textAlign: "right" }}>
+                      <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                        {formatTokenAmount(h.value, token.decimals)}
+                        {pct != null && <span style={{ color: mutedLight, fontWeight: 500 }}> ({pct.toFixed(2)}%)</span>}
+                      </span>
+                      {usdValue != null && (
+                        <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {!showAllHolders && holders.length > HOLDERS_PAGE_SIZE && (
+                <div style={{ textAlign: "center", marginTop: 12 }}>
+                  <NeonButton variant="dark" onClick={() => setShowAllHolders(true)} style={{ padding: "8px 20px", fontSize: 12 }}>
+                    Show More
+                  </NeonButton>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

@@ -1045,6 +1045,60 @@ scanners.
 
 ---
 
+## Top Holders: top 10 + Show More, and a USD value per holding
+
+Two follow-ups on `TokenDetail.jsx`'s Top Holders list and
+`AddressLookup.jsx`'s own holdings list:
+
+- Top Holders now renders only the first 10 by default (was all 25),
+  with a "Show More" button (`NeonButton`, same component/style
+  `TokenLeaderboard.jsx`'s own "Load More" already uses) revealing the
+  rest — client-side only, no extra fetch, since the existing
+  `getTokenHolders` call already returns up to 25 in one page.
+- Each holder row (`TokenDetail.jsx`) and each holding row
+  (`AddressLookup.jsx`, both the "Tokens" and "NFT's" category) now
+  shows that holding's USD value under its token amount — e.g. BOLT's
+  top holder shows `15,000,000 (15.00%)` with `$20,279.41` beneath it.
+
+**Where the price comes from:** the same GeckoTerminal-backed
+`/api/token-chart` endpoint (`tokenChartRouter.js`) `TokenPriceChart.jsx`
+already uses — the smallest range (7D) is fetched purely to read its
+last candle's close price, independent of whatever range/metric the
+price chart itself currently has selected. `TokenDetail.jsx` fetches
+its own token's price once; `AddressLookup.jsx` fetches one price per
+distinct fungible token in the wallet's holdings (capped at 25, matching
+the holdings list's own render cap) — NFTs are skipped entirely, since
+they have no ElectroSwap trading pair to price against (same reason
+`TokenPriceChart.jsx` shows nothing useful for one, which is why NFT
+collection pages get `NftSalesChart.jsx` instead — see above).
+
+Firing one request per held token sounds like it could hammer
+GeckoTerminal's rate limit, but doesn't: `tokenChartRouter.js` already
+serializes *every* outbound GeckoTerminal call, from every visitor and
+every endpoint, through one shared queue with an enforced minimum
+interval — a wallet holding 20 different tokens just means 20 requests
+taking their turn in that same queue, each independently resolving and
+updating that row's $ value as it arrives, rather than the whole list
+waiting on the slowest one. A token with no real GeckoTerminal pool
+(most of the long tail) just never gets a price — its row shows the
+token amount with no $ value beneath it, same "omit rather than fake a
+number" convention as the existing holder-percentage column.
+
+Verified live (local backend, to avoid the deployed backend's
+production `ALLOWED_ORIGINS` CORS allowlist rejecting a local dev
+port): BOLT's Top Holders shows 10 rows + a working "Show More" that
+reveals the remaining 15, each with a correct USD value; the exact same
+wallet/token combination the user gave as an example
+(`0x79c0c8Fe02B2438ea44d35CEC24Bf36E89D2704b` holding 15,000,000 BOLT,
+15.00%) showed `$20,279.41`. On Address Lookup, the same wallet's BOLT
+holding shows the identical `$20,279.41` (consistent between the two
+pages, as expected — same price source), a token with real liquidity
+(Pandy) showed a sensible small $ value, and a token with no real
+GeckoTerminal pool (ETN Club) correctly showed no $ value at all rather
+than a fake one.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is
