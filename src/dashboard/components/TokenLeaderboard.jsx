@@ -123,7 +123,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(token.address)}</div>
               {category === "nfts" && (
                 <a
-                  href={`https://app.electroswap.io/collection/${token.address}`}
+                  href={`https://app.electroswap.io/nfts/collection/${token.address}`}
                   target="_blank"
                   rel="noreferrer"
                   onClick={(e) => e.stopPropagation()}

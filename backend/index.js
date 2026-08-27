@@ -14,6 +14,7 @@ import { startNameServiceStatsCache } from "./utils/nameServiceStatsCache.js";
 import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
 import { startDashboardStatsCache } from "./utils/dashboardStatsCache.js";
+import { startNftSalesCache } from "./utils/nftSalesCache.js";
 import { startSubdomainAdvertScheduler } from "./utils/subdomainAdvertScheduler.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
@@ -80,6 +81,7 @@ app.listen(PORT, () => {
   startEtnPriceCache();
   startExpiryAlertScheduler();
   startDashboardStatsCache();
+  startNftSalesCache();
   safeStart("Telegram webhook registration", registerTelegramWebhook);
   safeStart("Subdomain advert scheduler", startSubdomainAdvertScheduler);
 
