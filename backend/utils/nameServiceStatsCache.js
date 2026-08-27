@@ -21,6 +21,26 @@ const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
+// BaseRegistrarImplementation — the canonical, chain-level registrar every .etn top-level domain
+// is minted through, regardless of which frontend/app was used. Added so this tab can show real
+// network-wide registration activity, not just the subset that happened to also flow through this
+// app's Marketplace contract (confirmed live: 90 real NameRegistered events on this contract vs.
+// only 4 domains this app's own Marketplace ever saw — most .etn registrations never touch this
+// app at all). Deployed before the Marketplace contract (confirmed via its earliest transaction,
+// block 15031631, one block before its own earliest NameRegistered event) — MARKETPLACE_DEPLOY_BLOCK
+// alone would miss all pre-Marketplace history.
+const BASE_REGISTRAR_ADDRESS = process.env.BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
+const BASE_REGISTRAR_DEPLOY_BLOCK = process.env.BASE_REGISTRAR_DEPLOY_BLOCK
+  ? parseInt(process.env.BASE_REGISTRAR_DEPLOY_BLOCK, 10)
+  : 15031631;
+// Earlier of the two — the scan's actual starting point (see the cursor-bootstrap logic below).
+const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_DEPLOY_BLOCK);
+// Bumped from the unversioned v1 (Marketplace-only) shape: a cache published before this change
+// already has `lastScannedBlock` advanced past MARKETPLACE_DEPLOY_BLOCK, which would silently
+// skip the entire BaseRegistrar pre-Marketplace block range forever (the cursor logic below only
+// bootstraps from EARLIEST_DEPLOY_BLOCK when there's *no* valid cache) — same fix shape as
+// ownedNamesCache.js's CACHE_SCHEMA_VERSION history.
+const CACHE_SCHEMA_VERSION = 2;
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
   ? parseInt(process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS, 10)
   : 300000;
@@ -41,6 +61,15 @@ const MARKETPLACE_ABI = [
   "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "function nextListingId() view returns (uint256)",
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
+];
+// Standard ENS-style BaseRegistrarImplementation shape — confirmed live against the real
+// contract. Deliberately no plaintext label: this event only ever carries the hashed tokenId
+// (`id`), same fundamental limitation already documented in ownedNamesCache.js for "retro" names
+// — there's no way to recover a name from this alone unless it's *also* independently wrapped via
+// NameWrapper at some point. Fine here: this is used only for an accurate network-wide count/
+// trend, not a name list.
+const BASE_REGISTRAR_ABI = [
+  "event NameRegistered(uint256 indexed id, address indexed owner, uint256 expires)",
 ];
 
 const MIN_CHUNK_SIZE = 50;
@@ -122,25 +151,27 @@ async function mapWithConcurrency(items, concurrency, fn) {
 
 let isRunning = false;
 
-async function scanAndPublish(marketplace, provider) {
+async function scanAndPublish(marketplace, baseRegistrar, provider) {
   if (isRunning) return;
   isRunning = true;
   try {
-    const cached = await getNameServiceStatsCache();
+    const rawCached = await getNameServiceStatsCache();
+    const cached = rawCached?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCached : null;
     const events = Array.isArray(cached?.events) ? cached.events.slice() : [];
 
-    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
+    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : EARLIEST_DEPLOY_BLOCK;
     const latestBlock = await marketplace.runner.getBlockNumber();
     const toBlock = Math.min(fromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
 
     if (fromBlock <= latestBlock) {
-      const [registered, activated, subnamesReg, sold] = await Promise.all([
+      const [registered, activated, subnamesReg, sold, networkRegistered] = await Promise.all([
         queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), fromBlock, toBlock),
         queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock),
         queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock),
         queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock, toBlock),
+        queryLogsChunked(baseRegistrar, baseRegistrar.filters.NameRegistered(), fromBlock, toBlock),
       ]);
-      const allEvents = [...registered, ...activated, ...subnamesReg, ...sold].sort(
+      const allEvents = [...registered, ...activated, ...subnamesReg, ...sold, ...networkRegistered].sort(
         (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
       );
 
@@ -160,11 +191,21 @@ async function scanAndPublish(marketplace, provider) {
           }
         });
 
+        const baseRegistrarAddrLc = BASE_REGISTRAR_ADDRESS.toLowerCase();
+
         for (const event of allEvents) {
           const timestampMs = blockTimestamps.get(event.blockNumber);
           if (timestampMs == null) continue; // couldn't get a real timestamp — skip rather than fake one
 
-          if (event.eventName === "NameRegistered") {
+          // Both contracts happen to emit an event literally named "NameRegistered", with
+          // different shapes (Marketplace's carries a plaintext label; BaseRegistrar's only ever
+          // carries a hashed tokenId — see BASE_REGISTRAR_ABI's comment) — disambiguated by which
+          // contract actually emitted it (event.address), not just the event name.
+          const isNetworkRegistration = event.eventName === "NameRegistered" && event.address?.toLowerCase() === baseRegistrarAddrLc;
+
+          if (isNetworkRegistration) {
+            events.push({ type: "network_domain_registered", timestampMs });
+          } else if (event.eventName === "NameRegistered") {
             events.push({ type: "domain_registered", label: event.args.label, timestampMs });
           } else if (event.eventName === "DomainActivated") {
             events.push({ type: "domain_activated", timestampMs });
@@ -210,6 +251,7 @@ async function scanAndPublish(marketplace, provider) {
       floorPriceWei,
       activeListingsCount,
       lastScannedBlock: toBlock,
+      schemaVersion: CACHE_SCHEMA_VERSION,
     });
 
     console.log(`📡 Name Service stats cache updated — ${trimmedEvents.length} event(s) tracked, ${activeListingsCount} active listing(s), scanned to block ${toBlock}`);
@@ -233,8 +275,9 @@ export function startNameServiceStatsCache() {
   // batchMaxCount: 1 — same fix as this repo's other per-item-call-heavy caches.
   const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const baseRegistrar = new ethers.Contract(BASE_REGISTRAR_ADDRESS, BASE_REGISTRAR_ABI, provider);
 
   console.log(`📡 Name Service stats cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(marketplace, provider);
-  setInterval(() => scanAndPublish(marketplace, provider), CACHE_INTERVAL_MS);
+  scanAndPublish(marketplace, baseRegistrar, provider);
+  setInterval(() => scanAndPublish(marketplace, baseRegistrar, provider), CACHE_INTERVAL_MS);
 }

@@ -660,6 +660,44 @@ fabricated number, and will start reflecting real data the moment a
 name actually resells. Small honest numbers (this is a young
 ecosystem — 4 domains, 21 subnames at build time), not inflated ones.
 
+**"All of Electroneum" vs. "via ETN Subdomain Service"** (added on
+request — "track all domains on Electroneum, not just those that run
+through my subdomain service"): everything above only ever reflected
+activity through this app's own Marketplace contract. Confirmed live
+that's a small fraction of the real total — `BaseRegistrarImplementation`
+(the chain-level registrar every `.etn` domain actually mints through,
+regardless of which frontend registered it) had **90** real
+`NameRegistered` events at the time this was built, vs. only 4 domains
+this app's own Marketplace ever touched. `nameServiceStatsCache.js` now
+also scans that contract and publishes a "Total .etn Domains" stat +
+its own registrations trend, kept **visually separate** from the
+app-specific section below it rather than blended into one number —
+blending would misattribute the other 86 registrations as if they were
+this app's own traffic.
+
+Two real wrinkles worth knowing:
+1. `BaseRegistrarImplementation.NameRegistered(uint256 indexed id, ...)`
+   never carries a plaintext label — only a hashed tokenId — same
+   fundamental limitation already documented for "retro" names in
+   `ownedNamesCache.js`. Fine here: this only needs an accurate
+   network-wide *count* and *trend*, not a name list.
+2. Both contracts happen to emit an event literally named
+   `NameRegistered`, with different shapes. Confirmed the naive
+   `event.eventName === "NameRegistered"` check would silently merge
+   them (reading `.args.label` off an event that doesn't have one) —
+   disambiguated by which contract actually emitted it (`event.address`)
+   instead.
+
+Deployed *before* the Marketplace contract (confirmed via its earliest
+transaction, one block before its own earliest `NameRegistered`) — a
+plain `MARKETPLACE_DEPLOY_BLOCK` cursor bootstrap would have missed
+pre-Marketplace history entirely. Bumped `CACHE_SCHEMA_VERSION` (same
+fix shape as `ownedNamesCache.js`'s own v1→v2 history) so the
+already-published cache — whose cursor had already advanced past
+`MARKETPLACE_DEPLOY_BLOCK` — properly re-backfills from the earlier of
+the two deploy blocks instead of silently skipping that whole range
+forever.
+
 ---
 
 ## Vercel edge request caching

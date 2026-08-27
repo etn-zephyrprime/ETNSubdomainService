@@ -24,6 +24,15 @@ function StatCard({ label, value, sub }) {
 // the registrations trend and marketplace volume/floor price come from the new
 // nameServiceStatsCache.js, since neither timestamped event history nor sale prices existed
 // anywhere in this backend before.
+//
+// Two genuinely different scopes shown here, deliberately kept visually separate rather than
+// blended into one number: "All of Electroneum" (network_domain_registered events, sourced from
+// BaseRegistrarImplementation — the chain-level registrar every .etn domain mints through
+// regardless of which app was used) vs. "via ETN Subdomain Service" (this app's own Marketplace
+// contract activity — domains that also activated subname-selling here, subnames sold through
+// this app, marketplace resales). Confirmed live these are meaningfully different populations:
+// 90 real network-wide registrations vs. only 4 domains this app's own Marketplace ever touched —
+// blending them would misattribute the other 86 as if they were this app's own traffic.
 export default function NameServiceStats() {
   const { domains, stats, loading, error } = useNameServiceStats();
 
@@ -35,6 +44,19 @@ export default function NameServiceStats() {
     () => (domains ? domains.reduce((sum, d) => sum + (d.subnames?.length || 0), 0) : 0),
     [domains]
   );
+
+  const totalNetworkDomains = useMemo(
+    () => (stats?.events ? stats.events.filter((e) => e.type === "network_domain_registered").length : 0),
+    [stats]
+  );
+
+  const networkTrendData = useMemo(() => {
+    if (!stats?.events) return [];
+    const relevant = stats.events
+      .filter((e) => e.type === "network_domain_registered")
+      .map((e) => ({ timestamp: new Date(e.timestampMs).toISOString() }));
+    return bucketDailyCounts(relevant, "timestamp", TREND_WINDOW_DAYS);
+  }, [stats]);
 
   const trendData = useMemo(() => {
     if (!stats?.events) return [];
@@ -62,10 +84,31 @@ export default function NameServiceStats() {
   return (
     <div>
       <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
-        Activity on the ETN Subdomain Service itself — domain registrations, subname sales, and
-        marketplace resales. Not available on any general block explorer.
+        The .etn naming layer — a general block explorer has no concept of it at all. Split below
+        into every domain registered anywhere on Electroneum, and this service's own activity
+        specifically.
       </div>
 
+      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
+        All of Electroneum
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 12 }}>
+        <StatCard
+          label="Total .etn Domains"
+          value={formatCompact(totalNetworkDomains)}
+          sub="Registered on-chain, any app"
+        />
+      </div>
+      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
+        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
+          Domain registrations per day, last {TREND_WINDOW_DAYS} days
+        </div>
+        <SparklineChart data={networkTrendData} height={140} formatValue={formatInt} formatLabel={formatChartDate} />
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
+        Via ETN Subdomain Service
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <StatCard label="Domains Activated" value={formatCompact(domains.length)} />
         <StatCard label="Subnames Registered" value={formatCompact(subnamesRegistered)} />
@@ -79,7 +122,7 @@ export default function NameServiceStats() {
 
       <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
-          New domains + subnames per day, last {TREND_WINDOW_DAYS} days
+          Domain activations + subname registrations per day, last {TREND_WINDOW_DAYS} days
         </div>
         <SparklineChart data={trendData} height={140} formatValue={formatInt} formatLabel={formatChartDate} />
       </div>
