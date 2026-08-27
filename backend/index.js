@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import telegramLinkRouter, { registerTelegramWebhook } from "./utils/telegramLinkRouter.js";
 import tokenChartRouter from "./utils/tokenChartRouter.js";
+import r2CacheProxyRouter from "./utils/r2CacheProxyRouter.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
@@ -52,6 +53,7 @@ app.get("/", (req, res) => {
 app.use("/api", generateNftRouter);
 app.use("/api", telegramLinkRouter);
 app.use("/api", tokenChartRouter);
+app.use("/api", r2CacheProxyRouter);
 
 const PORT = process.env.PORT || 3001;
 

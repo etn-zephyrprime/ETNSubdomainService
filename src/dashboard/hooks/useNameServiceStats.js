@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { R2_PUBLIC_URL } from "../../config.js";
+import { r2ProxyUrl } from "../../config.js";
 
-// Combines two R2-published caches, both already public/CORS-open — no backend call needed from
-// the browser, same as every other dashboard data source:
+// Combines two R2-published caches, both fetched via this backend's own proxy rather than R2
+// directly (see config.js's r2ProxyUrl for why):
 //   - activated-domains.json (backs the homepage's own Activated Domains table already) — real,
 //     current domain/subname counts and per-domain subname counts. No new backend work needed for
 //     this half; it was already being published for an unrelated feature.
@@ -17,8 +17,8 @@ export function useNameServiceStats() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch(`${R2_PUBLIC_URL}/activated-domains.json`).then((r) => (r.ok ? r.json() : { domains: [] })),
-      fetch(`${R2_PUBLIC_URL}/name-service-stats.json`).then((r) => (r.ok ? r.json() : null)),
+      fetch(r2ProxyUrl("activated-domains.json")).then((r) => (r.ok ? r.json() : { domains: [] })),
+      fetch(r2ProxyUrl("name-service-stats.json")).then((r) => (r.ok ? r.json() : null)),
     ])
       .then(([domainsRes, statsRes]) => {
         if (cancelled) return;

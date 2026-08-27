@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, MARKETPLACE_DEPLOY_BLOCK, NAME_WRAPPER_ADDRESS, RPC_URL, R2_PUBLIC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, MARKETPLACE_DEPLOY_BLOCK, NAME_WRAPPER_ADDRESS, RPC_URL, r2ProxyUrl } from "../config.js";
 import { computeSubnode, decodeFirstLabel } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
@@ -167,23 +167,22 @@ export function useSubnameRegistration() {
   // backend/utils/subnameDomainsCache.js keeps a small public JSON file in R2 with exactly this —
   // scanned server-side on a timer instead of by every visitor's browser on every page load (that
   // full-history scan is ~112 chunked RPC round trips as of writing, and grows by roughly one more
-  // every day, forever). One plain fetch here instead. Falls back to scanning on-chain directly —
+  // every day, forever). One plain fetch here instead (via this backend's own proxy — see
+  // config.js's r2ProxyUrl). Falls back to scanning on-chain directly —
   // scanAvailableParentDomainsOnChain below, unchanged in substance from before this cache existed
-  // — if R2_PUBLIC_URL isn't configured, the cache hasn't been published yet, or the fetch fails
-  // for any reason (network hiccup, stale deploy, etc.): slower in that case, but never broken.
+  // — if the cache hasn't been published yet or the fetch fails for any reason (network hiccup,
+  // stale deploy, backend down, etc.): slower in that case, but never broken.
   const getAvailableParentDomains = useCallback(async () => {
-    if (R2_PUBLIC_URL) {
-      try {
-        const res = await fetch(`${R2_PUBLIC_URL.replace(/\/$/, "")}/subname-domains.json`);
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data?.domains)) {
-            return data.domains.map((d) => ({ ...d, pricePerYear: BigInt(d.pricePerYear) }));
-          }
+    try {
+      const res = await fetch(r2ProxyUrl("subname-domains.json"));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.domains)) {
+          return data.domains.map((d) => ({ ...d, pricePerYear: BigInt(d.pricePerYear) }));
         }
-      } catch (err) {
-        console.warn("Subname domains cache fetch failed, falling back to on-chain scan:", err.message);
       }
+    } catch (err) {
+      console.warn("Subname domains cache fetch failed, falling back to on-chain scan:", err.message);
     }
 
     return scanAvailableParentDomainsOnChain(getReadContracts());
