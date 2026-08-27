@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
+import { useTokenChart } from "../hooks/useTokenChart.js";
 import { usePayment } from "../../hooks/usePayment.js";
-import { formatCompact, formatTokenAmount, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
+import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
@@ -69,6 +70,20 @@ const HOLDING_CATEGORIES = [
   { id: "nfts", label: "NFT's" },
 ];
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
+const MAX_PRICED_HOLDINGS = 25; // matches the holdings list's own render cap below
+
+// A holding's USD value from its own per-token price (see the tokenPrices-fetching effect below)
+// — null (row just omits the $ figure) whenever there's no known price yet, same "omit rather
+// than fake a number" convention as TokenDetail.jsx's holderUsdValue.
+function tokenUsdValue(rawValue, decimals, priceUsd) {
+  if (priceUsd == null) return null;
+  try {
+    const amount = parseFloat(ethers.formatUnits(rawValue, decimals == null ? 18 : Number(decimals)));
+    return Number.isFinite(amount) ? amount * priceUsd : null;
+  } catch {
+    return null;
+  }
+}
 
 // Session-only single wallet lookup (free tier) — accepts either a raw 0x address or a .etn name,
 // reusing usePayment.js's existing resolveName() rather than re-implementing name resolution a
@@ -76,6 +91,7 @@ const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // persisted" free-tier spec.
 export default function AddressLookup({ initialAddress = null, onSelectToken }) {
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
+  const { getTokenChart } = useTokenChart();
   const { resolveName } = usePayment();
 
   const [input, setInput] = useState(initialAddress || "");
@@ -86,6 +102,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [addressInfo, setAddressInfo] = useState(null);
   const [counters, setCounters] = useState(null);
   const [tokenBalances, setTokenBalances] = useState([]);
+  const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
   const [loadError, setLoadError] = useState(null);
 
   const [balanceHistory, setBalanceHistory] = useState(null);
@@ -130,6 +147,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     setTransferHistory(null);
     setTransferNextParams(null);
     setTransferWindowDays(DEFAULT_WINDOW_DAYS);
+    setTokenPrices({});
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -148,6 +166,30 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     })();
     return () => { cancelled = true; };
   }, [resolvedAddress, getAddress, getAddressCounters, getAddressTokenBalances]);
+
+  // USD value per holding — fetched per fungible token (NFTs have no ElectroSwap trading pair, so
+  // there's no price to fetch for those), one small request each via the same GeckoTerminal-backed
+  // chart endpoint TokenDetail.jsx's own price uses, just the smallest range (7D) purely to read
+  // its last candle's close. Fired independently per token rather than awaited together, so each
+  // row's $ value appears as its own request resolves instead of the whole list waiting on the
+  // slowest one — the backend already serializes these against GeckoTerminal's own rate limit
+  // (tokenChartRouter.js), so this doesn't risk hammering it just because several rows ask at once.
+  // Capped at MAX_PRICED_HOLDINGS, matching the holdings list's own render cap.
+  useEffect(() => {
+    const fungible = tokenBalances.filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type));
+    if (fungible.length === 0) return;
+    let cancelled = false;
+    fungible.slice(0, MAX_PRICED_HOLDINGS).forEach((tb) => {
+      const addr = tb.token.address.toLowerCase();
+      getTokenChart(tb.token.address, "7")
+        .then((res) => {
+          if (cancelled || !res?.hasData || !res.candles?.length) return;
+          setTokenPrices((prev) => ({ ...prev, [addr]: res.candles[res.candles.length - 1].close }));
+        })
+        .catch((err) => console.error(`Failed to load price for ${addr}:`, err.message));
+    });
+    return () => { cancelled = true; };
+  }, [tokenBalances, getTokenChart]);
 
   // Chart data loads separately from (and doesn't block) the core address detail above — each of
   // these is its own set of requests (balance history is one call; tx/transfer history fetch by
@@ -378,30 +420,38 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               {holdingsCategory === "nfts" ? "No NFTs held." : "No token balances."}
             </div>
           ) : (
-            visibleHoldings.slice(0, 25).map((tb, i) => (
-              <button
-                key={`${tb.token?.address}-${i}`}
-                onClick={() => onSelectToken?.(tb.token?.address)}
-                disabled={!onSelectToken || !tb.token?.address}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  width: "100%",
-                  padding: "8px 0",
-                  borderBottom: `1px solid ${border}`,
-                  background: "transparent",
-                  border: "none",
-                  cursor: onSelectToken ? "pointer" : "default",
-                  textAlign: "left",
-                }}
-              >
-                <span style={{ fontSize: 12, color: "#fff" }}>
-                  {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
-                </span>
-                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
-              </button>
-            ))
+            visibleHoldings.slice(0, 25).map((tb, i) => {
+              const usdValue = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
+              return (
+                <button
+                  key={`${tb.token?.address}-${i}`}
+                  onClick={() => onSelectToken?.(tb.token?.address)}
+                  disabled={!onSelectToken || !tb.token?.address}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    width: "100%",
+                    padding: "8px 0",
+                    borderBottom: `1px solid ${border}`,
+                    background: "transparent",
+                    border: "none",
+                    cursor: onSelectToken ? "pointer" : "default",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: "#fff" }}>
+                    {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
+                  </span>
+                  <span style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
+                    {usdValue != null && (
+                      <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
+                    )}
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
       )}
