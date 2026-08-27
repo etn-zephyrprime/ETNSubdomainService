@@ -32,14 +32,14 @@ import {
   LOOKBACK_BLOCKS,
 } from "./coreClashConfig.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
+import { getEtnPriceCache } from "../state/etnPriceState.js";
 
 const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
 const REORG_BUFFER_BLOCKS = 2;
-const COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price?ids=electroneum&vs_currencies=usd";
 // Same cadence as priceEngine.js's PRICE_REFRESH_MS — independent of swap activity, so CORE/WETN
 // pricing stays current even through a quiet period with no trades, and so a burst of swaps in
-// one poll tick doesn't hit CoinGecko once per trade.
+// one poll tick doesn't mean a shared-cache read once per trade.
 const PRICE_REFRESH_MS = 5 * 60 * 1000;
 // CoreClashGame's swapsConfig.js "zephyrosAnimationFileId" for CORE — same reasoning as the burn
 // watcher's file_id: bot-scoped, still valid via the same Zephyros bot token.
@@ -68,16 +68,23 @@ function formatUnitsSafe(value, decimals) {
 }
 
 async function fetchWetnUsd() {
+  // Reads etnPriceCache.js's own published price instead of calling CoinGecko directly a second
+  // time. Found live (a real 429 in production) that this and etnPriceCache.js were independently
+  // polling the exact same CoinGecko endpoint on the exact same 5-minute cadence, both started
+  // from the same app.listen() callback — meaning every ~5 minutes this backend made two
+  // near-simultaneous identical requests for data that's already published in one place for
+  // exactly this reason (see etnPriceState.js's own comment: "instead of every visitor's browser
+  // hitting CoinGecko directly" — the same logic applies to this backend's own internal callers).
+  // R2 reads aren't meaningfully rate-limited the way CoinGecko's free API is, so this halves the
+  // CoinGecko call volume for this price with no loss of freshness (etnPriceCache.js refreshes on
+  // the same 5-minute cadence this file used to poll CoinGecko on directly).
   try {
-    const res = await fetch(COINGECKO_API);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const price = data?.electroneum?.usd;
-    if (price && Number.isFinite(price) && price > 0) return price;
+    const cached = await getEtnPriceCache();
+    if (cached?.usd && Number.isFinite(cached.usd) && cached.usd > 0) return cached.usd;
   } catch (err) {
-    console.warn("⚠️  [SwapWatcher] CoinGecko fetch failed, using fallback price:", err.message);
+    console.warn("⚠️  [SwapWatcher] Failed to read shared ETN price cache, using fallback price:", err.message);
   }
-  return 0.00103; // same fallback priceEngine.js used
+  return 0.00103; // same fallback etnPriceCache.js uses when R2 itself has nothing published yet
 }
 
 // Cached, periodically-refreshed prices — same design as priceEngine.js: both the trade's own
