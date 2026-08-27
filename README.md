@@ -420,11 +420,20 @@ click a tile, the chart below swaps to that metric's history:
 - Address Lookup: ETN Balance uses Blockscout's real
   `coin-balance-history-by-day` endpoint (full history, immediately).
   Transactions/Token Transfers have no Blockscout history endpoint at
-  all, so they're derived from up to 5 pages (250 items) of the
-  address's own transaction/transfer list, bucketed by day — a bounded
-  "recent activity" view, not a claim of full history, so a genuinely
-  high-activity address doesn't mean unbounded fetching just to draw
-  a chart.
+  all, so they're derived from the address's own transaction/transfer
+  list, bucketed by day. Originally fetched a *fixed* 5 pages (250
+  items) regardless of the address's activity level — found live this
+  could silently fall short of even 30 days: a wallet doing 4,248
+  lifetime transactions only reached ~20 days back under that fixed
+  count, rendering the rest of a 60-day chart window as flat zero,
+  indistinguishable from genuine inactivity. `fetchUntilWindow()` in
+  `AddressLookup.jsx` now fetches by *coverage* instead — as many
+  pages as it takes for the oldest fetched item to reach 30 days back
+  (capped at 20 pages/1000 items per fetch, purely as a runaway-request
+  safety net, not the primary limiter) — plus a "Show more" button
+  that extends the window another 30 days per click, fetching only
+  what isn't already loaded, down to that address's genuine first
+  activity (`next_page_params` running out, not just the safety cap).
 
 **Own header/footer, dark green background**: `DashboardHeader.jsx` —
 Planet Zephyros logo + wordmark side by side — replaced reusing the
