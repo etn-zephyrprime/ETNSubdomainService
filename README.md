@@ -620,6 +620,48 @@ Fixed two more real bugs found via live testing after shipping:
 
 ---
 
+## Name Service tab (dashboard)
+
+Blockscout's own `/stats` page (and every generic chain explorer) has
+no way to show any of this — it sees raw addresses and transactions,
+only. This tab surfaces the one thing genuinely unique to this app:
+activity on the `.etn` naming layer itself, which Blockscout has zero
+concept of.
+
+Domain/subname counts and "Top Domains by Subnames" needed **no new
+backend work at all** — `activated-domains.json` (published for the
+homepage's own Activated Domains table) already had everything: domain
+count, per-domain subname arrays (`.length` = subnames registered per
+domain), summed for the total.
+
+What genuinely didn't exist anywhere: a *timestamped* event history
+(for the "new names per day" trend chart) and marketplace sale prices
+over time. Confirmed live that Blockscout's own logs endpoint
+(`/addresses/{address}/logs`) omits block timestamps entirely — only
+`block_number`/`block_hash` — so there was no way to get real dates for
+past registrations without a dedicated scanner. `nameServiceStatsCache.js`
+is a new, independent R2-publishing scanner (own cursor, duplicated
+`queryLogsChunked` — same "fine to drift independently" pattern as this
+backend's other caches) that watches `NameRegistered`/`DomainActivated`/
+`SubnameRegistered`/`ListingSold` and, for each new one, resolves its
+block's real timestamp (deduped per unique block within a scan cycle,
+since multiple events can share a block and this chain's RPC rejects
+request batching). Floor price / active listing count come from a live
+`nextListingId()`/`listings()` read each cycle — same as
+`marketplaceSellersCache.js` — rather than reconstructing "currently
+active" from the event log, which would be fragile around reorgs/
+processing-order edge cases the contract's own current state doesn't
+have to worry about.
+
+Verified live against the real contract before shipping: at the time
+this was built, the marketplace has had **zero** `ListingSold` events
+ever — Marketplace Volume genuinely shows "no resales" rather than a
+fabricated number, and will start reflecting real data the moment a
+name actually resells. Small honest numbers (this is a young
+ecosystem — 4 domains, 21 subnames at build time), not inflated ones.
+
+---
+
 ## Vercel edge request caching
 
 `vercel.json`'s catch-all rewrite (`/(.*)` → `/index.html`, needed so

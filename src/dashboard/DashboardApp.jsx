@@ -7,6 +7,7 @@ import Overview from "./components/Overview.jsx";
 import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
 import TokenDetail from "./components/TokenDetail.jsx";
 import AddressLookup from "./components/AddressLookup.jsx";
+import NameServiceStats from "./components/NameServiceStats.jsx";
 
 // Free-tier Electroneum on-chain dashboard — read-only, no login required (see the build brief:
 // premium tracked-wallet/subscription/PnL features are a separate, later pass). Deliberately
@@ -79,6 +80,7 @@ export default function DashboardApp() {
           )
         )}
         {tab === "address" && <AddressLookup key={addressFromToken} initialAddress={addressFromToken} />}
+        {tab === "nameservice" && <NameServiceStats />}
       </div>
 
       <DashboardFooter />
