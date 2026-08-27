@@ -87,12 +87,11 @@ const METRICS = [
   { id: "totalBlocks", label: "Total Blocks", formatValue: formatCompact },
   { id: "avgBlockTime", label: "Avg Block Time", formatValue: (v) => `${v.toFixed(1)}s` },
   { id: "gasPrice", label: "Gas Price", formatValue: (v) => `${v.toFixed(2)} gwei` },
-  { id: "txsToday", label: "Txs Today (by hour)", formatValue: formatInt },
+  { id: "txsToday", label: "Txs (Last 24h)", formatValue: formatInt },
 ];
 
-function todayUtcKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
 
 export default function Overview() {
   const { getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks } = useBlockscout();
@@ -144,13 +143,33 @@ export default function Overview() {
     const totalBlocks = snapshots.map((s) => ({ label: s.timestamp, value: s.totalBlocks }));
     const avgBlockTime = snapshots.map((s) => ({ label: s.timestamp, value: s.averageBlockTimeMs / 1000 }));
     const gasPrice = snapshots.map((s) => ({ label: s.timestamp, value: s.gasPriceAverage }));
-    const todayKey = todayUtcKey();
+    // A rolling last-24-hours window, not "since UTC midnight" — two reasons. Confirmed live
+    // that Blockscout's own "transactions_today" field can get stuck for an entire day (frozen
+    // at the same value for 19+ hours while total_transactions kept growing normally), so this
+    // no longer reads that field at all; transactionsThisHour is now a delta between this
+    // backend's own consecutive snapshots instead (see dashboardStatsCache.js). Separately, even
+    // when Blockscout's field worked fine, "today" meant the chart only had 1 real hour of bars
+    // right after UTC midnight, growing to 24 by end of day — a rolling window is always a
+    // consistent 24 hours regardless of what time it is.
+    const cutoffMs = Date.now() - ONE_DAY_MS;
     const txsToday = snapshots
-      .filter((s) => s.timestamp.slice(0, 10) === todayKey)
+      .filter((s) => new Date(s.timestamp).getTime() >= cutoffMs)
       .map((s) => ({ label: s.timestamp, value: s.transactionsThisHour }));
 
     return { totalTx, totalAddresses, totalBlocks, avgBlockTime, gasPrice, txsToday };
   }, [stats, txChart, snapshots]);
+
+  // Tile headline value — same rolling-24h reasoning as the chart above, not stats.transactions_today
+  // (the field confirmed stuck upstream). null until there's at least one snapshot old enough to
+  // diff against (same "thin at first" cold-start behavior as the other snapshot-backed tiles).
+  const txsLast24h = useMemo(() => {
+    if (snapshots.length === 0) return null;
+    const latest = snapshots[snapshots.length - 1];
+    const cutoffMs = Date.now() - ONE_DAY_MS;
+    const oldestInWindow = snapshots.find((s) => new Date(s.timestamp).getTime() >= cutoffMs) || snapshots[0];
+    if (oldestInWindow === latest) return null;
+    return Math.max(0, latest.totalTransactions - oldestInWindow.totalTransactions);
+  }, [snapshots]);
 
   if (loadError) {
     return <div style={{ fontSize: 13, color: errorColor, textAlign: "center", padding: 24 }}>{loadError}</div>;
@@ -165,7 +184,7 @@ export default function Overview() {
         case "totalBlocks": return formatCompact(stats.total_blocks);
         case "avgBlockTime": return `${(stats.average_block_time / 1000).toFixed(1)}s`;
         case "gasPrice": return `${stats.gas_prices?.average} gwei`;
-        case "txsToday": return formatInt(stats.transactions_today);
+        case "txsToday": return txsLast24h != null ? formatInt(txsLast24h) : "…";
         default: return "…";
       }
     })();
@@ -178,7 +197,7 @@ export default function Overview() {
     totalBlocks: snapshots.length > 0 ? `Total blocks — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     avgBlockTime: snapshots.length > 0 ? `Average block time (seconds) — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     gasPrice: snapshots.length > 0 ? `Average gas price (gwei) — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
-    txsToday: "Transactions per hour, today (UTC)",
+    txsToday: "Transactions per hour, rolling last 24 hours",
   };
 
   const activeFormatValue = METRICS.find((m) => m.id === activeMetric).formatValue;

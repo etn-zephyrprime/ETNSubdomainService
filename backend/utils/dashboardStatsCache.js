@@ -29,25 +29,27 @@ async function snapshotAndPublish() {
 
     const { snapshots } = await getDashboardStatsCache();
     const previous = snapshots[snapshots.length - 1] || null;
-    const transactionsToday = Number(stats.transactions_today) || 0;
+    const totalTransactions = Number(stats.total_transactions) || 0;
 
-    // How many transactions landed since the last snapshot, *within the same calendar day* —
-    // transactions_today resets to 0 at UTC midnight, so a drop from the previous snapshot means
-    // the day rolled over sometime in between; treat that as "today's count so far" rather than
-    // a negative delta. This is what makes an hourly bar chart of "Txs Today" meaningful instead
-    // of just re-plotting the same ever-growing daily total 24 times.
-    const transactionsThisHour = previous && transactionsToday >= previous.transactionsToday
-      ? transactionsToday - previous.transactionsToday
-      : transactionsToday;
+    // Rolling delta from the previous hourly snapshot's own cumulative total — not Blockscout's
+    // "transactions_today" field at all anymore. Confirmed live that field can get stuck for an
+    // entire day (transactions_today frozen at the exact same value for 19+ hours, chart showing
+    // a flat 0 line the whole time, while total_transactions kept growing normally the whole
+    // time) — total_transactions is Blockscout's real indexer output, not a separately
+    // maintained "since UTC midnight" bucket, so it doesn't share that failure mode. Also fixes a
+    // second, subtler issue the old "today" framing had even when Blockscout's field worked
+    // correctly: right after UTC midnight the chart only had 1 hour of real bars, growing to 24
+    // by end of day — inconsistent chart width depending purely on what time it is. A rolling
+    // window (see Overview.jsx) is always a consistent 24 hours regardless of wall-clock time.
+    const transactionsThisHour = previous ? Math.max(0, totalTransactions - previous.totalTransactions) : 0;
 
     const snapshot = {
       timestamp: new Date().toISOString(),
-      totalTransactions: Number(stats.total_transactions) || 0,
+      totalTransactions,
       totalAddresses: Number(stats.total_addresses) || 0,
       totalBlocks: Number(stats.total_blocks) || 0,
       averageBlockTimeMs: Number(stats.average_block_time) || 0,
       gasPriceAverage: Number(stats.gas_prices?.average) || 0,
-      transactionsToday,
       transactionsThisHour,
     };
 
