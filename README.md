@@ -532,10 +532,16 @@ proxy+cache (5 min TTL, keyed by `address:range`) in front of it —
 the one dashboard feature that needed backend involvement at all —
 consumed via `useTokenChart.js`.
 
-For each click, the backend looks up the token's pools, picks the one
-with the highest USD reserves (thin/dead pools shouldn't win over an
-actively-traded one), and fetches OHLCV for whichever side of that
-pool is the requested token. Market Cap isn't something GeckoTerminal
+For each click, the backend looks up the token's pools and fetches
+OHLCV for whichever side of the selected pool is the requested token.
+Pool selection prefers the highest-liquidity **WETN** pair if one
+exists at all — WETN (Wrapped Electroneum) is ElectroSwap's de facto
+quote asset — and only falls back to highest-reserve-regardless-of-pair
+when no WETN pool exists. Found live that raw "highest USD reserve"
+alone isn't enough: ElectroSwap BOLT has both a DYNO/BOLT pool
+($30k reserve) and a BOLT/WETN pool ($12k reserve), and reserve-only
+selection was picking the DYNO-denominated one, which isn't the price
+users actually want to see. Market Cap isn't something GeckoTerminal
 tracks historically for an arbitrary token, so it's derived
 client-side instead: each candle's close price × the token's current
 total supply (an approximation — assumes supply hasn't materially
@@ -556,6 +562,35 @@ fewer than 2 candles, the response is `{ hasData: false, reason:
 all" — so the UI can point the user at a longer range instead of
 implying the token has no market (confirmed live against Bananacoin,
 a real but essentially-idle pool).
+
+**CORS gotcha (real, hit live):** this is the *only* dashboard feature
+that calls back to this repo's own backend from the dashboard's
+origin — every other dashboard data source goes straight to Blockscout
+or CoinGecko. That means `ALLOWED_ORIGINS` (set in Render's dashboard,
+not committed to the repo) needs `https://dashboard.planetzephyros.xyz`
+in it specifically, on top of whatever the main site's origin already
+is — nothing else in this feature would have caught that gap before
+first real use, since curl (no `Origin` header) sails straight past
+CORS and looks identical to a working deploy.
+
+Fixed two more real bugs found via live testing after shipping:
+1. The chart cache was keyed by `address:range`, so clicking through
+   this UI's own 7D/30D/90D pills on the *same* token re-ran the pool
+   lookup every time, even though pool selection doesn't depend on
+   range — tripling GeckoTerminal calls for the single most obvious
+   user action on this page. Fixed with a separate, longer-lived
+   `poolCache` keyed by address alone (15 min TTL, vs. 5 min for the
+   range-specific chart cache).
+2. Even with that fix, a burst of several genuinely-new (uncached)
+   tokens browsed back to back could still trip GeckoTerminal's rate
+   limit — confirmed live it's a token bucket, not just an
+   anti-simultaneity guard (an initial ~5-6 calls succeed instantly,
+   then further calls need real spacing). All outbound GeckoTerminal
+   calls now go through a serialized queue with a 1.5s minimum gap,
+   plus a *shared* cooldown: the first 429 sets a cooldown that every
+   other queued call (and retry) waits out together, instead of each
+   one independently retrying on its own timer and turning a burst
+   into a worse burst a few seconds later.
 
 ---
 
