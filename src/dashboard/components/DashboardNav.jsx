@@ -5,6 +5,7 @@ const TABS = [
   { id: "overview", label: "Overview" },
   { id: "tokens", label: "Tokens" },
   { id: "address", label: "Address Lookup" },
+  { id: "nameservice", label: "Name Service" },
 ];
 
 export default function DashboardNav({ active, onChange }) {

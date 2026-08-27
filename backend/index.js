@@ -9,6 +9,7 @@ import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
 import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js";
 import { startOwnedNamesCache } from "./utils/ownedNamesCache.js";
+import { startNameServiceStatsCache } from "./utils/nameServiceStatsCache.js";
 import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
 import { startDashboardStatsCache } from "./utils/dashboardStatsCache.js";
@@ -73,6 +74,7 @@ app.listen(PORT, () => {
   startActivatedDomainsCache();
   startMarketplaceSellersCache();
   startOwnedNamesCache();
+  startNameServiceStatsCache();
   startEtnPriceCache();
   startExpiryAlertScheduler();
   startDashboardStatsCache();
