@@ -304,14 +304,31 @@ price, marketplace listings, renewal quotes, resale amounts, the burn
 pool balance) shows a small "≈ $X.XX" estimate underneath, via
 `UsdEstimate.jsx` + `useEtnPrice.js`. Backed by
 `backend/utils/etnPriceCache.js`, same R2-publish-on-a-timer pattern
-as every other cache here — the live ETN/USD price (from the same
-CoinGecko endpoint `coreClashSwapWatcher.js` already uses for its own
-WETN/USD estimate) is fetched once on a timer and published to R2,
-rather than every visitor's browser hitting CoinGecko directly on
-every page load. Renders nothing if the price hasn't loaded yet or
-R2/the cache isn't configured — every price display still works, just
-without the USD line, same fallback behavior as this repo's other
-optional R2-backed features.
+as every other cache here — the live ETN/USD price is fetched once on
+a timer and published to R2, rather than every visitor's browser
+hitting CoinGecko directly on every page load. Renders nothing if the
+price hasn't loaded yet or R2/the cache isn't configured — every price
+display still works, just without the USD line, same fallback
+behavior as this repo's other optional R2-backed features.
+
+`coreClashSwapWatcher.js` needs this same price for its own WETN/USD
+estimate. It originally called CoinGecko directly a second time, on
+the same 5-minute cadence as this cache's own refresh, both started
+from the same `app.listen()` callback — meaning every ~5 minutes this
+backend made two near-simultaneous identical requests to CoinGecko
+for the same data. Confirmed live: this genuinely tripped CoinGecko's
+rate limit (`HTTP 429`), and — worse than it sounds from the log
+line — the swap watcher's own "Prices refreshed" message fires
+unconditionally even when it silently fell back to a hardcoded
+placeholder price, so a 429 wasn't obviously visible from that log
+line alone. Fixed by having `coreClashSwapWatcher.js` read this
+cache's own published R2 value (`getEtnPriceCache()`) instead of
+querying CoinGecko itself at all — R2 reads aren't rate-limited the
+way CoinGecko's free API is, this halves the CoinGecko call volume
+for no loss of freshness, and it's the same "poll once, everything
+else reads the cache" pattern this cache exists to provide in the
+first place, just applied to this backend's own internal callers too,
+not only the frontend.
 
 Only wired into headline totals, not every fee-breakdown sub-line
 (e.g. the brokerage fee row) — a USD estimate next to every single
