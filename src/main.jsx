@@ -11,6 +11,17 @@ import './index.css'
 // already used for the /pay/, /subnames/, /marketplace deep links in App.jsx.
 const isDashboardHost = /^dashboard\./i.test(window.location.hostname) || new URLSearchParams(window.location.search).has("__dashboard_test");
 
+// <title>/favicon live in the one static index.html both apps share, so a dashboard visitor was
+// getting "ETN Subdomain Service (ENS)" and that app's rocket-logo favicon regardless — set here,
+// same "check window.location, branch client-side" pattern as isDashboardHost itself, rather than
+// two separate HTML files (Vercel serves one build from one project; see the header comment
+// above for why that's a deliberate constraint, not an oversight).
+if (isDashboardHost) {
+  document.title = "Electroneum Dashboard | Planet Zephyros";
+  const favicon = document.querySelector('link[rel="icon"]');
+  if (favicon) favicon.href = "/PlanetZephyrosLogo.png";
+}
+
 async function mount() {
   const root = ReactDOM.createRoot(document.getElementById('root'));
 

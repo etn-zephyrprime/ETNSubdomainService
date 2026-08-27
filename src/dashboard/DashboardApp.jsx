@@ -83,7 +83,7 @@ export default function DashboardApp() {
         {tab === "nameservice" && <NameServiceStats />}
       </div>
 
-      <DashboardFooter />
+      <DashboardFooter isMobile={isMobile} />
     </div>
   );
 }

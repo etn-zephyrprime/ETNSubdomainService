@@ -8,9 +8,52 @@ const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
 const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
 const TELEGRAM_URL = "https://t.me/PlanetZephyros";
 const X_URL = "https://x.com/ETNSubdomain";
+const DASHBOARD_URL = "https://dashboard.planetzephyros.xyz";
 
 function openLink(url) {
   window.open(url, "_blank", "noopener,noreferrer");
+}
+
+// Same visual footprint as EcosystemBanner (background/border/radius/height) but text instead of
+// a logo image — the dashboard has no dedicated logo graphic of its own; its actual visual
+// identity is this Orbitron-set "Electroneum Dashboard" wordmark (see
+// dashboard/DashboardApp.jsx's own heading), so that's what represents it here rather than
+// reusing the Planet Zephyros logo already shown elsewhere in this same footer.
+function DashboardBanner({ isMobile }) {
+  return (
+    <div
+      onClick={() => openLink(DASHBOARD_URL)}
+      style={{ width: isMobile ? "100%" : 320, maxWidth: "100%", cursor: "pointer", boxSizing: "border-box" }}
+    >
+      <div
+        style={{
+          background: "#0f0f0f",
+          border: "1px solid #333",
+          borderRadius: 12,
+          width: "100%",
+          height: isMobile ? 60 : 78,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 0 8px rgba(0,0,0,0.5)",
+          boxSizing: "border-box",
+          margin: "0 auto",
+        }}
+      >
+        <span style={{
+          fontFamily: "Orbitron, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          fontWeight: 700,
+          fontSize: isMobile ? 13 : 15,
+          color: "#fff",
+          letterSpacing: 0.5,
+        }}>
+          Electroneum Dashboard
+        </span>
+        <span style={{ fontSize: 10, color: muted, marginTop: 2 }}>Live network stats & activity</span>
+      </div>
+    </div>
+  );
 }
 
 export default function Footer({ isMobile = false }) {
@@ -94,6 +137,7 @@ export default function Footer({ isMobile = false }) {
           alt="ElectroSwap"
           isMobile={isMobile}
         />
+        <DashboardBanner isMobile={isMobile} />
       </div>
 
       <div style={{ display: "flex", gap: 16, alignItems: "center", marginTop: 4 }}>
