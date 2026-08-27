@@ -6,13 +6,14 @@ import { formatCompact, formatTokenAmount, shortHash } from "../utils/format.js"
 import { EXPLORER_BASE_URL } from "../config.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import TokenPriceChart from "./TokenPriceChart.jsx";
+import NftSalesChart from "./NftSalesChart.jsx";
 
 // ElectroSwap's two different per-asset URL shapes — a trading page for fungible tokens, a
 // collection page for NFTs — same distinction TokenLeaderboard.jsx's NFT-row link uses.
 function electroSwapUrl(token) {
   const isNft = token.type === "ERC-721" || token.type === "ERC-1155";
   return isNft
-    ? `https://app.electroswap.io/collection/${token.address}`
+    ? `https://app.electroswap.io/nfts/collection/${token.address}`
     : `https://app.electroswap.io/explore/tokens/electroneum/${token.address}?inputCurrency=ETN`;
 }
 
@@ -112,7 +113,11 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
             </div>
           </div>
 
-          <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
+          {token.type === "ERC-721" || token.type === "ERC-1155" ? (
+            <NftSalesChart address={token.address} />
+          ) : (
+            <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
+          )}
 
           <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
             Top Holders

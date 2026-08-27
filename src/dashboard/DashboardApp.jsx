@@ -36,6 +36,11 @@ export default function DashboardApp() {
     setTab("address");
   };
 
+  const handleSelectTokenFromAddress = (tokenAddress) => {
+    setSelectedToken(tokenAddress);
+    setTab("tokens");
+  };
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -79,7 +84,7 @@ export default function DashboardApp() {
             <TokenLeaderboard onSelectToken={setSelectedToken} />
           )
         )}
-        {tab === "address" && <AddressLookup key={addressFromToken} initialAddress={addressFromToken} />}
+        {tab === "address" && <AddressLookup key={addressFromToken} initialAddress={addressFromToken} onSelectToken={handleSelectTokenFromAddress} />}
         {tab === "nameservice" && <NameServiceStats />}
       </div>
 

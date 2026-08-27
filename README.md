@@ -767,7 +767,7 @@ Three follow-up requests:
 
 - Every NFT collection row (`TokenLeaderboard.jsx`) and every token's
   own detail page (`TokenDetail.jsx`) now links to ElectroSwap — a
-  collection page (`/collection/<address>`) for NFTs, a trading page
+  collection page (`/nfts/collection/<address>`) for NFTs, a trading page
   (`/explore/tokens/electroneum/<address>?inputCurrency=ETN`) for
   fungible tokens, plus a small ElectroSwap logo next to the link text
   (already available in `backend/assets/media.js`, reused rather than
@@ -785,11 +785,12 @@ Three follow-up requests:
   percentage) when total supply is missing or zero, rather than
   showing "NaN%"/"Infinity%".
 
-Verified live: NFT rows show the ElectroSwap logo + correct
-`/collection/` links; a real ERC-20 token page (Planet Zephyros CORE)
-shows the correct `/explore/tokens/` link; holder percentages are real
-and sum sensibly (top 14 holders of 71 ≈ 87% of supply, matching a
-genuinely concentrated small-cap token).
+Verified live: NFT rows show the ElectroSwap logo + a
+`/collection/<address>` link; a real ERC-20 token page (Planet Zephyros
+CORE) shows the correct `/explore/tokens/` link; holder percentages are
+real and sum sensibly (top 14 holders of 71 ≈ 87% of supply, matching a
+genuinely concentrated small-cap token). The NFT link's path was
+corrected after this — see "On-chain NFT sale history" below.
 
 ---
 
@@ -953,6 +954,94 @@ kept only as a fallback for the rare case where that read call fails (e.g.
 a transient RPC error). If you ever change the contract's `NameRegistered`
 event shape or `fullName` storage again, this fallback function is the one
 remaining place that would need updating to match.
+
+---
+
+## Address Lookup → Tokens/NFT's cross-navigation
+
+`AddressLookup.jsx`'s holdings rows (both the "Tokens" and "NFT's"
+category — same `visibleHoldings.map(...)` renders both) now link
+straight to that asset's own detail page. The row itself became a
+`<button onClick={() => onSelectToken?.(tb.token?.address)}>` rather
+than a plain `<div>`; `DashboardApp.jsx` passes down
+`handleSelectTokenFromAddress` (sets `selectedToken` + switches to the
+"Tokens" tab) as `AddressLookup`'s new `onSelectToken` prop, the same
+pattern `TokenDetail.jsx`'s own "click a holder" already used in the
+other direction (`onSelectAddress`). `onSelectToken` is optional — the
+button is disabled (and un-clickable) if the prop or the token address
+is missing, so this degrades safely if `AddressLookup` is ever reused
+somewhere without that wiring.
+
+---
+
+## On-chain NFT sale history (Tokens tab, NFT collections)
+
+NFT collection pages had nothing useful where `TokenPriceChart.jsx`
+normally goes — a collection isn't an ElectroSwap trading pair, so its
+GeckoTerminal-pool lookup always came back empty. Fixed with a new
+chart built entirely from public on-chain data — **zero calls to
+electroswap.io in any form** (see the incident note below for why that
+constraint is absolute here, not just a preference).
+
+**The marketplace:** ElectroSwap's NFT sales settle through
+[Seaport](https://github.com/ProjectOpenSea/seaport)
+(`0x678748317e7fD5B7699D07e666087608B401cbFd`), a well-known open-source
+marketplace protocol — already trusted elsewhere in this codebase as
+`SEAPORT_ADDRESS` in `coreClashConfig.js` / `coreClashNftSaleWatcher.js`.
+Confirmed to be ElectroSwap's own contract (not a guess) because every
+real fulfillment also fires a `FeeDeposited` event on their
+`EsDividendDistributorV2` fee-sharing contract.
+
+**The scanner:** `backend/utils/nftSalesCache.js` scans Seaport's
+`OrderFulfilled` events, decodes the NFT item (offer or consideration
+side — an order can carry the NFT on either side depending on whether
+it's a listing or a bid) and sums the fungible side into a price,
+publishing a flat, deduped `sales` array (per-sale: collection address,
+token ID, price in ETN wei or `null` for a non-ETN/WETN sale, buyer,
+seller, timestamp, tx hash) to `nft-sales.json` in R2, read through the
+same `r2CacheProxyRouter.js` proxy as every other cache. `useNftSales.js`
+filters that flat array down to one collection client-side.
+
+**Dual-cursor scan, unlike this repo's other single-forward-cursor
+caches:** Seaport was deployed at block 5,221,734 — over 10M blocks
+before chain tip at the time this was built. A single "oldest first"
+scan would've taken roughly a day of 5-minute cycles before reaching
+*today's* sales, leaving the feature visibly broken the whole time.
+Instead `highScannedBlock` stays caught up to chain tip every cycle
+(recent sales appear almost immediately), while `lowScannedBlock`
+independently backfills older history in the background, oldest-first,
+toward the deploy block.
+
+**The one real limitation — no floor price.** Seaport orders are
+off-chain signed messages; nothing about a *listing* ever touches the
+chain, only its fulfillment or cancellation. There's no on-chain
+"Listing" event, so a floor price (lowest active ask) isn't honestly
+derivable from chain data at all — not a scanning limitation, an
+architectural one. `NftSalesChart.jsx` shows a **"Last Sale"** headline
+stat instead (a real, verifiable number from the most recent priced
+sale), plus the price-over-time trend and a scrollable recent-sales
+list, each linking to its transaction on the block explorer.
+
+**Incident note, why this feature is on-chain-only:** the first attempt
+at this queried ElectroSwap's own GraphQL API directly
+(`electroswap.io/graphql`, which has introspection enabled) to look for
+an `nftActivity` feed. That triggered Cloudflare's WAF and got the
+user's own IP blocked from electroswap.io entirely. All calls to
+electroswap.io in any form stopped immediately, and this feature was
+rebuilt from scratch using only Blockscout's public API to identify the
+real marketplace contract and RPC log scanning for its events — the
+same approach every other cache in this backend already uses, and one
+that was always going to be more reliable than scraping a third party
+that (reasonably) doesn't want automated traffic.
+
+Verified: build succeeds, the NFT collection page correctly renders the
+new chart component (in place of `TokenPriceChart`) instead of the old
+empty state, in its loading/error/empty states — checked live against
+the deployed backend from a local dev server. The actual sales data
+itself can only be verified once this deploys and `nftSalesCache.js`'s
+background scanner has had time to run (backfill takes a while — see
+above), same "starts thin, grows richer" rollout as this repo's other
+scanners.
 
 ---
 

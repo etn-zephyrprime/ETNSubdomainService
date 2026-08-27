@@ -74,7 +74,7 @@ const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // reusing usePayment.js's existing resolveName() rather than re-implementing name resolution a
 // second time. Nothing here is persisted; re-searching starts fresh, same as the brief's "not
 // persisted" free-tier spec.
-export default function AddressLookup({ initialAddress = null }) {
+export default function AddressLookup({ initialAddress = null, onSelectToken }) {
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { resolveName } = usePayment();
 
@@ -379,12 +379,28 @@ export default function AddressLookup({ initialAddress = null }) {
             </div>
           ) : (
             visibleHoldings.slice(0, 25).map((tb, i) => (
-              <div key={`${tb.token?.address}-${i}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
+              <button
+                key={`${tb.token?.address}-${i}`}
+                onClick={() => onSelectToken?.(tb.token?.address)}
+                disabled={!onSelectToken || !tb.token?.address}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  width: "100%",
+                  padding: "8px 0",
+                  borderBottom: `1px solid ${border}`,
+                  background: "transparent",
+                  border: "none",
+                  cursor: onSelectToken ? "pointer" : "default",
+                  textAlign: "left",
+                }}
+              >
                 <span style={{ fontSize: 12, color: "#fff" }}>
                   {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
                 </span>
                 <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
-              </div>
+              </button>
             ))
           )}
         </div>
