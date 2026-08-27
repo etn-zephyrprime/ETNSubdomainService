@@ -212,7 +212,11 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
           } else if (event.eventName === "SubnameRegistered") {
             events.push({ type: "subname_registered", label: event.args.label, priceWei: event.args.price.toString(), timestampMs });
           } else if (event.eventName === "ListingSold") {
-            events.push({ type: "listing_sold", priceWei: event.args.price.toString(), timestampMs });
+            // txHash included so the frontend can link each sale straight to the block explorer —
+            // no name/label available here either (ListingSold carries a listingId, not a label;
+            // resolving one would mean an extra per-sale contract call this cache doesn't
+            // otherwise need), so the link is the primary way to see what actually sold.
+            events.push({ type: "listing_sold", priceWei: event.args.price.toString(), timestampMs, txHash: event.transactionHash });
           }
         }
       }
