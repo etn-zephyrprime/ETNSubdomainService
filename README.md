@@ -769,6 +769,53 @@ whatever caching already existed R2-side.
 
 ---
 
+## Dashboard/main-site cross-promotion + own tab identity
+
+`DashboardFooter.jsx` now mirrors the main site's `Footer.jsx`
+structure (ecosystem banner row, Telegram/X socials) rather than the
+minimal placeholder it shipped with — reused directly, not
+reimplemented, since the dashboard is part of the same Planet Zephyros
+ecosystem those links already promote. Two deliberate differences from
+a straight copy:
+
+- An extra **ETN Subdomain Service** card in the banner row
+  (`TransparentSubdomainLogo`, links to `SITE_URL`) — that app doesn't
+  link to itself in its own footer, so this needed adding, not just
+  copying.
+- **Terms & Conditions rewritten from scratch.** The main site's
+  version is entirely about name registration ("All registrations are
+  final...", "Renewal reminders are your responsibility...") — actively
+  misleading here, where nothing is registered, purchased, or wallet-
+  connected. Replaced with what's actually true of this app: read-only,
+  third-party data sources (Blockscout/CoinGecko/GeckoTerminal) shown
+  as-is with no accuracy guarantee, not financial advice.
+
+Cross-promotion runs the other way too: the main site's `Footer.jsx`
+gained an **Electroneum Dashboard** card linking to
+`dashboard.planetzephyros.xyz`. No dedicated dashboard logo graphic
+exists to put in it (confirmed — its actual visual identity is the
+Orbitron-set "Electroneum Dashboard" wordmark `DashboardApp.jsx`
+already renders as its own heading, not a logo image), so this is a
+small text card matching `EcosystemBanner`'s exact visual footprint
+(background/border/radius/height) rather than reusing the Planet
+Zephyros logo already shown elsewhere in the same footer, which would
+have been a duplicate, ambiguous visual.
+
+**Own `<title>`/favicon, added on request** — both apps share one
+static `index.html` (see "Why one repo, one build, two domains" above
+for why), so a dashboard visitor was getting "ETN Subdomain Service
+(ENS)" and that app's own rocket-logo favicon regardless. Set at
+runtime in `main.jsx`, the same `isDashboardHost`-branch pattern
+already used to pick which app mounts — not two separate HTML files.
+Dashboard gets "Electroneum Dashboard | Planet Zephyros" and
+`/PlanetZephyrosLogo.png` (already a public static asset, same
+directory `TransparentSubdomainLogo.png` — the main site's own
+favicon — already lives in); the main site's `<title>`/favicon are
+untouched, since the branch only ever overwrites them for
+`isDashboardHost`.
+
+---
+
 ## Vercel edge request caching
 
 `vercel.json`'s catch-all rewrite (`/(.*)` → `/index.html`, needed so
