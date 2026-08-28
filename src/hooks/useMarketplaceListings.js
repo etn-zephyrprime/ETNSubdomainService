@@ -83,9 +83,21 @@ export function useMarketplaceListings() {
         console.error(`Failed to decode name for listing ${l.listingId}:`, err);
       }
 
+      // Listing a name never required activation (see ManageSubdomain.jsx's `wrapped` state
+      // comment) — a buyer should be able to tell the two apart, since an unactivated one can't
+      // sell subnames until *someone* pays to activate it (the buyer, most likely, right after
+      // buying). Defaults to false (not true) on a failed read, same "don't claim a positive fact
+      // you couldn't verify" reasoning as `name` defaulting to null above.
+      let isActivated = false;
+      try {
+        isActivated = await marketplace.domainActivated(node);
+      } catch (err) {
+        console.error(`Failed to check activation for listing ${l.listingId}:`, err);
+      }
+
       const sellerName = sellerPrimaryNames[l.seller.toLowerCase()] || null;
 
-      return { ...l, node, name, sellerName };
+      return { ...l, node, name, sellerName, isActivated };
     }));
   }, [getReadContracts]);
 

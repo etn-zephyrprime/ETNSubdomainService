@@ -106,6 +106,15 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [activationLoading, setActivationLoading] = useState(false);
   const [activationError, setActivationError] = useState(null);
 
+  // Whether the looked-up name currently has a real NameWrapper token to list — true for every
+  // activated name (activation always implies wrapped) and every subname (always wrapped at
+  // creation, per registerSubname), but also, deliberately, true for a top-level name that's
+  // wrapped-and-owned yet still `activated === false`: resale only needs a real token to escrow
+  // (Marketplace.listExistingName has no activation check), unlike subname-selling, which
+  // genuinely does require activation. Drives the Resell section below instead of `activated`,
+  // so an owner can list a name for resale without paying the activation fee first.
+  const [wrapped, setWrapped] = useState(null);
+
   // Only relevant for a top-level name that's registered but not yet wrapped — activateDomain
   // now wraps it as part of activation, which needs this approval first. null = not applicable
   // (subname, or the name's already wrapped) / not checked yet.
@@ -357,21 +366,26 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       const isActivated = await isDomainActivated(domainNode);
       setActivated(isActivated);
 
-      if (isActivated) {
-        const [isApproved, price] = await Promise.all([
-          isMarketplaceApproved(wallet.account),
-          getSubnamePricePerYear(domainNode),
-        ]);
-        setApproved(isApproved);
-        setCurrentPrice(price);
-
-        // Non-blocking, same pattern as primaryName/resolvedAddress above — resale listing status
-        // doesn't need to hold up the rest of the lookup.
+      // Non-blocking fetch of resale approval + listing status, shared by both an activated name
+      // and a wrapped-but-not-yet-activated top-level one below — same pattern as
+      // primaryName/resolvedAddress above, resale listing status doesn't need to hold up the rest
+      // of the lookup.
+      const loadResaleStatus = () => {
         setListingLoading(true);
-        getListingForToken(BigInt(domainNode))
-          .then(setListing)
-          .catch((err) => console.error("Failed to fetch listing status:", err))
+        Promise.all([isMarketplaceApproved(wallet.account), getListingForToken(BigInt(domainNode))])
+          .then(([isApproved, listingResult]) => {
+            setApproved(isApproved);
+            setListing(listingResult);
+          })
+          .catch((err) => console.error("Failed to fetch resale status:", err))
           .finally(() => setListingLoading(false));
+      };
+
+      if (isActivated) {
+        setWrapped(true); // activation always implies wrapped
+        const price = await getSubnamePricePerYear(domainNode);
+        setCurrentPrice(price);
+        loadResaleStatus();
       } else {
         const fee = await getActivationFee(normalizedInput, domainNode);
         setActivationFee(fee);
@@ -382,10 +396,19 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         // asserting anything about it.
         if (!subname) {
           const alreadyWrapped = await isWrapped(domainNode);
+          setWrapped(alreadyWrapped);
           if (!alreadyWrapped) {
             const isApproved = await isBaseRegistrarApproved(wallet.account);
             setBaseRegistrarApproved(isApproved);
+          } else {
+            // Registered and wrapped outside the marketplace (or activated once, never
+            // deactivated — activation can't currently revert, so this is really "never
+            // activated") but never activated on this service — still a real NameWrapper token
+            // the connected owner can list for resale, no activation fee required for that.
+            loadResaleStatus();
           }
+        } else {
+          setWrapped(true); // defensive fallback — see the state comment above; should be unreachable
         }
       }
     } catch (err) {
@@ -427,6 +450,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       const signer = await wallet.getSigner();
       await activateDomain(node, verifiedName, activationFee, signer);
       setActivated(true);
+      setWrapped(true); // activateDomain wraps it as part of activation if it wasn't already
       generateNftAndLink(`${verifiedName}.etn`, node, signer);
 
       const [isApproved, price] = await Promise.all([
@@ -561,10 +585,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     }
   };
 
-  // Lists the currently-looked-up name for resale. Requires domain activation + marketplace
+  // Lists the currently-looked-up name for resale. Requires a real wrapped token + marketplace
   // approval (same NameWrapper.setApprovalForAll the Subname Pricing section above already gets
-  // the owner to grant), both already gated by this section only rendering when
-  // activated && approved are true.
+  // the owner to grant) — deliberately *not* activation, see the `wrapped` state comment above
+  // for why — both already gated by this section only rendering when wrapped && approved are true.
   const handleListForResale = async () => {
     setResellError(null);
 
@@ -1337,7 +1361,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             </div>
           )}
 
-          {activated === true && (
+          {wrapped === true && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{
                 fontSize: 11,
@@ -1349,6 +1373,13 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               }}>
                 Resell
               </div>
+
+              {activated === false && (
+                <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                  Not activated on this service — a buyer can't sell subnames under it until they
+                  activate it, but it can still be listed for resale as-is.
+                </div>
+              )}
 
               {listingLoading ? (
                 <div style={{ fontSize: 12, color: mutedLight }}>Checking listing status...</div>
