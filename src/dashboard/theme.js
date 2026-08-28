@@ -21,3 +21,10 @@ export const error = "#ff6b6b";
 // Page background — dark, desaturated green rather than the main site's navy (#011528), so the
 // bright accent green above actually reads as "on brand" instead of clashing.
 export const background = "#081c0a";
+
+// Fixed, validator-identity palette — deliberately distinct from any intensity/heat scale (which
+// encodes a quantity, not identity) so the two color dimensions never get visually confused.
+// Shared by CalendarHeatmap.jsx and ValidatorLineChart.jsx, the dashboard's two components that
+// color-code the same real validator addresses — kept here (not local to either) so the same
+// validator reads as the same color in both places rather than each picking independently.
+export const VALIDATOR_PALETTE = [blue, orange, "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8", "#90a4ae"];

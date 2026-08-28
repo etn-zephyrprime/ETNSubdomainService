@@ -39,6 +39,7 @@ const ALLOWED_FILES = new Set([
   "nft-sales.json",
   "daily-block-stats.json",
   "hourly-activity.json",
+  "validator-rewards.json",
 ]);
 
 // Short in-memory cache — these are the exact same objects R2 itself already serves with
