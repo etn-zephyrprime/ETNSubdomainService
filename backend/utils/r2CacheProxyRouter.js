@@ -37,6 +37,8 @@ const ALLOWED_FILES = new Set([
   "subname-domains.json",
   "name-service-stats.json",
   "nft-sales.json",
+  "daily-block-stats.json",
+  "hourly-activity.json",
 ]);
 
 // Short in-memory cache — these are the exact same objects R2 itself already serves with

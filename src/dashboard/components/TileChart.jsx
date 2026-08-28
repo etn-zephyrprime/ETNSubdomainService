@@ -6,7 +6,12 @@ import SparklineChart from "./SparklineChart.jsx";
 // series the chart shows, rather than one static chart per metric. Used by both Overview.jsx
 // (network-wide stats) and AddressLookup.jsx (per-wallet stats); the two just feed it different
 // tiles/series.
-export default function TileChart({ tiles, activeId, onSelect, data, formatValue, formatLabel, chartCaption, loading }) {
+// `renderChart` is an escape hatch for tiles whose active metric isn't a plain over-time line —
+// Overview.jsx's "Total Blocks" (a 90-day calendar heatmap) and "Txs Last 7 Days" (a day×hour
+// heatmap) both need an entirely different chart type, not just different data, when they're the
+// active tile. Omit it (or return a falsy value) to keep the default SparklineChart — every
+// existing caller (AddressLookup.jsx, Overview.jsx's other 4 metrics) is unaffected.
+export default function TileChart({ tiles, activeId, onSelect, data, formatValue, formatLabel, chartCaption, loading, renderChart }) {
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -41,6 +46,8 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
           <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
             Loading…
           </div>
+        ) : renderChart ? (
+          renderChart()
         ) : (
           <SparklineChart data={data} height={140} formatValue={formatValue} formatLabel={formatLabel} />
         )}
