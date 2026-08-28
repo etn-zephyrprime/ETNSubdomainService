@@ -189,6 +189,20 @@ export default function Overview() {
     return covered >= MIN_HOURS_FOR_7D_TOTAL ? sum : null;
   }, [hourlyActivity]);
 
+  // Whether Avg Block Time has shown any real variation yet — checked against every real value
+  // this app actually has: dashboardStatsCache.js's hourly snapshots (each one reads Blockscout's
+  // own average_block_time live) plus this page's own fresh /stats call. Currently always true
+  // (5.000s in every real value seen), but this is a live check against live Blockscout data every
+  // time it runs, not a hardcoded assumption — if the network's block time ever actually changes,
+  // this flips false the next hour a snapshot picks it up, and the tile switches to a real trend
+  // line automatically instead of continuing to claim it's constant.
+  const blockTimeIsConstant = useMemo(() => {
+    if (!stats) return true; // unknown yet — default to the clean view; re-checked once stats loads
+    const values = new Set(snapshots.map((s) => s.averageBlockTimeMs));
+    values.add(Number(stats.average_block_time));
+    return values.size <= 1;
+  }, [stats, snapshots]);
+
   if (loadError) {
     return <div style={{ fontSize: 13, color: errorColor, textAlign: "center", padding: 24 }}>{loadError}</div>;
   }
@@ -224,7 +238,9 @@ export default function Overview() {
     // one real hour every hour, same as the day it was first built.
     totalAddresses: snapshots.length > 0 ? `Total addresses — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     totalBlocks: `Daily tx-count heatmap, last 90 days (darker = fewer, brighter = more) — ${validatorDaysTracked} day(s) of real data so far. Hover a day for its validator breakdown.`,
-    avgBlockTime: "Block time — genuinely constant on this chain, not a rounded average (see below)",
+    avgBlockTime: blockTimeIsConstant
+      ? "Block time — every real hourly reading from Blockscout has been identical so far (see below)"
+      : `Average block time (seconds) — ${snapshots.length} hourly snapshot(s) collected so far`,
     gasPrice: snapshots.length > 0 ? `Average gas price (gwei) — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     txsToday: `Transactions per hour, last 7 days (darker = fewer, brighter = more) — ${hourlyCoverageHours} hour(s) of real data so far. Hover a cell for ETN transferred.`,
   };
@@ -234,7 +250,7 @@ export default function Overview() {
     ? () => <CalendarHeatmap days={dailyBlockStats} />
     : activeMetric === "txsToday"
     ? () => <WeekHourHeatmap hours={hourlyActivity} />
-    : activeMetric === "avgBlockTime" && stats
+    : activeMetric === "avgBlockTime" && stats && blockTimeIsConstant
     ? () => <BlockTimeConstant blockTimeSeconds={stats.average_block_time / 1000} />
     : null;
 
