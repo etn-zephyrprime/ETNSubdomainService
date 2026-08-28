@@ -1099,6 +1099,76 @@ than a fake one.
 
 ---
 
+## Real 90-day/7-day charts, heatmaps, and the constant-block-time fix (Overview tab)
+
+A cluster of related asks on Overview.jsx's tile charts, investigated together since they share
+the same root cause: several of these metrics had no real historical source deep enough to chart
+honestly, and the fixes needed new backend scanning rather than a frontend-only change.
+
+**What was actually possible, checked before building anything:**
+
+- **Total Transactions**: Blockscout's own `/stats/charts/transactions` only has 31 real days —
+  confirmed live, not a guess. Reaching a genuine 90 days meant a new backend scan.
+- **Total Addresses**: no historical source exists *anywhere* — not Blockscout (no addresses
+  chart), not reconstructable from raw blocks (unique-address-count-as-of-a-past-date isn't
+  something block scanning can recover). Left as-is: it keeps growing from
+  `dashboardStatsCache.js`'s hourly snapshots, honestly captioned rather than claiming a depth it
+  doesn't have.
+- **Total Blocks "give different validators different colors"**: confirmed live that this chain's
+  block producers round-robin fast (4 different validators in 4 consecutive blocks) — a single
+  color per *day* cell couldn't meaningfully represent "which validator" at 90-day scale, so
+  validators are shown via a legend + per-day breakdown in the tooltip instead of the cell's own
+  color (the cell's color is tx-count brightness, as literally asked).
+- **Avg Block Time**: separately reported as always looking like a flatline — confirmed live it
+  *is* a flatline: both Blockscout's own rolling average across 51 real hourly snapshots, and this
+  app's own raw consecutive-block-timestamp deltas taken straight from the chain, are **exactly**
+  5.000s, zero deviation. Not "rounds to 5.0" — genuinely constant, by protocol design. No chart
+  type makes that a more honest picture, so it's not charted at all anymore (see below).
+
+**New backend caches** (both dual-cursor like `nftSalesCache.js` — chain tip stays fresh every
+cycle, older history backfills in the background):
+
+- `backend/utils/dailyBlockStatsCache.js` → `daily-block-stats.json` — real per-UTC-day tx counts
+  and validator (miner) block-production breakdowns, 90-day trailing window. The heaviest one-time
+  backfill in this codebase (~1.5M individual block fetches, several hours), using the lightest
+  possible call per block (`eth_getBlockByNumber(n, false)` — hashes only, no full tx objects) to
+  keep that as cheap as it can be.
+- `backend/utils/hourlyActivityCache.js` → `hourly-activity.json` — real per-UTC-hour tx counts
+  and ETN volume transferred, a *rolling* ~8-day window (not a growing history — the 7-day heatmap
+  never needs more, so nothing older is kept or backfilled). Needs full transaction objects (only
+  a tx's own `value` field carries the transferred amount — there's no lighter call that includes
+  it), so it's more expensive per block than the daily cache but over a much smaller range —
+  catches up in well under an hour.
+
+**Frontend:**
+
+- `mergeDailyTransactionCounts` (`useDashboardStats.js`) merges Blockscout's live 31 days with
+  `dailyBlockStatsCache.js`'s deeper extension into one real daily series — Blockscout preferred
+  wherever both have a day (always freshest), our cache only extending further back. Found live
+  while testing: Blockscout's chart doesn't include *today* at all (newest entry is yesterday) —
+  the merge has to skip that leading gap rather than treat it as "no data at all", or the whole
+  series collapses to zero days every time.
+- `CalendarHeatmap.jsx` — 90-day GitHub-contribution-style grid for Total Blocks. Cell brightness
+  = that day's tx count; a fixed-color legend for the window's most active validators (by total
+  blocks produced), with each day's real breakdown shown on hover against that same legend.
+- `WeekHourHeatmap.jsx` — 7×24 (day × hour) grid for the renamed "Txs (Last 7 Days)" tile (was "Txs
+  Last 24h", now a heatmap, not a line). Tooltip shows real tx count *and* real ETN volume
+  transferred that hour.
+- `BlockTimeConstant.jsx` — replaces Avg Block Time's chart entirely with a static "5.0s" display
+  and a row of evenly-spaced dots (a metronome, not a data series) instead of dressing up a
+  flatline as if it were meaningful data.
+- `TileChart.jsx` gained an optional `renderChart` prop — an escape hatch for a tile whose active
+  metric needs an entirely different chart type, not just different data. Every existing caller
+  (`AddressLookup.jsx`, Overview's other metrics) is unaffected when it's omitted.
+
+Verified live against a local backend instance (R2 unconfigured there, so the two new caches
+correctly no-op and every new component's empty/"collecting data" state was checked instead of the
+populated one) plus targeted real-chain smoke tests of the core scanning mechanics (binary search,
+block fetch shape, day/hour bucketing, BigInt value summing) run directly against the RPC before
+writing the full caches. Real data populates after this deploys and the caches' backfills run.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is
