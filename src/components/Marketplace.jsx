@@ -166,8 +166,28 @@ export default function Marketplace({ wallet, onBack = null }) {
                 }}
               >
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {listing.name || "(unknown name)"}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {listing.name || "(unknown name)"}
+                    </div>
+                    {!listing.isActivated && (
+                      <span
+                        title="Not activated on this service yet — the buyer can activate it after purchase to start selling subnames"
+                        style={{
+                          flexShrink: 0,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: 0.4,
+                          textTransform: "uppercase",
+                          color: muted,
+                          border: `1px solid ${border}`,
+                          borderRadius: 4,
+                          padding: "2px 5px",
+                        }}
+                      >
+                        Not activated
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: mutedLight, marginTop: 2 }}>
                     Seller {listing.sellerName || `${listing.seller.slice(0, 6)}...${listing.seller.slice(-4)}`}
