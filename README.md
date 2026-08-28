@@ -1169,6 +1169,56 @@ writing the full caches. Real data populates after this deploys and the caches' 
 
 ---
 
+## Validators tile + per-validator reward chart (Overview tab)
+
+New "Validators" tile: total distinct validators seen, plus a 90-day line chart (one line per
+validator, blocks produced per day) with per-validator toggle checkboxes and each validator's
+total blocks + ETN earned over the window.
+
+**Reward data source, checked live before building anything:** raw RPC has no way to get a
+validator's earnings per block cheaply — `eth_getBlockByNumber` doesn't carry it, and this chain's
+RPC doesn't support `eth_getBlockReceipts` (confirmed live: `-32601 method does not exist`), so
+computing it via RPC would mean one `eth_getTransactionReceipt` call *per transaction*, on top of
+`dailyBlockStatsCache.js`'s already-heaviest 1.5M-block scan — tens of millions of extra calls,
+not viable. Blockscout's own `/api/v2/blocks?type=block` list already computes each block's reward
+server-side (confirmed live: `rewards: [{ type: "validator", reward: "<wei>" }]`, and on this chain
+it's exactly the block's priority-fee revenue — base fee is burnt separately, not paid to the
+validator) and paginates 50 blocks/page via a keyset cursor confirmed live to hold up at least a
+week back. A full 90-day backfill this way is ~31,000 page requests instead of ~1.5M individual RPC
+calls, and — deliberately — against a completely different budget than the RPC-based scanners,
+after this repo's own recent experience with two scanners fighting over one rate-limited RPC
+endpoint (see the daily-block-stats/hourly-activity history above). Sequential by design, small
+delay between requests, no concurrency knob — sensible defaults, but conservative on purpose since
+Blockscout's own rate limits for this volume aren't documented anywhere.
+
+**New backend cache:**
+
+- `backend/utils/validatorRewardsCache.js` → `validator-rewards.json` — real per-UTC-day,
+  per-validator block counts and ETN rewards earned, 90-day trailing window. Same dual-cursor shape
+  as `dailyBlockStatsCache.js` (chain tip stays fresh every cycle, backfill catches up in the
+  background), but the backfill cursor is Blockscout's own opaque `next_page_params` object rather
+  than a block number — its keyset cursor isn't reconstructable from a height alone.
+
+**Frontend:**
+
+- `ValidatorLineChart.jsx` — one polyline per validator over the trailing 90 days, toggleable via a
+  checkbox list below the chart (sorted by total blocks, each row showing block count + ETN
+  earned). Defaults to the top 4 validators by blocks so the chart isn't a 20+-line tangle on first
+  load; a missing day renders as a real gap (backfill hasn't reached it), a present day where a
+  validator produced nothing renders as a real 0 — same "don't draw absence as zero" discipline as
+  `SparklineChart.js`.
+- `VALIDATOR_PALETTE` moved from `CalendarHeatmap.jsx` into `theme.js` so the same validator
+  address gets the same color in both components instead of two independently-assigned palettes;
+  ranks beyond the fixed 9-color palette (this chain's active validator set runs past that) get a
+  deterministic HSL color instead of repeating one.
+
+Verified: `npm run build` succeeds clean. Live-tested the Blockscout pagination (tip page + a
+cursor ~7 days back) and confirmed reward/miner/timestamp shape before writing the scanner. Not yet
+verified: a full production backfill cycle (takes roughly a day at the default cadence) and
+sustained operation against Blockscout's real, undocumented rate limits.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is

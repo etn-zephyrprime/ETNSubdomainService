@@ -1,17 +1,10 @@
 import React, { useMemo, useState } from "react";
-import { border, muted, mutedLight, panel, blue, orange } from "../theme.js";
+import { border, muted, mutedLight, panel, VALIDATOR_PALETTE } from "../theme.js";
 import { formatInt, shortHash } from "../utils/format.js";
 
 const CELL_SIZE = 11;
 const CELL_GAP = 3;
 const TOP_VALIDATORS = 9; // + "Other" as a 10th bucket — bounds the legend regardless of how many validators actually produced blocks in the window
-
-// Fixed, validator-identity palette — deliberately distinct from the green intensity scale below
-// (which encodes tx count, not identity) so the two color dimensions never get visually confused.
-// Reuses this app's existing blue/orange tokens for the top two (most-recognizable) slots, hex
-// literals for the rest — this is the only place in the dashboard that needs an 8+-color
-// categorical palette, not worth promoting to theme.js for one component.
-const VALIDATOR_PALETTE = [blue, orange, "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8", "#90a4ae"];
 const OTHER_COLOR = muted;
 
 function intensityColor(value, max) {

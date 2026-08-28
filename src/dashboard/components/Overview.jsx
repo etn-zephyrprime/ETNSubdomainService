@@ -5,6 +5,7 @@ import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useDashboardStats, reconstructCumulativeTransactions, mergeDailyTransactionCounts } from "../hooks/useDashboardStats.js";
 import { useDailyBlockStats } from "../hooks/useDailyBlockStats.js";
 import { useHourlyActivity } from "../hooks/useHourlyActivity.js";
+import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
 import { formatCompact, formatInt, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import TileChart from "./TileChart.jsx";
@@ -12,6 +13,7 @@ import EtnPriceChart from "./EtnPriceChart.jsx";
 import CalendarHeatmap from "./CalendarHeatmap.jsx";
 import WeekHourHeatmap from "./WeekHourHeatmap.jsx";
 import BlockTimeConstant from "./BlockTimeConstant.jsx";
+import ValidatorLineChart from "./ValidatorLineChart.jsx";
 
 function IndexingBadge({ status }) {
   if (!status) return null;
@@ -93,6 +95,7 @@ const METRICS = [
   { id: "avgBlockTime", label: "Avg Block Time", formatValue: (v) => `${v.toFixed(1)}s` },
   { id: "gasPrice", label: "Gas Price", formatValue: (v) => `${v.toFixed(2)} gwei` },
   { id: "txsToday", label: "Txs (Last 7 Days)", formatValue: formatInt },
+  { id: "validators", label: "Validators", formatValue: formatInt },
 ];
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -109,12 +112,14 @@ export default function Overview() {
   const { getSnapshots } = useDashboardStats();
   const { getDailyBlockStats } = useDailyBlockStats();
   const { getHourlyActivity } = useHourlyActivity();
+  const { getValidatorRewards } = useValidatorRewards();
 
   const [stats, setStats] = useState(null);
   const [txChart, setTxChart] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [dailyBlockStats, setDailyBlockStats] = useState(null);
   const [hourlyActivity, setHourlyActivity] = useState(null);
+  const [validatorRewards, setValidatorRewards] = useState(null);
   const [indexingStatus, setIndexingStatus] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [blocks, setBlocks] = useState([]);
@@ -125,7 +130,7 @@ export default function Overview() {
     let cancelled = false;
     (async () => {
       try {
-        const [statsRes, txChartRes, indexingRes, txRes, blocksRes, snapshotsRes, dailyBlockStatsRes, hourlyActivityRes] = await Promise.all([
+        const [statsRes, txChartRes, indexingRes, txRes, blocksRes, snapshotsRes, dailyBlockStatsRes, hourlyActivityRes, validatorRewardsRes] = await Promise.all([
           getStats(),
           getTransactionsChart(),
           getIndexingStatus(),
@@ -134,6 +139,7 @@ export default function Overview() {
           getSnapshots(),
           getDailyBlockStats(),
           getHourlyActivity(),
+          getValidatorRewards(),
         ]);
         if (cancelled) return;
         setStats(statsRes);
@@ -144,13 +150,14 @@ export default function Overview() {
         setSnapshots(snapshotsRes);
         setDailyBlockStats(dailyBlockStatsRes?.days || {});
         setHourlyActivity(hourlyActivityRes?.hours || {});
+        setValidatorRewards(validatorRewardsRes?.days || {});
       } catch (err) {
         console.error("Failed to load network overview:", err);
         if (!cancelled) setLoadError("Couldn't load network data — try refreshing shortly.");
       }
     })();
     return () => { cancelled = true; };
-  }, [getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity]);
+  }, [getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity, getValidatorRewards]);
 
   // Each series is `{ label, value }[]` — label is a real date/timestamp from whichever source
   // backs that metric, threaded through to SparklineChart for its axis labels + hover tooltip.
@@ -207,6 +214,14 @@ export default function Overview() {
     return <div style={{ fontSize: 13, color: errorColor, textAlign: "center", padding: 24 }}>{loadError}</div>;
   }
 
+  // Distinct validator addresses seen across every real day validatorRewardsCache.js has
+  // published so far — same "grows as backfill grows" honesty as this app's other real-history
+  // tiles, not a live "currently active validator set" query (nothing here claims to know which
+  // of these are still active vs. rotated out).
+  const totalValidatorsCount = validatorRewards
+    ? new Set(Object.values(validatorRewards).flatMap((d) => Object.keys(d.validators || {}))).size
+    : 0;
+
   const tiles = METRICS.map((m) => {
     const value = (() => {
       if (!stats) return "…";
@@ -217,6 +232,7 @@ export default function Overview() {
         case "avgBlockTime": return `${(stats.average_block_time / 1000).toFixed(1)}s`;
         case "gasPrice": return `${stats.gas_prices?.average} gwei`;
         case "txsToday": return txsLast7d != null ? formatInt(txsLast7d) : "…";
+        case "validators": return totalValidatorsCount > 0 ? formatInt(totalValidatorsCount) : "…";
         default: return "…";
       }
     })();
@@ -226,6 +242,7 @@ export default function Overview() {
   const dailyCoverageDays = series.totalTx.length;
   const validatorDaysTracked = dailyBlockStats ? Object.keys(dailyBlockStats).length : 0;
   const hourlyCoverageHours = hourlyActivity ? Object.keys(hourlyActivity).length : 0;
+  const validatorRewardDaysTracked = validatorRewards ? Object.keys(validatorRewards).length : 0;
 
   const captions = {
     // Real daily counts throughout, no reconstruction-window guessing — see
@@ -243,6 +260,7 @@ export default function Overview() {
       : `Average block time (seconds) — ${snapshots.length} hourly snapshot(s) collected so far`,
     gasPrice: snapshots.length > 0 ? `Average gas price (gwei) — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     txsToday: `Transactions per hour, last 7 days (darker = fewer, brighter = more) — ${hourlyCoverageHours} hour(s) of real data so far. Hover a cell for ETN transferred.`,
+    validators: `Blocks produced per day, last 90 days — one line per validator, top 4 by blocks shown by default (toggle more below) — ${validatorRewardDaysTracked} day(s) of real data so far.`,
   };
 
   const activeFormatValue = METRICS.find((m) => m.id === activeMetric).formatValue;
@@ -252,6 +270,8 @@ export default function Overview() {
     ? () => <WeekHourHeatmap hours={hourlyActivity} />
     : activeMetric === "avgBlockTime" && stats && blockTimeIsConstant
     ? () => <BlockTimeConstant blockTimeSeconds={stats.average_block_time / 1000} />
+    : activeMetric === "validators"
+    ? () => <ValidatorLineChart days={validatorRewards} />
     : null;
 
   return (
