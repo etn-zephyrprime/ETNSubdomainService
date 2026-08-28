@@ -18,12 +18,9 @@ import { getHourlyActivityCache, setHourlyActivityCache } from "../state/hourlyA
 // range (~8 days × 17,280 blocks/day ≈ 138K blocks vs. dailyBlockStatsCache.js's ~1.5M), so this
 // one fully catches up in well under an hour rather than several.
 //
-// Same reasoning as dailyBlockStatsCache.js for using its own dedicated endpoint instead of this
-// repo's shared RPC_URL (rpc.ankr.com/electroneum) — full-transaction-object fetches are heavy
-// enough that this cache was contributing to that endpoint's rate-limit exhaustion too. Defaults
-// to thirdweb's public endpoint, same as dailyBlockStatsCache.js, so both new scanners draw from
-// one independent budget instead of two more pollers piling onto Ankr's.
-const RPC_URL = process.env.HOURLY_ACTIVITY_RPC_URL || "https://52014.rpc.thirdweb.com";
+// Same RPC_URL note as dailyBlockStatsCache.js — full-transaction-object fetches are heavy enough
+// that this cache needs a keyed endpoint too, not the bare public one.
+const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const DAYS_TO_KEEP = 8; // 7 real days shown + 1 day buffer, same reasoning as dailyBlockStatsCache.js
 const CACHE_SCHEMA_VERSION = 1;
 const CACHE_INTERVAL_MS = process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS

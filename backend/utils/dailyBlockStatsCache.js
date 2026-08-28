@@ -21,13 +21,11 @@ import { getDailyBlockStatsCache, setDailyBlockStatsCache } from "../state/daily
 // are never stale, while `lowScannedBlock` backfills the other 89 days in the background,
 // bounded per cycle so it never floods the RPC — just takes several hours to fully catch up.
 //
-// Deliberately its own RPC endpoint, not this repo's shared RPC_URL (rpc.ankr.com/electroneum) —
-// this cache's ~1.5M-block backfill was, on its own, enough to trip that endpoint's free-tier
-// call-rate limit and start starving every other cache/watcher sharing it (see hourlyActivityCache.js,
-// the other cache split the same way). Defaults to thirdweb's public endpoint instead so this
-// scanner draws from an independent rate-limit budget rather than competing with the rest of the
-// backend's steady-state polling for the same one.
-const RPC_URL = process.env.DAILY_BLOCK_STATS_RPC_URL || "https://52014.rpc.thirdweb.com";
+// This cache's ~1.5M-block backfill needs a *keyed* RPC_URL to avoid exhausting a public
+// endpoint's free anonymous rate limit (confirmed live: both Ankr's and thirdweb's public
+// endpoints hit their limit under this cache alone) — set RPC_URL to an authenticated endpoint,
+// not the bare public one, before running this at the default concurrency/blocks-per-cycle below.
+const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const DAYS_TO_KEEP = 90;
 const CACHE_SCHEMA_VERSION = 1;
 const CACHE_INTERVAL_MS = process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS
