@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
+import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
 import { usePayment } from "../../hooks/usePayment.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
@@ -72,6 +73,17 @@ const HOLDING_CATEGORIES = [
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 const MAX_PRICED_HOLDINGS = 25; // matches the holdings list's own render cap below
 
+// How recently a validator has to have produced a block to count as "active" here — validator-
+// rewards.json (backend/utils/validatorRewardsCache.js) is bucketed by real UTC day, so this can't
+// be finer than a day; 2 covers today-in-progress plus all of yesterday, so a validator isn't
+// dropped from the list purely for not having produced a block yet *today* at the moment someone
+// looks. This app's own dashboard has already confirmed this chain's validator set round-robins
+// fast (4 different validators in 4 consecutive blocks — see CalendarHeatmap.jsx's header
+// comment), so in practice this window includes essentially every currently-active validator
+// without also dragging in ones that may have rotated out over the full 90-day history the same
+// cache otherwise powers on Overview.jsx.
+const ACTIVE_VALIDATOR_WINDOW_DAYS = 2;
+
 // A holding's USD value from its own per-token price (see the tokenPrices-fetching effect below)
 // — null (row just omits the $ figure) whenever there's no known price yet, same "omit rather
 // than fake a number" convention as TokenDetail.jsx's holderUsdValue.
@@ -92,12 +104,15 @@ function tokenUsdValue(rawValue, decimals, priceUsd) {
 export default function AddressLookup({ initialAddress = null, onSelectToken }) {
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { getTokenChart } = useTokenChart();
+  const { getValidatorRewards } = useValidatorRewards();
   const { resolveName } = usePayment();
 
   const [input, setInput] = useState(initialAddress || "");
   const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
+
+  const [validators, setValidators] = useState(null); // null = loading, [] = none found
 
   const [addressInfo, setAddressInfo] = useState(null);
   const [counters, setCounters] = useState(null);
@@ -116,6 +131,44 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [transferLoadingMore, setTransferLoadingMore] = useState(false);
   const [activeMetric, setActiveMetric] = useState("balance");
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
+
+  // Quick-pick shortcuts into this same lookup — independent of whatever address (if any) is
+  // currently looked up, so it loads once on mount rather than being tied to resolvedAddress.
+  // Ranked by blocks produced within ACTIVE_VALIDATOR_WINDOW_DAYS, not the full 90-day history
+  // validator-rewards.json otherwise covers (see that constant's comment) — a different, narrower
+  // ranking than ValidatorLineChart.jsx's on Overview, so no attempt is made to share its color
+  // assignment here.
+  useEffect(() => {
+    let cancelled = false;
+    getValidatorRewards()
+      .then((res) => {
+        if (cancelled) return;
+        const days = res?.days || {};
+        const cutoff = new Date(Date.now() - ACTIVE_VALIDATOR_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+        const totals = new Map();
+        for (const [day, entry] of Object.entries(days)) {
+          if (day < cutoff) continue;
+          for (const [address, v] of Object.entries(entry.validators || {})) {
+            totals.set(address, (totals.get(address) || 0) + v.blocks);
+          }
+        }
+        const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([address, blocks]) => ({ address, blocks }));
+        setValidators(ranked);
+      })
+      .catch((err) => {
+        console.warn("Failed to load active validators:", err.message);
+        if (!cancelled) setValidators([]);
+      });
+    return () => { cancelled = true; };
+  }, [getValidatorRewards]);
+
+  // Already a known-good checksummed address — no name resolution needed, unlike handleLookup
+  // below which has to handle arbitrary free-text input.
+  const selectValidator = (address) => {
+    setInput(address);
+    setResolveError(null);
+    setResolvedAddress(address);
+  };
 
   const handleLookup = async () => {
     setResolveError(null);
@@ -312,6 +365,40 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
 
   return (
     <div>
+      {validators && validators.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+            Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d)
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {validators.map(({ address, blocks }) => (
+              <button
+                key={address}
+                onClick={() => selectValidator(address)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 10px",
+                  borderRadius: 8,
+                  border: `1px solid ${address === resolvedAddress ? green : border}`,
+                  background: address === resolvedAddress ? "rgba(24,187,26,0.12)" : panel2,
+                  color: address === resolvedAddress ? green : mutedLight,
+                  fontSize: 11,
+                  fontFamily: "monospace",
+                  cursor: "pointer",
+                }}
+              >
+                {shortHash(address)}
+                <span style={{ color: muted, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+                  {formatInt(blocks)} blk
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         <input
           type="text"

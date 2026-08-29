@@ -107,7 +107,7 @@ const SEVEN_DAYS_HOURS = 7 * 24;
 // discipline the old 24h tile already used.
 const MIN_HOURS_FOR_7D_TOTAL = Math.round(SEVEN_DAYS_HOURS * 0.85);
 
-export default function Overview() {
+export default function Overview({ onSelectAddress }) {
   const { getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks } = useBlockscout();
   const { getSnapshots } = useDashboardStats();
   const { getDailyBlockStats } = useDailyBlockStats();
@@ -271,7 +271,7 @@ export default function Overview() {
     : activeMetric === "avgBlockTime" && stats && blockTimeIsConstant
     ? () => <BlockTimeConstant blockTimeSeconds={stats.average_block_time / 1000} />
     : activeMetric === "validators"
-    ? () => <ValidatorLineChart days={validatorRewards} />
+    ? () => <ValidatorLineChart days={validatorRewards} onSelectAddress={onSelectAddress} />
     : null;
 
   return (
