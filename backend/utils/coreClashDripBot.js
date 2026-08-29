@@ -20,7 +20,8 @@
 // key long-term.
 import { ethers } from "ethers";
 import { sendZephyrosMessage, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
-import { RPC_URL, EXPLORER_BASE_URL, DRIP_FUNDER_ADDRESS } from "./coreClashConfig.js";
+import { EXPLORER_BASE_URL, DRIP_FUNDER_ADDRESS } from "./coreClashConfig.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes, same as the original
 
@@ -61,7 +62,7 @@ export async function startCoreClashDripBot() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const provider = createRpcProvider();
   const wallet = new ethers.Wallet(process.env.CORE_CLASH_BACKEND_PRIVATE_KEY, provider);
   const contract = new ethers.Contract(DRIP_FUNDER_ADDRESS, DRIP_ABI, provider);
   const contractWithSigner = contract.connect(wallet);

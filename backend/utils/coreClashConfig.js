@@ -10,7 +10,11 @@
 //
 // Every value here has the same default CoreClashGame itself uses; override via env if you ever
 // point this at a different deployment.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
+//
+// RPC access itself now goes through rpcProvider.js's createRpcProvider() (import that directly,
+// not from here) — no RPC_URL export here anymore. See that file for why: a single RPC_URL
+// export/import chain like this one is exactly what let one endpoint's API key being disabled
+// take every Core Clash watcher down at once, with no fallback.
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 const ELECTROSWAP_BASE_URL = process.env.ELECTROSWAP_BASE_URL || "https://app.electroswap.io";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — these bots trade Core Clash NFTs and
@@ -59,7 +63,6 @@ const LOOKBACK_BLOCKS = process.env.COREBOT_LOOKBACK_BLOCKS
   : 50000;
 
 export {
-  RPC_URL,
   EXPLORER_BASE_URL,
   ELECTROSWAP_BASE_URL,
   REVERSE_REGISTRAR_ADDRESS,

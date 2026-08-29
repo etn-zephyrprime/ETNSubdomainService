@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getHourlyActivityCache, setHourlyActivityCache } from "../state/hourlyActivityState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a public JSON cache of real per-UTC-hour transaction counts and ETN volume transferred,
 // for a rolling last ~8 days — powers Overview.jsx's "Txs Last 7 Days" heatmap (cell brightness =
@@ -19,8 +20,8 @@ import { getHourlyActivityCache, setHourlyActivityCache } from "../state/hourlyA
 // one fully catches up in well under an hour rather than several.
 //
 // Same RPC_URL note as dailyBlockStatsCache.js — full-transaction-object fetches are heavy enough
-// that this cache needs a keyed endpoint too, not the bare public one.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
+// that this cache needs a keyed endpoint too, not the bare public one. (RPC access itself goes
+// through rpcProvider.js's createRpcProvider().)
 const DAYS_TO_KEEP = 8; // 7 real days shown + 1 day buffer, same reasoning as dailyBlockStatsCache.js
 const CACHE_SCHEMA_VERSION = 1;
 const CACHE_INTERVAL_MS = process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS
@@ -184,7 +185,7 @@ export function startHourlyActivityCache() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
 
   console.log(`⏱️  Hourly activity cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
   scanAndPublish(provider);

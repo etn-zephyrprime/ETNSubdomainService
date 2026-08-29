@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getDailyBlockStatsCache, setDailyBlockStatsCache } from "../state/dailyBlockStatsState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a public JSON cache of real per-UTC-day transaction counts and validator (miner)
 // block-production breakdowns for the last ~90 days — powers Overview.jsx's "Total Transactions"
@@ -25,7 +26,8 @@ import { getDailyBlockStatsCache, setDailyBlockStatsCache } from "../state/daily
 // endpoint's free anonymous rate limit (confirmed live: both Ankr's and thirdweb's public
 // endpoints hit their limit under this cache alone) — set RPC_URL to an authenticated endpoint,
 // not the bare public one, before running this at the default concurrency/blocks-per-cycle below.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
+// (RPC access itself goes through rpcProvider.js's createRpcProvider() — see that file for the
+// primary/fallback failover every cache and watcher in this backend now shares.)
 const DAYS_TO_KEEP = 90;
 const CACHE_SCHEMA_VERSION = 1;
 const CACHE_INTERVAL_MS = process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS
@@ -184,7 +186,7 @@ export function startDailyBlockStatsCache() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
 
   console.log(`📅 Daily block stats cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
   scanAndPublish(provider);

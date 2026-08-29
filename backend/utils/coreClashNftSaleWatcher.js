@@ -7,7 +7,8 @@
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
 import { sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, NFT_THREAD_ID } from "./coreClashTelegram.js";
-import { RPC_URL, EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, REVERSE_REGISTRAR_ADDRESS, SEAPORT_ADDRESS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { EXPLORER_BASE_URL, ELECTROSWAP_BASE_URL, REVERSE_REGISTRAR_ADDRESS, SEAPORT_ADDRESS, NFT_COLLECTION_MAP, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 const STATE_KEY = "nft-sale-watcher";
@@ -169,7 +170,7 @@ export async function startCoreClashNftSaleWatcher() {
 
   // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves
   // seller/buyer primary names via primaryNameResolver.js.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   console.log(`💰 Core Clash NFT sale watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
