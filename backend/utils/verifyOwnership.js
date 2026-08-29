@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Minimal subset of src/abis/NameWrapperABI.json (frontend) — ownerOf(id) where id is the node
 // itself, treated as uint256 (NameWrapper is ERC1155-style; the token id is the node).
@@ -7,7 +8,6 @@ const NAME_WRAPPER_ABI = ["function ownerOf(uint256 id) view returns (address ow
 // Must point at the same chain the frontend actually registers names on (see RPC_URL /
 // NAME_WRAPPER_ADDRESS in src/config.js) — otherwise every legitimate request gets rejected
 // because ownerOf() is being checked on the wrong chain entirely.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const NAME_WRAPPER_ADDRESS =
   process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 
@@ -29,7 +29,7 @@ export class OwnershipVerificationError extends Error {
 let cachedNameWrapper = null;
 function getNameWrapper() {
   if (cachedNameWrapper) return cachedNameWrapper;
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const provider = createRpcProvider();
   cachedNameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   return cachedNameWrapper;
 }

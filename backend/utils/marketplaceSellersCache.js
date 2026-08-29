@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getMarketplaceSellersCache, setMarketplaceSellersCache } from "../state/marketplaceSellersState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a small public JSON cache of {seller address -> primary name} in R2 for the "Names For
 // Sale" marketplace screen, for the same reason and via the same fix as
@@ -16,7 +17,6 @@ import { getMarketplaceSellersCache, setMarketplaceSellersCache } from "../state
 // the connected user's own names), which needs to reflect a just-submitted transaction
 // immediately — a 5-minute-stale R2 cache would be a real regression there. Listings stay a live
 // on-chain read; only the seller-name resolution (the part that was actually broken) moves here.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 const CACHE_INTERVAL_MS = process.env.MARKETPLACE_SELLERS_CACHE_INTERVAL_MS
@@ -125,7 +125,7 @@ export function startMarketplaceSellersCache() {
 
   // batchMaxCount: 1 — same fix as activatedDomainsCache.js, for the same reason. This is exactly
   // the pattern (many concurrent per-item calls) that triggered Ankr's batch-size rejection there.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const reverseRegistrar = new ethers.Contract(REVERSE_REGISTRAR_ADDRESS, REVERSE_REGISTRAR_ABI, provider);
 

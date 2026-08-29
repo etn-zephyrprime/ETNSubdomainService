@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getActivatedDomainsCache, setActivatedDomainsCache } from "../state/activatedDomainsState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a small public JSON cache of every activated domain (and the subnames registered under
 // each) fresh in R2, for the homepage's "Activated Domains" table — same reasoning as
@@ -17,7 +18,6 @@ import { getActivatedDomainsCache, setActivatedDomainsCache } from "../state/act
 // of truth for their current owner/expiry. This is the dominant RPC cost here and the main thing
 // to revisit (e.g. re-verify on a slower rotating schedule instead of every entry every cycle) if
 // the number of activated domains grows large enough for it to matter.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
@@ -358,7 +358,7 @@ export function startActivatedDomainsCache() {
   // Disabling batching sends each call as its own HTTP request instead — slightly more request
   // overhead, but each one succeeds or fails on its own rather than one oversized batch taking
   // every concurrent call down with it.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const reverseRegistrar = new ethers.Contract(REVERSE_REGISTRAR_ADDRESS, REVERSE_REGISTRAR_ABI, provider);

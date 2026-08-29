@@ -1219,6 +1219,66 @@ sustained operation against Blockscout's real, undocumented rate limits.
 
 ---
 
+## RPC failover — one endpoint's key getting disabled took the whole backend down
+
+Every cache/watcher in this backend shared one `RPC_URL` env var and built its own
+`new ethers.JsonRpcProvider(RPC_URL, ...)` directly. That was already the subject of two earlier
+incidents in this file (public-endpoint rate-limit exhaustion, above) — this time Ankr disabled the
+*key* itself outright (`"message: API key disabled", json-rpc code -32051, rest code 403` — not a
+rate limit, confirmed live), which took every single one of them down at once, with nothing to
+fall back to.
+
+**What didn't work, checked before building anything:** ethers' own `FallbackProvider` looked like
+the obvious fix, but reading its source (`node_modules/ethers`, `provider-fallback.ts`) shows its
+`quorum` mechanism tallies a provider's *error* as a legitimate, quorum-meeting result — by design,
+for its own "do enough decentralized nodes agree this call reverts" use case. With two equal-weight
+providers and the quorum that setup needs, the primary's very first error alone already meets
+quorum and gets thrown immediately; the secondary is never even dispatched. That's consensus, not
+failover, and not what this needed.
+
+**What's here instead:** `backend/utils/rpcProvider.js`'s `createRpcProvider()` — a small
+hand-rolled `JsonRpcProvider` subclass overriding `_send()` (the one low-level dispatch point every
+call, `getBlock`/`call`/`getLogs`/a raw `provider.send(...)`, all of it, funnels through). Tries
+`RPC_URL` (Ankr by default) first; on any error, uses `RPC_URL_FALLBACK` (Electroneum's own public
+RPC by default) for every call for `RPC_PRIMARY_COOLDOWN_MS` (default 1 minute) before trying the
+primary again — a genuinely disabled key fails every request forever until someone fixes it
+manually, so without a cooldown every call across the whole backend would pay one
+guaranteed-failing request to it first, for as long as the outage lasts. A static network (chain
+52014) is passed to the underlying provider so it never does a live `eth_chainId` auto-detection
+handshake — that handshake failing outright (not just being slow) is what caused the
+"`JsonRpcProvider failed to detect network and cannot start up`" retry loop seen once already in
+this file's own history, against an endpoint under load.
+
+One real snag found live: the secondary path can't reuse ethers' own request layer. Ankr's key
+being disabled surfaced instantly via ethers' normal Node HTTP client, but hitting
+`rpc.electroneum.com` through that same client (a raw `http`/`https` request under the hood, see
+`node_modules/ethers/utils/geturl.js`) got a flat `403 Forbidden` that neither `curl` nor Node's
+native `fetch()` got hitting the exact same URL — almost certainly a TLS/HTTP client fingerprint
+check on their side, not anything about the request content (identical headers, identical body).
+`rpcProvider.js`'s secondary path uses plain `fetch()` instead, which this codebase's non-ethers
+HTTP calls already did anyway (`r2CacheProxyRouter.js`, `validatorRewardsCache.js`) — this was just
+the first time it mattered for an ethers provider specifically.
+
+Every one of this backend's 16 provider-construction call sites (every cache, every Core Clash
+watcher, `verifyOwnership.js`) now goes through `createRpcProvider()` instead of building its own
+`JsonRpcProvider` off a bare `RPC_URL`. `coreClashConfig.js` no longer exports `RPC_URL` at all —
+the five Core Clash files that used to import it from there now import `createRpcProvider` from
+`rpcProvider.js` directly instead, same as everything else.
+
+Verified live against the real (currently disabled) Ankr key and the real secondary endpoint,
+outside the running backend (a standalone script, not the deployed service): confirmed the
+mechanism actually fails over — `getBlockNumber()`, `getBlock()`, and `getCode()` all succeeded via
+the secondary once the primary's disabled-key error was hit, a second call skipped the primary
+entirely (cooldown in effect, no wasted request), and the fetch-vs-ethers-HTTP-client 403 above was
+diagnosed and fixed *because* of this live testing, not caught by `node --check` alone. Every
+modified file passes `node --check`, resolves its imports cleanly, and the whole backend boots
+without error locally (R2 unconfigured there, so the caches themselves correctly no-op before ever
+reaching `createRpcProvider()` — this refactor's actual RPC-failover behavior was verified via the
+standalone script above instead, since exercising a real cache cycle needs R2 credentials this
+session doesn't have).
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is

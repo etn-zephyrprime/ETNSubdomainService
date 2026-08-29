@@ -22,8 +22,8 @@ import { sendTelegramMessage, telegramConfigured } from "./telegramNotifier.js";
 import { getSubnameDomainsCache } from "../state/subnameDomainsState.js";
 import { getState, setState } from "../state/subdomainAdvertState.js";
 import { createAdvertScheduler } from "./advertScheduler.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default/override as marketplaceWatcher.js's SITE_URL — every link in these adverts is
@@ -182,7 +182,7 @@ export async function startSubdomainAdvertScheduler() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 

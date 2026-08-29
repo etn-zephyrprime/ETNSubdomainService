@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getSubnameDomainsCache, setSubnameDomainsCache } from "../state/subnameDomainsState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a small public JSON cache of "domains currently selling subnames" fresh in R2, so the
 // frontend's SubnameSearch screen can fetch it with one plain HTTPS request instead of scanning
@@ -8,7 +9,6 @@ import { getSubnameDomainsCache, setSubnameDomainsCache } from "../state/subname
 // and it only grows — every day adds another ~17k blocks/~17 round trips to that scan, forever,
 // for every visitor). Same chain/contract defaults as marketplaceWatcher.js, overridable via env
 // for a different deployment.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
@@ -189,7 +189,7 @@ export function startSubnameDomainsCache() {
     return;
   }
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const provider = createRpcProvider();
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 

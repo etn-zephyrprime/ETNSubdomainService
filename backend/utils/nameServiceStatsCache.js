@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getNameServiceStatsCache, setNameServiceStatsCache } from "../state/nameServiceStatsState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a small public JSON cache of proprietary .etn Name Service activity in R2, for the
 // dashboard's "Name Service" tab — data Blockscout's own /stats page has no way to show at all,
@@ -16,7 +17,6 @@ import { getNameServiceStatsCache, setNameServiceStatsCache } from "../state/nam
 // "fine to drift independently" philosophy already established for the several other copies of
 // this helper in this codebase. Keeps this cache's failure/disablement fully decoupled from
 // ownedNamesCache.js's.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
@@ -277,7 +277,7 @@ export function startNameServiceStatsCache() {
   }
 
   // batchMaxCount: 1 — same fix as this repo's other per-item-call-heavy caches.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const baseRegistrar = new ethers.Contract(BASE_REGISTRAR_ADDRESS, BASE_REGISTRAR_ABI, provider);
 

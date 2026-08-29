@@ -22,7 +22,6 @@ import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
 import { sendZephyrosAnimation, sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
 import {
-  RPC_URL,
   EXPLORER_BASE_URL,
   CORE_TOKEN_ADDRESS,
   CORE_WETN_POOL_ADDRESS,
@@ -31,6 +30,7 @@ import {
   POLL_INTERVAL_MS,
   LOOKBACK_BLOCKS,
 } from "./coreClashConfig.js";
+import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 
@@ -266,7 +266,7 @@ export async function startCoreClashSwapWatcher() {
 
   // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves the
   // trader's primary name via primaryNameResolver.js.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const pair = new ethers.Contract(CORE_WETN_POOL_ADDRESS, PAIR_ABI, provider);
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 

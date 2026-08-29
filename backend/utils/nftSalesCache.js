@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getNftSalesCache, setNftSalesCache } from "../state/nftSalesState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a public JSON cache of real on-chain NFT sale history in R2, for TokenDetail.jsx's NFT
 // collection pages — which otherwise have nothing useful to show (an NFT collection isn't an
@@ -30,7 +31,6 @@ import { getNftSalesCache, setNftSalesCache } from "../state/nftSalesState.js";
 // while `lowScannedBlock` independently backfills older history in the background, oldest-first
 // from wherever it last stopped, down toward SEAPORT_DEPLOY_BLOCK. Both halves append into the
 // same flat, deduped `sales` array.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const SEAPORT_ADDRESS = (process.env.SEAPORT_ADDRESS || "0x678748317e7fD5B7699D07e666087608B401cbFd").toLowerCase();
 const SEAPORT_DEPLOY_BLOCK = process.env.SEAPORT_DEPLOY_BLOCK
   ? parseInt(process.env.SEAPORT_DEPLOY_BLOCK, 10)
@@ -312,7 +312,7 @@ export function startNftSalesCache() {
   }
 
   // batchMaxCount: 1 — same fix as this repo's other per-item-call-heavy caches.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const seaport = new ethers.Contract(SEAPORT_ADDRESS, SEAPORT_ABI, provider);
 
   console.log(`🖼️  NFT sales cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);

@@ -12,7 +12,8 @@
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
 import { sendZephyrosAnimation, escapeHtml, zephyrosBotConfigured } from "./coreClashTelegram.js";
-import { RPC_URL, EXPLORER_BASE_URL, CORE_TOKEN_ADDRESS, REVERSE_REGISTRAR_ADDRESS, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { EXPLORER_BASE_URL, CORE_TOKEN_ADDRESS, REVERSE_REGISTRAR_ADDRESS, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
+import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 
 const STATE_KEY = "burn-watcher";
@@ -143,7 +144,7 @@ export async function startCoreClashBurnWatcher() {
 
   // batchMaxCount: 1 — same fix as marketplaceWatcher.js; this provider now also resolves the
   // donor's primary name via primaryNameResolver.js.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const token = new ethers.Contract(CORE_TOKEN_ADDRESS, ERC20_ABI, provider);
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 

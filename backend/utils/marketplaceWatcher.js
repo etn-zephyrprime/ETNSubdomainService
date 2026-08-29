@@ -3,12 +3,12 @@ import { sendTelegramMessage, sendTelegramPhoto, sendTelegramDirectMessage, tele
 import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getLinkedChatId } from "./telegramLinkRouter.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Polls the Marketplace contract for DomainActivated / SubnameRegistered / ExistingNameListed /
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
 // as the rest of the backend (see scripts/backfillNftImages.js), overridable via env for a
 // different deployment.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
@@ -341,7 +341,7 @@ export function startMarketplaceWatcher() {
 
   // batchMaxCount: 1 — same fix as activatedDomainsCache.js/marketplaceSellersCache.js; this
   // provider now also resolves buyer/seller/payer primary names via primaryNameResolver.js.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);

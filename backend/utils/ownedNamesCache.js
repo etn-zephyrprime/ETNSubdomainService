@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { getOwnedNamesCache, setOwnedNamesCache } from "../state/ownedNamesState.js";
+import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a small public JSON cache of every *wrapped* name (top-level domain or subname) in R2 —
 // node, current owner, expiry, whether it's a subname (and if so its parent), and whether a
@@ -32,7 +33,6 @@ import { getOwnedNamesCache, setOwnedNamesCache } from "../state/ownedNamesState
 // transfer never touches the Marketplace contract, so no event here would ever reflect it) — but
 // "activated" status is trusted from DomainActivated alone, not re-checked live, since activation
 // only ever happens through that one event and never reverts once set.
-const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
@@ -304,7 +304,7 @@ export function startOwnedNamesCache() {
 
   // batchMaxCount: 1 — same fix as activatedDomainsCache.js/marketplaceSellersCache.js, applied
   // from the start this time rather than as a follow-up fix.
-  const provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
