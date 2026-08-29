@@ -1279,6 +1279,51 @@ session doesn't have).
 
 ---
 
+## Cutting RPC volume — sizing showed the free tier was never going to cover this
+
+Once the disabled-key incident above got fixed by adding failover, the next question was
+"how much RPC does this backend actually need, and can I avoid paying for it" — Ankr's own
+dashboard had already shown one project spiking to 1M requests/24h. Rough sizing (steady-state,
+post-backfill): ~120,000 requests/day, ~3.5-4M/month — the bare-public-endpoint tier that started
+this whole saga, and even a $10/500k-request paid tier, both nowhere close. Real fixes, not just a
+bigger bill:
+
+- **`dailyBlockStatsCache.js` moved off RPC entirely**, same migration `validatorRewardsCache.js`
+  already proved: it was scanning ~1.5M blocks via raw RPC for a 90-day backfill (the single
+  largest RPC consumer in this backend, and the likeliest actual cause of the key getting disabled
+  for volume), when Blockscout's own `/api/v2/blocks` list already carries everything this cache
+  needs (`transaction_count`, `miner.hash`) at ~31,000 page requests instead. Zero RPC calls now.
+  Published data shape is unchanged (`{ txCount, blockCount, validators }` per day) so no frontend
+  change was needed — verified live against the real Blockscout endpoint (a standalone script, not
+  the deployed service): a 3-page bootstrap run correctly bucketed 150 real blocks into a real day
+  with a real validator breakdown, and a follow-up tip-catch-up cycle correctly found itself
+  already caught up. `hourlyActivityCache.js` stays on RPC — it needs real ETN volume transferred,
+  which requires full transaction values Blockscout's block list doesn't carry, so this specific
+  trick doesn't apply there.
+- **Every remaining cache/watcher's poll interval widened**: the four alert-only Core Clash
+  watchers and `marketplaceWatcher.js` from 60s to 5 minutes (they only post a Telegram message —
+  sub-minute latency was never needed), the drip bot (which actually signs and sends a
+  transaction, so kept more conservative) from a hardcoded 5 minutes to an overridable 15, and
+  every other 5-minute R2 cache (`subnameDomainsCache.js`, `marketplaceSellersCache.js`,
+  `nameServiceStatsCache.js`) to 15 minutes for one consistent story.
+- **`activatedDomainsCache.js` and `ownedNamesCache.js` from 5 to 15 minutes**, the specific ask
+  behind this pass — these two re-verify owner/expiry for *every* known domain/name on *every*
+  cycle (not just newly-discovered ones), which made them the largest steady-state RPC consumers
+  here even though their own event-scanning is cheap. Tripling the interval directly cuts that
+  cost by the same factor. Two small frontend notes went in alongside this, since a real user
+  could otherwise wonder where their name went for up to 15 minutes: `ActivatedDomainsTable.jsx`
+  (homepage) and `ManageSubdomain.jsx`'s "Your Names" picker both now say a just-activated/
+  registered/received name may take up to 15 minutes to appear, with a pointer to the manual
+  lookup fallback (which stays a live, uncached on-chain read) if it's needed sooner.
+
+Verified: `npm run build` succeeds clean, every modified backend file passes `node --check`, and
+the backend boots without error locally. Both new frontend notes confirmed rendering correctly in
+Chrome (mocked fetch responses for `owned-names.json`, same CORS-against-local-dev limitation as
+every other R2-backed hook in this repo) — the "Your Names" note appearing alongside a real mock
+entry, and "Enter it manually" still reachable right below it.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is

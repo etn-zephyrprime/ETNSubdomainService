@@ -41,9 +41,11 @@ const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_
 // bootstraps from EARLIEST_DEPLOY_BLOCK when there's *no* valid cache) — same fix shape as
 // ownedNamesCache.js's CACHE_SCHEMA_VERSION history.
 const CACHE_SCHEMA_VERSION = 2;
+// Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
+// board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
   ? parseInt(process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS, 10)
-  : 300000;
+  : 900000;
 const MAX_BLOCKS_PER_CYCLE = process.env.NAME_SERVICE_STATS_MAX_BLOCKS_PER_CYCLE
   ? parseInt(process.env.NAME_SERVICE_STATS_MAX_BLOCKS_PER_CYCLE, 10)
   : 50000;

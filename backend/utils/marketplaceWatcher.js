@@ -21,9 +21,13 @@ const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplore
 // Same bucket the frontend links to (computeNftImageUrl in src/utils/ens.js) and
 // scripts/backfillNftImages.js uploads to — same node-keyed object convention.
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+// Posts a Telegram alert, not a live UI update — sub-minute latency was never actually needed
+// here, and polling every 60s was a real chunk of this backend's RPC volume (confirmed live via
+// Ankr's own per-project request dashboard, after usage this size got a key disabled outright —
+// see rpcProvider.js). 5 minutes is still effectively real-time for a notification.
 const POLL_INTERVAL_MS = process.env.WATCHER_POLL_INTERVAL_MS
   ? parseInt(process.env.WATCHER_POLL_INTERVAL_MS, 10)
-  : 60000;
+  : 300000;
 // How far back to look when there's no saved lastProcessedBlock — covers both the genuine first
 // run AND, critically, every cold start on a host with ephemeral storage (e.g. Render's free
 // tier wipes local disk — including state/data/state.json — on every spin-down/spin-up cycle).

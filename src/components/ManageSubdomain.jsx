@@ -785,6 +785,12 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
           return (
             <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 11, color: muted, marginBottom: 12, lineHeight: 1.5 }}>
+                This list refreshes every 15 minutes — a name you just registered or received
+                may take up to that long to appear. It's still there on-chain; use "Enter it
+                manually" below if you need it right away.
+              </div>
+
               {ownedNamesError && (
                 <div style={{ fontSize: 12, color: error, marginBottom: 12, textAlign: "center" }}>
                   {ownedNamesError}

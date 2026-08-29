@@ -27,9 +27,15 @@ const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469
 // primary name server-side instead of per-listing in the browser (see useReverseRecord.js, which
 // this mirrors the read side of).
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
+// Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume (see
+// rpcProvider.js): this cache re-verifies owner/expiry for *every* known domain and subname on
+// *every* cycle (see the header comment above), which made it one of the largest steady-state RPC
+// consumers here even though its own event-scanning is cheap. Frontend now carries a note near
+// the Activated Domains table (src/components/ActivatedDomainsTable.jsx) explaining a
+// just-activated domain can take up to 15 minutes to show up.
 const CACHE_INTERVAL_MS = process.env.ACTIVATED_DOMAINS_CACHE_INTERVAL_MS
   ? parseInt(process.env.ACTIVATED_DOMAINS_CACHE_INTERVAL_MS, 10)
-  : 300000;
+  : 900000;
 // Caps how many blocks of event history a single cycle scans, rather than always racing straight
 // to the current chain tip. On a cold cache (fresh deploy, or R2 wiped) that gap is the entire
 // history back to MARKETPLACE_DEPLOY_BLOCK — ~300k blocks as of writing — and this cache does far

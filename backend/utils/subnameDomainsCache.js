@@ -17,9 +17,11 @@ const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469
 // Deliberately coarser than WATCHER_POLL_INTERVAL_MS (60s) — subname pricing changes far less
 // often than domain activations/registrations, and after the first run this only ever scans the
 // handful of blocks since lastScannedBlock, so there's little to gain from polling as tightly.
+// Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
+// board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
   ? parseInt(process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS, 10)
-  : 300000;
+  : 900000;
 
 // Bumped once, deliberately, to force every deployed instance's next tick to do a full fresh
 // rescan from MARKETPLACE_DEPLOY_BLOCK instead of trusting a previously-published cache's
