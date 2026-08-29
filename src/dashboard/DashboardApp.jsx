@@ -18,7 +18,10 @@ export default function DashboardApp() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [tab, setTab] = useState("overview");
   const [selectedToken, setSelectedToken] = useState(null);
-  const [addressFromToken, setAddressFromToken] = useState(null);
+  // Which address Address Lookup should open on next — named generically since it's fed from
+  // more than one source now (TokenDetail's holder links, Overview's validator links), not just
+  // tokens.
+  const [addressToLookUp, setAddressToLookUp] = useState(null);
 
   React.useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768);
@@ -31,8 +34,8 @@ export default function DashboardApp() {
     setSelectedToken(null);
   };
 
-  const handleSelectAddressFromToken = (address) => {
-    setAddressFromToken(address);
+  const handleSelectAddress = (address) => {
+    setAddressToLookUp(address);
     setTab("address");
   };
 
@@ -72,19 +75,19 @@ export default function DashboardApp() {
 
         <DashboardNav active={tab} onChange={handleTabChange} />
 
-        {tab === "overview" && <Overview />}
+        {tab === "overview" && <Overview onSelectAddress={handleSelectAddress} />}
         {tab === "tokens" && (
           selectedToken ? (
             <TokenDetail
               address={selectedToken}
               onBack={() => setSelectedToken(null)}
-              onSelectAddress={handleSelectAddressFromToken}
+              onSelectAddress={handleSelectAddress}
             />
           ) : (
             <TokenLeaderboard onSelectToken={setSelectedToken} />
           )
         )}
-        {tab === "address" && <AddressLookup key={addressFromToken} initialAddress={addressFromToken} onSelectToken={handleSelectTokenFromAddress} />}
+        {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
         {tab === "nameservice" && <NameServiceStats />}
       </div>
 

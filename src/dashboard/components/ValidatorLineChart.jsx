@@ -29,7 +29,13 @@ function colorForRank(rank) {
 // every line (unknown, not zero); a day that's present but where a given validator simply didn't
 // produce a block renders as a real 0 — those are different facts and this chart draws them
 // differently, same "don't draw a gap as if it were a real zero" discipline as SparklineChart.js.
-export default function ValidatorLineChart({ days }) {
+//
+// `onSelectAddress` is optional (same pattern as AddressLookup.jsx's own `onSelectToken`) — when
+// provided, each row's address becomes a link into the dashboard's Address Lookup tab for that
+// validator's real ETN balance/activity (DashboardApp.jsx wires this the same way it already
+// does for TokenDetail's "view holder" links). Omitted entirely, the address is plain text and
+// the row's only behavior is the existing checkbox toggle.
+export default function ValidatorLineChart({ days, onSelectAddress }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
   const [enabled, setEnabled] = useState(null); // null until the default top-4 selection is applied once
@@ -232,7 +238,36 @@ export default function ValidatorLineChart({ days }) {
             >
               <input type="checkbox" checked={!!isOn} onChange={() => toggle(addr)} style={{ accentColor: green, flexShrink: 0 }} />
               <span style={{ width: 9, height: 9, borderRadius: 2, flexShrink: 0, background: color }} />
-              <span style={{ color: mutedLight, fontFamily: "monospace" }}>{shortHash(addr)}</span>
+              {onSelectAddress ? (
+                <button
+                  onClick={(e) => {
+                    // preventDefault (not just stopPropagation) is what actually stops a click
+                    // inside a <label> from also toggling its associated checkbox — a label's
+                    // click-forwarding to its control is itself a default action, suppressed the
+                    // same way a nested link's default navigation would be.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onSelectAddress(addr);
+                  }}
+                  title="View this validator's balance and activity in Address Lookup"
+                  style={{
+                    color: mutedLight,
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                    textDecorationColor: border,
+                    textUnderlineOffset: 2,
+                  }}
+                >
+                  {shortHash(addr)}
+                </button>
+              ) : (
+                <span style={{ color: mutedLight, fontFamily: "monospace" }}>{shortHash(addr)}</span>
+              )}
               <span style={{ color: muted, marginLeft: "auto" }}>{formatInt(blocks)} blocks</span>
               <span style={{ color: "#fff", fontWeight: 700, minWidth: 90, textAlign: "right" }}>{formatEtnBalance(rewardWei)} ETN</span>
             </label>
