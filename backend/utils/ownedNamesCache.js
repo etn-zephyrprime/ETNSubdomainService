@@ -41,9 +41,14 @@ const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469
 // Same value as src/config.js's ETN_NODE — namehash("etn") — needed to derive a top-level node
 // from NameRegistered's plaintext label the same way computeNode() does client-side.
 const ETN_NODE = "0x69a3977d40595dbc343e3fa6ddbd26dbe31cc237836622384941b3c5148974cd";
+// Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume (see
+// rpcProvider.js): same "re-verifies every known name on every cycle" cost driver as
+// activatedDomainsCache.js. Frontend now carries a note near "Your Names"
+// (src/components/ManageSubdomain.jsx) explaining a freshly registered/transferred name can take
+// up to 15 minutes to show up there.
 const CACHE_INTERVAL_MS = process.env.OWNED_NAMES_CACHE_INTERVAL_MS
   ? parseInt(process.env.OWNED_NAMES_CACHE_INTERVAL_MS, 10)
-  : 300000;
+  : 900000;
 const MAX_BLOCKS_PER_CYCLE = process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE
   ? parseInt(process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE, 10)
   : 50000;

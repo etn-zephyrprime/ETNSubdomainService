@@ -138,6 +138,11 @@ export default function ActivatedDomainsTable() {
         </label>
       </div>
 
+      <div style={{ fontSize: 11, color: muted, marginBottom: 12, lineHeight: 1.5 }}>
+        This list refreshes every 15 minutes — a domain activated just now may take up to that
+        long to appear here.
+      </div>
+
       {domains === null && !loadError && (
         <div style={{ fontSize: 13, color: mutedLight, textAlign: "center", padding: "20px 0" }}>
           Loading activated domains...

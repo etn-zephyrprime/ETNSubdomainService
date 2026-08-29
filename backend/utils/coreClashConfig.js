@@ -51,9 +51,12 @@ const SEAPORT_ADDRESS = (process.env.SEAPORT_ADDRESS || "0x678748317e7fD5B7699D0
 // dripABI.json's drip() contract — CoreClashGame/backend/config.js hardcodes the same address.
 const DRIP_FUNDER_ADDRESS = process.env.DRIP_FUNDER_ADDRESS || "0x5c13dfF13885FbEc61207d52F992c55a5aa1908d";
 
+// Posts a Telegram alert, not a live UI update — same "sub-minute latency was never actually
+// needed" reasoning as marketplaceWatcher.js's own POLL_INTERVAL_MS, and shared across 4 watchers
+// here made this a real chunk of this backend's RPC volume.
 const POLL_INTERVAL_MS = process.env.COREBOT_POLL_INTERVAL_MS
   ? parseInt(process.env.COREBOT_POLL_INTERVAL_MS, 10)
-  : 60000;
+  : 300000;
 
 // Same reasoning as marketplaceWatcher.js's WATCHER_LOOKBACK_BLOCKS: how far back to scan when
 // there's no saved cursor (first run, or R2 unreachable) — bounded so a cold start doesn't

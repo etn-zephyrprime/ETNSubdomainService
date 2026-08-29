@@ -1,10 +1,10 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // The public cache dailyBlockStatsCache.js maintains — real per-UTC-day transaction counts and
-// validator (miner) block-production breakdowns for the last ~90 days, scanned directly from
-// blocks (see that file's header comment for why: neither figure exists anywhere else — Blockscout
-// only has 31 real days of daily tx counts and no validator breakdown at all, for any day). Same
-// bucket/credentials/shape-of-module as this repo's other state files.
+// validator (miner) block-production breakdowns for the last ~90 days, scanned from Blockscout's
+// own block list (see that file's header comment for why: neither figure exists anywhere else —
+// Blockscout only has 31 real days of daily tx counts and no validator breakdown at all, for any
+// day). Same bucket/credentials/shape-of-module as this repo's other state files.
 const CACHE_KEY = "daily-block-stats.json";
 
 let cachedR2Client = null;
@@ -41,7 +41,7 @@ export async function getDailyBlockStatsCache() {
   }
 }
 
-/** Publishes `{ days, lowScannedBlock, highScannedBlock, floorBlock, schemaVersion, updatedAt }`. */
+/** Publishes `{ days, highScannedBlock, lowCursorParams, schemaVersion, updatedAt }`. */
 export async function setDailyBlockStatsCache(data) {
   const r2 = getR2Client();
   if (!r2) return;

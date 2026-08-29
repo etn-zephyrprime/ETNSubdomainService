@@ -23,7 +23,14 @@ import { sendZephyrosMessage, zephyrosBotConfigured, GENERAL_THREAD_ID } from ".
 import { EXPLORER_BASE_URL, DRIP_FUNDER_ADDRESS } from "./coreClashConfig.js";
 import { createRpcProvider } from "./rpcProvider.js";
 
-const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes, same as the original
+// Was a hardcoded 5 minutes (same as the original) — bumped to 15 and made overridable as part of
+// cutting this backend's overall RPC volume (see rpcProvider.js). This one actually signs and
+// sends a transaction when due, unlike the other watchers here, so kept less aggressive than
+// their 5-minute bump: worst case this delays firing an overdue drip by up to 15 minutes, not a
+// meaningful difference against a multi-hour drip schedule.
+const CHECK_INTERVAL_MS = process.env.COREBOT_DRIP_CHECK_INTERVAL_MS
+  ? parseInt(process.env.COREBOT_DRIP_CHECK_INTERVAL_MS, 10)
+  : 15 * 60 * 1000;
 
 const DRIP_ABI = [
   "function owner() view returns (address)",

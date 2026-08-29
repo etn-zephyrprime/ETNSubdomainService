@@ -19,9 +19,11 @@ import { createRpcProvider } from "./rpcProvider.js";
 // on-chain read; only the seller-name resolution (the part that was actually broken) moves here.
 const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
+// Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
+// board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.MARKETPLACE_SELLERS_CACHE_INTERVAL_MS
   ? parseInt(process.env.MARKETPLACE_SELLERS_CACHE_INTERVAL_MS, 10)
-  : 300000;
+  : 900000;
 const VERIFY_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [

@@ -1,6 +1,4 @@
-import { ethers } from "ethers";
 import { getDailyBlockStatsCache, setDailyBlockStatsCache } from "../state/dailyBlockStatsState.js";
-import { createRpcProvider } from "./rpcProvider.js";
 
 // Keeps a public JSON cache of real per-UTC-day transaction counts and validator (miner)
 // block-production breakdowns for the last ~90 days — powers Overview.jsx's "Total Transactions"
@@ -8,167 +6,160 @@ import { createRpcProvider } from "./rpcProvider.js";
 // heatmap (cell brightness = that day's tx count, tooltip = which validators produced blocks that
 // day). Neither figure exists anywhere else: Blockscout's own `/stats/charts/transactions` only
 // keeps 31 real days (confirmed live), and it has no validator/miner breakdown at all, for any
-// day — this backend is the only place either could come from, same "Blockscout doesn't track
-// this, so scan it ourselves" reasoning as nftSalesCache.js / nameServiceStatsCache.js.
+// day — this backend is the only place either could come from.
 //
-// One real cost worth being upfront about: getting a *real* day's tx count means visiting every
-// block that day (there's no running per-day counter anywhere — total_transactions is a single
-// current total, not a per-day series, and RPC has no "transactions in this time range" query).
-// At ~17,280 blocks/day, 90 days is ~1.5M individual block fetches — the heaviest one-time
-// backfill in this codebase (bigger even than nftSalesCache.js's ~10M-block range, since that one
-// only touches Seaport's own log events, not every single block). Kept lightweight per call
-// (`eth_getBlockByNumber(n, false)` — hashes only, not full tx objects) and, like nftSalesCache.js,
-// dual-cursor: `highScannedBlock` stays caught up to chain tip every cycle so *today's* numbers
-// are never stale, while `lowScannedBlock` backfills the other 89 days in the background,
-// bounded per cycle so it never floods the RPC — just takes several hours to fully catch up.
+// Rewritten to scan Blockscout's own `/api/v2/blocks?type=block` list instead of raw RPC — same
+// migration and same reasoning as validatorRewardsCache.js (see that file's header comment in
+// full): this cache's original per-block RPC scan (`eth_getBlockByNumber` × ~1.5M blocks for a
+// full 90-day backfill) was, on its own, most of the RPC volume this backend's Ankr account was
+// burning — a real cost driver, not just a rate-limit annoyance, confirmed live via Ankr's own
+// per-project request-volume dashboard after that key got disabled outright. Blockscout's block
+// list already carries `transaction_count` and `miner.hash` per block (confirmed live), so this
+// needs zero RPC calls now — ~31,000 page requests (50 blocks/page) for a full 90-day backfill
+// against Blockscout, not ~1.5M against Ankr. `hourlyActivityCache.js` (real ETN volume
+// transferred, which needs full transaction values Blockscout's block list doesn't carry) stays
+// on RPC — this migration only covers what Blockscout's block-list summary can actually answer.
 //
-// This cache's ~1.5M-block backfill needs a *keyed* RPC_URL to avoid exhausting a public
-// endpoint's free anonymous rate limit (confirmed live: both Ankr's and thirdweb's public
-// endpoints hit their limit under this cache alone) — set RPC_URL to an authenticated endpoint,
-// not the bare public one, before running this at the default concurrency/blocks-per-cycle below.
-// (RPC access itself goes through rpcProvider.js's createRpcProvider() — see that file for the
-// primary/fallback failover every cache and watcher in this backend now shares.)
+// Cursor state is NOT compatible with the old RPC-based version (Blockscout's keyset
+// `next_page_params` isn't a block number), so CACHE_SCHEMA_VERSION bumped — the published `days`
+// shape is unchanged (still `{ txCount, blockCount, validators }` per day, same as before, so no
+// frontend change was needed), but the backfill starts over from scratch once on deploy, same
+// "thin at first, growing toward the full 90 days" shape this cache has always had.
 const DAYS_TO_KEEP = 90;
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
+const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 const CACHE_INTERVAL_MS = process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS
   ? parseInt(process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS, 10)
   : 300000;
-const MAX_BLOCKS_PER_CYCLE = process.env.DAILY_BLOCK_STATS_MAX_BLOCKS_PER_CYCLE
-  ? parseInt(process.env.DAILY_BLOCK_STATS_MAX_BLOCKS_PER_CYCLE, 10)
-  : 20000;
-// Conservative on purpose — this is ~1.5M individual RPC calls total, not the handful of
-// getLogs-filter calls this repo's other scanners make; a public rate-limited RPC endpoint
-// tolerates far fewer concurrent simple requests than it does a couple of chunked log queries.
-const CONCURRENCY = process.env.DAILY_BLOCK_STATS_CONCURRENCY
-  ? parseInt(process.env.DAILY_BLOCK_STATS_CONCURRENCY, 10)
-  : 15;
+// 50 blocks/page, so 200 pages/cycle ≈ 10,000 blocks — a full 90-day backfill (~31,000 pages)
+// takes roughly a day at the default cadence. Same conservative-by-default reasoning as
+// validatorRewardsCache.js's identical knob: Blockscout's own rate limits for this volume of
+// sequential requests aren't documented anywhere.
+const MAX_PAGES_PER_CYCLE = process.env.DAILY_BLOCK_STATS_MAX_PAGES_PER_CYCLE
+  ? parseInt(process.env.DAILY_BLOCK_STATS_MAX_PAGES_PER_CYCLE, 10)
+  : 200;
+const PAGE_DELAY_MS = process.env.DAILY_BLOCK_STATS_PAGE_DELAY_MS
+  ? parseInt(process.env.DAILY_BLOCK_STATS_PAGE_DELAY_MS, 10)
+  : 150;
 const MAX_RETRIES = 3;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function dayKeyFromTimestamp(timestampSec) {
-  return new Date(timestampSec * 1000).toISOString().slice(0, 10); // "2026-08-28"
-}
-
-async function fetchBlockWithRetry(provider, blockNumber, attempt = 0) {
+// Identical shape/reasoning to validatorRewardsCache.js's own fetchBlocksPage — duplicated rather
+// than shared, same "fine to drift independently" philosophy this repo's other scanner pairs use.
+async function fetchBlocksPage(cursorParams, attempt = 0) {
+  const url = new URL(`${BLOCKSCOUT_API_BASE}/blocks`);
+  url.searchParams.set("type", "block");
+  if (cursorParams) {
+    for (const [key, value] of Object.entries(cursorParams)) url.searchParams.set(key, value);
+  }
   try {
-    const raw = await provider.send("eth_getBlockByNumber", [ethers.toBeHex(blockNumber), false]);
-    if (!raw) return null;
-    const timestamp = parseInt(raw.timestamp, 16);
-    return {
-      dayKey: dayKeyFromTimestamp(timestamp),
-      miner: String(raw.miner || "").toLowerCase(),
-      txCount: Array.isArray(raw.transactions) ? raw.transactions.length : 0,
-    };
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json(); // { items: [...], next_page_params: {...} | null }
   } catch (err) {
     if (attempt < MAX_RETRIES) {
       await sleep(500 * (attempt + 1));
-      return fetchBlockWithRetry(provider, blockNumber, attempt + 1);
+      return fetchBlocksPage(cursorParams, attempt + 1);
     }
-    console.warn(`⚠️  Daily block stats: failed to fetch block ${blockNumber} after retries:`, err.message);
-    return null;
+    throw err;
   }
 }
 
-async function scanBlockRange(provider, fromBlock, toBlock, concurrency) {
-  const total = toBlock - fromBlock + 1;
-  if (total <= 0) return [];
-  const results = new Array(total);
-  let nextIndex = 0;
+// Applies one page's blocks (newest-first within the page) to `days`, stopping the moment a
+// block's UTC day falls before `cutoffDate` — safe to stop rather than skip-and-continue since
+// the page (and every page after it) is strictly time-descending.
+function applyPageBlocks(days, items, cutoffDate) {
+  for (const block of items) {
+    const dayKey = String(block.timestamp).slice(0, 10);
+    if (dayKey < cutoffDate) return { crossedCutoff: true };
 
-  async function worker() {
-    while (true) {
-      const i = nextIndex++;
-      if (i >= total) return;
-      results[i] = await fetchBlockWithRetry(provider, fromBlock + i);
-    }
-  }
+    const miner = String(block.miner?.hash || "").toLowerCase();
+    const txCount = Number(block.transaction_count) || 0;
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, total) }, worker));
-  return results;
-}
-
-function applyResults(days, results) {
-  for (const r of results) {
-    if (!r) continue;
-    const day = days[r.dayKey] || (days[r.dayKey] = { txCount: 0, blockCount: 0, validators: {} });
-    day.txCount += r.txCount;
+    const day = days[dayKey] || (days[dayKey] = { txCount: 0, blockCount: 0, validators: {} });
+    day.txCount += txCount;
     day.blockCount += 1;
-    day.validators[r.miner] = (day.validators[r.miner] || 0) + 1;
+    day.validators[miner] = (day.validators[miner] || 0) + 1;
   }
-}
-
-// One-time binary search for the earliest block at/after (now - (daysToKeep+1) days) — a few
-// dozen sequential RPC calls (each depends on the previous), done once and persisted as
-// `floorBlock` so it's never repeated. The +1 day buffer means the oldest UTC day is never
-// missing its very first blocks just because the floor landed a few hours into it.
-async function findFloorBlock(provider, latestBlock, daysToKeep) {
-  const targetTs = Math.floor(Date.now() / 1000) - (daysToKeep + 1) * 86400;
-  let lo = 0;
-  let hi = latestBlock;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const block = await provider.getBlock(mid);
-    if (!block || block.timestamp < targetTs) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
+  return { crossedCutoff: false };
 }
 
 let isRunning = false;
 
-async function scanAndPublish(provider) {
+async function scanAndPublish() {
   if (isRunning) return;
   isRunning = true;
   try {
     const rawCached = await getDailyBlockStatsCache();
     const cached = rawCached?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCached : null;
     const days = cached?.days ? { ...cached.days } : {};
-
-    const latestBlock = await provider.getBlockNumber();
-    const floorBlock = cached?.floorBlock ?? (await findFloorBlock(provider, latestBlock, DAYS_TO_KEEP));
-
     let highScannedBlock = cached?.highScannedBlock ?? null;
-    let lowScannedBlock = cached?.lowScannedBlock ?? null;
+    let lowCursorParams = cached?.lowCursorParams; // undefined: not yet started; object: mid-backfill; null: complete
+
+    const cutoffDate = new Date(Date.now() - DAYS_TO_KEEP * 86400000).toISOString().slice(0, 10);
 
     if (highScannedBlock == null) {
-      // First run ever — scan the most recent window first so today's numbers exist immediately,
-      // same "recency over completeness" reasoning as nftSalesCache.js.
-      const fromBlock = Math.max(floorBlock, latestBlock - MAX_BLOCKS_PER_CYCLE + 1);
-      applyResults(days, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY));
-      highScannedBlock = latestBlock;
-      lowScannedBlock = fromBlock;
-    } else {
-      if (latestBlock > highScannedBlock) {
-        const fromBlock = highScannedBlock + 1;
-        applyResults(days, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY));
-        highScannedBlock = latestBlock;
+      // First run ever — one bounded walk back from the chain tip covers both "today's numbers
+      // exist immediately" and seeds lowCursorParams for future backfill cycles, same
+      // "recency over completeness" reasoning as nftSalesCache.js.
+      let cursor;
+      let crossed = false;
+      for (let page = 0; page < MAX_PAGES_PER_CYCLE; page++) {
+        const result = await fetchBlocksPage(cursor);
+        if (!result.items?.length) { crossed = true; break; }
+        if (highScannedBlock == null) highScannedBlock = result.items[0].height;
+        const { crossedCutoff } = applyPageBlocks(days, result.items, cutoffDate);
+        if (crossedCutoff || !result.next_page_params) { crossed = true; break; }
+        cursor = result.next_page_params;
+        await sleep(PAGE_DELAY_MS);
       }
-      if (lowScannedBlock > floorBlock) {
-        const toBlock = lowScannedBlock - 1;
-        const fromBlock = Math.max(floorBlock, toBlock - MAX_BLOCKS_PER_CYCLE + 1);
-        applyResults(days, await scanBlockRange(provider, fromBlock, toBlock, CONCURRENCY));
-        lowScannedBlock = fromBlock;
+      lowCursorParams = crossed ? null : cursor;
+    } else {
+      // Tip catch-up — walk back from the chain tip until reaching already-scanned territory
+      // (a partial page's worth most cycles, at ~5s blocks and a 300s default interval).
+      let cursor;
+      let newHighScannedBlock = highScannedBlock;
+      for (let page = 0; page < MAX_PAGES_PER_CYCLE; page++) {
+        const result = await fetchBlocksPage(cursor);
+        if (!result.items?.length) break;
+        const newItems = result.items.filter((b) => b.height > highScannedBlock);
+        if (newItems.length === 0) break; // fully caught up
+        if (page === 0) newHighScannedBlock = newItems[0].height;
+        applyPageBlocks(days, newItems, cutoffDate);
+        if (newItems.length < result.items.length || !result.next_page_params) break; // rest of this page was already-scanned
+        cursor = result.next_page_params;
+        await sleep(PAGE_DELAY_MS);
+      }
+      highScannedBlock = newHighScannedBlock;
+
+      // Backfill — continue from where the last cycle left off, bounded per cycle.
+      if (lowCursorParams !== null) {
+        let cursor = lowCursorParams;
+        let crossed = false;
+        for (let page = 0; page < MAX_PAGES_PER_CYCLE; page++) {
+          const result = await fetchBlocksPage(cursor);
+          if (!result.items?.length) { crossed = true; break; }
+          const { crossedCutoff } = applyPageBlocks(days, result.items, cutoffDate);
+          if (crossedCutoff || !result.next_page_params) { crossed = true; break; }
+          cursor = result.next_page_params;
+          await sleep(PAGE_DELAY_MS);
+        }
+        lowCursorParams = crossed ? null : cursor;
       }
     }
 
-    // Self-pruning — same "oldest drops off first" convention as this repo's other bounded
-    // caches, just by calendar date instead of an array-length cap.
-    const cutoffDate = new Date(Date.now() - DAYS_TO_KEEP * 86400000).toISOString().slice(0, 10);
+    // Self-pruning — oldest drops off first, by calendar date.
     for (const day of Object.keys(days)) {
       if (day < cutoffDate) delete days[day];
     }
 
-    await setDailyBlockStatsCache({ days, lowScannedBlock, highScannedBlock, floorBlock, schemaVersion: CACHE_SCHEMA_VERSION });
+    await setDailyBlockStatsCache({ days, highScannedBlock, lowCursorParams, schemaVersion: CACHE_SCHEMA_VERSION });
 
-    const totalRange = latestBlock - floorBlock || 1;
-    const backfillPct = (((highScannedBlock - lowScannedBlock) / totalRange) * 100).toFixed(1);
-    console.log(`📅 Daily block stats cache updated — ${Object.keys(days).length} day(s) tracked, history backfilled ${backfillPct}%, caught up to block ${highScannedBlock}`);
+    const backfillDone = lowCursorParams === null;
+    console.log(`📅 Daily block stats cache updated — ${Object.keys(days).length} day(s) tracked, backfill ${backfillDone ? "complete" : "in progress"}, caught up to block ${highScannedBlock}`);
   } catch (err) {
     console.error("⚠️  Daily block stats scan failed:", err.message);
   } finally {
@@ -178,7 +169,7 @@ async function scanAndPublish(provider) {
 
 /**
  * Starts the background cache refresher. No-op if R2 isn't configured, same as this repo's other
- * caches.
+ * caches. No longer needs an RPC provider at all — see the file's header comment.
  */
 export function startDailyBlockStatsCache() {
   if (!process.env.R2_ENDPOINT || !process.env.R2_BUCKET_NAME || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
@@ -186,9 +177,7 @@ export function startDailyBlockStatsCache() {
     return;
   }
 
-  const provider = createRpcProvider({ batchMaxCount: 1 });
-
   console.log(`📅 Daily block stats cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(provider);
-  setInterval(() => scanAndPublish(provider), CACHE_INTERVAL_MS);
+  scanAndPublish();
+  setInterval(scanAndPublish, CACHE_INTERVAL_MS);
 }
