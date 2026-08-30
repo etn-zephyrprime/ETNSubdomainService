@@ -4,6 +4,8 @@ import { FileText, ExternalLink } from "lucide-react";
 import Panel from "../../components/Panel.jsx";
 import NeonButton from "../../components/NeonButton.jsx";
 import { usePnlPurchase } from "../../hooks/usePnlPurchase.js";
+import { useOwnedNames } from "../../hooks/useOwnedNames.js";
+import { computeNodeForName } from "../../utils/ens.js";
 import { PNL_BACKEND_URL } from "../../config.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../styles/theme.js";
 
@@ -35,10 +37,13 @@ function parseAddressList(raw) {
 // see backend/services/pnlStatementGenerator.js — so this only kicks it off and links to the
 // viewer, which is where the user watches it move from PENDING_GENERATION to GENERATED.
 export default function PnlStatementRequest({ wallet }) {
-  const { isConfigured, getPnlPricePerPeriod, getIsFreeForCaller, purchasePnlPeriods, waitForStatementRequests, loading, error } = usePnlPurchase();
+  const { isConfigured, getPnlPricePerPeriod, getFreeAccessInfo, purchasePnlPeriods, waitForStatementRequests, loading, error } = usePnlPurchase();
+  const { getNamesOwnedBy } = useOwnedNames();
 
   const [pricePerPeriod, setPricePerPeriod] = useState(null);
-  const [isFree, setIsFree] = useState(false);
+  const [freeInfo, setFreeInfo] = useState({ free: false, reason: null });
+  const [activatedDomainNode, setActivatedDomainNode] = useState(null);
+  const [activatedDomainName, setActivatedDomainName] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
   const [trackedWallet, setTrackedWallet] = useState("");
@@ -54,18 +59,40 @@ export default function PnlStatementRequest({ wallet }) {
     if (wallet?.account && !trackedWallet) setTrackedWallet(wallet.account);
   }, [wallet?.account, trackedWallet]);
 
+  // Finds one activated domain the connected wallet owns, if any, and computes its on-chain node
+  // — this is what purchasePnlPeriods can be given as proof of free access via activated-domain
+  // ownership (see PremiumSubscription.sol's isActivatedDomainOwner). Any ONE qualifying domain is
+  // enough; the first one found is used. The contract independently re-verifies this at purchase
+  // time, so a stale/wrong guess here just falls through to the paid path, never a bad free grant.
+  const findActivatedDomain = useCallback(async (address) => {
+    try {
+      const owned = await getNamesOwnedBy(address);
+      const activated = owned.find((n) => n.activated === true);
+      if (!activated) return { node: null, name: null };
+      return { node: computeNodeForName(activated.name), name: activated.name };
+    } catch (err) {
+      console.warn("Failed to look up activated domains for free-access check:", err.message);
+      return { node: null, name: null };
+    }
+  }, [getNamesOwnedBy]);
+
   const refresh = useCallback(async () => {
     if (!isConfigured) return;
     try {
       const price = await getPnlPricePerPeriod();
       setPricePerPeriod(price);
-      if (wallet?.account) setIsFree(await getIsFreeForCaller(wallet.account));
+      if (wallet?.account) {
+        const { node, name } = await findActivatedDomain(wallet.account);
+        setActivatedDomainNode(node);
+        setActivatedDomainName(name);
+        setFreeInfo(await getFreeAccessInfo(wallet.account, node));
+      }
       setLoadError(null);
     } catch (err) {
       console.error("Failed to load PnL pricing:", err);
       setLoadError("Couldn't load pricing");
     }
-  }, [isConfigured, getPnlPricePerPeriod, getIsFreeForCaller, wallet?.account]);
+  }, [isConfigured, getPnlPricePerPeriod, getFreeAccessInfo, findActivatedDomain, wallet?.account]);
 
   useEffect(() => {
     refresh();
@@ -79,7 +106,7 @@ export default function PnlStatementRequest({ wallet }) {
     );
   }
 
-  const requiredValueWei = isFree ? 0n : (pricePerPeriod ?? 0n) * BigInt(numPeriods);
+  const requiredValueWei = freeInfo.free ? 0n : (pricePerPeriod ?? 0n) * BigInt(numPeriods);
 
   const handlePurchase = async () => {
     setStageError(null);
@@ -106,7 +133,7 @@ export default function PnlStatementRequest({ wallet }) {
       const signer = await wallet.getSigner();
 
       setStage("purchasing");
-      const { txHash } = await purchasePnlPeriods(trackedWallet, numPeriods, requiredValueWei, signer);
+      const { txHash } = await purchasePnlPeriods(trackedWallet, numPeriods, activatedDomainNode, requiredValueWei, signer);
 
       setStage("waiting-for-backend");
       const requests = await waitForStatementRequests(txHash, numPeriods);
@@ -153,15 +180,21 @@ export default function PnlStatementRequest({ wallet }) {
 
       {loadError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{loadError}</div>}
 
-      <div style={{ fontSize: 13, color: mutedLight, marginBottom: 16 }}>
+      <div style={{ fontSize: 13, color: mutedLight, marginBottom: 6 }}>
         Price per 12-month period: {pricePerPeriod != null ? (
-          isFree ? (
-            <b style={{ color: green }}>Free — active member</b>
+          freeInfo.free ? (
+            <b style={{ color: green }}>Free — {freeInfo.reason}</b>
           ) : (
             <b style={{ color: "#fff" }}>{ethers.formatEther(pricePerPeriod)} ETN</b>
           )
         ) : "Loading…"}
       </div>
+      {!freeInfo.free && activatedDomainName && (
+        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+          ({activatedDomainName} looked activated, but couldn't be verified on-chain just now — using the paid price. It'll still be checked again when you submit.)
+        </div>
+      )}
+      <div style={{ marginBottom: 16 }} />
 
       <label style={labelStyle}>Tracked wallet address</label>
       <input style={{ ...inputStyle, marginBottom: 14 }} value={trackedWallet} onChange={(e) => setTrackedWallet(e.target.value.trim())} placeholder="0x..." />
@@ -193,7 +226,7 @@ export default function PnlStatementRequest({ wallet }) {
         onChange={(e) => setNumPeriods(Math.max(1, parseInt(e.target.value, 10) || 1))}
       />
 
-      {pricePerPeriod != null && !isFree && (
+      {pricePerPeriod != null && !freeInfo.free && (
         <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
           Total: <b style={{ color: "#fff" }}>{ethers.formatEther(requiredValueWei)} ETN</b>
         </div>

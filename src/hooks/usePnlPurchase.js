@@ -19,23 +19,49 @@ export function usePnlPurchase() {
     return await contract.pnlPricePerPeriod();
   }, [getReadContract]);
 
-  // purchasePnlPeriods() itself computes whether msg.sender has an active membership and charges
-  // 0 in that case — this just reads that same live state up front so the UI can show "Free
-  // (active member)" instead of a price before the user ever signs anything.
-  const getIsFreeForCaller = useCallback(async (address) => {
+  // purchasePnlPeriods() itself computes free eligibility on-chain and charges 0 when it applies —
+  // this mirrors that same logic up front (plus a couple of extra reads purely for a friendlier
+  // "why" in the UI) so the price shown before signing always matches what the contract will
+  // actually charge. `activatedDomainNode` (bytes32, or null to skip that path) is the specific
+  // domain node the caller wants to claim free access through, if any — see
+  // PnlStatementRequest.jsx for how that's discovered from the wallet's owned/activated names.
+  const getFreeAccessInfo = useCallback(async (address, activatedDomainNode) => {
     const contract = getReadContract();
-    return await contract.isMembershipActive(address);
+
+    const [eligible, isMember, isWhitelisted, erevosSharesAddr] = await Promise.all([
+      contract.isEligibleForFreeAccess(address),
+      contract.isMembershipActive(address),
+      contract.whitelisted(address),
+      contract.erevosShares(),
+    ]);
+
+    if (isMember) return { free: true, reason: "active membership" };
+    if (isWhitelisted) return { free: true, reason: "whitelisted" };
+    if (eligible && erevosSharesAddr && erevosSharesAddr !== ethers.ZeroAddress) {
+      // isEligibleForFreeAccess was true and neither membership nor whitelist explain it — must
+      // be the ErevosShares holder path (the only other thing that function checks).
+      return { free: true, reason: "Erevos Shares holder" };
+    }
+
+    if (activatedDomainNode && activatedDomainNode !== ethers.ZeroHash) {
+      const ownsActivatedDomain = await contract.isActivatedDomainOwner(address, activatedDomainNode);
+      if (ownsActivatedDomain) return { free: true, reason: "activated domain owner" };
+    }
+
+    return { free: false, reason: null };
   }, [getReadContract]);
 
-  const purchasePnlPeriods = useCallback(async (trackedWallet, numPeriods, requiredValueWei, signer) => {
+  const purchasePnlPeriods = useCallback(async (trackedWallet, numPeriods, activatedDomainNode, requiredValueWei, signer) => {
     setLoading(true);
     setError(null);
     try {
       const contract = new ethers.Contract(PREMIUM_SUBSCRIPTION_ADDRESS, PremiumSubscriptionABI, signer);
+      const node = activatedDomainNode || ethers.ZeroHash;
       // Fixed gas limit — same reasoning as usePremiumSubscription.js's subscribe(). Padded
       // higher than subscribe() since this writes no persistent state on the happy path (funds
-      // just sit escrowed) but still needs headroom for the refund-of-excess transfer.
-      const tx = await contract.purchasePnlPeriods(trackedWallet, numPeriods, { value: requiredValueWei, gasLimit: 150000 });
+      // just sit escrowed) but still needs headroom for the refund-of-excess transfer plus the
+      // extra cross-contract reads the activated-domain free-access check does.
+      const tx = await contract.purchasePnlPeriods(trackedWallet, numPeriods, node, { value: requiredValueWei, gasLimit: 220000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Purchase failed");
       return { success: true, txHash: tx.hash };
@@ -71,7 +97,7 @@ export function usePnlPurchase() {
   return {
     isConfigured,
     getPnlPricePerPeriod,
-    getIsFreeForCaller,
+    getFreeAccessInfo,
     purchasePnlPeriods,
     waitForStatementRequests,
     loading,
