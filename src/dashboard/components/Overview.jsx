@@ -159,16 +159,23 @@ export default function Overview({ onSelectAddress }) {
   const [loadError, setLoadError] = useState(null);
   const [activeMetric, setActiveMetric] = useState("totalTx");
 
-  // Recent Transactions and Top Transactions by Volume are two different views over the same
-  // growing pool of real, chain-wide recent transactions (chronological vs. sorted-by-value) —
-  // one fetch/pagination state, two independent "how many to show" counts, so "show more" on
-  // either can reuse whatever the other has already loaded before fetching a fresh page itself.
+  // Recent Transactions paginates its own live, chronological view straight from Blockscout.
   const [transactions, setTransactions] = useState([]);
   const [txNextParams, setTxNextParams] = useState(null);
   const [txShowCount, setTxShowCount] = useState(RECENT_TX_STEP);
   const [txLoadingMore, setTxLoadingMore] = useState(false);
+
+  // Top Transactions by Volume is a *different* dataset, not a re-ranking of the pool above —
+  // Blockscout has no sortable/rankable endpoint for "biggest transactions" (not a cheap query
+  // for any chain explorer to offer), and a live client-side scan deep enough to genuinely cover
+  // 7 real days would mean millions of transactions, nowhere near feasible on demand. This is
+  // hourlyActivityCache.js's own real rolling-7-day leaderboard instead — it already fetches every
+  // full transaction in that window for its ETN-volume sums, so tracking the highest-value ones
+  // alongside costs it zero extra RPC calls. Already sorted + capped server-side, so "show more"
+  // here just reveals more of what's already loaded, no fetch needed.
+  const [topTxByVolume, setTopTxByVolume] = useState(null); // null = not loaded yet, distinct from a loaded-but-currently-empty (still collecting) list
+  const [topTxSinceMs, setTopTxSinceMs] = useState(null);
   const [topTxShowCount, setTopTxShowCount] = useState(TOP_TX_DEFAULT);
-  const [topTxLoadingMore, setTopTxLoadingMore] = useState(false);
 
   const [blocks, setBlocks] = useState([]);
   const [blocksNextParams, setBlocksNextParams] = useState(null);
@@ -201,6 +208,8 @@ export default function Overview({ onSelectAddress }) {
         setSnapshots(snapshotsRes);
         setDailyBlockStats(dailyBlockStatsRes?.days || {});
         setHourlyActivity(hourlyActivityRes?.hours || {});
+        setTopTxByVolume(Array.isArray(hourlyActivityRes?.topTransactions) ? hourlyActivityRes.topTransactions : []);
+        setTopTxSinceMs(hourlyActivityRes?.topTransactionsSinceMs ?? null);
         setValidatorRewards(validatorRewardsRes?.days || {});
       } catch (err) {
         console.error("Failed to load network overview:", err);
@@ -234,10 +243,8 @@ export default function Overview({ onSelectAddress }) {
     setTxShowCount(target);
   };
 
-  const handleShowMoreTopTx = async () => {
-    const target = topTxShowCount + TOP_TX_STEP;
-    await ensureTransactionsLoaded(target, setTopTxLoadingMore);
-    setTopTxShowCount(target);
+  const handleShowMoreTopTx = () => {
+    setTopTxShowCount((c) => Math.min(c + TOP_TX_STEP, topTxByVolume?.length || 0));
   };
 
   const handleShowMoreBlocks = async () => {
@@ -257,18 +264,24 @@ export default function Overview({ onSelectAddress }) {
     setBlocksShowCount(target);
   };
 
-  // Sorted by value descending — same real transaction pool Recent Transactions shows
-  // chronologically, just re-ranked. Ties (rare — exact-wei matches) keep their relative order,
-  // Array.prototype.sort being stable.
-  const topTransactionsByVolume = useMemo(() => {
-    return [...transactions]
-      .sort((a, b) => {
-        const av = BigInt(a.value || 0);
-        const bv = BigInt(b.value || 0);
-        return bv > av ? 1 : bv < av ? -1 : 0;
-      })
-      .slice(0, topTxShowCount);
-  }, [transactions, topTxShowCount]);
+  // hourlyActivityCache.js publishes topTxByVolume already sorted and capped — just adapted here
+  // into the same shape TxRow already renders for Recent Transactions (Blockscout's `from: {
+  // hash, ens_domain_name }` object, an ISO `timestamp`, `value`), since this is RPC-sourced and
+  // genuinely doesn't have Blockscout's richer shape (no ENS resolution, no decoded method name —
+  // "transfer" is accurate regardless, every entry here is a real value transfer by definition).
+  const visibleTopTxByVolume = useMemo(() => {
+    return (topTxByVolume || []).slice(0, topTxShowCount).map((tx) => ({
+      hash: tx.hash,
+      from: { hash: tx.from, ens_domain_name: null },
+      value: tx.valueWei,
+      timestamp: new Date(tx.timestampMs).toISOString(),
+    }));
+  }, [topTxByVolume, topTxShowCount]);
+
+  // How much of a genuine rolling 7 days topTxByVolume actually covers right now — this cache
+  // deliberately doesn't backfill retroactively (see its own header comment for why), so a fresh
+  // deploy starts this at 0 and it grows to a real 7 over the following 7 real days.
+  const topTxCoverageDays = topTxSinceMs != null ? Math.min(7, (Date.now() - topTxSinceMs) / 86400000) : null;
 
   // Each series is `{ label, value }[]` — label is a real date/timestamp from whichever source
   // backs that metric, threaded through to SparklineChart for its axis labels + hover tooltip.
@@ -436,15 +449,23 @@ export default function Overview({ onSelectAddress }) {
           <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
             Top Transactions by ETN Volume
           </div>
-          {transactions.length === 0 ? (
+          {topTxByVolume === null ? (
             <div style={{ fontSize: 12, color: muted }}>Loading…</div>
+          ) : topTxByVolume.length === 0 ? (
+            <div style={{ fontSize: 12, color: muted }}>
+              Collecting real transaction data — check back shortly.
+            </div>
           ) : (
             <>
               <div style={{ fontSize: 10, color: muted, marginBottom: 6 }}>
-                Ranked out of the {transactions.length} most recent transactions loaded — not this chain's real all-time largest.
+                {topTxCoverageDays != null && topTxCoverageDays < 6.9
+                  ? `Real rolling window, ${topTxCoverageDays.toFixed(1)} of 7 days covered so far (growing daily).`
+                  : "Real rolling last 7 days, by ETN value."}
               </div>
-              {topTransactionsByVolume.map((tx, i) => <TxRow key={tx.hash} tx={tx} rank={i + 1} />)}
-              <ShowMoreButton onClick={handleShowMoreTopTx} loading={topTxLoadingMore} label={`Show ${TOP_TX_STEP} more`} />
+              {visibleTopTxByVolume.map((tx, i) => <TxRow key={tx.hash} tx={tx} rank={i + 1} />)}
+              {topTxShowCount < topTxByVolume.length && (
+                <ShowMoreButton onClick={handleShowMoreTopTx} label={`Show ${TOP_TX_STEP} more`} />
+              )}
             </>
           )}
         </div>

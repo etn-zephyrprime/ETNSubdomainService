@@ -1362,6 +1362,53 @@ succeeds clean.
 
 ---
 
+## Top Transactions by ETN Volume, take two: a real rolling 7-day window
+
+The version above ranked whatever was currently loaded into Recent Transactions' own live
+pagination — honest about what it was, but not what was actually asked for: a real rolling 7-day
+window, not however many pages happen to be paginated in one browser session (anywhere from
+minutes to maybe an hour of real chain time, nowhere near 7 days).
+
+A live client-side scan deep enough to genuinely cover 7 days isn't feasible at all — 7 days ×
+~17,280 blocks/day × ~15-40 tx/block is millions of transactions, and Blockscout has no
+sortable/rankable "biggest transactions" endpoint to ask instead (not a cheap query for any chain
+explorer to offer). The fix: `hourlyActivityCache.js` already fetches every full transaction
+object in its own rolling 8-day window, server-side, to sum ETN volume per hour — tracking the
+highest-value individual transactions alongside that costs it zero extra RPC calls, just a small
+in-memory top-K merge (`mergeTopTransactions`, capped at `TOP_TX_LIMIT=50`, re-sorted and re-pruned
+by a precise 7-day-in-milliseconds cutoff every cycle) piggybacked onto a scan that was happening
+anyway.
+
+**Deliberately not backfilled retroactively.** This cache's own historical scan already happened
+(or, on most running deployments, already completed) purely to produce `hours`' aggregate sums —
+individual transactions were never retained. Re-scanning already-scanned blocks a second time just
+to extract them would double-count those sums unless `hours` were wiped and rebuilt from scratch
+too, reintroducing exactly the RPC cost this whole feature exists to avoid by reusing an existing
+scan. So `topTransactions` starts genuinely empty on deploy and grows into a real, complete rolling
+7 days over the following 7 real days — `topTransactionsSinceMs` (set once, never touched again)
+is what lets the frontend caption its actual current coverage ("3.5 of 7 days covered so far")
+instead of just showing a suspiciously short list with no explanation.
+
+Overview.jsx's Top Transactions panel now sources this instead of re-ranking Recent Transactions'
+own pool — a completely separate dataset from a completely different source, not the same live
+pool viewed two ways anymore. Since the backend already returns it pre-sorted and capped, "Show
+more" here is now just revealing more of what's already loaded (no fetch, unlike Recent
+Transactions' own "Show more", which still pages live against Blockscout) — genuinely simpler than
+the previous version, not just differently-scoped.
+
+Verified: a standalone script fetched 30 real recent blocks via the actual RPC failover path
+(`createRpcProvider()`) and ran the real `mergeTopTransactions`/pruning logic against them —
+correctly capped at 50 candidates, correctly descending by value, correctly survived a 7-day-cutoff
+prune test. Backend boots without error locally; `node --check` passes on every modified file.
+Frontend verified live in Chrome (mocked `hourly-activity.json` response, same
+CORS-against-local-dev limitation as every other R2-backed hook here, with a deliberately partial
+`topTransactionsSinceMs` to exercise the coverage caption): correct descending rank order, correct
+"3.5 of 7 days covered so far (growing daily)" caption, "Show more" correctly revealing more
+already-loaded entries with no fetch/flicker, and correctly disappearing once every mocked entry
+was shown. `npm run build` succeeds clean.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is

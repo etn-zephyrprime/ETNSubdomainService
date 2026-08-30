@@ -23,6 +23,27 @@ import { createRpcProvider } from "./rpcProvider.js";
 // that this cache needs a keyed endpoint too, not the bare public one. (RPC access itself goes
 // through rpcProvider.js's createRpcProvider().)
 const DAYS_TO_KEEP = 8; // 7 real days shown + 1 day buffer, same reasoning as dailyBlockStatsCache.js
+
+// Also maintains a real rolling-7-day "top transactions by ETN value" leaderboard, for Overview.jsx's
+// Top Transactions by ETN Volume panel — this cache already fetches every full transaction object
+// in the window for the volume sums above, so tracking the highest-value ones alongside that costs
+// zero extra RPC calls, just a bit more memory/CPU per cycle to keep a small sorted list. A
+// streaming top-K, not a stored history: only TOP_TX_LIMIT entries are ever kept, re-merged and
+// re-pruned (by age, a precise 7*86400000ms cutoff — not the looser 8-day-bucket one `hours` uses)
+// every cycle, so this never grows unbounded the way naively storing every candidate would.
+//
+// Deliberately does NOT force a backfill to seed this retroactively — this cache's own backfill
+// (if not already complete on a running deployment) only re-derives `hours`' aggregate sums, and
+// re-scanning already-scanned blocks a second time just to extract individual transactions would
+// double-count those sums unless `hours` were wiped and rebuilt from scratch too, which reintroduces
+// exactly the RPC cost this whole feature is designed to avoid by reusing an existing scan. So this
+// starts genuinely empty on a deployment that's already caught up, and grows into a real, complete
+// rolling 7 days over the next 7 real days — same "starts thin, grows honestly" pattern this
+// codebase uses elsewhere (see dashboardStatsCache.js) — `topTransactionsSinceMs` (set once, never
+// changed) is what lets the frontend caption its actual current coverage instead of just... showing
+// a suspiciously short list with no explanation.
+const TOP_TX_LIMIT = 50; // well above what the UI shows by default (10) or reasonably expands to
+const TOP_TX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const CACHE_SCHEMA_VERSION = 1;
 const CACHE_INTERVAL_MS = process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS
   ? parseInt(process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS, 10)
@@ -50,16 +71,25 @@ async function fetchBlockWithRetry(provider, blockNumber, attempt = 0) {
     const raw = await provider.send("eth_getBlockByNumber", [ethers.toBeHex(blockNumber), true]);
     if (!raw) return null;
     const timestamp = parseInt(raw.timestamp, 16);
+    const timestampMs = timestamp * 1000;
     const transactions = Array.isArray(raw.transactions) ? raw.transactions : [];
     let valueWei = 0n;
+    // Zero-value entries (contract calls, approvals, etc.) can never place on a by-value
+    // leaderboard, so they're dropped here rather than carried through only to lose a sort later.
+    const txCandidates = [];
     for (const tx of transactions) {
+      let v = 0n;
       try {
-        valueWei += BigInt(tx.value || "0x0");
+        v = BigInt(tx.value || "0x0");
       } catch {
         // malformed value on one tx shouldn't drop the whole block's count — just skip its value
       }
+      valueWei += v;
+      if (v > 0n) {
+        txCandidates.push({ hash: tx.hash, from: tx.from, to: tx.to, valueWei: v.toString(), timestampMs });
+      }
     }
-    return { hourKey: hourKeyFromTimestamp(timestamp), txCount: transactions.length, valueWei };
+    return { hourKey: hourKeyFromTimestamp(timestamp), txCount: transactions.length, valueWei, txCandidates };
   } catch (err) {
     if (attempt < MAX_RETRIES) {
       await sleep(500 * (attempt + 1));
@@ -88,13 +118,32 @@ async function scanBlockRange(provider, fromBlock, toBlock, concurrency) {
   return results;
 }
 
-function applyResults(hours, results) {
+// Keeps only the top `limit` by value across `current` (already-ranked) and `incoming` (this
+// batch's new candidates) — a plain sort-and-slice, not an incremental insert, since `current` is
+// never more than TOP_TX_LIMIT items and `incoming` is bounded by one scan batch, so the combined
+// size this runs against stays small regardless of how much real transaction volume this chain
+// sees over time.
+function mergeTopTransactions(current, incoming, limit) {
+  if (incoming.length === 0) return current;
+  const merged = [...current, ...incoming];
+  merged.sort((a, b) => {
+    const av = BigInt(a.valueWei);
+    const bv = BigInt(b.valueWei);
+    return bv > av ? 1 : bv < av ? -1 : 0;
+  });
+  return merged.slice(0, limit);
+}
+
+function applyResults(hours, results, topTransactions) {
+  let merged = topTransactions;
   for (const r of results) {
     if (!r) continue;
     const bucket = hours[r.hourKey] || (hours[r.hourKey] = { txCount: 0, etnVolumeWei: "0" });
     bucket.txCount += r.txCount;
     bucket.etnVolumeWei = (BigInt(bucket.etnVolumeWei) + r.valueWei).toString();
+    merged = mergeTopTransactions(merged, r.txCandidates, TOP_TX_LIMIT);
   }
+  return merged;
 }
 
 // Same one-time binary search as dailyBlockStatsCache.js's findFloorBlock, just against this
@@ -124,6 +173,11 @@ async function scanAndPublish(provider) {
     const rawCached = await getHourlyActivityCache();
     const cached = rawCached?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCached : null;
     const hours = cached?.hours ? { ...cached.hours } : {};
+    let topTransactions = cached?.topTransactions ? [...cached.topTransactions] : [];
+    // Set once, on this feature's genuine first run, and never touched again — the frontend's only
+    // way to know how much of a real rolling 7 days topTransactions actually covers right now
+    // (see the const's own comment above for why this can't just be backfilled).
+    const topTransactionsSinceMs = cached?.topTransactionsSinceMs ?? Date.now();
 
     const latestBlock = await provider.getBlockNumber();
     // The floor slides forward every cycle (unlike dailyBlockStatsCache.js's fixed floor) — this
@@ -137,19 +191,19 @@ async function scanAndPublish(provider) {
 
     if (highScannedBlock == null) {
       const fromBlock = Math.max(floorBlock, latestBlock - MAX_BLOCKS_PER_CYCLE + 1);
-      applyResults(hours, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY));
+      topTransactions = applyResults(hours, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY), topTransactions);
       highScannedBlock = latestBlock;
       lowScannedBlock = fromBlock;
     } else {
       if (latestBlock > highScannedBlock) {
         const fromBlock = highScannedBlock + 1;
-        applyResults(hours, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY));
+        topTransactions = applyResults(hours, await scanBlockRange(provider, fromBlock, latestBlock, CONCURRENCY), topTransactions);
         highScannedBlock = latestBlock;
       }
       if (lowScannedBlock > floorBlock) {
         const toBlock = lowScannedBlock - 1;
         const fromBlock = Math.max(floorBlock, toBlock - MAX_BLOCKS_PER_CYCLE + 1);
-        applyResults(hours, await scanBlockRange(provider, fromBlock, toBlock, CONCURRENCY));
+        topTransactions = applyResults(hours, await scanBlockRange(provider, fromBlock, toBlock, CONCURRENCY), topTransactions);
         lowScannedBlock = fromBlock;
       }
       // The floor sliding forward means lowScannedBlock can end up *behind* the new floor after
@@ -165,9 +219,23 @@ async function scanAndPublish(provider) {
       if (hour < cutoffHour) delete hours[hour];
     }
 
-    await setHourlyActivityCache({ hours, lowScannedBlock, highScannedBlock, floorBlock, schemaVersion: CACHE_SCHEMA_VERSION });
+    // Own, tighter, precise-to-the-millisecond cutoff — topTransactions is a genuine rolling 7
+    // days, not the looser 8-day-bucket-with-buffer window `hours` above keeps.
+    const topTxCutoffMs = Date.now() - TOP_TX_WINDOW_MS;
+    topTransactions = topTransactions.filter((tx) => tx.timestampMs >= topTxCutoffMs);
 
-    console.log(`⏱️  Hourly activity cache updated — ${Object.keys(hours).length} hour(s) tracked, caught up to block ${highScannedBlock}`);
+    await setHourlyActivityCache({
+      hours,
+      lowScannedBlock,
+      highScannedBlock,
+      floorBlock,
+      topTransactions,
+      topTransactionsSinceMs,
+      schemaVersion: CACHE_SCHEMA_VERSION,
+    });
+
+    const topTxCoverageDays = Math.min(7, (Date.now() - topTransactionsSinceMs) / 86400000).toFixed(1);
+    console.log(`⏱️  Hourly activity cache updated — ${Object.keys(hours).length} hour(s) tracked, ${topTransactions.length} top transaction(s) (${topTxCoverageDays}/7 days coverage), caught up to block ${highScannedBlock}`);
   } catch (err) {
     console.error("⚠️  Hourly activity scan failed:", err.message);
   } finally {

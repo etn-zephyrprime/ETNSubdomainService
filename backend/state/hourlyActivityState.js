@@ -1,9 +1,9 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // The public cache hourlyActivityCache.js maintains — real per-UTC-hour transaction counts and
-// ETN volume transferred, for the last ~8 days (a rolling window, not a growing history — see
-// that file's header comment). Same bucket/credentials/shape-of-module as this repo's other state
-// files.
+// ETN volume transferred, for the last ~8 days (a rolling window, not a growing history), plus a
+// real rolling-7-day top-transactions-by-value leaderboard (see that file's header comment for
+// both). Same bucket/credentials/shape-of-module as this repo's other state files.
 const CACHE_KEY = "hourly-activity.json";
 
 let cachedR2Client = null;
@@ -40,7 +40,8 @@ export async function getHourlyActivityCache() {
   }
 }
 
-/** Publishes `{ hours, lowScannedBlock, highScannedBlock, floorBlock, schemaVersion, updatedAt }`. */
+/** Publishes `{ hours, lowScannedBlock, highScannedBlock, floorBlock, topTransactions,
+ * topTransactionsSinceMs, schemaVersion, updatedAt }`. */
 export async function setHourlyActivityCache(data) {
   const r2 = getR2Client();
   if (!r2) return;
