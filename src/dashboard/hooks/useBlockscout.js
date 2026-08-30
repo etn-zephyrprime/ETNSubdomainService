@@ -18,8 +18,20 @@ export function useBlockscout() {
   const getMarketChart = useCallback(() => fetchJson("/stats/charts/market"), []);
   const getTransactionsChart = useCallback(() => fetchJson("/stats/charts/transactions"), []);
   const getIndexingStatus = useCallback(() => fetchJson("/main-page/indexing-status"), []);
-  const getRecentTransactions = useCallback(() => fetchJson("/main-page/transactions"), []);
-  const getRecentBlocks = useCallback(() => fetchJson("/main-page/blocks"), []);
+
+  // Chain-wide, paginated — unlike the old /main-page/transactions and /main-page/blocks (small
+  // fixed snapshots with no next_page_params at all: fine for "what's happening right now", no way
+  // to ever show more than that). Same nextPageParams-cursor shape as getAddressTransactions/
+  // getAddressTokenTransfers below, just without an address scoping it — powers Overview.jsx's
+  // Recent Transactions/Recent Blocks (and their "Show more") and its Top Transactions by Volume.
+  const getTransactions = useCallback((nextPageParams = null) => {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    return fetchJson(`/transactions${query}`);
+  }, []);
+  const getBlocks = useCallback((nextPageParams = null) => {
+    const params = { type: "block", ...(nextPageParams || {}) };
+    return fetchJson(`/blocks?${new URLSearchParams(params).toString()}`);
+  }, []);
 
   // `type` is a Blockscout token type filter, e.g. "ERC-20" or "ERC-721,ERC-1155" — confirmed
   // live that the API supports both single and comma-separated multi-type filtering server-side,
@@ -52,8 +64,8 @@ export function useBlockscout() {
     getMarketChart,
     getTransactionsChart,
     getIndexingStatus,
-    getRecentTransactions,
-    getRecentBlocks,
+    getTransactions,
+    getBlocks,
     getTokens,
     getToken,
     getTokenHolders,

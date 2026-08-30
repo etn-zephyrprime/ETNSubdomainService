@@ -1324,6 +1324,44 @@ entry, and "Enter it manually" still reachable right below it.
 
 ---
 
+## Top Transactions by ETN Volume, and "Show more" on Recent Transactions/Recent Blocks
+
+Overview.jsx's Recent Transactions and Recent Blocks were both backed by Blockscout's
+`/main-page/transactions` and `/main-page/blocks` endpoints — small, fixed snapshots (confirmed
+live: plain arrays, no `next_page_params` at all) that are fine for "what's happening right now"
+but have no way to ever show more than that. Both switched to the full paginated `/transactions`
+and `/blocks?type=block` endpoints instead (the same chain-wide, cursor-paginated shape
+`validatorRewardsCache.js`/`dailyBlockStatsCache.js` already use server-side, and
+`getAddressTransactions`/`getAddressTokenTransfers` already use for a single address) — both now
+have a real "Show more" that fetches the next page when needed. `useBlockscout.js`'s old
+`getRecentTransactions`/`getRecentBlocks` were removed entirely rather than left dead, since
+nothing else in the app used them.
+
+New "Top Transactions by ETN Volume" panel — no sortable/rankable endpoint exists on Blockscout for
+this (chain explorers generally don't index "biggest transaction ever", it's not a cheap query),
+so this is deliberately scoped honestly: the same real, chain-wide transaction pool Recent
+Transactions already loads, re-ranked by `value` descending instead of shown chronologically, with
+a caption that says exactly that ("Ranked out of the N most recent transactions loaded — not this
+chain's real all-time largest") rather than implying a claim this app can't back up. One growing
+pool, two independent "how many to show" counts — Recent Transactions' own "Show more" and Top
+Transactions' both pull from (and, if needed, extend) the same underlying data, so ranking a wider
+transaction set and browsing further back through time both benefit from whichever request
+happened to run first, instead of double-fetching the same pages twice.
+
+None of this touches RPC — Blockscout's public API is what both the old and new endpoints already
+were, so this has no effect on the backend's Ankr usage at all.
+
+Verified live in Chrome against the real deployed Blockscout API (no mocking needed — unlike the R2
+proxy hooks, Blockscout is CORS-open): all three panels loaded real data on first render (Top
+Transactions correctly rank-ordered, e.g. 27.91 → 18.19 → 17.89 ETN descending), and each "Show
+more" click confirmed independently — Recent Transactions' own click grew only that list (8 → 16,
+Recent Blocks and Top Transactions unaffected), Top Transactions' click correctly reused the
+already-larger shared pool from that first click before fetching further (10 → 20, still correctly
+sorted), and Recent Blocks' click grew independently of both transaction panels. `npm run build`
+succeeds clean.
+
+---
+
 ## Troubleshooting
 
 **`canvas` fails to install** — see system dependency note above. This is
