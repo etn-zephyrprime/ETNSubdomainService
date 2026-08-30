@@ -9,15 +9,19 @@
     "start:local": "node start-local.js",
     "dev": "node --watch index.js",
     "backfill:images": "node scripts/backfillNftImages.js",
-    "set-r2-cors": "node scripts/setR2Cors.js"
+    "set-r2-cors": "node scripts/setR2Cors.js",
+    "migrate": "node scripts/runMigrations.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
     "canvas": "^3.2.3",
     "cors": "^2.8.5",
+    "decimal.js": "^10.4.3",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.0",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pdfkit": "^0.15.0",
+    "pg": "^8.13.0"
   },
   "engines": {
     "node": ">=18.0.0"
