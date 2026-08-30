@@ -14,6 +14,8 @@ import NeonButton from "./components/NeonButton.jsx";
 import BurnPoolCard from "./components/BurnPoolCard.jsx";
 import CoreBurnedCard from "./components/CoreBurnedCard.jsx";
 import ActivatedDomainsTable from "./components/ActivatedDomainsTable.jsx";
+import Premium from "./premium/Premium.jsx";
+import PnlStatementViewer from "./premium/components/PnlStatementViewer.jsx";
 
 function AppContent() {
   const SUSPENDED = false; // flip to false to restore access
@@ -72,6 +74,9 @@ function AppContent() {
   const [showPay, setShowPay] = useState(false);
   const [payPrefillName, setPayPrefillName] = useState(null);
   const [showMarketplace, setShowMarketplace] = useState(false);
+  const [showPremium, setShowPremium] = useState(false);
+  const [showStatementViewer, setShowStatementViewer] = useState(false);
+  const [statementRequestId, setStatementRequestId] = useState(null);
 
   // Deep link: /pay/alice.etn (or /pay/shop.alice.etn, /pay/alice with no suffix) opens straight
   // to the Pay screen with that name pre-filled — e.g. for a payment request shared in Telegram.
@@ -88,6 +93,12 @@ function AppContent() {
   // Deep link: /marketplace opens straight to the "Names For Sale" screen — no name to pre-fill,
   // just skips the main search landing screen. Used by subdomainAdvertScheduler.js's marketplace
   // advert to link straight to current listings instead of the homepage.
+  //
+  // Deep link: /statement/:requestId opens the PnL statement viewer directly with that request ID
+  // — e.g. from a link the purchaser saved or shared. Deliberately NOT wallet-gated, same
+  // reasoning as /pay/ and /subnames/ above: access is tx-hash/request-ID based by design (see
+  // the PnL statement build plan's confirmed decision), so anyone with the link can view it
+  // without connecting a wallet first.
   useEffect(() => {
     const payMatch = window.location.pathname.match(/^\/pay\/([^/]+)\/?$/i);
     if (payMatch) {
@@ -100,6 +111,13 @@ function AppContent() {
     if (subnamesMatch) {
       setSubnamesPrefillParent(decodeURIComponent(subnamesMatch[1]));
       setShowSubnameSearch(true);
+      return;
+    }
+
+    const statementMatch = window.location.pathname.match(/^\/statement\/([^/]+)\/?$/i);
+    if (statementMatch) {
+      setStatementRequestId(decodeURIComponent(statementMatch[1]));
+      setShowStatementViewer(true);
       return;
     }
 
@@ -207,11 +225,40 @@ function AppContent() {
   const handleMarketplace = () => setShowMarketplace(true);
   const handleBackFromMarketplace = () => setShowMarketplace(false);
 
+  const handlePremium = async () => {
+    if (!wallet.isConnected) {
+      await wallet.connectWallet();
+      return;
+    }
+    try {
+      await wallet.ensureCorrectNetwork();
+    } catch (err) {
+      console.error("Network switch failed:", err);
+      return;
+    }
+    setShowPremium(true);
+  };
+  const handleBackFromPremium = () => setShowPremium(false);
+
+  // Read-only lookup, so — like Marketplace above — doesn't gate on a connected wallet.
+  const handleViewStatements = () => {
+    setShowPremium(false);
+    setShowStatementViewer(true);
+  };
+  const handleBackFromStatementViewer = () => {
+    setShowStatementViewer(false);
+    setStatementRequestId(null);
+    if (window.location.pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  };
+
   const handleRegistrationSuccess = (result) => {
     console.log("Registration successful:", result);
   };
 
-  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay && !showMarketplace;
+  const showingMainSearch =
+    !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay && !showMarketplace && !showPremium && !showStatementViewer;
 
   return (
     <div style={{
@@ -282,6 +329,15 @@ function AppContent() {
                 Pay / Receive
               </NeonButton>
             </div>
+            <div style={{ width: "100%", maxWidth: 600, margin: "12px auto 0", padding: "0 16px" }}>
+              <NeonButton
+                variant="dark"
+                onClick={handlePremium}
+                style={{ width: "100%", justifyContent: "center" }}
+              >
+                Premium — Membership &amp; PnL Statements
+              </NeonButton>
+            </div>
 
             <HowItWorks />
             <BurnPoolCard wallet={wallet} />
@@ -312,6 +368,18 @@ function AppContent() {
             wallet={wallet}
             onBack={handleBackFromPay}
             initialRecipient={payPrefillName}
+          />
+        ) : showPremium ? (
+          <Premium
+            wallet={wallet}
+            onBack={handleBackFromPremium}
+            onViewStatements={handleViewStatements}
+          />
+        ) : showStatementViewer ? (
+          <PnlStatementViewer
+            wallet={wallet}
+            onBack={handleBackFromStatementViewer}
+            initialRequestId={statementRequestId}
           />
         ) : (
           <Marketplace
