@@ -39,7 +39,7 @@ function IndexingBadge({ status }) {
   );
 }
 
-function TxRow({ tx }) {
+function TxRow({ tx, rank }) {
   const label = tx.from?.ens_domain_name || shortHash(tx.from?.hash);
   return (
     <a
@@ -48,12 +48,17 @@ function TxRow({ tx }) {
       rel="noreferrer"
       style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}`, textDecoration: "none", gap: 10 }}
     >
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {shortHash(tx.hash)}
-        </div>
-        <div style={{ fontSize: 11, color: mutedLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {tx.method || "transfer"} · from {label}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {rank != null && (
+          <span style={{ fontSize: 11, fontWeight: 700, color: muted, flexShrink: 0, minWidth: 16 }}>#{rank}</span>
+        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {shortHash(tx.hash)}
+          </div>
+          <div style={{ fontSize: 11, color: mutedLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {tx.method || "transfer"} · from {label}
+          </div>
         </div>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -61,6 +66,31 @@ function TxRow({ tx }) {
         <div style={{ fontSize: 10, color: muted }}>{timeAgo(tx.timestamp)}</div>
       </div>
     </a>
+  );
+}
+
+function ShowMoreButton({ onClick, loading, label }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      style={{
+        display: "block",
+        width: "100%",
+        margin: "10px auto 0",
+        padding: "6px 16px",
+        borderRadius: 8,
+        border: `1px solid ${border}`,
+        background: panel2,
+        color: loading ? muted : green,
+        fontSize: 12,
+        fontWeight: 700,
+        cursor: loading ? "default" : "pointer",
+        boxSizing: "border-box",
+      }}
+    >
+      {loading ? "Loading…" : label}
+    </button>
   );
 }
 
@@ -107,8 +137,13 @@ const SEVEN_DAYS_HOURS = 7 * 24;
 // discipline the old 24h tile already used.
 const MIN_HOURS_FOR_7D_TOTAL = Math.round(SEVEN_DAYS_HOURS * 0.85);
 
+const RECENT_TX_STEP = 8;
+const RECENT_BLOCKS_STEP = 8;
+const TOP_TX_DEFAULT = 10;
+const TOP_TX_STEP = 10;
+
 export default function Overview({ onSelectAddress }) {
-  const { getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks } = useBlockscout();
+  const { getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks } = useBlockscout();
   const { getSnapshots } = useDashboardStats();
   const { getDailyBlockStats } = useDailyBlockStats();
   const { getHourlyActivity } = useHourlyActivity();
@@ -121,10 +156,24 @@ export default function Overview({ onSelectAddress }) {
   const [hourlyActivity, setHourlyActivity] = useState(null);
   const [validatorRewards, setValidatorRewards] = useState(null);
   const [indexingStatus, setIndexingStatus] = useState(null);
-  const [transactions, setTransactions] = useState([]);
-  const [blocks, setBlocks] = useState([]);
   const [loadError, setLoadError] = useState(null);
   const [activeMetric, setActiveMetric] = useState("totalTx");
+
+  // Recent Transactions and Top Transactions by Volume are two different views over the same
+  // growing pool of real, chain-wide recent transactions (chronological vs. sorted-by-value) —
+  // one fetch/pagination state, two independent "how many to show" counts, so "show more" on
+  // either can reuse whatever the other has already loaded before fetching a fresh page itself.
+  const [transactions, setTransactions] = useState([]);
+  const [txNextParams, setTxNextParams] = useState(null);
+  const [txShowCount, setTxShowCount] = useState(RECENT_TX_STEP);
+  const [txLoadingMore, setTxLoadingMore] = useState(false);
+  const [topTxShowCount, setTopTxShowCount] = useState(TOP_TX_DEFAULT);
+  const [topTxLoadingMore, setTopTxLoadingMore] = useState(false);
+
+  const [blocks, setBlocks] = useState([]);
+  const [blocksNextParams, setBlocksNextParams] = useState(null);
+  const [blocksShowCount, setBlocksShowCount] = useState(RECENT_BLOCKS_STEP);
+  const [blocksLoadingMore, setBlocksLoadingMore] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,8 +183,8 @@ export default function Overview({ onSelectAddress }) {
           getStats(),
           getTransactionsChart(),
           getIndexingStatus(),
-          getRecentTransactions(),
-          getRecentBlocks(),
+          getTransactions(),
+          getBlocks(),
           getSnapshots(),
           getDailyBlockStats(),
           getHourlyActivity(),
@@ -145,8 +194,10 @@ export default function Overview({ onSelectAddress }) {
         setStats(statsRes);
         setTxChart(txChartRes);
         setIndexingStatus(indexingRes);
-        setTransactions(Array.isArray(txRes) ? txRes.slice(0, 8) : []);
-        setBlocks(Array.isArray(blocksRes) ? blocksRes.slice(0, 8) : []);
+        setTransactions(Array.isArray(txRes?.items) ? txRes.items : []);
+        setTxNextParams(txRes?.next_page_params || null);
+        setBlocks(Array.isArray(blocksRes?.items) ? blocksRes.items : []);
+        setBlocksNextParams(blocksRes?.next_page_params || null);
         setSnapshots(snapshotsRes);
         setDailyBlockStats(dailyBlockStatsRes?.days || {});
         setHourlyActivity(hourlyActivityRes?.hours || {});
@@ -157,7 +208,67 @@ export default function Overview({ onSelectAddress }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [getStats, getTransactionsChart, getIndexingStatus, getRecentTransactions, getRecentBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity, getValidatorRewards]);
+  }, [getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity, getValidatorRewards]);
+
+  // Fetches one more page into the shared transactions pool if `count` isn't already covered by
+  // what's loaded — a single page (50 items) comfortably covers RECENT_TX_STEP/TOP_TX_STEP-sized
+  // "show more" clicks almost every time, so this doesn't need AddressLookup.jsx's fetch-until-
+  // window loop, just one fetch.
+  const ensureTransactionsLoaded = async (count, setLoading) => {
+    if (transactions.length >= count || !txNextParams) return;
+    setLoading(true);
+    try {
+      const res = await getTransactions(txNextParams);
+      setTransactions((prev) => [...prev, ...(res?.items || [])]);
+      setTxNextParams(res?.next_page_params || null);
+    } catch (err) {
+      console.error("Failed to load more transactions:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShowMoreTransactions = async () => {
+    const target = txShowCount + RECENT_TX_STEP;
+    await ensureTransactionsLoaded(target, setTxLoadingMore);
+    setTxShowCount(target);
+  };
+
+  const handleShowMoreTopTx = async () => {
+    const target = topTxShowCount + TOP_TX_STEP;
+    await ensureTransactionsLoaded(target, setTopTxLoadingMore);
+    setTopTxShowCount(target);
+  };
+
+  const handleShowMoreBlocks = async () => {
+    const target = blocksShowCount + RECENT_BLOCKS_STEP;
+    if (blocks.length < target && blocksNextParams) {
+      setBlocksLoadingMore(true);
+      try {
+        const res = await getBlocks(blocksNextParams);
+        setBlocks((prev) => [...prev, ...(res?.items || [])]);
+        setBlocksNextParams(res?.next_page_params || null);
+      } catch (err) {
+        console.error("Failed to load more blocks:", err);
+      } finally {
+        setBlocksLoadingMore(false);
+      }
+    }
+    setBlocksShowCount(target);
+  };
+
+  // Sorted by value descending — same real transaction pool Recent Transactions shows
+  // chronologically, just re-ranked. Ties (rare — exact-wei matches) keep their relative order,
+  // Array.prototype.sort being stable.
+  const topTransactionsByVolume = useMemo(() => {
+    return [...transactions]
+      .sort((a, b) => {
+        const av = BigInt(a.value || 0);
+        const bv = BigInt(b.value || 0);
+        return bv > av ? 1 : bv < av ? -1 : 0;
+      })
+      .slice(0, topTxShowCount);
+  }, [transactions, topTxShowCount]);
 
   // Each series is `{ label, value }[]` — label is a real date/timestamp from whichever source
   // backs that metric, threaded through to SparklineChart for its axis labels + hover tooltip.
@@ -302,7 +413,10 @@ export default function Overview({ onSelectAddress }) {
           {transactions.length === 0 ? (
             <div style={{ fontSize: 12, color: muted }}>Loading…</div>
           ) : (
-            transactions.map((tx) => <TxRow key={tx.hash} tx={tx} />)
+            <>
+              {transactions.slice(0, txShowCount).map((tx) => <TxRow key={tx.hash} tx={tx} />)}
+              <ShowMoreButton onClick={handleShowMoreTransactions} loading={txLoadingMore} label={`Show ${RECENT_TX_STEP} more`} />
+            </>
           )}
         </div>
         <div>
@@ -312,7 +426,26 @@ export default function Overview({ onSelectAddress }) {
           {blocks.length === 0 ? (
             <div style={{ fontSize: 12, color: muted }}>Loading…</div>
           ) : (
-            blocks.map((block) => <BlockRow key={block.hash} block={block} />)
+            <>
+              {blocks.slice(0, blocksShowCount).map((block) => <BlockRow key={block.hash} block={block} />)}
+              <ShowMoreButton onClick={handleShowMoreBlocks} loading={blocksLoadingMore} label={`Show ${RECENT_BLOCKS_STEP} more`} />
+            </>
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
+            Top Transactions by ETN Volume
+          </div>
+          {transactions.length === 0 ? (
+            <div style={{ fontSize: 12, color: muted }}>Loading…</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 10, color: muted, marginBottom: 6 }}>
+                Ranked out of the {transactions.length} most recent transactions loaded — not this chain's real all-time largest.
+              </div>
+              {topTransactionsByVolume.map((tx, i) => <TxRow key={tx.hash} tx={tx} rank={i + 1} />)}
+              <ShowMoreButton onClick={handleShowMoreTopTx} loading={topTxLoadingMore} label={`Show ${TOP_TX_STEP} more`} />
+            </>
           )}
         </div>
       </div>
