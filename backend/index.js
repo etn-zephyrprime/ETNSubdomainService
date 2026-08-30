@@ -25,6 +25,10 @@ import { startCoreClashNftMintWatcher } from "./utils/coreClashNftMintWatcher.js
 import { startCoreClashNftSaleWatcher } from "./utils/coreClashNftSaleWatcher.js";
 import { startCoreClashAdvertScheduler } from "./utils/coreClashAdvertScheduler.js";
 import { startCoreClashDripBot } from "./utils/coreClashDripBot.js";
+import { startPremiumSubscriptionWatcher } from "./utils/premiumSubscriptionWatcher.js";
+import { startPnlAutoFinalizeScheduler } from "./utils/pnlAutoFinalizeScheduler.js";
+import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionScheduler.js";
+import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 
 dotenv.config();
 
@@ -58,6 +62,7 @@ app.use("/api", generateNftRouter);
 app.use("/api", telegramLinkRouter);
 app.use("/api", tokenChartRouter);
 app.use("/api", r2CacheProxyRouter);
+app.use("/api", pnlStatementRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -100,4 +105,12 @@ app.listen(PORT, () => {
   safeStart("Core Clash NFT sale watcher", startCoreClashNftSaleWatcher);
   safeStart("Core Clash advert scheduler", startCoreClashAdvertScheduler);
   safeStart("Core Clash drip bot", startCoreClashDripBot);
+
+  // Premium Feature #1 (per-wallet PnL statements) — see backend/services/pnlStatementGenerator.js
+  // and the PremiumSubscription contract in the PlanetZephyros repo. All three no-op cleanly if
+  // their required env vars (DATABASE_URL / PREMIUM_SUBSCRIPTION_ADDRESS /
+  // CORE_CLASH_BACKEND_PRIVATE_KEY) aren't set, same as every other optional feature above.
+  safeStart("Premium subscription watcher", startPremiumSubscriptionWatcher);
+  safeStart("PnL auto-finalize scheduler", startPnlAutoFinalizeScheduler);
+  safeStart("PnL split execution scheduler", startPnlSplitExecutionScheduler);
 });

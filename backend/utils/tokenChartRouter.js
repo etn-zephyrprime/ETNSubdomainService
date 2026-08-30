@@ -89,7 +89,12 @@ const RANGE_PARAMS = {
   "90": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 90 * 24 * 60 * 60 * 1000 },
 };
 
-async function fetchGeckoTerminal(path, { retryOn429 = true } = {}) {
+// Exported so other backend callers hitting GeckoTerminal (currently: pnlPricing.js, resolving
+// historical trade prices for PnL statements) share this exact queue/cooldown instead of running
+// a second independent rate limiter against the same shared GeckoTerminal budget — two queues
+// that each individually respect the limit can still trip it together if they don't know about
+// each other.
+export async function fetchGeckoTerminal(path, { retryOn429 = true } = {}) {
   const doFetch = () => enqueueGeckoTerminalCall(async () => {
     const res = await fetch(`${GECKOTERMINAL_API_BASE}${path}`);
     if (res.status === 429) {
