@@ -7,6 +7,7 @@ import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getById, getByTxHash, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
+import { periodTypeLabel } from "../services/periodTypes.js";
 
 const PREMIUM_SUBSCRIPTION_ADDRESS = process.env.PREMIUM_SUBSCRIPTION_ADDRESS;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
@@ -25,12 +26,13 @@ function serializeRequest(r) {
   return {
     id: r.id,
     txHash: r.tx_hash,
-    periodIndex: r.period_index,
+    periodType: r.period_type,
+    periodTypeLabel: periodTypeLabel(r.period_type),
+    year: r.year,
     trackedWallet: r.tracked_wallet,
     payerWallet: r.payer_wallet,
     amountPaidWei: r.amount_paid_wei,
     status: r.status,
-    yearEndMarkDate: r.year_end_mark_date,
     selfOwnedAddresses: r.self_owned_addresses,
     generatedAt: r.generated_at,
     firstViewedAt: r.first_viewed_at,
@@ -54,14 +56,14 @@ router.get("/pnl/statement/by-tx/:txHash", async (req, res) => {
   res.json(requests.map(serializeRequest));
 });
 
-// Fills in the user-supplied period metadata (watcher already created the row from the confirmed
-// on-chain purchase event — see premiumSubscriptionWatcher.js) and kicks off generation.
-// Generation runs in the background — a wallet's first-ever request can mean ingesting years of
-// history, which is exactly why PENDING_GENERATION exists as a distinct status the client polls
-// rather than something this endpoint blocks a response on.
+// Fills in the user-supplied self-owned-addresses list (watcher already created the row, fully
+// knowing period_type/year, from the confirmed on-chain purchase event — see
+// premiumSubscriptionWatcher.js) and kicks off generation. Generation runs in the background — a
+// wallet's first-ever request can mean ingesting years of history, which is exactly why
+// PENDING_GENERATION exists as a distinct status the client polls rather than something this
+// endpoint blocks a response on.
 router.post("/pnl/statement/:requestId/request", async (req, res) => {
-  const { yearEndMarkDate, selfOwnedAddresses } = req.body || {};
-  if (!yearEndMarkDate) return res.status(400).json({ error: "yearEndMarkDate is required" });
+  const { selfOwnedAddresses } = req.body || {};
   if (selfOwnedAddresses && !Array.isArray(selfOwnedAddresses)) {
     return res.status(400).json({ error: "selfOwnedAddresses must be an array" });
   }
@@ -69,7 +71,7 @@ router.post("/pnl/statement/:requestId/request", async (req, res) => {
     if (!ethers.isAddress(addr)) return res.status(400).json({ error: `Invalid address in selfOwnedAddresses: ${addr}` });
   }
 
-  const updated = await markPendingGeneration(req.params.requestId, { yearEndMarkDate, selfOwnedAddresses });
+  const updated = await markPendingGeneration(req.params.requestId, { selfOwnedAddresses });
   if (!updated) {
     return res.status(409).json({ error: "Request not found, or not in PAID status (already requested?)" });
   }

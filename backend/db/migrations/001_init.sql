@@ -3,28 +3,36 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- for gen_random_uuid()
 
--- Read-through cache of PremiumSubscription.membershipExpiry — the contract remains the source of
--- truth; this exists so request handling doesn't need a live eth_call on every read. Kept current
--- by backend/utils/premiumSubscriptionWatcher.js.
+-- Read-through cache of PremiumSubscription's two independent membership tiers — the contract
+-- remains the source of truth; this exists so request handling doesn't need a live eth_call on
+-- every read. Kept current by backend/utils/premiumSubscriptionWatcher.js. Two separate expiry
+-- columns (not one row per tier) because a wallet can hold both simultaneously — annual is the
+-- only tier that grants the PnL discount (see PremiumSubscription.sol's header comment).
 CREATE TABLE IF NOT EXISTS premium_memberships (
   wallet_address TEXT PRIMARY KEY,
-  expiry_timestamp TIMESTAMPTZ NOT NULL,
+  monthly_expiry TIMESTAMPTZ,
+  annual_expiry TIMESTAMPTZ,
   last_tx_hash TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- One row per purchased PnL statement period. Created only from a confirmed on-chain
--- PnlPeriodsPurchased event (never from a client claim) — see premiumSubscriptionWatcher.js.
+-- PnlPeriodPurchased event (never from a client claim) — see premiumSubscriptionWatcher.js.
+-- period_type/year identify one of the four fixed reporting periods (see
+-- backend/services/periodTypes.js, the actual authority on what boundaries they mean — this
+-- table's log_index/tx_hash only identify which on-chain event created the row, they don't carry
+-- meaningful date info themselves beyond what periodTypes.js derives from period_type+year).
 CREATE TABLE IF NOT EXISTS statement_requests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tx_hash TEXT NOT NULL,
-  period_index INTEGER NOT NULL,
+  log_index BIGINT NOT NULL, -- the PnlPeriodPurchased log's own block-wide index (ethers' event.index) — globally unique per emission, used as this row's dedup key alongside tx_hash
+  period_type SMALLINT NOT NULL, -- 0=CalendarYear, 1=UKStyle, 2=AUStyle, 3=USStyle — matches PremiumSubscription.sol's PeriodType enum
+  year SMALLINT NOT NULL,
   tracked_wallet TEXT NOT NULL,
   payer_wallet TEXT NOT NULL,
   amount_paid_wei NUMERIC(78, 0) NOT NULL,
   status TEXT NOT NULL DEFAULT 'PAID'
     CHECK (status IN ('PAID', 'PENDING_GENERATION', 'GENERATED', 'FINALIZED', 'REFUNDED')),
-  year_end_mark_date DATE,
   self_owned_addresses JSONB NOT NULL DEFAULT '[]'::jsonb,
   generated_at TIMESTAMPTZ,
   first_viewed_at TIMESTAMPTZ,
@@ -35,7 +43,11 @@ CREATE TABLE IF NOT EXISTS statement_requests (
   artifact_json_key TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (tx_hash, period_index)
+  UNIQUE (tx_hash, log_index)
+  -- Deliberately NOT unique on (tracked_wallet, period_type, year) — a wallet buying the same
+  -- period twice is unusual but not invalid, and the earlier build brief explicitly allows a
+  -- re-issue (a new, separately-labeled statement) as a legitimate reason for a second purchase of
+  -- what's nominally the same period; blocking that at the schema level would contradict it.
 );
 CREATE INDEX IF NOT EXISTS idx_statement_requests_tracked_wallet ON statement_requests (tracked_wallet);
 CREATE INDEX IF NOT EXISTS idx_statement_requests_status ON statement_requests (status);

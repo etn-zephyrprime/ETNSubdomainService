@@ -2,18 +2,19 @@ import { query } from "./pool.js";
 
 // The statement request state machine's own table: PAID -> PENDING_GENERATION -> GENERATED ->
 // FINALIZED (or REFUNDED from any of the first three). A row only ever gets created from a
-// confirmed on-chain PnlPeriodsPurchased event (see premiumSubscriptionWatcher.js) — never from a
-// client-submitted claim.
+// confirmed on-chain PnlPeriodPurchased event (see premiumSubscriptionWatcher.js) — never from a
+// client-submitted claim. periodType/year identify one of the four fixed reporting periods (see
+// backend/services/periodTypes.js); logIndex is the log's own on-chain identity, used for dedup.
 
-export async function createFromPurchase({ txHash, periodIndex, trackedWallet, payerWallet, amountPaidWei }) {
+export async function createFromPurchase({ txHash, logIndex, periodType, year, trackedWallet, payerWallet, amountPaidWei }) {
   const res = await query(
-    `INSERT INTO statement_requests (tx_hash, period_index, tracked_wallet, payer_wallet, amount_paid_wei)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (tx_hash, period_index) DO NOTHING
+    `INSERT INTO statement_requests (tx_hash, log_index, period_type, year, tracked_wallet, payer_wallet, amount_paid_wei)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (tx_hash, log_index) DO NOTHING
      RETURNING *`,
-    [txHash, periodIndex, trackedWallet.toLowerCase(), payerWallet.toLowerCase(), amountPaidWei.toString()]
+    [txHash, logIndex, periodType, year, trackedWallet.toLowerCase(), payerWallet.toLowerCase(), amountPaidWei.toString()]
   );
-  return res?.rows[0] || null; // null if this exact (tx_hash, period_index) was already recorded
+  return res?.rows[0] || null; // null if this exact (tx_hash, log_index) was already recorded
 }
 
 export async function getById(id) {
@@ -23,21 +24,22 @@ export async function getById(id) {
 
 export async function getByTxHash(txHash) {
   const res = await query(
-    "SELECT * FROM statement_requests WHERE tx_hash = $1 ORDER BY period_index ASC",
+    "SELECT * FROM statement_requests WHERE tx_hash = $1 ORDER BY log_index ASC",
     [txHash]
   );
   return res?.rows || [];
 }
 
-/** PENDING_GENERATION with the user-supplied period metadata — only legal from PAID. */
-export async function markPendingGeneration(id, { yearEndMarkDate, selfOwnedAddresses }) {
+/** PENDING_GENERATION with the user-supplied self-owned-addresses list — only legal from PAID.
+ * Unlike the earlier design, no period metadata is submitted here: period_type/year are already
+ * known from the purchase event itself (see createFromPurchase). */
+export async function markPendingGeneration(id, { selfOwnedAddresses }) {
   const res = await query(
     `UPDATE statement_requests
-     SET status = 'PENDING_GENERATION', year_end_mark_date = $2,
-         self_owned_addresses = $3::jsonb, updated_at = now()
+     SET status = 'PENDING_GENERATION', self_owned_addresses = $2::jsonb, updated_at = now()
      WHERE id = $1 AND status = 'PAID'
      RETURNING *`,
-    [id, yearEndMarkDate, JSON.stringify(selfOwnedAddresses || [])]
+    [id, JSON.stringify(selfOwnedAddresses || [])]
   );
   return res?.rows[0] || null;
 }

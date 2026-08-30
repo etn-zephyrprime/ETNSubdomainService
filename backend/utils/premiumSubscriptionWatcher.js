@@ -1,11 +1,12 @@
 // backend/utils/premiumSubscriptionWatcher.js
 //
-// Polls the PremiumSubscription contract (see PlanetZephyros repo) for MembershipPurchased and
-// PnlPeriodsPurchased events and writes them into Postgres — this is the ONLY thing that creates
-// statement_requests rows, and it only ever does so from a confirmed on-chain event, never from a
-// client-submitted "I paid" claim (see PremiumSubscription.sol's own header comment on this same
-// trust boundary). Same polling-with-cursor shape as marketplaceWatcher.js/coreClashSwapWatcher.js
-// — duplicated rather than shared, same "fine to drift independently" reasoning those files give.
+// Polls the PremiumSubscription contract (see PlanetZephyros repo) for MembershipPurchased,
+// AnnualMembershipPurchased, and PnlPeriodPurchased events and writes them into Postgres — this is
+// the ONLY thing that creates statement_requests rows, and it only ever does so from a confirmed
+// on-chain event, never from a client-submitted "I paid" claim (see PremiumSubscription.sol's own
+// header comment on this same trust boundary). Same polling-with-cursor shape as
+// marketplaceWatcher.js/coreClashSwapWatcher.js — duplicated rather than shared, same "fine to
+// drift independently" reasoning those files give.
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getPremiumSubscriptionWatcherState, setPremiumSubscriptionWatcherState } from "../state/premiumSubscriptionWatcherState.js";
@@ -31,7 +32,8 @@ const WATCHER_LOOKBACK_BLOCKS = process.env.PREMIUM_SUBSCRIPTION_LOOKBACK_BLOCKS
 
 const PREMIUM_SUBSCRIPTION_ABI = [
   "event MembershipPurchased(address indexed subscriber, uint256 numMonths, uint256 paid, uint256 newExpiry)",
-  "event PnlPeriodsPurchased(address indexed payer, address indexed trackedWallet, uint256 numPeriods, uint256 amountPaid)",
+  "event AnnualMembershipPurchased(address indexed subscriber, uint256 numYears, uint256 paid, uint256 newExpiry)",
+  "event PnlPeriodPurchased(address indexed payer, address indexed trackedWallet, uint8 periodType, uint16 year, uint64 periodEnd, uint256 amountPaid)",
 ];
 
 // Same RPC block-range-flakiness handling as marketplaceWatcher.js's identical helper.
@@ -57,37 +59,30 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
   return events;
 }
 
-async function handleMembershipPurchased(event) {
+async function handleMembershipPurchased(event, tier) {
   const { subscriber, newExpiry } = event.args;
   const expiryTimestamp = new Date(Number(newExpiry) * 1000);
-  await upsertMembership(subscriber, expiryTimestamp, event.transactionHash);
-  console.log(`💳 Membership purchased: ${subscriber} — now expires ${expiryTimestamp.toISOString()} (tx ${event.transactionHash})`);
+  await upsertMembership(subscriber, tier, expiryTimestamp, event.transactionHash);
+  console.log(`💳 ${tier === "annual" ? "Annual" : "Monthly"} membership purchased: ${subscriber} — now expires ${expiryTimestamp.toISOString()} (tx ${event.transactionHash})`);
 }
 
-async function handlePnlPeriodsPurchased(event) {
-  const { payer, trackedWallet, numPeriods, amountPaid } = event.args;
-  const periods = Number(numPeriods);
-  if (periods < 1) return; // defensive — the contract itself requires numPeriods >= 1
+async function handlePnlPeriodPurchased(event) {
+  const { payer, trackedWallet, periodType, year, amountPaid } = event.args;
 
-  // Split evenly across periods — always exact by construction, since the contract charges
-  // pnlPricePerPeriod * numPeriods (or 0 for an active member) and never a per-period-varying
-  // price within one purchase.
-  const perPeriod = amountPaid / BigInt(periods);
-
-  for (let periodIndex = 0; periodIndex < periods; periodIndex++) {
-    const created = await createFromPurchase({
-      txHash: event.transactionHash,
-      periodIndex,
-      trackedWallet,
-      payerWallet: payer,
-      amountPaidWei: perPeriod,
-    });
-    if (created) {
-      console.log(`📄 Statement request created: ${created.id} (wallet ${trackedWallet}, period ${periodIndex}, tx ${event.transactionHash})`);
-    }
-    // created === null means this exact (tx_hash, period_index) was already recorded — expected
-    // on a re-scanned/overlapping block range, not an error.
+  const created = await createFromPurchase({
+    txHash: event.transactionHash,
+    logIndex: event.index,
+    periodType: Number(periodType),
+    year: Number(year),
+    trackedWallet,
+    payerWallet: payer,
+    amountPaidWei: amountPaid,
+  });
+  if (created) {
+    console.log(`📄 Statement request created: ${created.id} (wallet ${trackedWallet}, periodType ${periodType}, year ${year}, tx ${event.transactionHash})`);
   }
+  // created === null means this exact (tx_hash, log_index) was already recorded — expected on a
+  // re-scanned/overlapping block range, not an error.
 }
 
 let isPolling = false;
@@ -107,21 +102,24 @@ async function poll(contract) {
 
     if (latestBlock <= fromBlock) return;
 
-    const [memberships, pnlPurchases] = await Promise.all([
+    const [monthlyMemberships, annualMemberships, pnlPurchases] = await Promise.all([
       queryLogsChunked(contract, contract.filters.MembershipPurchased(), fromBlock + 1, latestBlock),
-      queryLogsChunked(contract, contract.filters.PnlPeriodsPurchased(), fromBlock + 1, latestBlock),
+      queryLogsChunked(contract, contract.filters.AnnualMembershipPurchased(), fromBlock + 1, latestBlock),
+      queryLogsChunked(contract, contract.filters.PnlPeriodPurchased(), fromBlock + 1, latestBlock),
     ]);
 
-    const events = [...memberships, ...pnlPurchases].sort(
+    const events = [...monthlyMemberships, ...annualMemberships, ...pnlPurchases].sort(
       (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
     );
 
     for (const event of events) {
       try {
         if (event.eventName === "MembershipPurchased") {
-          await handleMembershipPurchased(event);
-        } else if (event.eventName === "PnlPeriodsPurchased") {
-          await handlePnlPeriodsPurchased(event);
+          await handleMembershipPurchased(event, "monthly");
+        } else if (event.eventName === "AnnualMembershipPurchased") {
+          await handleMembershipPurchased(event, "annual");
+        } else if (event.eventName === "PnlPeriodPurchased") {
+          await handlePnlPeriodPurchased(event);
         }
       } catch (err) {
         // One bad event must not stop lastProcessedBlock from advancing or block the rest —

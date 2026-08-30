@@ -17,13 +17,14 @@ import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
 
 const NATIVE_SENTINEL = "NATIVE";
 const DISCLAIMER =
   "This statement is provided for informational purposes only and does not constitute tax, " +
-  "legal, or financial advice. Figures use FIFO cost-basis accounting and the fiscal year-end " +
-  "date you selected, which may not match every jurisdiction's actual tax treatment. Consult a " +
-  "qualified professional in your jurisdiction before relying on this statement for tax filing.";
+  "legal, or financial advice. Figures use FIFO cost-basis accounting over a fixed reporting " +
+  "period, which may not match every jurisdiction's actual tax treatment. Consult a qualified " +
+  "professional in your jurisdiction before relying on this statement for tax filing.";
 
 let cachedR2Client = null;
 function getR2Client() {
@@ -50,17 +51,6 @@ async function uploadStatementArtifact(body, key, contentType) {
       CacheControl: "public, max-age=31536000, immutable",
     })
   );
-}
-
-/** Rolling-forward period window: period_index 0 ends at yearEndMarkDate, each subsequent
- * pre-purchased period rolls one year later — matches the brief's "anchor for this and all
- * subsequent periods." */
-function periodWindow(yearEndMarkDate, periodIndex) {
-  const end = new Date(yearEndMarkDate);
-  end.setUTCFullYear(end.getUTCFullYear() + periodIndex);
-  const start = new Date(end);
-  start.setUTCFullYear(start.getUTCFullYear() - 1);
-  return { periodStart: start, periodEnd: end };
 }
 
 function transferToEvent(t) {
@@ -162,6 +152,7 @@ function buildPdf({ request, periodStart, periodEnd, opening, closing, gas, flow
 
   doc.fillColor("#000").fontSize(11);
   doc.text(`Wallet: ${request.tracked_wallet}`);
+  doc.text(`Reporting period: ${periodTypeLabel(request.period_type)} ${request.year}`);
   doc.text(`Period: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)}`);
   doc.text(`Request ID: ${request.id}`);
   doc.text(`Generated: ${new Date().toISOString()}`);
@@ -219,7 +210,12 @@ export async function generateStatement(requestId) {
     throw new Error(`Statement request ${requestId} is ${request.status}, not PENDING_GENERATION — refusing to generate`);
   }
 
-  const { periodStart, periodEnd } = periodWindow(request.year_end_mark_date, request.period_index);
+  // Always recomputed from (period_type, year) via this backend's own calendar math — never
+  // trusts the on-chain periodEnd the contract validated at payment time as the real slice
+  // boundary (see periodTypes.js's header comment and the confirmed "backend validates the
+  // shape" decision). A mismatched/gamed on-chain claim can't be used to underpay; it just can't
+  // produce a statement for anything other than the real (period_type, year) it names.
+  const { periodStart, periodEnd } = computePeriodBoundaries(request.period_type, request.year);
   if (periodEnd > new Date()) {
     throw new Error(`Statement request ${requestId}'s period ends ${periodEnd.toISOString()}, which hasn't happened yet — cannot generate a statement for a future period`);
   }
@@ -255,6 +251,9 @@ export async function generateStatement(requestId) {
     schemaVersion: 1,
     requestId: request.id,
     trackedWallet: request.tracked_wallet,
+    periodType: request.period_type,
+    periodTypeLabel: periodTypeLabel(request.period_type),
+    year: request.year,
     periodStart: periodStart.toISOString(),
     periodEnd: periodEnd.toISOString(),
     generatedAt: new Date().toISOString(),
