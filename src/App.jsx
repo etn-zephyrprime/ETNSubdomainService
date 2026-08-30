@@ -211,7 +211,8 @@ function AppContent() {
     console.log("Registration successful:", result);
   };
 
-  const showingMainSearch = !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay && !showMarketplace;
+  const showingMainSearch =
+    !selectedName && !showManageSubdomain && !showSubnameSearch && !showPay && !showMarketplace;
 
   return (
     <div style={{
@@ -282,7 +283,6 @@ function AppContent() {
                 Pay / Receive
               </NeonButton>
             </div>
-
             <HowItWorks />
             <BurnPoolCard wallet={wallet} />
             <CoreBurnedCard />

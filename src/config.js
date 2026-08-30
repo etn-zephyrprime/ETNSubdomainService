@@ -83,6 +83,18 @@ export const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID || "146ee3
 // Backend — NFT image generation + R2 upload (see backend/index.js)
 export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "https://electroneumnameservice.onrender.com";
 
+// Premium Feature #1 — Per-Wallet PnL Statements (see PlanetZephyros repo,
+// contracts/premium/PremiumSubscription.sol, and this backend's backend/utils/pnlStatementRouter.js).
+// No hardcoded default — unlike MARKETPLACE_ADDRESS, this contract isn't deployed to mainnet as
+// of this being written, and silently pointing every read/write at a wrong/placeholder address
+// would be far worse than the UI clearly showing "not configured yet" (see usePremiumSubscription.js
+// and usePnlPurchase.js — both treat a missing address as "premium features unavailable", not a crash).
+export const PREMIUM_SUBSCRIPTION_ADDRESS = import.meta.env.VITE_PREMIUM_SUBSCRIPTION_ADDRESS || null;
+
+// Same backend as BACKEND_IMAGE_URL above (one backend serves both) — separate constant purely
+// for readability at call sites that have nothing to do with NFT images.
+export const PNL_BACKEND_URL = import.meta.env.VITE_PNL_BACKEND_URL || BACKEND_IMAGE_URL;
+
 // Public (no-auth) base URL for the R2 bucket NFT images are uploaded to — the bucket's
 // "Enable public access" r2.dev subdomain, not the Cloudflare account/dashboard itself. Safe to
 // ship in the frontend bundle: it only serves what's already meant to be publicly readable.

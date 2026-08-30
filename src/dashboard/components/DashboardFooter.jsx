@@ -21,9 +21,11 @@ function openLink(url) {
 //     its own footer, so this needed adding rather than just copying).
 //   - Terms & Conditions reworked from scratch — the main site's version is entirely about name
 //     registration ("All registrations are final...", "Renewal reminders are your
-//     responsibility...") which is actively misleading here: this dashboard is read-only, no
-//     wallet connection, nothing to register or purchase. Covers what's actually true of this
-//     app instead: third-party data sources, no financial advice, no warranty on accuracy.
+//     responsibility...") which doesn't apply here. Covers what's actually true of this app
+//     instead: every tab except Premium is read-only with no wallet connection; third-party data
+//     sources; no financial advice; no warranty on accuracy. Updated when the Premium tab (per-
+//     wallet PnL statements) shipped — that one tab genuinely does connect a wallet and send
+//     transactions, so "no wallet connection... here" stopped being true of the app as a whole.
 export default function DashboardFooter({ isMobile = false }) {
   return (
     <div
@@ -101,7 +103,7 @@ export default function DashboardFooter({ isMobile = false }) {
           Terms & Conditions
         </div>
         <div style={{ fontSize: 10, color: muted, maxWidth: 520, margin: "0 auto" }}>
-          <div>• This dashboard is read-only — no wallet connection, no transactions, nothing to buy or register here.</div>
+          <div>• Every tab except Premium is read-only — no wallet connection, no transactions. Premium (per-wallet PnL statements) does connect a wallet and send transactions when you choose to purchase.</div>
           <div>• Data is sourced from Electroneum Blockscout, CoinGecko, and GeckoTerminal — shown as-is, with no guarantee of accuracy, completeness, or timeliness.</div>
           <div>• Nothing here is financial advice. Prices, charts, and stats are informational only.</div>
           <div>• For registering or managing a .etn name, use ETN Subdomain Service directly.</div>
