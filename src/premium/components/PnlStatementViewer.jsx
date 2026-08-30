@@ -129,7 +129,7 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
         <Panel key={request.id} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Period {request.periodIndex + 1}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{request.periodTypeLabel} {request.year}</div>
               <div style={{ fontSize: 11, color: mutedLight }}>{request.trackedWallet}</div>
             </div>
             <div style={{ fontSize: 11, fontWeight: 700, color: request.status === "GENERATED" || request.status === "FINALIZED" ? green : mutedLight, textTransform: "uppercase" }}>

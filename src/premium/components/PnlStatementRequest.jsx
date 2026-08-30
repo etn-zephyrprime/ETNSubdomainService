@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
-import { FileText, ExternalLink } from "lucide-react";
+import { FileText, ExternalLink, Plus, X } from "lucide-react";
 import Panel from "../../components/Panel.jsx";
 import NeonButton from "../../components/NeonButton.jsx";
 import { usePnlPurchase } from "../../hooks/usePnlPurchase.js";
 import { useOwnedNames } from "../../hooks/useOwnedNames.js";
 import { computeNodeForName } from "../../utils/ens.js";
+import { PERIOD_TYPES, computePeriodBoundaries, isPeriodElapsed } from "../../utils/periodTypes.js";
 import { PNL_BACKEND_URL } from "../../config.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../styles/theme.js";
 
@@ -23,6 +24,7 @@ const inputStyle = {
 };
 
 const labelStyle = { fontSize: 11, color: mutedLight, display: "block", marginBottom: 6 };
+const CURRENT_YEAR = new Date().getUTCFullYear();
 
 function parseAddressList(raw) {
   return raw
@@ -31,25 +33,27 @@ function parseAddressList(raw) {
     .filter(Boolean);
 }
 
-// Purchases one or more 12-month PnL statement periods for a tracked wallet, then hands the
-// resulting request(s) off to the backend to actually generate. Generation itself (ingestion +
+// Purchases one or more of the four fixed PnL reporting periods for a tracked wallet, then hands
+// the resulting request(s) off to the backend to actually generate. Generation itself (ingestion +
 // FIFO replay + PDF) happens server-side and can take a while for a wallet's first-ever request —
 // see backend/services/pnlStatementGenerator.js — so this only kicks it off and links to the
 // viewer, which is where the user watches it move from PENDING_GENERATION to GENERATED.
 export default function PnlStatementRequest({ wallet }) {
-  const { isConfigured, getPnlPricePerPeriod, getFreeAccessInfo, purchasePnlPeriods, waitForStatementRequests, loading, error } = usePnlPurchase();
+  const { isConfigured, getPnlPricePerPeriod, getDiscountInfo, computePeriodPrices, purchasePnlPeriods, waitForStatementRequests, loading, error } = usePnlPurchase();
   const { getNamesOwnedBy } = useOwnedNames();
 
   const [pricePerPeriod, setPricePerPeriod] = useState(null);
-  const [freeInfo, setFreeInfo] = useState({ free: false, reason: null });
+  const [discountInfo, setDiscountInfo] = useState({ discounted: false, reason: null });
   const [activatedDomainNode, setActivatedDomainNode] = useState(null);
   const [activatedDomainName, setActivatedDomainName] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
   const [trackedWallet, setTrackedWallet] = useState("");
   const [selfOwnedRaw, setSelfOwnedRaw] = useState("");
-  const [yearEndMarkDate, setYearEndMarkDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [numPeriods, setNumPeriods] = useState(1);
+  const [selectedPeriods, setSelectedPeriods] = useState([]); // [{ periodType, year }]
+  const [newPeriodType, setNewPeriodType] = useState(0);
+  const [newYear, setNewYear] = useState(CURRENT_YEAR - 1);
+  const [addPeriodError, setAddPeriodError] = useState(null);
 
   const [stage, setStage] = useState("idle"); // idle | purchasing | waiting-for-backend | requesting | done
   const [stageError, setStageError] = useState(null);
@@ -60,10 +64,10 @@ export default function PnlStatementRequest({ wallet }) {
   }, [wallet?.account, trackedWallet]);
 
   // Finds one activated domain the connected wallet owns, if any, and computes its on-chain node
-  // — this is what purchasePnlPeriods can be given as proof of free access via activated-domain
-  // ownership (see PremiumSubscription.sol's isActivatedDomainOwner). Any ONE qualifying domain is
-  // enough; the first one found is used. The contract independently re-verifies this at purchase
-  // time, so a stale/wrong guess here just falls through to the paid path, never a bad free grant.
+  // — this is what purchasePnlPeriods can be given as proof of the activated-domain discount (see
+  // PremiumSubscription.sol's isActivatedDomainOwner). Any ONE qualifying domain is enough; the
+  // first one found is used. The contract independently re-verifies this at purchase time, so a
+  // stale/wrong guess here just falls through to the full/multi-buy price, never a bad discount.
   const findActivatedDomain = useCallback(async (address) => {
     try {
       const owned = await getNamesOwnedBy(address);
@@ -71,7 +75,7 @@ export default function PnlStatementRequest({ wallet }) {
       if (!activated) return { node: null, name: null };
       return { node: computeNodeForName(activated.name), name: activated.name };
     } catch (err) {
-      console.warn("Failed to look up activated domains for free-access check:", err.message);
+      console.warn("Failed to look up activated domains for the discount check:", err.message);
       return { node: null, name: null };
     }
   }, [getNamesOwnedBy]);
@@ -85,14 +89,14 @@ export default function PnlStatementRequest({ wallet }) {
         const { node, name } = await findActivatedDomain(wallet.account);
         setActivatedDomainNode(node);
         setActivatedDomainName(name);
-        setFreeInfo(await getFreeAccessInfo(wallet.account, node));
+        setDiscountInfo(await getDiscountInfo(wallet.account, node));
       }
       setLoadError(null);
     } catch (err) {
       console.error("Failed to load PnL pricing:", err);
       setLoadError("Couldn't load pricing");
     }
-  }, [isConfigured, getPnlPricePerPeriod, getFreeAccessInfo, findActivatedDomain, wallet?.account]);
+  }, [isConfigured, getPnlPricePerPeriod, getDiscountInfo, findActivatedDomain, wallet?.account]);
 
   useEffect(() => {
     refresh();
@@ -106,7 +110,29 @@ export default function PnlStatementRequest({ wallet }) {
     );
   }
 
-  const requiredValueWei = freeInfo.free ? 0n : (pricePerPeriod ?? 0n) * BigInt(numPeriods);
+  const periodPrices = pricePerPeriod != null ? computePeriodPrices(pricePerPeriod, selectedPeriods.length, discountInfo.discounted) : [];
+  const totalValueWei = periodPrices.reduce((sum, p) => sum + p, 0n);
+
+  const handleAddPeriod = () => {
+    setAddPeriodError(null);
+    if (!isPeriodElapsed(newPeriodType, newYear)) {
+      setAddPeriodError("That period hasn't fully ended yet — pick an earlier year.");
+      return;
+    }
+    if (selectedPeriods.some((p) => p.periodType === newPeriodType && p.year === newYear)) {
+      setAddPeriodError("That exact period is already in this order.");
+      return;
+    }
+    if (selectedPeriods.length >= 12) {
+      setAddPeriodError("Up to 12 periods per order.");
+      return;
+    }
+    setSelectedPeriods([...selectedPeriods, { periodType: newPeriodType, year: newYear }]);
+  };
+
+  const handleRemovePeriod = (index) => {
+    setSelectedPeriods(selectedPeriods.filter((_, i) => i !== index));
+  };
 
   const handlePurchase = async () => {
     setStageError(null);
@@ -118,6 +144,10 @@ export default function PnlStatementRequest({ wallet }) {
     }
     if (!ethers.isAddress(trackedWallet)) {
       setStageError("Enter a valid wallet address to generate a statement for.");
+      return;
+    }
+    if (selectedPeriods.length === 0) {
+      setStageError("Add at least one reporting period to purchase.");
       return;
     }
     const selfOwnedAddresses = parseAddressList(selfOwnedRaw);
@@ -132,11 +162,16 @@ export default function PnlStatementRequest({ wallet }) {
       await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
 
+      const periodsWithEnds = selectedPeriods.map((p) => ({
+        ...p,
+        periodEnd: computePeriodBoundaries(p.periodType, p.year).periodEnd,
+      }));
+
       setStage("purchasing");
-      const { txHash } = await purchasePnlPeriods(trackedWallet, numPeriods, activatedDomainNode, requiredValueWei, signer);
+      const { txHash } = await purchasePnlPeriods(trackedWallet, periodsWithEnds, activatedDomainNode, totalValueWei, signer);
 
       setStage("waiting-for-backend");
-      const requests = await waitForStatementRequests(txHash, numPeriods);
+      const requests = await waitForStatementRequests(txHash, selectedPeriods.length);
 
       setStage("requesting");
       const submitted = [];
@@ -144,16 +179,17 @@ export default function PnlStatementRequest({ wallet }) {
         const res = await fetch(`${PNL_BACKEND_URL}/api/pnl/statement/${request.id}/request`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ yearEndMarkDate, selfOwnedAddresses }),
+          body: JSON.stringify({ selfOwnedAddresses }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `Failed to submit period ${request.periodIndex}`);
+          throw new Error(body.error || `Failed to submit request ${request.id}`);
         }
         submitted.push(await res.json());
       }
 
       setCreatedRequests(submitted);
+      setSelectedPeriods([]);
       setStage("done");
     } catch (err) {
       console.error("PnL statement request failed:", err);
@@ -181,17 +217,17 @@ export default function PnlStatementRequest({ wallet }) {
       {loadError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{loadError}</div>}
 
       <div style={{ fontSize: 13, color: mutedLight, marginBottom: 6 }}>
-        Price per 12-month period: {pricePerPeriod != null ? (
-          freeInfo.free ? (
-            <b style={{ color: green }}>Free — {freeInfo.reason}</b>
+        Price per period: {pricePerPeriod != null ? (
+          discountInfo.discounted ? (
+            <><b style={{ color: green }}>{ethers.formatEther(pricePerPeriod / 2n)} ETN</b> <span style={{ color: mutedLight }}>(50% off — {discountInfo.reason})</span></>
           ) : (
-            <b style={{ color: "#fff" }}>{ethers.formatEther(pricePerPeriod)} ETN</b>
+            <><b style={{ color: "#fff" }}>{ethers.formatEther(pricePerPeriod)} ETN</b> <span style={{ color: mutedLight }}>(first period; each additional period in the same order is {ethers.formatEther((pricePerPeriod * 2n) / 3n)} ETN)</span></>
           )
         ) : "Loading…"}
       </div>
-      {!freeInfo.free && activatedDomainName && (
+      {!discountInfo.discounted && activatedDomainName && (
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-          ({activatedDomainName} looked activated, but couldn't be verified on-chain just now — using the paid price. It'll still be checked again when you submit.)
+          ({activatedDomainName} looked activated, but couldn't be verified on-chain just now — using the standard price. It'll still be checked again when you submit.)
         </div>
       )}
       <div style={{ marginBottom: 16 }} />
@@ -209,26 +245,51 @@ export default function PnlStatementRequest({ wallet }) {
         placeholder="0xabc..., 0xdef..."
       />
 
-      <label style={labelStyle}>Fiscal year-end date (anchors this and every future period)</label>
-      <input
-        type="date"
-        style={{ ...inputStyle, marginBottom: 14 }}
-        value={yearEndMarkDate}
-        onChange={(e) => setYearEndMarkDate(e.target.value)}
-      />
+      <label style={labelStyle}>Add a reporting period (must have already ended)</label>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <select
+          value={newPeriodType}
+          onChange={(e) => setNewPeriodType(Number(e.target.value))}
+          style={{ ...inputStyle, flex: 2 }}
+        >
+          {PERIOD_TYPES.map((p) => (
+            <option key={p.id} value={p.id}>{p.label} ({p.range})</option>
+          ))}
+        </select>
+        <input
+          type="number"
+          value={newYear}
+          onChange={(e) => setNewYear(parseInt(e.target.value, 10) || CURRENT_YEAR)}
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <NeonButton variant="dark" onClick={handleAddPeriod} style={{ padding: "0 14px" }}>
+          <Plus size={16} />
+        </NeonButton>
+      </div>
+      {addPeriodError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 8 }}>{addPeriodError}</div>}
 
-      <label style={labelStyle}>Number of 12-month periods to purchase now</label>
-      <input
-        type="number"
-        min={1}
-        style={{ ...inputStyle, marginBottom: 16 }}
-        value={numPeriods}
-        onChange={(e) => setNumPeriods(Math.max(1, parseInt(e.target.value, 10) || 1))}
-      />
+      {selectedPeriods.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          {selectedPeriods.map((p, i) => {
+            const type = PERIOD_TYPES.find((t) => t.id === p.periodType);
+            return (
+              <div key={`${p.periodType}-${p.year}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderRadius: 8, background: panel2, border: `1px solid ${border}`, marginBottom: 6 }}>
+                <div style={{ fontSize: 12, color: "#fff" }}>{type.label} {p.year}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ fontSize: 12, color: mutedLight }}>{periodPrices[i] != null ? `${ethers.formatEther(periodPrices[i])} ETN` : ""}</div>
+                  <button onClick={() => handleRemovePeriod(i)} style={{ background: "none", border: "none", color: mutedLight, cursor: "pointer", display: "flex" }}>
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {pricePerPeriod != null && !freeInfo.free && (
+      {selectedPeriods.length > 0 && (
         <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
-          Total: <b style={{ color: "#fff" }}>{ethers.formatEther(requiredValueWei)} ETN</b>
+          Total: <b style={{ color: "#fff" }}>{ethers.formatEther(totalValueWei)} ETN</b>
         </div>
       )}
 
@@ -246,7 +307,7 @@ export default function PnlStatementRequest({ wallet }) {
                 href={`/statement/${r.id}`}
                 style={{ color: green, display: "flex", alignItems: "center", gap: 6, fontWeight: 700, textDecoration: "none" }}
               >
-                <ExternalLink size={12} /> Period {r.periodIndex + 1} statement
+                <ExternalLink size={12} /> {r.periodTypeLabel} {r.year} statement
               </a>
             ))}
           </div>
@@ -256,7 +317,7 @@ export default function PnlStatementRequest({ wallet }) {
       <NeonButton
         variant="green"
         onClick={handlePurchase}
-        disabled={busy || pricePerPeriod == null}
+        disabled={busy || pricePerPeriod == null || selectedPeriods.length === 0}
         loading={busy}
         style={{ width: "100%", justifyContent: "center" }}
       >

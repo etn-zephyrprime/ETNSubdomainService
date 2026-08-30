@@ -52,12 +52,82 @@
     "inputs": [
       {
         "indexed": false,
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "ActivatedDomainDiscountEnabledUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "annualMembershipPricePerYear",
+        "type": "uint256"
+      }
+    ],
+    "name": "AnnualMembershipPricePerYearUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "subscriber",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "numYears",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "paid",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newExpiry",
+        "type": "uint256"
+      }
+    ],
+    "name": "AnnualMembershipPurchased",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
         "internalType": "address",
         "name": "coreToken",
         "type": "address"
       }
     ],
     "name": "CoreTokenUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "ErevosDiscountEnabledUpdated",
     "type": "event"
   },
   {
@@ -194,6 +264,49 @@
       {
         "indexed": true,
         "internalType": "address",
+        "name": "payer",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "trackedWallet",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "enum PremiumSubscription.PeriodType",
+        "name": "periodType",
+        "type": "uint8"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint16",
+        "name": "year",
+        "type": "uint16"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "periodEnd",
+        "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountPaid",
+        "type": "uint256"
+      }
+    ],
+    "name": "PnlPeriodPurchased",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
         "name": "operator",
         "type": "address"
       },
@@ -248,37 +361,6 @@
       }
     ],
     "name": "PnlPeriodSplitExecuted",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "payer",
-        "type": "address"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "trackedWallet",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "numPeriods",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "amountPaid",
-        "type": "uint256"
-      }
-    ],
-    "name": "PnlPeriodsPurchased",
     "type": "event"
   },
   {
@@ -341,7 +423,78 @@
   },
   {
     "inputs": [],
+    "name": "MAX_PERIODS_PER_PURCHASE",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "SECONDS_PER_MONTH",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "SECONDS_PER_YEAR",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "activatedDomainDiscountEnabled",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "annualMembershipExpiry",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "annualMembershipPricePerYear",
     "outputs": [
       {
         "internalType": "uint256",
@@ -360,6 +513,19 @@
         "internalType": "address",
         "name": "",
         "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "erevosDiscountEnabled",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
       }
     ],
     "stateMutability": "view",
@@ -433,7 +599,26 @@
         "type": "address"
       }
     ],
-    "name": "isEligibleForFreeAccess",
+    "name": "isAnnualMember",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "who",
+        "type": "address"
+      }
+    ],
+    "name": "isEligibleForDiscount",
     "outputs": [
       {
         "internalType": "bool",
@@ -581,9 +766,26 @@
         "type": "address"
       },
       {
-        "internalType": "uint256",
-        "name": "numPeriods",
-        "type": "uint256"
+        "components": [
+          {
+            "internalType": "enum PremiumSubscription.PeriodType",
+            "name": "periodType",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint16",
+            "name": "year",
+            "type": "uint16"
+          },
+          {
+            "internalType": "uint64",
+            "name": "periodEnd",
+            "type": "uint64"
+          }
+        ],
+        "internalType": "struct PremiumSubscription.PeriodClaim[]",
+        "name": "periods",
+        "type": "tuple[]"
       },
       {
         "internalType": "bytes32",
@@ -624,12 +826,51 @@
   {
     "inputs": [
       {
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "setActivatedDomainDiscountEnabled",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_annualMembershipPricePerYear",
+        "type": "uint256"
+      }
+    ],
+    "name": "setAnnualMembershipPricePerYear",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "_coreToken",
         "type": "address"
       }
     ],
     "name": "setCoreToken",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bool",
+        "name": "enabled",
+        "type": "bool"
+      }
+    ],
+    "name": "setErevosDiscountEnabled",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -809,6 +1050,19 @@
       }
     ],
     "name": "subscribe",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "numYears",
+        "type": "uint256"
+      }
+    ],
+    "name": "subscribeAnnual",
     "outputs": [],
     "stateMutability": "payable",
     "type": "function"
