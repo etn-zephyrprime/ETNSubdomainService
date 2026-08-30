@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
 import { Crown } from "lucide-react";
-import Panel from "../../components/Panel.jsx";
-import NeonButton from "../../components/NeonButton.jsx";
-import { usePremiumSubscription } from "../../hooks/usePremiumSubscription.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../styles/theme.js";
+import DashboardPanel from "./DashboardPanel.jsx";
+import DashboardButton from "./DashboardButton.jsx";
+import { usePremiumSubscription } from "../../../hooks/usePremiumSubscription.js";
+import { green, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
 const MONTH_OPTIONS = [1, 3, 6, 12];
 const YEAR_OPTIONS = [1, 2, 3];
@@ -65,9 +65,9 @@ export default function MembershipPurchase({ wallet }) {
 
   if (!isConfigured) {
     return (
-      <Panel style={{ width: "100%", maxWidth: 600, margin: "0 auto" }}>
+      <DashboardPanel>
         <div style={{ fontSize: 13, color: mutedLight }}>Premium membership isn't available yet — check back soon.</div>
-      </Panel>
+      </DashboardPanel>
     );
   }
 
@@ -104,7 +104,7 @@ export default function MembershipPurchase({ wallet }) {
     padding: "10px 0",
     borderRadius: 10,
     border: `1px solid ${active ? green : border}`,
-    background: active ? "rgba(18,86,131,0.15)" : panel2,
+    background: active ? "rgba(24,187,26,0.15)" : panel2,
     color: active ? green : mutedLight,
     fontSize: 13,
     fontWeight: 800,
@@ -114,7 +114,7 @@ export default function MembershipPurchase({ wallet }) {
   });
 
   return (
-    <Panel style={{ width: "100%", maxWidth: 600, margin: "0 auto" }}>
+    <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <Crown size={18} color={green} />
         <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
@@ -167,7 +167,7 @@ export default function MembershipPurchase({ wallet }) {
               padding: "10px 0",
               borderRadius: 10,
               border: `1px solid ${numUnits === n ? green : border}`,
-              background: numUnits === n ? "rgba(18,86,131,0.15)" : panel2,
+              background: numUnits === n ? "rgba(24,187,26,0.15)" : panel2,
               color: numUnits === n ? green : mutedLight,
               fontSize: 13,
               fontWeight: 700,
@@ -193,15 +193,14 @@ export default function MembershipPurchase({ wallet }) {
         </div>
       )}
 
-      <NeonButton
-        variant="green"
+      <DashboardButton
         onClick={handleSubscribe}
         disabled={loading || pricePerUnit == null}
         loading={loading}
         style={{ width: "100%", justifyContent: "center" }}
       >
         {!wallet.isConnected ? "Connect Wallet" : isActive ? "Extend Membership" : "Subscribe"}
-      </NeonButton>
-    </Panel>
+      </DashboardButton>
+    </DashboardPanel>
   );
 }

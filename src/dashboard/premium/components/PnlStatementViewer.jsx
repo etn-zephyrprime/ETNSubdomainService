@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ArrowLeft, Download, FileJson } from "lucide-react";
-import Panel from "../../components/Panel.jsx";
-import NeonButton from "../../components/NeonButton.jsx";
-import { PNL_BACKEND_URL } from "../../config.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../styles/theme.js";
+import DashboardPanel from "./DashboardPanel.jsx";
+import DashboardButton from "./DashboardButton.jsx";
+import { PNL_BACKEND_URL } from "../../../config.js";
+import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
 // tx-hash/request-ID based access — no login (see the build plan's confirmed decision). Reachable
-// either via the /statement/:requestId deep link (see App.jsx) or by pasting a request ID/tx hash
-// into the lookup form below, so a shared link works for anyone regardless of whether they have a
-// wallet connected.
-export default function PnlStatementViewer({ initialRequestId = null, wallet, onBack = null }) {
+// either via the /statement/:requestId deep link (see DashboardApp.jsx) or by pasting a request
+// ID/tx hash into the lookup form below, so a shared link works for anyone regardless of whether
+// they have a wallet connected — this is the one part of the premium section that stays usable
+// without connecting a wallet at all.
+export default function PnlStatementViewer({ initialRequestId = null, onBack = null }) {
   const [lookupInput, setLookupInput] = useState(initialRequestId || "");
   const [requests, setRequests] = useState(null); // array — a tx-hash lookup can return several periods
   const [loadError, setLoadError] = useState(null);
@@ -81,12 +82,12 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
   }, [markViewed]);
 
   return (
-    <div style={{ width: "100%", maxWidth: 700, margin: "0 auto", padding: "0 16px" }}>
+    <div style={{ width: "100%" }}>
       {onBack && (
         <div style={{ marginBottom: 20 }}>
           <button
             onClick={onBack}
-            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: green, background: "rgba(18,86,131,0.06)", border: `1px solid ${border}`, borderRadius: 10, cursor: "pointer", padding: "8px 14px" }}
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: green, background: "rgba(24,187,26,0.06)", border: `1px solid ${border}`, borderRadius: 10, cursor: "pointer", padding: "8px 14px" }}
           >
             <ArrowLeft size={14} /> Back
           </button>
@@ -103,7 +104,7 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
       </div>
 
       {!initialRequestId && (
-        <Panel style={{ marginBottom: 20 }}>
+        <DashboardPanel style={{ marginBottom: 20 }}>
           <label style={{ fontSize: 11, color: mutedLight, display: "block", marginBottom: 6 }}>Request ID or transaction hash</label>
           <div style={{ display: "flex", gap: 8 }}>
             <input
@@ -112,11 +113,11 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
               onChange={(e) => setLookupInput(e.target.value)}
               placeholder="0x... or request ID"
             />
-            <NeonButton variant="green" onClick={() => lookup(lookupInput)} disabled={loading || !lookupInput.trim()} loading={loading}>
+            <DashboardButton onClick={() => lookup(lookupInput)} disabled={loading || !lookupInput.trim()} loading={loading}>
               Look Up
-            </NeonButton>
+            </DashboardButton>
           </div>
-        </Panel>
+        </DashboardPanel>
       )}
 
       {loadError && <div style={{ fontSize: 13, color: errorColor, marginBottom: 16, textAlign: "center" }}>{loadError}</div>}
@@ -126,7 +127,7 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
       )}
 
       {requests && requests.map((request) => (
-        <Panel key={request.id} style={{ marginBottom: 16 }}>
+        <DashboardPanel key={request.id} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{request.periodTypeLabel} {request.year}</div>
@@ -145,9 +146,9 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
           )}
           {(request.status === "GENERATED" || request.status === "FINALIZED") && (
             <div style={{ display: "flex", gap: 8 }}>
-              <NeonButton variant="green" onClick={() => openStatement(request)} disabled={loading}>
+              <DashboardButton onClick={() => openStatement(request)} disabled={loading}>
                 <Download size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} /> View / Download PDF
-              </NeonButton>
+              </DashboardButton>
               {request.jsonUrl && (
                 <a href={request.jsonUrl} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: mutedLight, textDecoration: "none" }}>
                   <FileJson size={14} /> Raw data (JSON)
@@ -164,7 +165,7 @@ export default function PnlStatementViewer({ initialRequestId = null, wallet, on
               <embed src={pdfBlobUrl} type="application/pdf" style={{ width: "100%", height: 500, border: "none" }} />
             </div>
           )}
-        </Panel>
+        </DashboardPanel>
       ))}
     </div>
   );

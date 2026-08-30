@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
 import { FileText, ExternalLink, Plus, X } from "lucide-react";
-import Panel from "../../components/Panel.jsx";
-import NeonButton from "../../components/NeonButton.jsx";
-import { usePnlPurchase } from "../../hooks/usePnlPurchase.js";
-import { useOwnedNames } from "../../hooks/useOwnedNames.js";
-import { computeNodeForName } from "../../utils/ens.js";
-import { PERIOD_TYPES, computePeriodBoundaries, isPeriodElapsed } from "../../utils/periodTypes.js";
-import { PNL_BACKEND_URL } from "../../config.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../styles/theme.js";
+import DashboardPanel from "./DashboardPanel.jsx";
+import DashboardButton from "./DashboardButton.jsx";
+import { usePnlPurchase } from "../../../hooks/usePnlPurchase.js";
+import { useOwnedNames } from "../../../hooks/useOwnedNames.js";
+import { computeNodeForName } from "../../../utils/ens.js";
+import { PERIOD_TYPES, computePeriodBoundaries, isPeriodElapsed } from "../../../utils/periodTypes.js";
+import { PNL_BACKEND_URL } from "../../../config.js";
+import { green, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
 const inputStyle = {
   width: "100%",
@@ -104,9 +104,9 @@ export default function PnlStatementRequest({ wallet }) {
 
   if (!isConfigured) {
     return (
-      <Panel style={{ width: "100%", maxWidth: 600, margin: "0 auto" }}>
+      <DashboardPanel>
         <div style={{ fontSize: 13, color: mutedLight }}>PnL statements aren't available yet — check back soon.</div>
-      </Panel>
+      </DashboardPanel>
     );
   }
 
@@ -206,7 +206,7 @@ export default function PnlStatementRequest({ wallet }) {
   }[stage];
 
   return (
-    <Panel style={{ width: "100%", maxWidth: 600, margin: "0 auto" }}>
+    <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <FileText size={18} color={green} />
         <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
@@ -262,9 +262,9 @@ export default function PnlStatementRequest({ wallet }) {
           onChange={(e) => setNewYear(parseInt(e.target.value, 10) || CURRENT_YEAR)}
           style={{ ...inputStyle, flex: 1 }}
         />
-        <NeonButton variant="dark" onClick={handleAddPeriod} style={{ padding: "0 14px" }}>
+        <DashboardButton onClick={handleAddPeriod} style={{ padding: "0 14px", background: panel2, color: green, border: `1px solid ${border}`, boxShadow: "none" }}>
           <Plus size={16} />
-        </NeonButton>
+        </DashboardButton>
       </div>
       {addPeriodError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 8 }}>{addPeriodError}</div>}
 
@@ -314,15 +314,14 @@ export default function PnlStatementRequest({ wallet }) {
         </div>
       )}
 
-      <NeonButton
-        variant="green"
+      <DashboardButton
         onClick={handlePurchase}
         disabled={busy || pricePerPeriod == null || selectedPeriods.length === 0}
         loading={busy}
         style={{ width: "100%", justifyContent: "center" }}
       >
         {!wallet.isConnected ? "Connect Wallet" : "Purchase & Generate"}
-      </NeonButton>
-    </Panel>
+      </DashboardButton>
+    </DashboardPanel>
   );
 }
