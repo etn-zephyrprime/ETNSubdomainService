@@ -85,11 +85,17 @@ export const BACKEND_IMAGE_URL = import.meta.env.VITE_BACKEND_IMAGE_URL || "http
 
 // Premium Feature #1 — Per-Wallet PnL Statements (see PlanetZephyros repo,
 // contracts/premium/PremiumSubscription.sol, and this backend's backend/utils/pnlStatementRouter.js).
-// No hardcoded default — unlike MARKETPLACE_ADDRESS, this contract isn't deployed to mainnet as
-// of this being written, and silently pointing every read/write at a wrong/placeholder address
-// would be far worse than the UI clearly showing "not configured yet" (see usePremiumSubscription.js
-// and usePnlPurchase.js — both treat a missing address as "premium features unavailable", not a crash).
-export const PREMIUM_SUBSCRIPTION_ADDRESS = import.meta.env.VITE_PREMIUM_SUBSCRIPTION_ADDRESS || null;
+// Deployed to MAINNET 2026-08-31: 0x05Cc5a4Cbf18113f7e9c1675a0Ffc702BA7876E1, block 15621940, tx
+// 0x05cbbc0c8eb1aef641695aef5bde132445fe21dd704b911b17ddf169e944b1a3. owner/coreToken/swapRouter
+// confirmed correct on-chain post-deploy; operator/splitDestination were INITIALLY wired to an
+// unexpected address (not the intended CORE_CLASH_BACKEND_PRIVATE_KEY address) — likely a stale
+// Remix workspace copy of the deploy script — caught via a failed executeSplitForPeriod dry run
+// ("Not operator" revert) and corrected via setOperator/setSplitDestination before going live; see
+// PlanetZephyros's deployPremiumSubscription_mainnet_remix.ts for the deploy script itself. Full
+// dry run (100 ETN purchase -> split -> real ETN->CORE swap -> burn) verified working end-to-end
+// on mainnet before pnlPricePerPeriod was reset from its 100 ETN test value to its real price.
+export const PREMIUM_SUBSCRIPTION_ADDRESS =
+  import.meta.env.VITE_PREMIUM_SUBSCRIPTION_ADDRESS || "0x05Cc5a4Cbf18113f7e9c1675a0Ffc702BA7876E1";
 
 // Same backend as BACKEND_IMAGE_URL above (one backend serves both) — separate constant purely
 // for readability at call sites that have nothing to do with NFT images.
