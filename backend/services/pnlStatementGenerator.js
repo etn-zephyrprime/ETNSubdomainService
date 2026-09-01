@@ -427,6 +427,75 @@ function renderInventorySection(doc, valuation, tokenMeta, emptyText) {
   doc.font("Helvetica");
 }
 
+/** Groups realized disposal events by asset, summing cost basis/proceeds/gain-loss and counting
+ * disposals per asset. NFTs roll up to their COLLECTION address (not the per-tokenId composite
+ * key) — aggregating at the exact same granularity as the itemized table below would just
+ * duplicate it one row per NFT; rolling up to the collection is what actually makes this a useful
+ * summary when a wallet sold several different tokenIds from the same collection. Returns a Map
+ * keyed by that aggregation key, preserving first-seen order (chronological, since events arrives
+ * chronologically sorted) — not sorted by size, so the order matches how a reader would encounter
+ * these assets reading the itemized table below it. */
+function aggregateRealizedGains(events) {
+  const byAsset = new Map();
+  for (const e of events) {
+    const aggKey = isNftAssetKey(e.tokenAddress) ? e.tokenAddress.split(":")[0] : e.tokenAddress;
+    if (!byAsset.has(aggKey)) {
+      byAsset.set(aggKey, { disposalCount: 0, costBasisUsd: new Decimal(0), proceedsUsd: new Decimal(0), gainLossUsd: new Decimal(0) });
+    }
+    const agg = byAsset.get(aggKey);
+    agg.disposalCount++;
+    agg.costBasisUsd = agg.costBasisUsd.plus(e.costBasisUsd);
+    agg.proceedsUsd = agg.proceedsUsd.plus(e.proceedsUsd);
+    agg.gainLossUsd = agg.gainLossUsd.plus(e.realizedPnlUsd);
+  }
+  return byAsset;
+}
+
+/** Table for the per-asset aggregate above the itemized Realized Gains & Losses table — same
+ * explicit x/y + gutter approach as the other tables here, but simple enough (short, fixed number
+ * of rows — one per distinct asset, never paginates) that it doesn't need drawHeaderRow/pagination
+ * machinery of its own. */
+function renderRealizedGainsAggregateTable(doc, aggregated, tokenMeta) {
+  const left = doc.page.margins.left;
+  const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const cols = [
+    { label: "Asset", width: tableWidth * 0.40, align: "left" },
+    { label: "Disposals", width: tableWidth * 0.12, align: "right" },
+    { label: "Total Cost Basis", width: tableWidth * 0.16, align: "right" },
+    { label: "Total Proceeds", width: tableWidth * 0.16, align: "right" },
+    { label: "Total Gain / Loss", width: tableWidth * 0.16, align: "right" },
+  ];
+  let x = left;
+  for (const col of cols) {
+    col.x = x;
+    x += col.width;
+  }
+  const GUTTER = 6;
+  const rowHeight = 13;
+
+  const y0 = doc.y;
+  doc.fontSize(8).font("Helvetica-Bold").fillColor(THEME.green);
+  for (const col of cols) doc.text(col.label, col.x, y0, { width: col.width - GUTTER, align: col.align, lineBreak: false });
+  doc.font("Helvetica");
+  doc.y = y0 + rowHeight;
+  doc.moveTo(left, doc.y).lineTo(left + tableWidth, doc.y).strokeColor(THEME.border).lineWidth(0.5).stroke();
+  doc.y += 4;
+
+  for (const [assetKey, agg] of aggregated) {
+    const y = doc.y;
+    const gainColor = agg.gainLossUsd.isNegative() ? THEME.orange : THEME.green;
+    doc.fontSize(8).fillColor(THEME.bodyText);
+    doc.text(formatAssetLabel(assetKey, tokenMeta), cols[0].x, y, { width: cols[0].width - GUTTER, height: rowHeight, ellipsis: true });
+    doc.text(String(agg.disposalCount), cols[1].x, y, { width: cols[1].width - GUTTER, align: "right", lineBreak: false });
+    doc.text(`$${fmtAmount(agg.costBasisUsd)}`, cols[2].x, y, { width: cols[2].width - GUTTER, align: "right", lineBreak: false });
+    doc.text(`$${fmtAmount(agg.proceedsUsd)}`, cols[3].x, y, { width: cols[3].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(gainColor).text(`${agg.gainLossUsd.isNegative() ? "" : "+"}$${fmtAmount(agg.gainLossUsd)}`, cols[4].x, y, { width: cols[4].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(THEME.bodyText);
+    doc.y = y + rowHeight;
+  }
+  doc.x = left;
+}
+
 /** Real column-aligned table for Realized Gains & Losses — same explicit x/y positioning,
  * gutter, and manual pagination approach as renderTransactionTable below (kept as a separate
  * function rather than a shared generic-table abstraction, matching this codebase's existing
@@ -617,7 +686,7 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
   return items;
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod }) {
+function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset }) {
   const PORTRAIT = { margin: 50, layout: "portrait" };
   const LANDSCAPE = { margin: 50, layout: "landscape" };
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
@@ -764,6 +833,15 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   if (!realizedEventsInPeriod || realizedEventsInPeriod.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No disposals (sales, swaps, or NFT sales) in this period.");
   } else {
+    doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("By Asset");
+    doc.font("Helvetica");
+    doc.moveDown(0.2);
+    renderRealizedGainsAggregateTable(doc, realizedGainsByAsset, tokenMeta);
+    doc.moveDown(0.8);
+
+    doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("Every Disposal");
+    doc.font("Helvetica");
+    doc.moveDown(0.2);
     renderRealizedGainsTable(doc, realizedEventsInPeriod, tokenMeta, LANDSCAPE);
     doc.x = doc.page.margins.left;
   }
@@ -924,6 +1002,7 @@ export async function generateStatement(requestId) {
   const gameActivity = buildGameActivitySummary(transfersInPeriod);
 
   const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
+  const realizedGainsByAsset = aggregateRealizedGains(realizedEventsInPeriod);
   const realizedPnlUsd = realizedEventsInPeriod.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   const netPnlUsd = realizedPnlUsd.plus(closingValuation.totalUnrealizedUsd).minus(gas.totalGasUsd);
 
@@ -981,6 +1060,15 @@ export async function generateStatement(requestId) {
     },
     flows: { onChainIn: flows.onChainIn.toString(), onChainOut: flows.onChainOut.toString(), cexIn: flows.cexIn.toString(), cexOut: flows.cexOut.toString() },
     fees: { gasEtn: gas.totalGasEtn, gasUsd: gas.totalGasUsd.toString() },
+    // Per-asset totals — NFTs rolled up to their collection address (see aggregateRealizedGains's
+    // own comment on why: aggregating at the exact per-tokenId key would just duplicate
+    // realizedPnlEvents below one-for-one).
+    realizedGainsByAsset: [...realizedGainsByAsset.entries()].map(([assetKey, agg]) => withAssetLabel({
+      disposalCount: agg.disposalCount,
+      costBasisUsd: agg.costBasisUsd.toString(),
+      proceedsUsd: agg.proceedsUsd.toString(),
+      realizedPnlUsd: agg.gainLossUsd.toString(),
+    }, assetKey)),
     realizedPnlEvents: realizedEventsInPeriod.map((e) => withAssetLabel({
       disposalTxHash: e.disposalTxHash,
       timestamp: e.timestamp.toISOString(),
@@ -1008,7 +1096,7 @@ export async function generateStatement(requestId) {
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;
