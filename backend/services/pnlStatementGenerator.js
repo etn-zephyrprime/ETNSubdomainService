@@ -426,7 +426,7 @@ function shortHash(hash) {
  * calling doc.addPage() itself) rather than relying on pdfkit's automatic per-text-call page
  * break, and redraws the header row on every new page it creates — a reader landing on any page of
  * a multi-page table still sees what each column means. */
-function renderTransactionTable(doc, rows) {
+function renderTransactionTable(doc, rows, pageOptions) {
   const left = doc.page.margins.left;
   const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const cols = [
@@ -467,7 +467,11 @@ function renderTransactionTable(doc, rows) {
   drawHeaderRow();
   for (const row of rows) {
     if (doc.y + rowHeight > bottomLimit) {
-      doc.addPage(); // fires pageAdded -> paintBackground automatically
+      // Bare doc.addPage() would revert to the DOCUMENT's original construction options
+      // (portrait) rather than continuing in whatever orientation the caller placed this table
+      // in — pageOptions carries that through so a landscape table's overflow page is also
+      // landscape, not a narrower portrait page the already-computed column widths don't fit.
+      doc.addPage(pageOptions); // fires pageAdded -> paintBackground automatically
       doc.y = doc.page.margins.top;
       drawHeaderRow();
     }
@@ -539,6 +543,8 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
 }
 
 function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod }) {
+  const PORTRAIT = { margin: 50, layout: "portrait" };
+  const LANDSCAPE = { margin: 50, layout: "landscape" };
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
   let hasOrbitron = true;
   try {
@@ -552,13 +558,22 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   const done = new Promise((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
   // Dark background on every page, including ones pdfkit auto-adds when content overflows (the
-  // transaction history below can easily run to several pages for an active wallet) — pageAdded
+  // transaction table below can easily run to several pages for an active wallet) — pageAdded
   // fires after the new page exists but before anything's drawn on it, and .rect().fill() changes
   // the current fill color as a side effect, so every draw call below re-sets its own color rather
   // than assuming what the background fill left behind.
   const paintBackground = () => doc.rect(0, 0, doc.page.width, doc.page.height).fill(THEME.background);
   paintBackground();
   doc.on("pageAdded", paintBackground);
+
+  // Page-number tracking for the Contents block below — a second, independent 'pageAdded'
+  // listener (pdfkit supports multiple listeners on the same event) rather than folding this into
+  // paintBackground, so the two concerns stay easy to reason about separately. Fires for every
+  // addPage() call anywhere, including renderTransactionTable's own internal overflow pagination,
+  // so this stays accurate even when a section's table itself spans several pages.
+  let currentPageNumber = 1;
+  doc.on("pageAdded", () => { currentPageNumber++; });
+  const sectionPageNumbers = {};
 
   const sectionHeader = (text) => {
     doc.moveDown(0.2);
@@ -579,7 +594,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.y = logoY + logoHeight + 14;
 
   doc.font(hasOrbitron ? "Orbitron-Bold" : "Helvetica-Bold").fontSize(18).fillColor(THEME.white)
-    .text("Profit & Loss Statement");
+    .text("Electroneum Profit & Loss Statement");
   doc.font("Helvetica");
   doc.moveDown(0.3);
   // Replaces the old static "Planet Zephyros — Electroneum Dashboard" subtitle with a real,
@@ -616,8 +631,27 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   }
   doc.moveDown(1);
 
+  // Contents — page numbers aren't known yet (they depend on how much content later sections
+  // take up), so this reserves blank lines now, at fontSize 10, remembering each entry's exact Y
+  // position, then gets overwritten with the real page numbers via switchToPage() right before
+  // doc.end() once every section's actual starting page is known. Entry list matches the
+  // sectionHeader() calls below exactly, including Game Activity being conditional.
+  const contentsEntries = ["Summary", "Opening Inventory", "Closing Inventory", "Realized Gains & Losses"];
+  if (gameActivity.size > 0) contentsEntries.push("Game Activity");
+  contentsEntries.push("Transaction History", "Understanding This Statement");
+  const contentsPageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("Contents");
+  doc.font("Helvetica").fillColor(THEME.bodyText).fontSize(10);
+  const contentsEntryYs = [];
+  for (let i = 0; i < contentsEntries.length; i++) {
+    contentsEntryYs.push(doc.y);
+    doc.text(" ");
+  }
+  doc.moveDown(1);
+
   const line = (label, value) => doc.fontSize(11).fillColor(THEME.bodyText).text(`${label}: ${value}`);
 
+  sectionPageNumbers["Summary"] = currentPageNumber;
   sectionHeader("Summary");
   line("On-chain inflows (USD)", flows.onChainIn.toFixed(2));
   line("On-chain outflows (USD)", flows.onChainOut.toFixed(2));
@@ -634,14 +668,23 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.font("Helvetica");
   doc.moveDown(1);
 
+  sectionPageNumbers["Opening Inventory"] = currentPageNumber;
   sectionHeader("Opening Inventory");
   renderInventorySection(doc, openingValuation, tokenMeta, "No open positions at period start (this appears to be the wallet's first reporting period).");
   doc.moveDown(1);
 
+  sectionPageNumbers["Closing Inventory"] = currentPageNumber;
   sectionHeader("Closing Inventory");
   renderInventorySection(doc, closingValuation, tokenMeta, "No open positions at period end.");
   doc.moveDown(1);
 
+  // Realized Gains & Losses and Transaction History both get their own landscape page — wider
+  // rows read far better for these two specifically (long asset labels, tabular data) than the
+  // portrait layout the rest of the statement uses.
+  doc.addPage(LANDSCAPE);
+  doc.x = doc.page.margins.left;
+  doc.y = doc.page.margins.top;
+  sectionPageNumbers["Realized Gains & Losses"] = currentPageNumber;
   sectionHeader("Realized Gains & Losses");
   if (!realizedEventsInPeriod || realizedEventsInPeriod.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No disposals (sales, swaps, or NFT sales) in this period.");
@@ -662,6 +705,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.moveDown(1);
 
   if (gameActivity.size > 0) {
+    sectionPageNumbers["Game Activity"] = currentPageNumber;
     sectionHeader("Game Activity");
     doc.fontSize(9).fillColor(THEME.muted).text("Already counted in Realized Gains & Losses above — shown again here as a labeled breakdown, not an additional amount.");
     doc.moveDown(0.3);
@@ -677,14 +721,28 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.moveDown(1);
   }
 
+  doc.addPage(LANDSCAPE);
+  doc.x = doc.page.margins.left;
+  doc.y = doc.page.margins.top;
+  sectionPageNumbers["Transaction History"] = currentPageNumber;
   sectionHeader("Transaction History");
   if (transactionLines.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No transactions in this period.");
   } else {
-    renderTransactionTable(doc, transactionLines);
+    renderTransactionTable(doc, transactionLines, LANDSCAPE);
   }
+  // renderTransactionTable positions every cell with explicit x/y — without this, doc.x is left
+  // wherever the last column was (the Tx column, far right), and the next plain-flowing .text()
+  // call (Understanding This Statement's header) would start from THAT stale x instead of the
+  // page's left margin, visually landing inside the table's own column area. Confirmed live: this
+  // was exactly the "Understanding This Statement looks like it's gone into the table" bug.
+  doc.x = doc.page.margins.left;
   doc.moveDown(1);
 
+  doc.addPage(PORTRAIT);
+  doc.x = doc.page.margins.left;
+  doc.y = doc.page.margins.top;
+  sectionPageNumbers["Understanding This Statement"] = currentPageNumber;
   sectionHeader("Understanding This Statement");
   doc.fontSize(9);
   for (const [label, explanation] of SUMMARY_EXPLANATIONS) {
@@ -719,6 +777,20 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.moveDown(0.6);
 
   doc.fontSize(8).fillColor(THEME.muted).text(DISCLAIMER, { align: "left" });
+
+  // Every section's real starting page is known now — go back to page 1 (bufferPages:true keeps
+  // every page in memory until end() actually flushes them, so this is safe) and overwrite the
+  // blank lines reserved earlier with the real Contents entries. switchToPage only changes where
+  // subsequent draw calls target; it doesn't need to be switched back afterward — end() flushes
+  // every buffered page regardless of which one is "current".
+  doc.switchToPage(0);
+  doc.fontSize(10).font("Helvetica").fillColor(THEME.bodyText);
+  for (let i = 0; i < contentsEntries.length; i++) {
+    const label = contentsEntries[i];
+    const pageNum = sectionPageNumbers[label] ?? "?";
+    const dots = ".".repeat(Math.max(2, 55 - label.length - String(pageNum).length));
+    doc.text(`${label} ${dots} ${pageNum}`, doc.page.margins.left, contentsEntryYs[i], { width: contentsPageWidth, lineBreak: false });
+  }
 
   doc.end();
   return done;
