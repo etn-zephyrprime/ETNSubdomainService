@@ -177,13 +177,102 @@ async function priceOrNull(asset, timestamp) {
   }
 }
 
-/** Collects and classifies a wallet's raw transfers (native + tokens) and gas fees across both the
- * /transactions and /internal-transactions endpoints. Swap detection/decomposition is layered on
- * top separately (see ingestSwaps) rather than folded in here, since a swap's own token-transfer
- * legs would otherwise double-count as plain transfers too. */
-async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes) {
+/** Detects whether a single /transactions item `tx` is an ElectroSwap trade — same heuristic as
+ * before (see this file's header comment): fetch the tx's logs, look for a Swap topic naming the
+ * tracked wallet as sender/to, then match the sold/bought legs against its own token_transfers.
+ * Only ever called for contract-interaction txs that already have token transfers attached
+ * (checked by the caller), so this is never wasted on a plain ETN send. On a match, records the
+ * trade into `swapRows` and the tx hash into `swapTxHashes`, and returns true so the caller skips
+ * emitting this tx's native/token legs as plain transfers instead. */
+async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows) {
+  let logsPage;
+  try {
+    logsPage = await fetchPage(`/transactions/${tx.hash}/logs`, null);
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not fetch logs for tx ${tx.hash}, skipping swap detection for it:`, err.message);
+    return false;
+  }
+
+  const swapLog = (logsPage.items || []).find((l) => (l.topics || [])[0] === SWAP_TOPIC);
+  if (!swapLog) return false;
+
+  let parsed;
+  try {
+    // Blockscout pads `topics` to a fixed length with trailing nulls for unused slots (confirmed
+    // live) — ethers' parseLog expects exactly as many topics as the event actually uses (1
+    // signature + N indexed params), not a padded array.
+    const realTopics = (swapLog.topics || []).filter((t) => t != null);
+    parsed = SWAP_IFACE.parseLog({ topics: realTopics, data: swapLog.data });
+  } catch {
+    return false;
+  }
+
+  const sender = String(parsed.args.sender).toLowerCase();
+  const to = String(parsed.args.to).toLowerCase();
+  if (sender !== walletLc && to !== walletLc) return false; // this Swap log isn't this wallet's trade
+
+  // Determine which leg the wallet actually sold/bought via the tx's own decoded token transfers —
+  // restricted to transfers directly between the wallet and THIS pool (swapLog.address), not just
+  // "any transfer from/to the wallet anywhere in the tx". Confirmed live this distinction matters:
+  // a tx can contain unrelated later transfers (e.g. a buyBackAndBurn's burn-to-zero-address leg)
+  // that would otherwise be misattributed as a swap leg if matched by wallet address alone. A pure
+  // ETN<->token swap has only one pool<->wallet token-transfer leg; the other leg is the tx's own
+  // native value (handled by the caller's plain-native-transfer logic being skipped for this tx
+  // hash, since this function returning true means it's a swap leg instead).
+  const poolLc = String(swapLog.address?.hash || swapLog.address).toLowerCase();
+  const sold = tokenTransfers.find(
+    (t) => String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc
+  );
+  const bought = tokenTransfers.find(
+    (t) => String(t.to?.hash).toLowerCase() === walletLc && String(t.from?.hash).toLowerCase() === poolLc
+  );
+  if (!sold && !bought) return false; // couldn't identify either leg — don't fabricate a trade
+
+  const timestamp = new Date(tx.timestamp);
+  const nativeValue = BigInt(tx.value || "0");
+
+  const soldAddress = sold ? sold.token.address : "NATIVE";
+  const soldAmount = sold ? weiToDecimal(BigInt(sold.total.value), Number(sold.token.decimals)) : weiToDecimal(nativeValue);
+  const boughtAddress = bought ? bought.token.address : "NATIVE";
+  const boughtAmount = bought ? weiToDecimal(BigInt(bought.total.value), Number(bought.token.decimals)) : weiToDecimal(nativeValue);
+
+  const [priceSold, priceBought] = await Promise.all([
+    priceOrNull(soldAddress, timestamp),
+    priceOrNull(boughtAddress, timestamp),
+  ]);
+
+  swapTxHashes.add(tx.hash.toLowerCase());
+  swapRows.push({
+    trackedWallet,
+    txHash: tx.hash,
+    logIndex: Number(swapLog.index ?? 0),
+    poolAddress: swapLog.address?.hash || swapLog.address, // Blockscout returns an address object ({hash, ...}), not a bare string
+    tokenSoldAddress: soldAddress,
+    amountSold: soldAmount,
+    tokenBoughtAddress: boughtAddress,
+    amountBought: boughtAmount,
+    priceUsdSoldLeg: priceSold,
+    priceUsdBoughtLeg: priceBought,
+    blockNumber: Number(tx.block_number),
+    timestamp,
+  });
+  return true;
+}
+
+/** Walks /addresses/{wallet}/transactions exactly once, doing BOTH swap detection and gas/plain-
+ * native-transfer extraction in the same per-tx pass. These used to be two entirely separate full
+ * walks of this same endpoint (one in a since-removed ingestSwaps, one here) — pure waste, since
+ * whether a given tx is a swap never depends on any *other* tx, so both can be decided together
+ * with no ordering hazard. For a high-activity wallet this endpoint is usually the largest of the
+ * three by page count, so halving its walks (on top of removing the duplicate) is where most of
+ * this refactor's win comes from. Returns { swapTxHashes, highestBlock } — swapTxHashes feeds
+ * ingestInternalTransactions/ingestTokenTransfers below, which still run after this completes,
+ * since they filter on the now-complete set. */
+async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAtBlock) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
+  const swapTxHashes = new Set();
+  const swapRows = [];
   let highestBlock = stopAtBlock ?? -1;
 
   await walkAllPages(`/addresses/${trackedWallet}/transactions`, stopAtBlock, async (items) => {
@@ -192,6 +281,16 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
       const fromLc = String(tx.from?.hash || "").toLowerCase();
       const toLc = String(tx.to?.hash || "").toLowerCase();
       const timestamp = new Date(tx.timestamp);
+
+      // Only worth checking transactions that are actually contract interactions with token
+      // transfers attached — Blockscout's /transactions items already embed a token_transfers
+      // array per tx (confirmed live), which is exactly the filter needed here without a second
+      // per-tx fetch for every plain ETN send.
+      const tokenTransfers = tx.token_transfers || [];
+      const isSwap =
+        tokenTransfers.length > 0 && tx.to?.is_contract
+          ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows)
+          : false;
 
       // Gas is only ever charged to whoever actually sent the transaction.
       if (fromLc === walletLc && tx.gas_used && tx.gas_price) {
@@ -220,7 +319,6 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
       // Plain top-level native ETN transfer (tx.value), separate from the gas-fee row above.
       const value = BigInt(tx.value || "0");
       if (value > 0n && (fromLc === walletLc || toLc === walletLc) && fromLc !== toLc) {
-        const isSwap = swapTxHashes.has(tx.hash.toLowerCase());
         if (isSwap) continue; // the swap leg is recorded via swap_trades instead, not as a plain transfer
         const direction = fromLc === walletLc ? "out" : "in";
         const counterparty = direction === "out" ? toLc : fromLc;
@@ -249,6 +347,19 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
       }
     }
   });
+
+  if (rows.length > 0) await insertTransfers(rows);
+  if (swapRows.length > 0) await insertSwapTrades(swapRows);
+  return { swapTxHashes, highestBlock };
+}
+
+/** Walks /addresses/{wallet}/internal-transactions — ETN moved by contract calls, invisible to
+ * both the plain transaction list and eth_getLogs. Independent of ingestTokenTransfers below (each
+ * only touches its own endpoint/rows), so the caller runs the two concurrently. */
+async function ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes) {
+  const walletLc = trackedWallet.toLowerCase();
+  const rows = [];
+  let highestBlock = stopAtBlock ?? -1;
 
   await walkAllPages(`/addresses/${trackedWallet}/internal-transactions`, stopAtBlock, async (items) => {
     for (const itx of items) {
@@ -288,6 +399,17 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
       });
     }
   });
+
+  if (rows.length > 0) await insertTransfers(rows);
+  return highestBlock;
+}
+
+/** Walks /addresses/{wallet}/token-transfers — ERC20/721/1155 in/out. Independent of
+ * ingestInternalTransactions above, so the caller runs the two concurrently. */
+async function ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes) {
+  const walletLc = trackedWallet.toLowerCase();
+  const rows = [];
+  let highestBlock = stopAtBlock ?? -1;
 
   await walkAllPages(`/addresses/${trackedWallet}/token-transfers`, stopAtBlock, async (items) => {
     for (const tt of items) {
@@ -370,102 +492,6 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
   return highestBlock;
 }
 
-/** Finds Swap events involving the tracked wallet within its own transaction history, by fetching
- * each transaction's logs and checking for the Swap topic — see this file's header comment on the
- * detection heuristic and its known limitations. Returns the set of matched tx hashes (lowercased)
- * so ingestTransfersAndGas can skip those legs as plain transfers, and writes swap_trades rows. */
-async function ingestSwaps(trackedWallet, stopAtBlock) {
-  const walletLc = trackedWallet.toLowerCase();
-  const swapTxHashes = new Set();
-  const swapRows = [];
-
-  // Only worth checking transactions that are actually contract interactions with token transfers
-  // attached — Blockscout's /transactions items already embed a token_transfers array per tx
-  // (confirmed live), which is exactly the filter needed here without a second per-tx fetch.
-  await walkAllPages(`/addresses/${trackedWallet}/transactions`, stopAtBlock, async (items) => {
-    for (const tx of items) {
-      const tokenTransfers = tx.token_transfers || [];
-      if (tokenTransfers.length === 0 || !tx.to?.is_contract) continue;
-
-      let logsPage;
-      try {
-        logsPage = await fetchPage(`/transactions/${tx.hash}/logs`, null);
-      } catch (err) {
-        console.warn(`⚠️  Ingestion: could not fetch logs for tx ${tx.hash}, skipping swap detection for it:`, err.message);
-        continue;
-      }
-
-      const swapLog = (logsPage.items || []).find((l) => (l.topics || [])[0] === SWAP_TOPIC);
-      if (!swapLog) continue;
-
-      let parsed;
-      try {
-        // Blockscout pads `topics` to a fixed length with trailing nulls for unused slots
-        // (confirmed live) — ethers' parseLog expects exactly as many topics as the event
-        // actually uses (1 signature + N indexed params), not a padded array.
-        const realTopics = (swapLog.topics || []).filter((t) => t != null);
-        parsed = SWAP_IFACE.parseLog({ topics: realTopics, data: swapLog.data });
-      } catch {
-        continue;
-      }
-
-      const sender = String(parsed.args.sender).toLowerCase();
-      const to = String(parsed.args.to).toLowerCase();
-      if (sender !== walletLc && to !== walletLc) continue; // this Swap log isn't this wallet's trade
-
-      // Determine which leg the wallet actually sold/bought via the tx's own decoded token
-      // transfers — restricted to transfers directly between the wallet and THIS pool
-      // (swapLog.address), not just "any transfer from/to the wallet anywhere in the tx".
-      // Confirmed live this distinction matters: a tx can contain unrelated later transfers
-      // (e.g. a buyBackAndBurn's burn-to-zero-address leg) that would otherwise be misattributed
-      // as a swap leg if matched by wallet address alone. A pure ETN<->token swap has only one
-      // pool<->wallet token-transfer leg; the other leg is the tx's own native value (handled by
-      // ingestTransfersAndGas's plain-native-transfer logic being skipped for this tx hash, then
-      // re-attributed here as the swap's ETN leg).
-      const poolLc = String(swapLog.address?.hash || swapLog.address).toLowerCase();
-      const sold = tokenTransfers.find(
-        (t) => String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc
-      );
-      const bought = tokenTransfers.find(
-        (t) => String(t.to?.hash).toLowerCase() === walletLc && String(t.from?.hash).toLowerCase() === poolLc
-      );
-      const timestamp = new Date(tx.timestamp);
-      const nativeValue = BigInt(tx.value || "0");
-
-      const soldAddress = sold ? sold.token.address : "NATIVE";
-      const soldAmount = sold ? weiToDecimal(BigInt(sold.total.value), Number(sold.token.decimals)) : weiToDecimal(nativeValue);
-      const boughtAddress = bought ? bought.token.address : "NATIVE";
-      const boughtAmount = bought ? weiToDecimal(BigInt(bought.total.value), Number(bought.token.decimals)) : weiToDecimal(nativeValue);
-
-      if (!sold && !bought) continue; // couldn't identify either leg — don't fabricate a trade
-
-      const [priceSold, priceBought] = await Promise.all([
-        priceOrNull(soldAddress, timestamp),
-        priceOrNull(boughtAddress, timestamp),
-      ]);
-
-      swapTxHashes.add(tx.hash.toLowerCase());
-      swapRows.push({
-        trackedWallet,
-        txHash: tx.hash,
-        logIndex: Number(swapLog.index ?? 0),
-        poolAddress: swapLog.address?.hash || swapLog.address, // Blockscout returns an address object ({hash, ...}), not a bare string
-        tokenSoldAddress: soldAddress,
-        amountSold: soldAmount,
-        tokenBoughtAddress: boughtAddress,
-        amountBought: boughtAmount,
-        priceUsdSoldLeg: priceSold,
-        priceUsdBoughtLeg: priceBought,
-        blockNumber: Number(tx.block_number),
-        timestamp,
-      });
-    }
-  });
-
-  if (swapRows.length > 0) await insertSwapTrades(swapRows);
-  return swapTxHashes;
-}
-
 /**
  * Ingests (or backfills) `trackedWallet`'s on-chain history. `selfOwnedAddresses` are the user's
  * other addresses, used to flag self-transfers (excluded from FIFO disposal — see fifoLotEngine.js).
@@ -479,8 +505,18 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
 
   console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}`);
 
-  const swapTxHashes = await ingestSwaps(trackedWallet, stopAtBlock);
-  const highestBlock = await ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes);
+  // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
+  // other two need to correctly skip a swap's legs. Those two are independent of each other, so
+  // they run concurrently rather than sequentially — see each function's own comment for why this
+  // is a meaningful restructure, not just a stylistic change: /transactions used to be walked
+  // twice (once here, once in a separate swap-detection pass) and all three walks used to run
+  // fully sequentially.
+  const { swapTxHashes, highestBlock: highestFromTx } = await ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAtBlock);
+  const [highestFromInternal, highestFromTokens] = await Promise.all([
+    ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes),
+    ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes),
+  ]);
+  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
 
   if (highestBlock >= 0) {
     await upsertIngestionState(trackedWallet, {
