@@ -38,7 +38,11 @@ const THEME = {
 const LOGO_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosLogo.png");
 const WORDMARK_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosText.png");
 const ORBITRON_BOLD_PATH = path.resolve(__dirname, "..", "fonts", "Orbitron-Bold.ttf");
-const PREMIUM_TAB_URL = "https://dashboard.planetzephyros.xyz/premium";
+// /pnl is the feature's canonical path on the existing dashboard.planetzephyros.xyz domain (see
+// DashboardApp.jsx's tab-init logic) — no separate subdomain/DNS entry needed. This constant only
+// affects newly-generated statements going forward; already-frozen PDFs keep whatever link they
+// were built with.
+const PREMIUM_TAB_URL = "https://dashboard.planetzephyros.xyz/pnl";
 
 const NATIVE_SENTINEL = "NATIVE";
 const DISCLAIMER =

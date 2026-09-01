@@ -9,6 +9,9 @@ import './index.css'
 // below talks to WalletConnect's infra on load) never loads at all for a visitor on the other
 // domain. Matches this app's existing "check window.location, branch client-side" convention
 // already used for the /pay/, /subnames/, /marketplace deep links in App.jsx.
+// The PnL Statement feature lives at dashboard.planetzephyros.xyz/pnl — a path on this same
+// domain, not a separate subdomain — so no extra hostname branch is needed here; see
+// DashboardApp.jsx for the /pnl path handling.
 const isDashboardHost = /^dashboard\./i.test(window.location.hostname) || new URLSearchParams(window.location.search).has("__dashboard_test");
 
 // <title>/favicon live in the one static index.html both apps share, so a dashboard visitor was

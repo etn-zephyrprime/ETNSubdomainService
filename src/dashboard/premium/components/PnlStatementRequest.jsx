@@ -26,6 +26,12 @@ const inputStyle = {
 const labelStyle = { fontSize: 11, color: mutedLight, display: "block", marginBottom: 6 };
 const CURRENT_YEAR = new Date().getUTCFullYear();
 
+// Permanent, already-generated request used as a live example — Calendar Year 2025 for
+// planetzephyros.etn, generated during this feature's own end-to-end testing. Links to the
+// existing /statement/:id viewer route rather than the raw R2 PDF URL, same as createdRequests
+// links below, so it opens in-app (new tab) instead of a bare file download.
+const DEMO_STATEMENT_REQUEST_ID = "830724ea-c676-4f17-8de1-e675e45fc995";
+
 function parseAddressList(raw) {
   return raw
     .split(/[\n,]/)
@@ -215,6 +221,15 @@ export default function PnlStatementRequest({ wallet }) {
       </div>
 
       {loadError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{loadError}</div>}
+
+      <a
+        href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ color: green, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12, textDecoration: "none", marginBottom: 14 }}
+      >
+        <ExternalLink size={12} /> View a demo statement
+      </a>
 
       <div style={{ fontSize: 13, color: mutedLight, marginBottom: 6 }}>
         Price per period: {pricePerPeriod != null ? (
