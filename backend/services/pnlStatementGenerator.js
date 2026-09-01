@@ -14,7 +14,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getById, markGenerated } from "../db/statementRequests.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
-import { ingestWalletHistory } from "./pnlIngestion.js";
+import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
@@ -25,6 +25,18 @@ const DISCLAIMER =
   "legal, or financial advice. Figures use FIFO cost-basis accounting over a fixed reporting " +
   "period, which may not match every jurisdiction's actual tax treatment. Consult a qualified " +
   "professional in your jurisdiction before relying on this statement for tax filing.";
+
+// Plain-English explanations for the Summary section's line items, shown further down the
+// statement (after Closing Inventory) rather than inline — keeps the Summary itself scannable
+// while still giving every figure a real definition somewhere in the document.
+const SUMMARY_EXPLANATIONS = [
+  ["On-chain inflows / outflows (USD)", "The USD value of ETN and tokens received or sent on-chain during this period, excluding transfers between your own addresses (see \"self-owned addresses\") and gas fees, which are broken out separately below."],
+  ["CEX deposits / withdrawals (USD)", "The USD value of transfers to/from addresses recognized as centralized exchange wallets. Only wallets this app already has on record are detected automatically — anything missed shows up as an on-chain flow instead."],
+  ["Gas fees paid", "The total transaction fees this wallet paid across every transaction in the period, valued in ETN and in USD at the time each fee was paid. Deducted from Net P&L, but not treated as a disposal for cost-basis purposes."],
+  ["Realized P&L (USD)", "Profit or loss actually locked in during this period: for every disposal (a sale, swap, or outbound transfer that isn't a self-transfer), proceeds minus the FIFO cost basis of the specific lot(s) consumed. FIFO means the oldest acquired units of an asset are always treated as sold first."],
+  ["Unrealized P&L (USD)", "The paper profit or loss on whatever this wallet still held at the exact end of the period: current market value at the period-end date minus the FIFO cost basis of those remaining holdings. Nothing here has actually been sold — it reflects value on paper only, as of the period-end snapshot."],
+  ["Net P&L after fees (USD)", "Realized P&L plus Unrealized P&L, minus total gas fees paid (USD) for the period. The single bottom-line figure for the period."],
+];
 
 let cachedR2Client = null;
 function getR2Client() {
@@ -51,6 +63,38 @@ async function uploadStatementArtifact(body, key, contentType) {
       CacheControl: "public, max-age=31536000, immutable",
     })
   );
+}
+
+/** "Name (SYMBOL) (0xAddress)" when both name/symbol are known, degrading gracefully down to just
+ * the address if metadata lookup failed for that token. Native ETN has no contract address, so it
+ * never gets a trailing "(0x...)" segment. `tokenMeta` is the Map built by collectTokenMetadata. */
+function formatAssetLabel(tokenAddress, tokenMeta) {
+  if (tokenAddress === NATIVE_SENTINEL) return "Electroneum (ETN)";
+  const meta = tokenMeta.get(tokenAddress.toLowerCase());
+  if (meta?.name && meta?.symbol) return `${meta.name} (${meta.symbol}) (${tokenAddress})`;
+  if (meta?.symbol) return `${meta.symbol} (${tokenAddress})`;
+  return tokenAddress;
+}
+
+/** Resolves and caches name/symbol for every distinct token address appearing anywhere in this
+ * statement (opening/closing inventory, unrealized holdings, realized disposal events) in one
+ * pass, so formatAssetLabel/JSON enrichment never has to do it ad hoc per line item. Native ETN is
+ * never looked up (formatAssetLabel special-cases it directly). */
+async function collectTokenMetadata(openingLots, closingLots, unrealizedPerToken, realizedEvents) {
+  const addresses = new Set();
+  for (const l of openingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
+  for (const l of closingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
+  for (const t of unrealizedPerToken) if (t.tokenAddress !== NATIVE_SENTINEL) addresses.add(t.tokenAddress.toLowerCase());
+  for (const e of realizedEvents) if (e.tokenAddress !== NATIVE_SENTINEL) addresses.add(e.tokenAddress.toLowerCase());
+
+  const tokenMeta = new Map();
+  await Promise.all(
+    [...addresses].map(async (addr) => {
+      const meta = await getTokenMetadata(addr);
+      if (meta) tokenMeta.set(addr, meta);
+    })
+  );
+  return tokenMeta;
 }
 
 function transferToEvent(t) {
@@ -139,7 +183,26 @@ async function computeUnrealizedPnl(closingLots, periodEnd) {
   return { totalUnrealizedUsd, perToken };
 }
 
-function buildPdf({ request, periodStart, periodEnd, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd }) {
+/** Sums lot quantities per token and renders one line per distinct asset, using formatAssetLabel
+ * for the "Name (SYMBOL) (0xAddress)" formatting — shared by both the Opening and Closing
+ * Inventory sections below, which are otherwise identical in shape. */
+function renderInventorySection(doc, lots, tokenMeta, emptyText) {
+  if (lots.length === 0) {
+    doc.fontSize(10).text(emptyText);
+    return;
+  }
+  const byToken = new Map();
+  for (const lot of lots) {
+    const key = lot.tokenAddress;
+    const cur = byToken.get(key) || new Decimal(0);
+    byToken.set(key, cur.plus(lot.quantityRemaining));
+  }
+  for (const [token, qty] of byToken) {
+    doc.fontSize(10).text(`${formatAssetLabel(token, tokenMeta)}: ${qty.toFixed(6)}`);
+  }
+}
+
+function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta }) {
   const doc = new PDFDocument({ margin: 50 });
   const chunks = [];
   doc.on("data", (c) => chunks.push(c));
@@ -154,6 +217,9 @@ function buildPdf({ request, periodStart, periodEnd, opening, closing, gas, flow
   doc.text(`Wallet: ${request.tracked_wallet}`);
   doc.text(`Reporting period: ${periodTypeLabel(request.period_type)} ${request.year}`);
   doc.text(`Period: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)}`);
+  if (blockRange) {
+    doc.text(`Block range: ${blockRange.startBlock} to ${blockRange.endBlock} (for cross-checking against the block explorer — informational only, not what determined which transactions were included; see the explanation below)`);
+  }
   doc.text(`Request ID: ${request.id}`);
   doc.text(`Generated: ${new Date().toISOString()}`);
   doc.moveDown(1);
@@ -176,22 +242,33 @@ function buildPdf({ request, periodStart, periodEnd, opening, closing, gas, flow
   doc.fontSize(12).text(`Net P&L after fees (USD): ${netPnlUsd.toFixed(2)}`, { underline: true });
   doc.moveDown(1);
 
+  doc.fontSize(14).text("Opening Inventory", { underline: true });
+  doc.moveDown(0.3);
+  renderInventorySection(doc, opening.lots, tokenMeta, "No open positions at period start (this appears to be the wallet's first reporting period).");
+  doc.moveDown(1);
+
   doc.fontSize(14).text("Closing Inventory", { underline: true });
   doc.moveDown(0.3);
-  if (closing.lots.length === 0) {
-    doc.fontSize(10).text("No open positions at period end.");
-  } else {
-    const byToken = new Map();
-    for (const lot of closing.lots) {
-      const key = lot.tokenAddress;
-      const cur = byToken.get(key) || new Decimal(0);
-      byToken.set(key, cur.plus(lot.quantityRemaining));
-    }
-    for (const [token, qty] of byToken) {
-      doc.fontSize(10).text(`${token === NATIVE_SENTINEL ? "ETN" : token}: ${qty.toFixed(6)}`);
-    }
-  }
+  renderInventorySection(doc, closing.lots, tokenMeta, "No open positions at period end.");
   doc.moveDown(1);
+
+  doc.fontSize(14).text("Understanding This Statement", { underline: true });
+  doc.moveDown(0.3);
+  doc.fontSize(9).fillColor("#333");
+  for (const [label, explanation] of SUMMARY_EXPLANATIONS) {
+    doc.font("Helvetica-Bold").text(label);
+    doc.font("Helvetica").text(explanation);
+    doc.moveDown(0.4);
+  }
+  if (blockRange) {
+    doc.font("Helvetica-Bold").text("Block range");
+    doc.font("Helvetica").text(
+      "The Block range shown above is derived by looking up which block was nearest each period boundary's exact timestamp — it's provided so you can independently cross-check this statement's activity against the block explorer directly. It is not what this statement itself used to decide which transactions to include: that decision is based on each transaction's own timestamp falling within the period, not its block number."
+    );
+    doc.moveDown(0.4);
+  }
+  doc.fillColor("#000");
+  doc.moveDown(0.6);
 
   doc.fontSize(8).fillColor("#777").text(DISCLAIMER, { align: "left" });
 
@@ -242,10 +319,26 @@ export async function generateStatement(requestId) {
   ]);
   const flows = summarizeFlows(transfersInPeriod);
 
-  const realizedPnlUsd = closing.realizedEvents
-    .filter((e) => e.timestamp >= periodStart)
-    .reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
+  const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
+  const realizedPnlUsd = realizedEventsInPeriod.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   const netPnlUsd = realizedPnlUsd.plus(unrealized.totalUnrealizedUsd).minus(gas.totalGasUsd);
+
+  // Informational only (see getBlockByTimestamp's own comment) — never lets a lookup failure fail
+  // the whole statement, since this is purely a cross-checking convenience, not load-bearing data.
+  let blockRange = null;
+  try {
+    const [startBlock, endBlock] = await Promise.all([
+      getBlockByTimestamp(periodStart, "after"),
+      getBlockByTimestamp(periodEnd, "before"),
+    ]);
+    blockRange = { startBlock, endBlock };
+    console.log(`📄 Statement ${requestId}: period ${periodStart.toISOString()} to ${periodEnd.toISOString()} resolved to blocks ${startBlock}-${endBlock}`);
+  } catch (err) {
+    console.warn(`⚠️  Statement generator: could not resolve block range for request ${requestId}:`, err.message);
+  }
+
+  const tokenMeta = await collectTokenMetadata(opening.lots, closing.lots, unrealized.perToken, realizedEventsInPeriod);
+  const withAssetLabel = (obj, tokenAddress) => ({ ...obj, tokenAddress, assetLabel: formatAssetLabel(tokenAddress, tokenMeta) });
 
   const jsonArtifact = {
     schemaVersion: 1,
@@ -256,26 +349,30 @@ export async function generateStatement(requestId) {
     year: request.year,
     periodStart: periodStart.toISOString(),
     periodEnd: periodEnd.toISOString(),
+    blockRange,
     generatedAt: new Date().toISOString(),
-    openingInventory: opening.lots.map((l) => ({ tokenAddress: l.tokenAddress, quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() })),
-    closingInventory: closing.lots.map((l) => ({ tokenAddress: l.tokenAddress, quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() })),
+    openingInventory: opening.lots.map((l) => withAssetLabel({ quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() }, l.tokenAddress)),
+    closingInventory: closing.lots.map((l) => withAssetLabel({ quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() }, l.tokenAddress)),
     flows: { onChainIn: flows.onChainIn.toString(), onChainOut: flows.onChainOut.toString(), cexIn: flows.cexIn.toString(), cexOut: flows.cexOut.toString() },
     fees: { gasEtn: gas.totalGasEtn, gasUsd: gas.totalGasUsd.toString() },
-    realizedPnlEvents: closing.realizedEvents.filter((e) => e.timestamp >= periodStart).map((e) => ({
-      tokenAddress: e.tokenAddress,
+    realizedPnlEvents: realizedEventsInPeriod.map((e) => withAssetLabel({
       disposalTxHash: e.disposalTxHash,
       timestamp: e.timestamp.toISOString(),
       quantityConsumed: e.quantityConsumed.toString(),
       costBasisUsd: e.costBasisUsd.toString(),
       proceedsUsd: e.proceedsUsd.toString(),
       realizedPnlUsd: e.realizedPnlUsd.toString(),
-    })),
-    unrealizedPnl: { totalUsd: unrealized.totalUnrealizedUsd.toString(), perToken: unrealized.perToken },
+    }, e.tokenAddress)),
+    unrealizedPnl: {
+      totalUsd: unrealized.totalUnrealizedUsd.toString(),
+      perToken: unrealized.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
+    },
     summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: unrealized.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
+    summaryExplanations: Object.fromEntries(SUMMARY_EXPLANATIONS),
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd: unrealized.totalUnrealizedUsd, netPnlUsd });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd: unrealized.totalUnrealizedUsd, netPnlUsd, tokenMeta });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;
