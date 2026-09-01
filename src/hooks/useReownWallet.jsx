@@ -69,7 +69,17 @@ export const appKitModal = createAppKit({
   defaultNetwork: electroneum,
   projectId: REOWN_PROJECT_ID,
   metadata,
-  enableInjected: false,
+  // Was `false` with no documented reason (present since this hook's first commit). Disabling
+  // this skips creating an injected (window.ethereum) connector entirely — confirmed in
+  // @reown/appkit-adapter-ethers' client.js, `enableInjected !== false` gates whether it even
+  // instantiates one. That's mostly moot on a plain mobile browser tab (no window.ethereum there
+  // regardless), but it also blocks the one genuinely reliable mobile path: opening this site
+  // through MetaMask's own in-app browser, which injects window.ethereum directly — no
+  // WalletConnect deep-link handoff involved. With injected disabled, even that route was forced
+  // through the same deep-link roundtrip as a bare browser tab, which is a known source of
+  // flakiness on Android (e.g. reown-com/appkit#4823 — MetaMask's confirmation dialog not
+  // appearing after the deep link fires). `true` is also this option's own library default.
+  enableInjected: true,
   allowUnsupportedChain: false,
   featuredWalletIds: FEATURED_WALLET_IDS,
   features: {
