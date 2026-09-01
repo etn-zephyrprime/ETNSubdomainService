@@ -326,6 +326,14 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
     return Number(process.env.PNL_PRICING_TESTNET_STUB_USD);
   }
 
+  // "collectionAddress:tokenId" — pnlStatementGenerator.js's NFT lot key convention (see
+  // buildNftEvents). No fungible-market price feed exists for one specific NFT — fail fast rather
+  // than wasting a bulk-backfill attempt (and a stray price_history_backfill_state row) on a
+  // string that was never a real token address to begin with.
+  if (asset.includes(":")) {
+    throw new Error(`No price feed for individual NFT ${asset} — NFT valuation comes from correlated same-tx payments, not a market price`);
+  }
+
   const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
   const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
   const bucketed = bucketToDay(timestamp);

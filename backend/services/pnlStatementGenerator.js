@@ -86,32 +86,50 @@ async function uploadStatementArtifact(body, key, contentType) {
   );
 }
 
-/** "Name (SYMBOL) (0xAddress)" when both name/symbol are known, degrading gracefully down to just
- * the address if metadata lookup failed for that token. Native ETN has no contract address, so it
- * never gets a trailing "(0x...)" segment. `tokenMeta` is the Map built by collectTokenMetadata. */
-function formatAssetLabel(tokenAddress, tokenMeta) {
-  if (tokenAddress === NATIVE_SENTINEL) return "Electroneum (ETN)";
-  const meta = tokenMeta.get(tokenAddress.toLowerCase());
-  if (meta?.name && meta?.symbol) return `${meta.name} (${meta.symbol}) (${tokenAddress})`;
-  if (meta?.symbol) return `${meta.symbol} (${tokenAddress})`;
-  return tokenAddress;
+/** True addresses never contain ":" — buildNftEvents's own lot-key convention for one specific
+ * NFT is "collectionAddress:tokenId". Used wherever a value that's usually a bare token address
+ * needs to be told apart from that composite form. */
+function isNftAssetKey(assetKey) {
+  return assetKey.includes(":");
 }
 
-/** Resolves and caches name/symbol for every distinct token address appearing anywhere in this
- * statement (opening/closing inventory, unrealized holdings, realized disposal events, plus every
- * in-period transfer/swap for the Transaction History section) in one pass, so
+/** "Name (SYMBOL) (0xAddress)" for a fungible token, "CollectionName #id (0xAddress)" for one
+ * specific NFT (assetKey "collectionAddress:tokenId" — see buildNftEvents), degrading gracefully
+ * to just the address/id if metadata lookup failed. Native ETN has no contract address, so it
+ * never gets a trailing "(0x...)" segment. `tokenMeta` is the Map built by collectTokenMetadata,
+ * keyed by bare collection/token address either way (never the composite NFT key). */
+function formatAssetLabel(assetKey, tokenMeta) {
+  if (assetKey === NATIVE_SENTINEL) return "Electroneum (ETN)";
+  if (isNftAssetKey(assetKey)) {
+    const [collectionAddress, tokenId] = assetKey.split(":");
+    const meta = tokenMeta.get(collectionAddress.toLowerCase());
+    const collectionLabel = meta?.name || meta?.symbol || collectionAddress;
+    return `${collectionLabel} #${tokenId} (${collectionAddress})`;
+  }
+  const meta = tokenMeta.get(assetKey.toLowerCase());
+  if (meta?.name && meta?.symbol) return `${meta.name} (${meta.symbol}) (${assetKey})`;
+  if (meta?.symbol) return `${meta.symbol} (${assetKey})`;
+  return assetKey;
+}
+
+/** Resolves and caches name/symbol for every distinct token/NFT-collection address appearing
+ * anywhere in this statement (opening/closing inventory, unrealized holdings, realized disposal
+ * events, plus every in-period transfer/swap for the Transaction History section) in one pass, so
  * formatAssetLabel/JSON enrichment never has to do it ad hoc per line item. Native ETN is never
- * looked up (formatAssetLabel special-cases it directly). */
+ * looked up (formatAssetLabel special-cases it directly); NFT composite keys are reduced to their
+ * bare collection address first, since that's the actual contract Blockscout's metadata endpoint
+ * knows about — a specific tokenId is never itself a lookup target. */
 async function collectTokenMetadata(openingLots, closingLots, unrealizedPerToken, realizedEvents, transfersInPeriod, swapsInPeriod) {
   const addresses = new Set();
-  for (const l of openingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
-  for (const l of closingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
-  for (const t of unrealizedPerToken) if (t.tokenAddress !== NATIVE_SENTINEL) addresses.add(t.tokenAddress.toLowerCase());
-  for (const e of realizedEvents) if (e.tokenAddress !== NATIVE_SENTINEL) addresses.add(e.tokenAddress.toLowerCase());
-  for (const t of transfersInPeriod) if (t.token_address) addresses.add(t.token_address.toLowerCase());
+  const addBare = (key) => { if (key && key !== NATIVE_SENTINEL) addresses.add((isNftAssetKey(key) ? key.split(":")[0] : key).toLowerCase()); };
+  for (const l of openingLots) addBare(l.tokenAddress);
+  for (const l of closingLots) addBare(l.tokenAddress);
+  for (const t of unrealizedPerToken) addBare(t.tokenAddress);
+  for (const e of realizedEvents) addBare(e.tokenAddress);
+  for (const t of transfersInPeriod) addBare(t.token_address);
   for (const s of swapsInPeriod) {
-    if (s.token_sold_address && s.token_sold_address !== NATIVE_SENTINEL) addresses.add(s.token_sold_address.toLowerCase());
-    if (s.token_bought_address && s.token_bought_address !== NATIVE_SENTINEL) addresses.add(s.token_bought_address.toLowerCase());
+    addBare(s.token_sold_address);
+    addBare(s.token_bought_address);
   }
 
   const tokenMeta = new Map();
@@ -158,6 +176,121 @@ function transferToEvent(t) {
   return t.direction === "out"
     ? { kind: "out", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal, proceedsUsd: t.usd_value ?? 0 }
     : { kind: "in", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal, unitCostUsd: t.price_usd_at_time ?? 0 };
+}
+
+// Known Core Clash game contracts on Electroneum mainnet — confirmed live via Blockscout
+// (verified source, real interaction history against the wallet used to build/test this feature).
+// Wagers/winnings move as plain ERC-20/native transfers to/from these addresses, already captured
+// by the generic ingestion pipeline — this section is a labeled BREAKDOWN of amounts already
+// counted in Realized P&L above, not a separate/additive figure (see buildGameActivitySummary's
+// own comment). CLUBSpinVault is a one-way prize payout (no wager side at all, confirmed via its
+// own contract — no "cost to play" leg exists to net against), included as a "won" line only.
+const KNOWN_GAME_CONTRACTS = new Map([
+  ["0xbb9ec09eab6d680e2a6c4794c34a9b3c0208fce2", "CoreClashTradingCardGame"],
+  ["0x113129f0865058a840d7ad78a655735a590c7c03", "CoreClashGame"],
+  ["0x9043c8797b3a3babd877aeed3e3cc3baad2d53c2", "CLUBSpinVault"],
+]);
+
+/** Breaks out wagered vs. won amounts specifically against known Core Clash game contracts, from
+ * transfers already collected by the generic ingestion pipeline — NOT a separate calculation, and
+ * NOT additive to Net P&L (these amounts are already counted there as ordinary disposals/
+ * acquisitions of whatever token was wagered). Purely a labeled re-view for visibility, per the
+ * explicit "if it cost me 50 CORE to play and I won 100 CORE, I need to see this" request. */
+function buildGameActivitySummary(transfersInPeriod) {
+  const perGame = new Map(); // contract address -> { name, wageredUsd, wonUsd, wageredUnpriced, wonUnpriced }
+  for (const t of transfersInPeriod) {
+    const name = KNOWN_GAME_CONTRACTS.get(t.counterparty_address?.toLowerCase());
+    if (!name || Number(t.amount_raw) === 0 || t.gas_fee_wei != null) continue;
+    if (!perGame.has(name)) perGame.set(name, { wageredUsd: new Decimal(0), wonUsd: new Decimal(0), wageredUnpriced: 0, wonUnpriced: 0 });
+    const g = perGame.get(name);
+    if (t.direction === "out") {
+      if (t.usd_value != null) g.wageredUsd = g.wageredUsd.plus(t.usd_value);
+      else g.wageredUnpriced++;
+    } else {
+      if (t.usd_value != null) g.wonUsd = g.wonUsd.plus(t.usd_value);
+      else g.wonUnpriced++;
+    }
+  }
+  return perGame;
+}
+
+const NFT_ASSET_TYPES = new Set(["erc721", "erc1155"]);
+
+/** "collectionAddress:tokenId" — the lot key one specific NFT is tracked under everywhere in this
+ * file (FIFO lots, formatAssetLabel, collectTokenMetadata). Distinct from a fungible token's plain
+ * address specifically so fifoLotEngine.js — which has no NFT-specific code at all, it just keys
+ * lots by whatever string it's given — never pools two different NFTs (or an NFT and a same-
+ * collection fungible token, if that were ever possible) into one FIFO queue. */
+function nftAssetKey(t) {
+  return `${t.token_address}:${t.token_id}`;
+}
+
+/** Detects NFT (ERC-721/1155) mint/purchase and sale/transfer-out events by correlating each NFT
+ * leg with any other non-NFT leg in the SAME transaction that moved value the opposite direction —
+ * the payment for a mint/purchase, or the proceeds of a sale. This is a heuristic, the same
+ * category of caveat as ingestSwaps' own same-tx-leg correlation in pnlIngestion.js: it assumes
+ * payment and NFT movement happen atomically in one transaction, which covers the common case (a
+ * single mint()/buyNow() call) but won't catch a payment that lands in a separate transaction. No
+ * same-tx match: cost basis / proceeds is 0 — correct for a genuine free mint/airdrop/gift, but
+ * would understate cost basis (or overstate a sale's gain) for a genuinely unmatched paid
+ * transaction, so `unmatchedCount` is surfaced on the returned object for the statement to flag.
+ *
+ * Returns { events: FIFO events (kind 'in'/'out'/'self_in'/'self_out', tokenAddress = the NFT's
+ * composite key) for every NFT leg, consumedRowIds: Set of row `id`s already turned into one of
+ * those events — the caller excludes these from the generic transferToEvent mapping so an NFT leg
+ * is never fed into FIFO twice, unmatchedCount }. */
+function buildNftEvents(transfers) {
+  const byTx = new Map();
+  for (const t of transfers) {
+    if (!byTx.has(t.tx_hash)) byTx.set(t.tx_hash, []);
+    byTx.get(t.tx_hash).push(t);
+  }
+
+  const events = [];
+  const consumedRowIds = new Set();
+  let unmatchedCount = 0;
+
+  for (const rows of byTx.values()) {
+    const nftLegs = rows.filter((r) => NFT_ASSET_TYPES.has(r.asset_type));
+    if (nftLegs.length === 0) continue;
+
+    for (const nftLeg of nftLegs) {
+      consumedRowIds.add(nftLeg.id);
+      const tokenAddress = nftAssetKey(nftLeg);
+      const timestamp = new Date(nftLeg.timestamp);
+      const quantity = Number(nftLeg.amount_decimal) || 1; // ERC-1155 batch quantity, or 1 for ERC-721
+
+      if (nftLeg.direction === "in") {
+        if (nftLeg.is_self_transfer) {
+          // No fungible-market price feed exists for an NFT to "reset to" the way a regular
+          // token's self_in does (see transferToEvent) — 0 cost basis on this side, same
+          // reasoning fifoLotEngine.js's own removeForSelfTransfer comment already documents for
+          // why cross-wallet cost-basis continuity is out of scope here.
+          events.push({ kind: "self_in", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity, unitCostUsd: 0 });
+          continue;
+        }
+        const paymentLeg = rows.find(
+          (r) => r !== nftLeg && r.direction === "out" && !NFT_ASSET_TYPES.has(r.asset_type) && Number(r.amount_raw) > 0
+        );
+        if (!paymentLeg) unmatchedCount++;
+        const unitCostUsd = paymentLeg?.usd_value != null ? Number(paymentLeg.usd_value) / quantity : 0;
+        events.push({ kind: "in", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity, unitCostUsd });
+      } else {
+        if (nftLeg.is_self_transfer) {
+          events.push({ kind: "self_out", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity });
+          continue;
+        }
+        const proceedsLeg = rows.find(
+          (r) => r !== nftLeg && r.direction === "in" && !NFT_ASSET_TYPES.has(r.asset_type) && Number(r.amount_raw) > 0
+        );
+        if (!proceedsLeg) unmatchedCount++;
+        const proceedsUsd = proceedsLeg?.usd_value != null ? Number(proceedsLeg.usd_value) : 0;
+        events.push({ kind: "out", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity, proceedsUsd });
+      }
+    }
+  }
+
+  return { events, consumedRowIds, unmatchedCount };
 }
 
 function swapToEvent(s) {
@@ -257,9 +390,14 @@ function renderInventorySection(doc, valuation, tokenMeta, emptyText) {
   }
   let anyUnpriced = false;
   for (const t of valuation.perToken) {
-    const usdText = t.marketValueUsd != null ? `$${Number(t.marketValueUsd).toFixed(2)}` : "price unavailable";
-    if (t.marketValueUsd == null) anyUnpriced = true;
-    doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(t.tokenAddress, tokenMeta)}: ${Number(t.quantity).toFixed(6)}  —  ${usdText}`);
+    // NFTs never have a market-value feed for one specific token (see pnlPricing.js's composite-
+    // key guard) — that's expected, not counted toward "excludes assets with no price data" below,
+    // which is specifically about a genuine fungible-token pricing gap.
+    const isNft = isNftAssetKey(t.tokenAddress);
+    const usdText = isNft ? "cost basis only, no market feed" : t.marketValueUsd != null ? `$${Number(t.marketValueUsd).toFixed(2)}` : "price unavailable";
+    if (!isNft && t.marketValueUsd == null) anyUnpriced = true;
+    const qtyText = isNft ? String(Number(t.quantity)) : Number(t.quantity).toFixed(6);
+    doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(t.tokenAddress, tokenMeta)}: ${qtyText}  —  ${usdText}`);
   }
   doc.moveDown(0.2);
   const totalNote = anyUnpriced ? " (excludes assets with no price data — see above)" : "";
@@ -282,14 +420,23 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
   const items = [];
   for (const t of transfersInPeriod) {
     if (t.gas_fee_wei != null || Number(t.amount_raw) === 0) continue;
+    const isNft = NFT_ASSET_TYPES.has(t.asset_type);
+    const assetKey = isNft ? nftAssetKey(t) : t.token_address || NATIVE_SENTINEL;
+    // NFT quantity is always a whole count (1 per unique ERC-721, or an ERC-1155 batch amount) —
+    // ".000000" on an NFT line reads as a fungible-token artifact, not as "1 of something unique".
+    const quantityText = isNft ? String(Number(t.amount_decimal)) : Number(t.amount_decimal).toFixed(6);
     const tag = t.is_self_transfer ? " (self)" : t.is_cex ? " (CEX)" : "";
-    const usd = t.usd_value != null ? `$${Number(t.usd_value).toFixed(2)}` : "price unavailable";
+    // NFTs never have a fungible-market usd_value (see pnlPricing.js's early guard on composite
+    // keys) — its cost basis/proceeds, if this leg turned out to be a mint/sale, show separately in
+    // Realized Gains & Losses instead; showing "price unavailable" here would misleadingly suggest
+    // a missing market feed rather than "this is correctly a non-priced asset".
+    const usd = isNft ? "" : t.usd_value != null ? `  —  $${Number(t.usd_value).toFixed(2)}` : "  —  price unavailable";
     items.push({
       timestamp: new Date(t.timestamp),
       txHash: t.tx_hash,
       // Full formatted line, minus the trailing tx reference — buildPdf renders that part
       // separately as a real hyperlink to the block explorer (see shortHash/EXPLORER_BASE_URL).
-      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${Number(t.amount_decimal).toFixed(6)} ${formatAssetLabel(t.token_address || NATIVE_SENTINEL, tokenMeta)}  —  ${usd}  —  `,
+      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${quantityText} ${formatAssetLabel(assetKey, tokenMeta)}${usd}  —  `,
     });
   }
   for (const s of swapsInPeriod) {
@@ -303,7 +450,7 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
   return items;
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, ensName }) {
+function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod }) {
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
   let hasOrbitron = true;
   try {
@@ -374,6 +521,11 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.fontSize(9).fillColor(THEME.orange).text(priceCoverageDisclaimer);
     doc.fillColor(THEME.bodyText).fontSize(11);
   }
+  if (nftDisclaimer) {
+    doc.moveDown(0.4);
+    doc.fontSize(9).fillColor(THEME.orange).text(nftDisclaimer);
+    doc.fillColor(THEME.bodyText).fontSize(11);
+  }
   doc.moveDown(1);
 
   const line = (label, value) => doc.fontSize(11).fillColor(THEME.bodyText).text(`${label}: ${value}`);
@@ -401,6 +553,41 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   sectionHeader("Closing Inventory");
   renderInventorySection(doc, closingValuation, tokenMeta, "No open positions at period end.");
   doc.moveDown(1);
+
+  sectionHeader("Realized Gains & Losses");
+  if (!realizedEventsInPeriod || realizedEventsInPeriod.length === 0) {
+    doc.fontSize(10).fillColor(THEME.muted).text("No disposals (sales, swaps, or NFT sales) in this period.");
+  } else {
+    doc.fontSize(8);
+    for (const e of realizedEventsInPeriod) {
+      const gainLoss = e.realizedPnlUsd;
+      const gainColor = gainLoss.isNegative() ? THEME.orange : THEME.green;
+      const dateStr = e.timestamp.toISOString().slice(0, 10);
+      const qtyStr = isNftAssetKey(e.tokenAddress) ? String(e.quantityConsumed) : e.quantityConsumed.toFixed(6);
+      doc.fillColor(THEME.bodyText).text(
+        `${dateStr}  ${qtyStr} ${formatAssetLabel(e.tokenAddress, tokenMeta)}  —  cost $${e.costBasisUsd.toFixed(2)}, proceeds $${e.proceedsUsd.toFixed(2)}  —  `,
+        { continued: true }
+      );
+      doc.fillColor(gainColor).text(`${gainLoss.isNegative() ? "" : "+"}$${gainLoss.toFixed(2)}`);
+    }
+  }
+  doc.moveDown(1);
+
+  if (gameActivity.size > 0) {
+    sectionHeader("Game Activity");
+    doc.fontSize(9).fillColor(THEME.muted).text("Already counted in Realized Gains & Losses above — shown again here as a labeled breakdown, not an additional amount.");
+    doc.moveDown(0.3);
+    doc.fontSize(10);
+    for (const [name, g] of gameActivity) {
+      const net = g.wonUsd.minus(g.wageredUsd);
+      const netColor = net.isNegative() ? THEME.orange : THEME.green;
+      const unpricedNote = g.wageredUnpriced + g.wonUnpriced > 0 ? `  (${g.wageredUnpriced + g.wonUnpriced} transaction(s) with no price data, not included above)` : "";
+      doc.fillColor(THEME.bodyText).text(`${name} — Wagered: $${g.wageredUsd.toFixed(2)}, Won: $${g.wonUsd.toFixed(2)}, `, { continued: true });
+      doc.fillColor(netColor).text(`Net: ${net.isNegative() ? "" : "+"}$${net.toFixed(2)}`, { continued: unpricedNote.length > 0 });
+      if (unpricedNote) doc.fillColor(THEME.muted).text(unpricedNote);
+    }
+    doc.moveDown(1);
+  }
 
   sectionHeader("Transaction History");
   if (transactionLines.length === 0) {
@@ -438,6 +625,16 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.fillColor(THEME.muted).font("Helvetica").text(
       `${priceCoverageDisclaimer} This reflects a real limit of the underlying free price data sources (they only expose a recent rolling window, not full history), not a bug in how this statement was produced — every figure that IS shown is a real historical price, never an estimate or placeholder.`
     );
+    doc.moveDown(0.4);
+  }
+  doc.fillColor(THEME.white).font("Helvetica-Bold").text("Realized Gains & Losses");
+  doc.fillColor(THEME.muted).font("Helvetica").text(
+    "Every disposal in the period — a token sale, a swap, or an NFT sale — with its cost basis (what you originally paid), proceeds (what you received), and the resulting gain or loss. For a mint or purchase followed later by a sale, cost basis is whatever ETN/token payment was found in the exact same transaction as the acquisition; proceeds work the same way for the sale side. NFT gains/losses appear here exactly the same as fungible token ones — an NFT minted for 1,000 ETN and later sold for 10,000 ETN shows as a single +9,000 (in USD terms) line."
+  );
+  doc.moveDown(0.4);
+  if (nftDisclaimer) {
+    doc.fillColor(THEME.white).font("Helvetica-Bold").text("NFT cost basis / proceeds matching");
+    doc.fillColor(THEME.muted).font("Helvetica").text(nftDisclaimer);
     doc.moveDown(0.4);
   }
   doc.moveDown(0.6);
@@ -481,7 +678,16 @@ export async function generateStatement(requestId) {
     getAllSwapTradesBefore(request.tracked_wallet, periodEnd),
   ]);
 
-  const events = [...transfers.map(transferToEvent), ...swaps.map(swapToEvent)].sort((a, b) => a.timestamp - b.timestamp);
+  // NFT legs are pulled out and turned into their own mint/purchase/sale FIFO events (see
+  // buildNftEvents) BEFORE the generic transferToEvent mapping runs, so consumedRowIds excludes
+  // them there — an NFT leg must never be fed into FIFO both as a generic zero-priced transfer AND
+  // as a properly cost-tracked NFT event.
+  const { events: nftEvents, consumedRowIds: nftConsumedRowIds, unmatchedCount: nftUnmatchedCount } = buildNftEvents(transfers);
+  const events = [
+    ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
+    ...swaps.map(swapToEvent),
+    ...nftEvents,
+  ].sort((a, b) => a.timestamp - b.timestamp);
   const { opening, closing } = replayFifo(events, periodStart, periodEnd);
 
   const transfersInPeriod = transfers.filter((t) => {
@@ -499,6 +705,7 @@ export async function generateStatement(requestId) {
     valueInventoryAtTimestamp(opening.lots, periodStart),
   ]);
   const flows = summarizeFlows(transfersInPeriod);
+  const gameActivity = buildGameActivitySummary(transfersInPeriod);
 
   const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
   const realizedPnlUsd = realizedEventsInPeriod.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
@@ -522,6 +729,9 @@ export async function generateStatement(requestId) {
   const withAssetLabel = (obj, tokenAddress) => ({ ...obj, tokenAddress, assetLabel: formatAssetLabel(tokenAddress, tokenMeta) });
   const transactionLines = buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta);
   const priceCoverageDisclaimer = await buildPriceCoverageDisclaimer(periodStart, [...tokenAddresses]);
+  const nftDisclaimer = nftUnmatchedCount > 0
+    ? `${nftUnmatchedCount} NFT transfer${nftUnmatchedCount === 1 ? "" : "s"} in this wallet's history had no matching payment found in the same transaction — recorded with $0 cost basis / proceeds for that leg. This is correct for a genuine free mint, airdrop, or gift; it would understate a real cost or gain if the actual payment happened in a separate transaction from the NFT transfer itself.`
+    : null;
 
   const jsonArtifact = {
     schemaVersion: 1,
@@ -536,6 +746,15 @@ export async function generateStatement(requestId) {
     blockRange,
     generatedAt: new Date().toISOString(),
     priceCoverageDisclaimer,
+    nftDisclaimer,
+    nftUnmatchedCount,
+    // Breakdown only — already counted in realizedPnlEvents/summary above, not additive to it.
+    gameActivity: [...gameActivity.entries()].map(([name, g]) => ({
+      name,
+      wageredUsd: g.wageredUsd.toString(),
+      wonUsd: g.wonUsd.toString(),
+      netUsd: g.wonUsd.minus(g.wageredUsd).toString(),
+    })),
     openingInventory: {
       totalValueUsd: openingValuation.totalMarketValueUsd.toString(),
       perAsset: openingValuation.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
@@ -566,7 +785,7 @@ export async function generateStatement(requestId) {
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, ensName });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;

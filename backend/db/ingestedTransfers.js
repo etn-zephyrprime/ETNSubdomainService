@@ -14,6 +14,7 @@ const COLUMNS = [
   "is_cex",
   "asset_type",
   "token_address",
+  "token_id",
   "amount_raw",
   "amount_decimal",
   "price_usd_at_time",
@@ -36,6 +37,7 @@ function rowToValues(r) {
     r.isCex,
     r.assetType,
     r.tokenAddress ? r.tokenAddress.toLowerCase() : null,
+    r.tokenId ?? null,
     r.amountRaw.toString(),
     r.amountDecimal,
     r.priceUsdAtTime ?? null,
@@ -48,7 +50,7 @@ function rowToValues(r) {
 
 /** Bulk-inserts rows, silently skipping any that already exist (re-ingestion after a partial
  * failure must never double-count). Each row: { trackedWallet, txHash, logIndex, direction,
- * counterpartyAddress, isSelfTransfer, isCex, assetType, tokenAddress, amountRaw, amountDecimal,
+ * counterpartyAddress, isSelfTransfer, isCex, assetType, tokenAddress, tokenId, amountRaw, amountDecimal,
  * priceUsdAtTime, usdValue, gasFeeWei, blockNumber, timestamp }. */
 export async function insertTransfers(rows) {
   if (!rows.length) return;
