@@ -29,11 +29,17 @@ import { insertTransfers } from "../db/ingestedTransfers.js";
 import { insertSwapTrades } from "../db/swapTrades.js";
 import { isCexAddress } from "../db/cexAddresses.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { createRpcProvider } from "../utils/rpcProvider.js";
+import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
+export const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 // Blockscout's legacy Etherscan-compatible API — the v2 REST API above has no block-by-timestamp
 // equivalent. Used only by getBlockByTimestamp below.
 const BLOCKSCOUT_LEGACY_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api`;
+// Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS / coreClashConfig.js's own copy — used
+// only by resolveEnsDisplayName below.
+const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 const MAX_RETRIES = 3;
 const PAGE_DELAY_MS = process.env.PNL_INGESTION_PAGE_DELAY_MS ? parseInt(process.env.PNL_INGESTION_PAGE_DELAY_MS, 10) : 150;
 
@@ -86,6 +92,38 @@ export async function getTokenMetadata(tokenAddress) {
   }
   tokenMetadataCache.set(key, result);
   return result;
+}
+
+// Reuses the exact same ReverseRegistrar+resolver chain the Core Clash Telegram bots already use
+// (see primaryNameResolver.js's own header comment on why this is centralized rather than
+// reimplemented per call site) — one shared resolver instance/provider for the life of the
+// process, not per-call.
+let cachedEnsResolver = null;
+function getEnsResolver() {
+  if (!cachedEnsResolver) {
+    const provider = createRpcProvider();
+    cachedEnsResolver = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
+  }
+  return cachedEnsResolver;
+}
+
+/** Resolves `address`'s primary ENS name, or null if it doesn't have one / resolution fails —
+ * callers show the raw address either way (see formatAssetLabel-style callers in
+ * pnlStatementGenerator.js), this only ever adds a friendlier name alongside it, never replaces
+ * the address as the source of truth. */
+export async function resolveEnsDisplayName(address) {
+  try {
+    const resolveDisplayName = getEnsResolver();
+    const result = await resolveDisplayName(address);
+    // primaryNameResolver's own contract falls back to a shortened address string (e.g.
+    // "0x1234...abcd") when there's no primary name set — that's not a real ENS name, so callers
+    // here want null instead of that shortened-address fallback (this file already has the full
+    // address on hand and formats it consistently itself).
+    return result && result.startsWith("0x") ? null : result;
+  } catch (err) {
+    console.warn(`⚠️  Could not resolve ENS name for ${address}:`, err.message);
+    return null;
+  }
 }
 
 async function fetchPage(path, cursorParams, attempt = 0) {
@@ -168,6 +206,7 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
           isCex: false,
           assetType: "native",
           tokenAddress: null,
+          tokenId: null,
           amountRaw: 0n, // this row represents ONLY the gas fee, not a value transfer — see the plain-ETN-value row below when value > 0
           amountDecimal: 0,
           priceUsdAtTime: null,
@@ -198,6 +237,7 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
           isCex,
           assetType: "native",
           tokenAddress: null,
+          tokenId: null,
           amountRaw: value,
           amountDecimal: weiToDecimal(value),
           priceUsdAtTime: priceUsd,
@@ -237,6 +277,7 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
         isCex,
         assetType: "native",
         tokenAddress: null,
+        tokenId: null,
         amountRaw: value,
         amountDecimal: weiToDecimal(value),
         priceUsdAtTime: priceUsd,
@@ -261,10 +302,45 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
       const isSelf = selfOwnedSet.has(counterparty);
       const isCex = !isSelf && (await isCexAddress(counterparty));
 
-      const decimals = Number(tt.token?.decimals ?? 18);
-      const amountRaw = BigInt(tt.total?.value || "0");
       const timestamp = new Date(tt.timestamp);
       const tokenAddress = tt.token?.address;
+      const tokenType = tt.token?.type; // "ERC-20" | "ERC-721" | "ERC-1155" — confirmed live shape
+
+      if (tokenType === "ERC-721" || tokenType === "ERC-1155") {
+        // NFTs have no `total.value`/decimals at all (confirmed live: total is
+        // { token_id, token_instance }, decimals is null) — previously this fell through to the
+        // ERC-20 branch below, BigInt(undefined || "0") silently produced amountRaw=0, and every
+        // amount_raw=0 filter elsewhere in this codebase (flows, transaction history) then dropped
+        // the row entirely. Each NFT is a distinct, individually-cost-tracked asset (see
+        // fifoLotEngine.js's "tokenAddress:tokenId" lot-key convention), not a fungible quantity —
+        // ERC-1155 IS technically semi-fungible (total.value can be >1 of the same tokenId), so its
+        // quantity is read from total.value when present; ERC-721 is always exactly 1.
+        const tokenId = tt.total?.token_id != null ? String(tt.total.token_id) : null;
+        const quantity = tokenType === "ERC-1155" && tt.total?.value ? BigInt(tt.total.value) : 1n;
+        rows.push({
+          trackedWallet,
+          txHash: tt.transaction_hash,
+          logIndex: Number(tt.log_index),
+          direction,
+          counterpartyAddress: counterparty,
+          isSelfTransfer: isSelf,
+          isCex,
+          assetType: tokenType === "ERC-721" ? "erc721" : "erc1155",
+          tokenAddress,
+          tokenId,
+          amountRaw: quantity,
+          amountDecimal: Number(quantity),
+          priceUsdAtTime: null, // NFTs have no fungible-market price feed — cost basis/proceeds come from correlated same-tx payments instead, see pnlStatementGenerator.js's buildNftEvents
+          usdValue: null,
+          gasFeeWei: null,
+          blockNumber: Number(tt.block_number),
+          timestamp,
+        });
+        continue;
+      }
+
+      const decimals = Number(tt.token?.decimals ?? 18);
+      const amountRaw = BigInt(tt.total?.value || "0");
       const priceUsd = await priceOrNull(tokenAddress, timestamp);
       const amountDecimal = weiToDecimal(amountRaw, decimals);
 
@@ -278,6 +354,7 @@ async function ingestTransfersAndGas(trackedWallet, selfOwnedSet, stopAtBlock, s
         isCex,
         assetType: "erc20",
         tokenAddress,
+        tokenId: null,
         amountRaw,
         amountDecimal,
         priceUsdAtTime: priceUsd,

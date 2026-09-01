@@ -24,7 +24,10 @@ const PremiumDashboardSection = lazy(() => import("./premium/PremiumDashboardSec
 // (and its network calls) out of the base dashboard build for visitors who never open Premium.
 export default function DashboardApp() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  const [tab, setTab] = useState(() => (/^\/statement\/([^/]+)\/?$/i.test(window.location.pathname) ? "premium" : "overview"));
+  // /premium opens straight to the Premium tab (no specific statement) — used by the "request
+  // another statement" link on generated PDFs (see pnlStatementGenerator.js), same deep-link
+  // spirit as /statement/:requestId below.
+  const [tab, setTab] = useState(() => (/^\/(statement\/[^/]+|premium)\/?$/i.test(window.location.pathname) ? "premium" : "overview"));
   const [selectedToken, setSelectedToken] = useState(null);
   // Which address Address Lookup should open on next — named generically since it's fed from
   // more than one source now (TokenDetail's holder links, Overview's validator links), not just
