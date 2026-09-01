@@ -410,12 +410,87 @@ function shortHash(hash) {
   return hash ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : "—";
 }
 
+/** Real column-aligned table for Transaction History — explicit x/y positioning rather than
+ * pdfkit's normal flowing-text cursor, since laying out 6 columns on one row needs each field
+ * placed at its own x with a fixed width (ellipsis-truncated if it overflows), not appended to a
+ * moving cursor. Handles its own pagination (checking remaining vertical space before each row and
+ * calling doc.addPage() itself) rather than relying on pdfkit's automatic per-text-call page
+ * break, and redraws the header row on every new page it creates — a reader landing on any page of
+ * a multi-page table still sees what each column means. */
+function renderTransactionTable(doc, rows) {
+  const left = doc.page.margins.left;
+  const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const cols = [
+    { key: "date", label: "Date", width: tableWidth * 0.16, align: "left" },
+    { key: "type", label: "Type", width: tableWidth * 0.10, align: "left" },
+    { key: "asset", label: "Asset", width: tableWidth * 0.34, align: "left" },
+    { key: "amount", label: "Amount", width: tableWidth * 0.16, align: "right" },
+    { key: "usd", label: "USD", width: tableWidth * 0.12, align: "right" },
+    { key: "tx", label: "Tx", width: tableWidth * 0.12, align: "left" },
+  ];
+  let x = left;
+  for (const col of cols) {
+    col.x = x;
+    x += col.width;
+  }
+  // Gutter reserved from each column's OWN width (not added on top) — column x-positions/
+  // boundaries above stay based on the full width, so shrinking only the text-rendering width
+  // leaves genuine blank space before the next column's x starts, on both left- and right-aligned
+  // columns. Confirmed live this was needed: without it, a right-aligned column's text fills all
+  // the way to its box's right edge, directly touching the next column's text with zero gap (the
+  // header rendered as "USDTx" with no fix).
+  const GUTTER = 6;
+  const rowHeight = 13;
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
+
+  function drawHeaderRow() {
+    const y = doc.y;
+    doc.fontSize(8).font("Helvetica-Bold").fillColor(THEME.green);
+    for (const col of cols) {
+      doc.text(col.label, col.x, y, { width: col.width - GUTTER, align: col.align, lineBreak: false });
+    }
+    doc.font("Helvetica");
+    doc.y = y + rowHeight;
+    doc.moveTo(left, doc.y).lineTo(left + tableWidth, doc.y).strokeColor(THEME.border).lineWidth(0.5).stroke();
+    doc.y += 4;
+  }
+
+  drawHeaderRow();
+  for (const row of rows) {
+    if (doc.y + rowHeight > bottomLimit) {
+      doc.addPage(); // fires pageAdded -> paintBackground automatically
+      doc.y = doc.page.margins.top;
+      drawHeaderRow();
+    }
+    const y = doc.y;
+    doc.fontSize(8).fillColor(THEME.bodyText);
+    doc.text(row.timestamp.toISOString().slice(0, 16).replace("T", " "), cols[0].x, y, { width: cols[0].width - GUTTER, lineBreak: false });
+    doc.text(row.type, cols[1].x, y, { width: cols[1].width - GUTTER, lineBreak: false });
+    // ellipsis:true alone does NOT truncate to one line — confirmed live it just wraps normally
+    // (silently corrupting every fixed-rowHeight row below it) unless a height constraint is also
+    // given; rowHeight itself is that constraint here, same box the row's other cells use.
+    doc.text(row.asset, cols[2].x, y, { width: cols[2].width - GUTTER, height: rowHeight, ellipsis: true });
+    doc.text(row.amount, cols[3].x, y, { width: cols[3].width - GUTTER, align: cols[3].align, lineBreak: false });
+    doc.text(row.usd, cols[4].x, y, { width: cols[4].width - GUTTER, align: cols[4].align, lineBreak: false });
+    doc.fillColor(THEME.green).text(shortHash(row.txHash), cols[5].x, y, {
+      width: cols[5].width - GUTTER,
+      lineBreak: false,
+      link: `${EXPLORER_BASE_URL}/tx/${row.txHash}`,
+      underline: true,
+    });
+    doc.fillColor(THEME.bodyText);
+    doc.y = y + rowHeight;
+  }
+}
+
 /** Builds the chronological, page-spanning transaction list — every in-period transfer (native +
  * token, excluding pure gas-fee bookkeeping rows, which have no asset movement of their own and
  * are already totaled in the Fees summary) plus every in-period swap, sorted oldest first. This is
- * the literal ledger a statement's "Transaction History" section shows — separate from
+ * the literal ledger a statement's "Transaction History" table shows — separate from
  * realizedPnlEvents (FIFO disposals only) and from the flows/gas totals (aggregated, not
- * itemized). */
+ * itemized). Each item is pre-formatted into the exact column strings the table renders (date,
+ * type, asset, amount, usd, tx) rather than one joined line, so buildPdf can lay them out as real
+ * table columns instead of parsing a sentence back apart. */
 function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
   const items = [];
   for (const t of transfersInPeriod) {
@@ -424,26 +499,30 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
     const assetKey = isNft ? nftAssetKey(t) : t.token_address || NATIVE_SENTINEL;
     // NFT quantity is always a whole count (1 per unique ERC-721, or an ERC-1155 batch amount) —
     // ".000000" on an NFT line reads as a fungible-token artifact, not as "1 of something unique".
-    const quantityText = isNft ? String(Number(t.amount_decimal)) : Number(t.amount_decimal).toFixed(6);
+    const amount = isNft ? String(Number(t.amount_decimal)) : Number(t.amount_decimal).toFixed(6);
     const tag = t.is_self_transfer ? " (self)" : t.is_cex ? " (CEX)" : "";
     // NFTs never have a fungible-market usd_value (see pnlPricing.js's early guard on composite
     // keys) — its cost basis/proceeds, if this leg turned out to be a mint/sale, show separately in
     // Realized Gains & Losses instead; showing "price unavailable" here would misleadingly suggest
     // a missing market feed rather than "this is correctly a non-priced asset".
-    const usd = isNft ? "" : t.usd_value != null ? `  —  $${Number(t.usd_value).toFixed(2)}` : "  —  price unavailable";
+    const usd = isNft ? "n/a" : t.usd_value != null ? `$${Number(t.usd_value).toFixed(2)}` : "unavailable";
     items.push({
       timestamp: new Date(t.timestamp),
       txHash: t.tx_hash,
-      // Full formatted line, minus the trailing tx reference — buildPdf renders that part
-      // separately as a real hyperlink to the block explorer (see shortHash/EXPLORER_BASE_URL).
-      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${quantityText} ${formatAssetLabel(assetKey, tokenMeta)}${usd}  —  `,
+      type: `${t.direction === "in" ? "IN" : "OUT"}${tag}`,
+      asset: formatAssetLabel(assetKey, tokenMeta),
+      amount,
+      usd,
     });
   }
   for (const s of swapsInPeriod) {
     items.push({
       timestamp: new Date(s.timestamp),
       txHash: s.tx_hash,
-      text: `SWAP  ${Number(s.amount_sold).toFixed(6)} ${formatAssetLabel(s.token_sold_address, tokenMeta)}  ->  ${Number(s.amount_bought).toFixed(6)} ${formatAssetLabel(s.token_bought_address, tokenMeta)}  —  `,
+      type: "SWAP",
+      asset: `${formatAssetLabel(s.token_sold_address, tokenMeta)} -> ${formatAssetLabel(s.token_bought_address, tokenMeta)}`,
+      amount: `${Number(s.amount_sold).toFixed(4)} -> ${Number(s.amount_bought).toFixed(4)}`,
+      usd: "—",
     });
   }
   items.sort((a, b) => a.timestamp - b.timestamp);
@@ -593,16 +672,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   if (transactionLines.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No transactions in this period.");
   } else {
-    doc.fontSize(8);
-    for (const item of transactionLines) {
-      // Two text() calls on one visual line via continued:true — the first (plain) segment, then
-      // the tx reference as a real clickable link to the block explorer, styled distinctly (green,
-      // underlined) so it reads as a link rather than plain data. Full hash kept as the link
-      // target even though the visible label is shortened — the point is "click through", not
-      // "read the raw hex".
-      doc.fillColor(THEME.bodyText).text(`${item.timestamp.toISOString().slice(0, 16).replace("T", " ")}  ${item.text}`, { continued: true });
-      doc.fillColor(THEME.green).text(`tx ${shortHash(item.txHash)}`, { link: `${EXPLORER_BASE_URL}/tx/${item.txHash}`, underline: true });
-    }
+    renderTransactionTable(doc, transactionLines);
   }
   doc.moveDown(1);
 
@@ -779,7 +849,14 @@ export async function generateStatement(requestId) {
     },
     // Every in-period transfer/swap, chronological — the same ledger the PDF's Transaction History
     // pages show (see buildTransactionLines), just machine-readable here instead of pre-formatted.
-    transactions: transactionLines.map((item) => ({ timestamp: item.timestamp.toISOString(), description: item.text })),
+    transactions: transactionLines.map((item) => ({
+      timestamp: item.timestamp.toISOString(),
+      type: item.type,
+      asset: item.asset,
+      amount: item.amount,
+      usd: item.usd,
+      txHash: item.txHash,
+    })),
     summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: closingValuation.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
     summaryExplanations: Object.fromEntries(SUMMARY_EXPLANATIONS),
     disclaimer: DISCLAIMER,
