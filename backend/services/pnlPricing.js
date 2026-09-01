@@ -2,11 +2,24 @@
 //
 // Resolves the USD price of ETN or a token at a specific historical timestamp — needed at the
 // time of every inflow/outflow to compute cost basis and proceeds (see the PnL statement build
-// brief). Reuses tokenChartRouter.js's shared, rate-limited GeckoTerminal queue (fetchGeckoTerminal)
-// rather than running a second independent limiter against the same GeckoTerminal budget — see
-// that export's own comment for why sharing the queue is a correctness requirement here, not just
-// a style choice. Falls back to CoinGecko's historical-by-date endpoint for plain ETN/USD when no
-// relevant GeckoTerminal pool candle exists.
+// brief).
+//
+// PRICE SOURCES, in the order each asset actually uses them:
+//  - Native ETN: KuCoin's public spot-market daily candles (ETN-USDT) — confirmed live this goes
+//    back to the pair's real listing date, 2019-07-10, with NO rolling-window restriction (unlike
+//    every "indexer product" tier below) since it's just KuCoin's own trading history, not a
+//    third-party data product with a free/paid tier. This is the primary source for ETN. Checked
+//    several other major exchanges too (Binance doesn't list ETN at all) before landing on KuCoin.
+//  - Tokens (any ERC-20 on this chain, e.g. CORE): GeckoTerminal's on-chain OHLCV, via
+//    tokenChartRouter.js's shared, rate-limited queue (fetchGeckoTerminal) — confirmed live this
+//    is capped at roughly the last 184 days REGARDLESS of a pool's actual age (tested 3 pools with
+//    very different creation dates, all returned exactly 184 candles) — a GeckoTerminal/CoinGecko
+//    account-tier restriction, not a per-request quirk, and not fixable without a paid API tier.
+//    There is no exchange-listing fallback for arbitrary tokens the way there is for ETN — none of
+//    these tokens trade anywhere but this chain's own DEX pools.
+//  - ETN also falls back to this same GeckoTerminal path, then to CoinGecko's historical-by-date
+//    endpoint (confirmed live: hard-capped at the past 365 days on the free tier), only if KuCoin
+//    itself ever fails entirely.
 //
 // TESTNET CAVEAT: GeckoTerminal is a mainnet indexer product — it will never index the testnet
 // MockRouter/MockCoreToken pair used for the buy-and-burn lifecycle tests (see the PnL statement
@@ -195,7 +208,55 @@ async function backfillAssetPriceHistory(cacheAsset, tokenAddress) {
   return { earliestDate, poolCount: sorted.length };
 }
 
-/** Runs backfillAssetPriceHistory exactly once, ever, per asset — recorded in
+const KUCOIN_CANDLES_URL = "https://api.kucoin.com/api/v1/market/candles";
+const KUCOIN_SYMBOL = "ETN-USDT"; // confirmed live listed, real daily data back to 2019-07-10
+const KUCOIN_PAGE_SIZE = 1500; // KuCoin's own per-request cap for this endpoint, confirmed live
+
+/** Bulk-backfills native ETN's ENTIRE KuCoin trading history — paginated by narrowing `endAt`
+ * backward past the oldest candle each page returns (confirmed live: KuCoin returns the most
+ * recent candles within [startAt, endAt], not the oldest, so startAt stays fixed at 1 and endAt is
+ * what walks backward), until a page comes back with fewer than KUCOIN_PAGE_SIZE candles — which
+ * is genuinely "no more history", not a rolling-window cutoff like the indexer sources below. */
+async function backfillEtnFromKucoin() {
+  let endAtSec = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
+  let earliestDate = null;
+  let totalCandles = 0;
+  // 12 pages * 1500 days ≈ 49 years — comfortably past any realistic listing date, purely a safety
+  // ceiling against an unbounded loop, same reasoning as backfillPoolDailyHistory's own cap.
+  for (let page = 0; page < 12; page++) {
+    let json;
+    try {
+      const res = await fetch(`${KUCOIN_CANDLES_URL}?type=1day&symbol=${KUCOIN_SYMBOL}&startAt=1&endAt=${endAtSec}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      json = await res.json();
+      if (json.code !== "200000") throw new Error(`KuCoin error ${json.code}: ${json.msg || "unknown"}`);
+    } catch (err) {
+      console.warn(`⚠️  KuCoin ETN price backfill: page fetch failed:`, err.message);
+      break;
+    }
+    const rows = json.data || [];
+    if (rows.length === 0) break;
+
+    let oldestSecThisPage = Infinity;
+    for (const row of rows) {
+      // KuCoin's own documented column order for this endpoint: [time, open, close, high, low,
+      // volume, turnover] — close is index 2, NOT the usual OHLC index 3/4.
+      const sec = Number(row[0]);
+      const close = Number(row[2]);
+      const day = new Date(sec * 1000);
+      day.setUTCHours(0, 0, 0, 0);
+      await upsertPricePoint("ETN", day, close, "kucoin");
+      totalCandles++;
+      if (!earliestDate || day < earliestDate) earliestDate = day;
+      if (sec < oldestSecThisPage) oldestSecThisPage = sec;
+    }
+    if (rows.length < KUCOIN_PAGE_SIZE || oldestSecThisPage >= endAtSec) break;
+    endAtSec = oldestSecThisPage - 1;
+  }
+  return { earliestDate, poolCount: totalCandles > 0 ? 1 : 0 };
+}
+
+/** Runs the appropriate bulk backfill exactly once, ever, per asset — recorded in
  * price_history_backfill_state. Every getHistoricalPriceUsd call routes through this first, so the
  * very first lookup for a brand-new asset triggers the bulk fetch (a handful of calls) and every
  * lookup after that — for that date or any other, in this statement or a future one — is a pure
@@ -206,10 +267,16 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
   if (state) return state;
 
   try {
-    const { earliestDate, poolCount } = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
-    await markBackfilled(cacheAsset, { earliestAvailableDate: earliestDate, poolCount });
+    let result = cacheAsset === "ETN" ? await backfillEtnFromKucoin() : null;
+    if (!result || !result.earliestDate) {
+      // Either a token (always uses the on-chain-pool path), or ETN's KuCoin call itself came back
+      // empty — shouldn't happen given it's confirmed live, but don't leave ETN with zero coverage
+      // if it ever does; fall back to the same on-chain-pool approach every other asset uses.
+      result = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
+    }
+    await markBackfilled(cacheAsset, { earliestAvailableDate: result.earliestDate, poolCount: result.poolCount });
     console.log(
-      `💰 Price history backfilled for ${cacheAsset}: earliest available ${earliestDate ? earliestDate.toISOString().slice(0, 10) : "none found"}, ${poolCount} pool(s) scanned`
+      `💰 Price history backfilled for ${cacheAsset}: earliest available ${result.earliestDate ? result.earliestDate.toISOString().slice(0, 10) : "none found"}, ${result.poolCount} source(s) scanned`
     );
   } catch (err) {
     console.warn(`⚠️  Price history backfill failed for ${cacheAsset}, falling back to per-date lookups:`, err.message);

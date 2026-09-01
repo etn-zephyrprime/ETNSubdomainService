@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { getById, markGenerated } from "../db/statementRequests.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
-import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata } from "./pnlIngestion.js";
+import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata, resolveEnsDisplayName, EXPLORER_BASE_URL } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
@@ -38,6 +38,7 @@ const THEME = {
 const LOGO_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosLogo.png");
 const WORDMARK_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosText.png");
 const ORBITRON_BOLD_PATH = path.resolve(__dirname, "..", "fonts", "Orbitron-Bold.ttf");
+const PREMIUM_TAB_URL = "https://dashboard.planetzephyros.xyz/premium";
 
 const NATIVE_SENTINEL = "NATIVE";
 const DISCLAIMER =
@@ -285,20 +286,24 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
     const usd = t.usd_value != null ? `$${Number(t.usd_value).toFixed(2)}` : "price unavailable";
     items.push({
       timestamp: new Date(t.timestamp),
-      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${Number(t.amount_decimal).toFixed(6)} ${formatAssetLabel(t.token_address || NATIVE_SENTINEL, tokenMeta)}  —  ${usd}  —  tx ${shortHash(t.tx_hash)}`,
+      txHash: t.tx_hash,
+      // Full formatted line, minus the trailing tx reference — buildPdf renders that part
+      // separately as a real hyperlink to the block explorer (see shortHash/EXPLORER_BASE_URL).
+      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${Number(t.amount_decimal).toFixed(6)} ${formatAssetLabel(t.token_address || NATIVE_SENTINEL, tokenMeta)}  —  ${usd}  —  `,
     });
   }
   for (const s of swapsInPeriod) {
     items.push({
       timestamp: new Date(s.timestamp),
-      text: `SWAP  ${Number(s.amount_sold).toFixed(6)} ${formatAssetLabel(s.token_sold_address, tokenMeta)}  ->  ${Number(s.amount_bought).toFixed(6)} ${formatAssetLabel(s.token_bought_address, tokenMeta)}  —  tx ${shortHash(s.tx_hash)}`,
+      txHash: s.tx_hash,
+      text: `SWAP  ${Number(s.amount_sold).toFixed(6)} ${formatAssetLabel(s.token_sold_address, tokenMeta)}  ->  ${Number(s.amount_bought).toFixed(6)} ${formatAssetLabel(s.token_bought_address, tokenMeta)}  —  `,
     });
   }
   items.sort((a, b) => a.timestamp - b.timestamp);
   return items;
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer }) {
+function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, ensName }) {
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
   let hasOrbitron = true;
   try {
@@ -326,26 +331,32 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.moveDown(0.3);
   };
 
-  // Header: logo + wordmark side by side, matching DashboardHeader.jsx's own layout.
-  const logoHeight = 46;
+  // Header: logo + wordmark as a compact top-left letterhead mark, not a centered hero banner.
+  const logoHeight = 28;
   const logoY = doc.y;
+  const logoX = doc.page.margins.left;
   try {
-    doc.image(LOGO_PATH, doc.page.width / 2 - 140, logoY, { height: logoHeight });
-    doc.image(WORDMARK_PATH, doc.page.width / 2 - 80, logoY + 8, { height: 30 });
+    doc.image(LOGO_PATH, logoX, logoY, { height: logoHeight });
+    doc.image(WORDMARK_PATH, logoX + logoHeight + 10, logoY + 5, { height: 18 });
   } catch (err) {
     console.warn("⚠️  Statement PDF: could not embed logo/wordmark images:", err.message);
   }
-  doc.y = logoY + logoHeight + 16;
+  doc.y = logoY + logoHeight + 14;
 
   doc.font(hasOrbitron ? "Orbitron-Bold" : "Helvetica-Bold").fontSize(18).fillColor(THEME.white)
-    .text("Profit & Loss Statement", { align: "center" });
+    .text("Profit & Loss Statement");
   doc.font("Helvetica");
-  doc.moveDown(0.4);
-  doc.fontSize(10).fillColor(THEME.muted).text("Planet Zephyros — Electroneum Dashboard", { align: "center" });
-  doc.moveDown(1.3);
+  doc.moveDown(0.3);
+  // Replaces the old static "Planet Zephyros — Electroneum Dashboard" subtitle with a real,
+  // clickable link back to the dashboard's Premium tab — lets anyone reading a shared/printed
+  // statement get straight to requesting another one.
+  // Plain "->" rather than a Unicode arrow — same font-glyph issue as the ⚠ character above:
+  // Helvetica's table doesn't include "→" either, and it silently renders as garbage instead.
+  doc.fontSize(10).fillColor(THEME.green).text("Request another statement ->", { link: PREMIUM_TAB_URL, underline: true });
+  doc.moveDown(1);
 
   doc.fillColor(THEME.bodyText).fontSize(11);
-  doc.text(`Wallet: ${request.tracked_wallet}`);
+  doc.text(`Wallet: ${request.tracked_wallet}${ensName ? `  (${ensName})` : ""}`);
   doc.text(`Reporting period: ${periodTypeLabel(request.period_type)} ${request.year}`);
   doc.text(`Period: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)}`);
   if (blockRange) {
@@ -356,7 +367,11 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.text(`Generated: ${new Date().toISOString()}`);
   if (priceCoverageDisclaimer) {
     doc.moveDown(0.4);
-    doc.fontSize(9).fillColor(THEME.orange).text(`⚠ ${priceCoverageDisclaimer}`);
+    // Plain text, no leading symbol — an earlier version prefixed this with the ⚠ Unicode
+    // character, which isn't in Helvetica's glyph table and rendered as a stray "&" instead.
+    // Orange fill color alone is enough visual distinction, matching the muted-color treatment
+    // the Block range note above already uses.
+    doc.fontSize(9).fillColor(THEME.orange).text(priceCoverageDisclaimer);
     doc.fillColor(THEME.bodyText).fontSize(11);
   }
   doc.moveDown(1);
@@ -391,9 +406,15 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   if (transactionLines.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No transactions in this period.");
   } else {
-    doc.fontSize(8).fillColor(THEME.bodyText);
+    doc.fontSize(8);
     for (const item of transactionLines) {
-      doc.text(`${item.timestamp.toISOString().slice(0, 16).replace("T", " ")}  ${item.text}`);
+      // Two text() calls on one visual line via continued:true — the first (plain) segment, then
+      // the tx reference as a real clickable link to the block explorer, styled distinctly (green,
+      // underlined) so it reads as a link rather than plain data. Full hash kept as the link
+      // target even though the visible label is shortened — the point is "click through", not
+      // "read the raw hex".
+      doc.fillColor(THEME.bodyText).text(`${item.timestamp.toISOString().slice(0, 16).replace("T", " ")}  ${item.text}`, { continued: true });
+      doc.fillColor(THEME.green).text(`tx ${shortHash(item.txHash)}`, { link: `${EXPLORER_BASE_URL}/tx/${item.txHash}`, underline: true });
     }
   }
   doc.moveDown(1);
@@ -447,6 +468,10 @@ export async function generateStatement(requestId) {
   if (periodEnd > new Date()) {
     throw new Error(`Statement request ${requestId}'s period ends ${periodEnd.toISOString()}, which hasn't happened yet — cannot generate a statement for a future period`);
   }
+
+  // Purely cosmetic (shown alongside the raw address, never replacing it) — a lookup failure here
+  // must never fail statement generation over something this minor.
+  const ensName = await resolveEnsDisplayName(request.tracked_wallet).catch(() => null);
 
   const selfOwnedAddresses = Array.isArray(request.self_owned_addresses) ? request.self_owned_addresses : [];
   await ingestWalletHistory(request.tracked_wallet, selfOwnedAddresses);
@@ -502,6 +527,7 @@ export async function generateStatement(requestId) {
     schemaVersion: 1,
     requestId: request.id,
     trackedWallet: request.tracked_wallet,
+    trackedWalletEnsName: ensName,
     periodType: request.period_type,
     periodTypeLabel: periodTypeLabel(request.period_type),
     year: request.year,
@@ -540,7 +566,7 @@ export async function generateStatement(requestId) {
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, ensName });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;

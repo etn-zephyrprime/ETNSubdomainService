@@ -29,11 +29,17 @@ import { insertTransfers } from "../db/ingestedTransfers.js";
 import { insertSwapTrades } from "../db/swapTrades.js";
 import { isCexAddress } from "../db/cexAddresses.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { createRpcProvider } from "../utils/rpcProvider.js";
+import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
+export const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 // Blockscout's legacy Etherscan-compatible API — the v2 REST API above has no block-by-timestamp
 // equivalent. Used only by getBlockByTimestamp below.
 const BLOCKSCOUT_LEGACY_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api`;
+// Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS / coreClashConfig.js's own copy — used
+// only by resolveEnsDisplayName below.
+const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 const MAX_RETRIES = 3;
 const PAGE_DELAY_MS = process.env.PNL_INGESTION_PAGE_DELAY_MS ? parseInt(process.env.PNL_INGESTION_PAGE_DELAY_MS, 10) : 150;
 
@@ -86,6 +92,38 @@ export async function getTokenMetadata(tokenAddress) {
   }
   tokenMetadataCache.set(key, result);
   return result;
+}
+
+// Reuses the exact same ReverseRegistrar+resolver chain the Core Clash Telegram bots already use
+// (see primaryNameResolver.js's own header comment on why this is centralized rather than
+// reimplemented per call site) — one shared resolver instance/provider for the life of the
+// process, not per-call.
+let cachedEnsResolver = null;
+function getEnsResolver() {
+  if (!cachedEnsResolver) {
+    const provider = createRpcProvider();
+    cachedEnsResolver = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
+  }
+  return cachedEnsResolver;
+}
+
+/** Resolves `address`'s primary ENS name, or null if it doesn't have one / resolution fails —
+ * callers show the raw address either way (see formatAssetLabel-style callers in
+ * pnlStatementGenerator.js), this only ever adds a friendlier name alongside it, never replaces
+ * the address as the source of truth. */
+export async function resolveEnsDisplayName(address) {
+  try {
+    const resolveDisplayName = getEnsResolver();
+    const result = await resolveDisplayName(address);
+    // primaryNameResolver's own contract falls back to a shortened address string (e.g.
+    // "0x1234...abcd") when there's no primary name set — that's not a real ENS name, so callers
+    // here want null instead of that shortened-address fallback (this file already has the full
+    // address on hand and formats it consistently itself).
+    return result && result.startsWith("0x") ? null : result;
+  } catch (err) {
+    console.warn(`⚠️  Could not resolve ENS name for ${address}:`, err.message);
+    return null;
+  }
 }
 
 async function fetchPage(path, cursorParams, attempt = 0) {
