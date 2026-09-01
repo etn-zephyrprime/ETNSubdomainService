@@ -27,7 +27,7 @@ import { ethers } from "ethers";
 import { getIngestionState, upsertIngestionState } from "../db/walletIngestionState.js";
 import { insertTransfers } from "../db/ingestedTransfers.js";
 import { insertSwapTrades } from "../db/swapTrades.js";
-import { isCexAddress } from "../db/cexAddresses.js";
+import { listCexAddresses } from "../db/cexAddresses.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
@@ -277,7 +277,7 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
  * this refactor's win comes from. Returns { swapTxHashes, highestBlock } — swapTxHashes feeds
  * ingestInternalTransactions/ingestTokenTransfers below, which still run after this completes,
  * since they filter on the now-complete set. */
-async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAtBlock) {
+async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   const swapTxHashes = new Set();
@@ -332,7 +332,11 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAt
         const direction = fromLc === walletLc ? "out" : "in";
         const counterparty = direction === "out" ? toLc : fromLc;
         const isSelf = selfOwnedSet.has(counterparty);
-        const isCex = !isSelf && (await isCexAddress(counterparty));
+        // cexAddressSet is loaded once in ingestWalletHistory, not queried per row — was previously
+        // a live Supabase round-trip (isCexAddress) for every non-self transfer, which for a
+        // high-activity wallet meant thousands of individual DB calls stacked on top of the
+        // Blockscout pagination itself.
+        const isCex = !isSelf && cexAddressSet.has(counterparty);
         const priceUsd = await priceOrNull("NATIVE", timestamp);
         rows.push({
           trackedWallet,
@@ -365,7 +369,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAt
 /** Walks /addresses/{wallet}/internal-transactions — ETN moved by contract calls, invisible to
  * both the plain transaction list and eth_getLogs. Independent of ingestTokenTransfers below (each
  * only touches its own endpoint/rows), so the caller runs the two concurrently. */
-async function ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes) {
+async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -385,7 +389,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlo
       const direction = fromLc === walletLc ? "out" : "in";
       const counterparty = direction === "out" ? toLc : fromLc;
       const isSelf = selfOwnedSet.has(counterparty);
-      const isCex = !isSelf && (await isCexAddress(counterparty));
+      const isCex = !isSelf && cexAddressSet.has(counterparty);
       const priceUsd = await priceOrNull("NATIVE", timestamp);
       rows.push({
         trackedWallet,
@@ -415,7 +419,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlo
 
 /** Walks /addresses/{wallet}/token-transfers — ERC20/721/1155 in/out. Independent of
  * ingestInternalTransactions above, so the caller runs the two concurrently. */
-async function ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes) {
+async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -431,7 +435,7 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, sw
       const direction = fromLc === walletLc ? "out" : "in";
       const counterparty = direction === "out" ? toLc : fromLc;
       const isSelf = selfOwnedSet.has(counterparty);
-      const isCex = !isSelf && (await isCexAddress(counterparty));
+      const isCex = !isSelf && cexAddressSet.has(counterparty);
 
       const timestamp = new Date(tt.timestamp);
       const tokenAddress = tt.token?.address;
@@ -509,7 +513,11 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, sw
  */
 export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []) {
   const selfOwnedSet = new Set([trackedWallet.toLowerCase(), ...selfOwnedAddresses.map((a) => a.toLowerCase())]);
-  const state = await getIngestionState(trackedWallet);
+  // Loaded once per ingestion run rather than queried per-row (see cexAddressSet's own comment
+  // below at its call sites) — the list itself is small and manually-maintained (see
+  // cexAddresses.js), so this is one query however many thousands of transfer rows follow.
+  const [state, cexAddressList] = await Promise.all([getIngestionState(trackedWallet), listCexAddresses()]);
+  const cexAddressSet = new Set(cexAddressList.map((r) => r.address.toLowerCase()));
   const stopAtBlock = state?.last_ingested_block > 0 ? state.last_ingested_block : null;
 
   console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}`);
@@ -520,10 +528,10 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   // is a meaningful restructure, not just a stylistic change: /transactions used to be walked
   // twice (once here, once in a separate swap-detection pass) and all three walks used to run
   // fully sequentially.
-  const { swapTxHashes, highestBlock: highestFromTx } = await ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, stopAtBlock);
+  const { swapTxHashes, highestBlock: highestFromTx } = await ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock);
   const [highestFromInternal, highestFromTokens] = await Promise.all([
-    ingestInternalTransactions(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes),
-    ingestTokenTransfers(trackedWallet, selfOwnedSet, stopAtBlock, swapTxHashes),
+    ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
+    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
   ]);
   const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
 
