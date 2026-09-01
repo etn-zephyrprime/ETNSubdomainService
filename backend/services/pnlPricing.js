@@ -37,6 +37,11 @@ const NETWORK = "electroneum";
 // pegged; GeckoTerminal indexes the wrapped pools, not native ETN transfers).
 const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const NATIVE_SENTINEL = "NATIVE";
+// Node's built-in fetch has no default request timeout — see pnlIngestion.js's own copy of this
+// constant for the live failure this guards against (a stalled connection can hang a statement
+// generation indefinitely with no error and near-zero CPU/memory). Every direct fetch() in this
+// file passes this as its signal.
+const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env.PNL_FETCH_TIMEOUT_MS, 10) : 20000;
 
 // Bucket historical price lookups to the DAY — both underlying sources only ever resolve to day
 // granularity anyway (fetchNearestCandleUsd queries GeckoTerminal's /ohlcv/day endpoint;
@@ -236,7 +241,9 @@ async function backfillEtnFromKucoin() {
   for (let page = 0; page < 12; page++) {
     let json;
     try {
-      const res = await fetch(`${KUCOIN_CANDLES_URL}?type=1day&symbol=${KUCOIN_SYMBOL}&startAt=1&endAt=${endAtSec}`);
+      const res = await fetch(`${KUCOIN_CANDLES_URL}?type=1day&symbol=${KUCOIN_SYMBOL}&startAt=1&endAt=${endAtSec}`, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       json = await res.json();
       if (json.code !== "200000") throw new Error(`KuCoin error ${json.code}: ${json.msg || "unknown"}`);
@@ -326,7 +333,8 @@ async function fetchCoinGeckoHistoricalEtnUsd(timestamp, attempt = 0) {
   const mm = String(timestamp.getUTCMonth() + 1).padStart(2, "0");
   const yyyy = timestamp.getUTCFullYear();
   const res = await fetch(
-    `https://api.coingecko.com/api/v3/coins/electroneum/history?date=${dd}-${mm}-${yyyy}&localization=false`
+    `https://api.coingecko.com/api/v3/coins/electroneum/history?date=${dd}-${mm}-${yyyy}&localization=false`,
+    { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }
   );
   if (res.status === 429 && attempt === 0) {
     const retryAfterSec = Number(res.headers.get("retry-after"));

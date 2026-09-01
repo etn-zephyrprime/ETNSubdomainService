@@ -42,6 +42,13 @@ const BLOCKSCOUT_LEGACY_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 const MAX_RETRIES = 3;
 const PAGE_DELAY_MS = process.env.PNL_INGESTION_PAGE_DELAY_MS ? parseInt(process.env.PNL_INGESTION_PAGE_DELAY_MS, 10) : 150;
+// Node's built-in fetch has no default request timeout — confirmed live this let a single statement
+// generation hang indefinitely with no error, no crash, and near-zero CPU/memory the whole time
+// (a stalled/silently-dropped connection to Blockscout just never resolves await fetch(), and
+// nothing here was ever going to time it out). Every fetch() in this file passes this as its
+// signal now. 20s is generous for a small JSON response from any of these APIs under normal
+// conditions; a real hang is caught well before a customer notices something's "just slow."
+const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env.PNL_FETCH_TIMEOUT_MS, 10) : 20000;
 
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
@@ -61,7 +68,7 @@ function sleep(ms) {
 export async function getBlockByTimestamp(timestamp, closest = "before") {
   const unixSeconds = Math.floor(timestamp.getTime() / 1000);
   const url = `${BLOCKSCOUT_LEGACY_API_BASE}?module=block&action=getblocknobytime&timestamp=${unixSeconds}&closest=${closest}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`HTTP ${res.status} resolving block by timestamp`);
   const json = await res.json();
   if (json.status !== "1" || !json.result?.blockNumber) {
@@ -83,7 +90,7 @@ export async function getTokenMetadata(tokenAddress) {
 
   let result = null;
   try {
-    const res = await fetch(`${BLOCKSCOUT_API_BASE}/tokens/${tokenAddress}`);
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}/tokens/${tokenAddress}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     if (json.name || json.symbol) result = { name: json.name || null, symbol: json.symbol || null };
@@ -132,10 +139,12 @@ async function fetchPage(path, cursorParams, attempt = 0) {
     for (const [key, value] of Object.entries(cursorParams)) url.searchParams.set(key, value);
   }
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
     return await res.json();
   } catch (err) {
+    // A timeout throws the same as any other network failure here, so it falls through to the
+    // existing retry path below rather than needing special-case handling.
     if (attempt < MAX_RETRIES) {
       await sleep(500 * (attempt + 1));
       return fetchPage(path, cursorParams, attempt + 1);

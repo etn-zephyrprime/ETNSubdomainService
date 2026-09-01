@@ -26,6 +26,12 @@ const NETWORK = "electroneum";
 // not just used as an if-nothing-else-exists fallback.
 const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 
+// Node's built-in fetch has no default request timeout — confirmed live this let a PnL statement
+// generation (a caller of fetchGeckoTerminal below, via pnlPricing.js) hang indefinitely on a
+// stalled connection, with no error and near-zero CPU/memory the whole time. 20s is generous for
+// this endpoint's small JSON responses under normal conditions.
+const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env.PNL_FETCH_TIMEOUT_MS, 10) : 20000;
+
 // How long a token's chart response is reused before re-fetching from GeckoTerminal — the whole
 // point of this cache is cutting down *repeat* views of the same token, not just the first one,
 // since that's the case a shared rate limit actually gets exhausted by.
@@ -96,7 +102,7 @@ const RANGE_PARAMS = {
 // each other.
 export async function fetchGeckoTerminal(path, { retryOn429 = true } = {}) {
   const doFetch = () => enqueueGeckoTerminalCall(async () => {
-    const res = await fetch(`${GECKOTERMINAL_API_BASE}${path}`);
+    const res = await fetch(`${GECKOTERMINAL_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 429) {
       gtCooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
       const err = new Error("GeckoTerminal rate limit hit");
