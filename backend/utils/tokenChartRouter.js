@@ -15,6 +15,7 @@
 // this backend re-implementing pool-reserve/Swap-event scanning from scratch.
 import express from "express";
 import { ethers } from "ethers";
+import { getPricePointsSince } from "../db/pricePoints.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -211,7 +212,45 @@ async function loadTokenChart(address, range) {
   return { hasData: true, candles, pool };
 }
 
+// Long-range ETN price history, backed by price_points (see pnlPricing.js's KuCoin backfill) —
+// the Overview tab's short-range (7D/30D/90D) chart stays on live CoinGecko OHLC (EtnPriceChart.jsx
+// via useCoinGecko.js), since CoinGecko's free 365-day cap comfortably covers those and gives real
+// open/high/low/volume that price_points doesn't have (it's daily close only). This endpoint is
+// for ranges CoinGecko's free tier can't serve at all — "1y" and "all" (back to KuCoin's real
+// 2019-07-10 ETN-USDT listing once fully backfilled) — rendered as a line chart, not candles.
+const ETN_PRICE_HISTORY_RANGES = {
+  "1y": () => new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+  all: () => new Date("2019-01-01T00:00:00.000Z"), // safely before KuCoin's confirmed 2019-07-10 listing
+};
+const ETN_PRICE_HISTORY_CACHE_TTL_MS = 60 * 60 * 1000; // price_points updates at most once/day (daily candles) — no need to re-hit the DB more often than this
+const etnPriceHistoryCache = new Map(); // range -> { expiresAt, payload }
+
 const router = express.Router();
+
+router.get("/etn-price-history", async (req, res) => {
+  const range = String(req.query.range || "1y");
+  const sinceFn = ETN_PRICE_HISTORY_RANGES[range];
+  if (!sinceFn) {
+    return res.status(400).json({ error: "Invalid range — use 1y or all" });
+  }
+
+  const cached = etnPriceHistoryCache.get(range);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json(cached.payload);
+  }
+
+  try {
+    const rows = await getPricePointsSince("ETN", sinceFn());
+    const payload = {
+      points: rows.map((r) => ({ timestamp: r.timestamp, priceUsd: Number(r.price_usd) })),
+    };
+    etnPriceHistoryCache.set(range, { payload, expiresAt: Date.now() + ETN_PRICE_HISTORY_CACHE_TTL_MS });
+    res.json(payload);
+  } catch (err) {
+    console.error("⚠️  ETN price history failed:", err.message);
+    res.status(502).json({ error: "Couldn't load ETN price history" });
+  }
+});
 
 router.get("/token-chart", async (req, res) => {
   const address = String(req.query.address || "");
