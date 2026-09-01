@@ -5,7 +5,7 @@
 import express from "express";
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
-import { getById, getByTxHash, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
+import { getById, getByTxHash, getByPayerWallet, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
 import { periodTypeLabel } from "../services/periodTypes.js";
 
@@ -34,6 +34,7 @@ function serializeRequest(r) {
     amountPaidWei: r.amount_paid_wei,
     status: r.status,
     selfOwnedAddresses: r.self_owned_addresses,
+    createdAt: r.created_at,
     generatedAt: r.generated_at,
     firstViewedAt: r.first_viewed_at,
     finalizedAt: r.finalized_at,
@@ -53,6 +54,20 @@ router.get("/pnl/statement/:requestId", async (req, res) => {
 
 router.get("/pnl/statement/by-tx/:txHash", async (req, res) => {
   const requests = await getByTxHash(req.params.txHash);
+  res.json(requests.map(serializeRequest));
+});
+
+// Powers the "N of M ready" progress tracker on the PnL Statement tab — a wallet's full order
+// history, oldest first, so a returning visitor (or one who just closed the tab mid-generation)
+// can still see where things stand without needing the original tx hash or request IDs. No auth,
+// same as every other endpoint here: payer_wallet is public on-chain via PnlPeriodsPurchased
+// regardless, this just saves a Blockscout round-trip.
+router.get("/pnl/statements", async (req, res) => {
+  const { payerWallet } = req.query;
+  if (!payerWallet || !ethers.isAddress(payerWallet)) {
+    return res.status(400).json({ error: "Query param payerWallet must be a valid address" });
+  }
+  const requests = await getByPayerWallet(payerWallet);
   res.json(requests.map(serializeRequest));
 });
 
