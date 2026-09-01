@@ -24,13 +24,18 @@ const NETWORK = "electroneum";
 const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const NATIVE_SENTINEL = "NATIVE";
 
-// Bucket historical price lookups to the hour — a PnL statement's cost-basis accuracy doesn't
-// need sub-hour precision, and this is what makes repeat lookups for the same rough time actually
-// hit the price_points cache (backend/db/pricePoints.js) instead of missing on exact-millisecond
-// differences between two events in the same trading session.
-function bucketToHour(timestamp) {
+// Bucket historical price lookups to the DAY — both underlying sources only ever resolve to day
+// granularity anyway (fetchNearestCandleUsd queries GeckoTerminal's /ohlcv/day endpoint;
+// fetchCoinGeckoHistoricalEtnUsd's date=dd-mm-yyyy param has no time component), so bucketing any
+// finer than a day was pure waste: a wallet with several transactions on the same calendar day but
+// different hours was triggering a separate fresh external lookup — and separate rate-limit
+// pressure — per hour, for an answer that would've been byte-identical. Confirmed live: this is
+// what was driving the GeckoTerminal/CoinGecko 429 storm on a single busy wallet's first-ever
+// statement. Bucketing to the day is a strict improvement — same or better cache hit rate, zero
+// accuracy loss, since neither source could tell two same-day timestamps apart regardless.
+function bucketToDay(timestamp) {
   const d = new Date(timestamp);
-  d.setUTCMinutes(0, 0, 0);
+  d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 
@@ -105,13 +110,24 @@ async function fetchNearestCandleUsd(poolAddress, tokenIsBase, timestamp) {
   return Number(closest);
 }
 
-async function fetchCoinGeckoHistoricalEtnUsd(timestamp) {
+// One bounded retry on 429, honoring Retry-After when CoinGecko sends it (else a flat 3s) — same
+// "bounded retry, not a runaway loop" philosophy as tokenChartRouter.js's GeckoTerminal queue, but
+// simpler: unlike that shared queue, this fallback path has no other callers to coordinate a
+// cooldown with, so a plain per-call retry is enough. Previously this had zero resilience at all —
+// a single transient 429 permanently gave up on that day's price.
+async function fetchCoinGeckoHistoricalEtnUsd(timestamp, attempt = 0) {
   const dd = String(timestamp.getUTCDate()).padStart(2, "0");
   const mm = String(timestamp.getUTCMonth() + 1).padStart(2, "0");
   const yyyy = timestamp.getUTCFullYear();
   const res = await fetch(
     `https://api.coingecko.com/api/v3/coins/electroneum/history?date=${dd}-${mm}-${yyyy}&localization=false`
   );
+  if (res.status === 429 && attempt === 0) {
+    const retryAfterSec = Number(res.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : 3000;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return fetchCoinGeckoHistoricalEtnUsd(timestamp, attempt + 1);
+  }
   if (!res.ok) throw new Error(`CoinGecko history returned ${res.status}`);
   const json = await res.json();
   const usd = json?.market_data?.current_price?.usd;
@@ -129,7 +145,7 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
 
   const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
   const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
-  const bucketed = bucketToHour(timestamp);
+  const bucketed = bucketToDay(timestamp);
 
   const cached = await getPricePoint(cacheAsset, bucketed);
   if (cached) return Number(cached.price_usd);
