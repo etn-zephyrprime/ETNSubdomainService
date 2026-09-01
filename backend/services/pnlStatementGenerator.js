@@ -51,7 +51,7 @@ const DISCLAIMER =
 // statement (after Closing Inventory) rather than inline — keeps the Summary itself scannable
 // while still giving every figure a real definition somewhere in the document.
 const SUMMARY_EXPLANATIONS = [
-  ["On-chain inflows / outflows (USD)", "The USD value of ETN and tokens received or sent on-chain during this period, excluding transfers between your own addresses (see \"self-owned addresses\") and gas fees, which are broken out separately below."],
+  ["On-chain inflows / outflows (USD)", "The USD value of ETN and tokens received or sent on-chain during this period, including both legs of any swap (the sold side counts as an outflow, the bought side as an inflow) — excluding transfers between your own addresses (see \"self-owned addresses\") and gas fees, which are broken out separately below."],
   ["CEX deposits / withdrawals (USD)", "The USD value of transfers to/from addresses recognized as centralized exchange wallets. Only wallets this app already has on record are detected automatically — anything missed shows up as an on-chain flow instead."],
   ["Gas fees paid", "The total transaction fees this wallet paid across every transaction in the period, valued in ETN and in USD at the time each fee was paid. Deducted from Net P&L, but not treated as a disposal for cost-basis purposes."],
   ["Realized P&L (USD)", "Profit or loss actually locked in during this period: for every disposal (a sale, swap, or outbound transfer that isn't a self-transfer), proceeds minus the FIFO cost basis of the specific lot(s) consumed. FIFO means the oldest acquired units of an asset are always treated as sold first."],
@@ -323,7 +323,7 @@ async function computeGasFeesUsd(transfersInPeriod) {
   return { totalGasEtn: ethers.formatEther(totalGasWei), totalGasUsd };
 }
 
-function summarizeFlows(transfersInPeriod) {
+function summarizeFlows(transfersInPeriod, swapsInPeriod) {
   // Categorized purely for the statement's readable line items — the FIFO math itself doesn't
   // care about these categories, only about in/out/self/swap (see transferToEvent above).
   const summary = { onChainIn: new Decimal(0), onChainOut: new Decimal(0), cexIn: new Decimal(0), cexOut: new Decimal(0) };
@@ -337,6 +337,15 @@ function summarizeFlows(transfersInPeriod) {
       if (t.direction === "in") summary.onChainIn = summary.onChainIn.plus(usd);
       else summary.onChainOut = summary.onChainOut.plus(usd);
     }
+  }
+  // Swaps are always on-chain DEX trades, never CEX and never a self-transfer by definition — the
+  // sold leg counts as an outflow, the bought leg as an inflow, same as any other on-chain
+  // transfer. Confirmed deliberate addition (previously swap legs were only reflected in Realized
+  // Gains & Losses, not in this flow summary at all) — folds swaps into the same "everything that
+  // moved on-chain" total Transaction History already shows them as part of.
+  for (const s of swapsInPeriod ?? []) {
+    summary.onChainOut = summary.onChainOut.plus(new Decimal(s.amount_sold).times(s.price_usd_sold_leg ?? 0));
+    summary.onChainIn = summary.onChainIn.plus(new Decimal(s.amount_bought).times(s.price_usd_bought_leg ?? 0));
   }
   return summary;
 }
@@ -774,7 +783,7 @@ export async function generateStatement(requestId) {
     valueInventoryAtTimestamp(closing.lots, periodEnd),
     valueInventoryAtTimestamp(opening.lots, periodStart),
   ]);
-  const flows = summarizeFlows(transfersInPeriod);
+  const flows = summarizeFlows(transfersInPeriod, swapsInPeriod);
   const gameActivity = buildGameActivitySummary(transfersInPeriod);
 
   const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
