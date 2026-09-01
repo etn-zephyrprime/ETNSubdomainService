@@ -20,3 +20,15 @@ export async function upsertPricePoint(asset, timestamp, priceUsd, source) {
     [asset, timestamp, priceUsd, source]
   );
 }
+
+/** Every cached price point for `asset` from `sinceTimestamp` onward (inclusive), oldest first.
+ * Powers the dashboard's long-range ETN price chart (see tokenChartRouter.js) — unlike
+ * getPricePoint above, this is a genuine range scan, not an exact-timestamp cache lookup, so it's
+ * fine for this to return a lot of rows (one per day covers 2019-to-now in ~2,600 rows). */
+export async function getPricePointsSince(asset, sinceTimestamp) {
+  const res = await query(
+    `SELECT "timestamp", price_usd FROM price_points WHERE asset = $1 AND "timestamp" >= $2 ORDER BY "timestamp" ASC`,
+    [asset, sinceTimestamp]
+  );
+  return res?.rows || [];
+}
