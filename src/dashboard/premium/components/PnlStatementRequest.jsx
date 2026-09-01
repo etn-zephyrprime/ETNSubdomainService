@@ -246,6 +246,12 @@ export default function PnlStatementRequest({ wallet }) {
       />
 
       <label style={labelStyle}>Add a reporting period (must have already ended)</label>
+      <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>
+        Price data for older transactions may be incomplete — free-tier price sources only cover a recent
+        rolling window (roughly the past several months to a year), not full history back to any fixed date.
+        Every USD figure shown is a real historical price; anything outside that window is clearly marked
+        "price unavailable" on the statement rather than estimated or guessed.
+      </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
         <select
           value={newPeriodType}

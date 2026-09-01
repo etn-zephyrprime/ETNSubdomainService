@@ -15,6 +15,7 @@
 // still be exercised end-to-end on testnet without real market data.
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
 import { getPricePoint, upsertPricePoint } from "../db/pricePoints.js";
+import { getBackfillState, markBackfilled } from "../db/priceHistoryBackfillState.js";
 
 const NETWORK = "electroneum";
 // Same wrapped-Electroneum address tokenChartRouter.js prefers pools against — see that file's
@@ -110,6 +111,121 @@ async function fetchNearestCandleUsd(poolAddress, tokenIsBase, timestamp) {
   return Number(closest);
 }
 
+/** Walks one pool's ENTIRE available daily OHLCV history backward (paginating via
+ * before_timestamp until an empty page — GeckoTerminal simply stops returning candles once it
+ * runs out, which for these pools means "back to the pool's own creation", not any fixed window),
+ * upserting every day into price_points. Turns "one live lookup per transaction date" into "one
+ * bulk fetch, ever, per pool" — a handful of paginated calls through the existing shared
+ * rate-limited queue instead of potentially hundreds of individual ones. Returns the earliest date
+ * actually reached (or null if the pool had no candles at all). */
+async function backfillPoolDailyHistory(poolAddress, tokenIsBase, cacheAsset) {
+  const tokenSide = tokenIsBase ? "base" : "quote";
+  let beforeTs = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
+  let earliestDate = null;
+  // 20 pages * up to 1000 daily candles/page = room for ~54 years — nowhere close to being hit in
+  // practice, purely a safety ceiling against an unbounded loop if the API ever behaves
+  // unexpectedly (e.g. before_timestamp not actually advancing).
+  for (let page = 0; page < 20; page++) {
+    let res;
+    try {
+      res = await fetchGeckoTerminal(
+        `/networks/${NETWORK}/pools/${poolAddress}/ohlcv/day?aggregate=1&limit=1000&currency=usd&token=${tokenSide}&before_timestamp=${beforeTs}`
+      );
+    } catch (err) {
+      console.warn(`⚠️  Price backfill: OHLCV page fetch failed for pool ${poolAddress}:`, err.message);
+      break;
+    }
+    const list = res.data?.attributes?.ohlcv_list || [];
+    if (list.length === 0) break;
+
+    let oldestSecThisPage = Infinity;
+    for (const [sec, , , , close] of list) {
+      const day = new Date(sec * 1000);
+      day.setUTCHours(0, 0, 0, 0);
+      await upsertPricePoint(cacheAsset, day, Number(close), "geckoterminal-backfill");
+      if (!earliestDate || day < earliestDate) earliestDate = day;
+      if (sec < oldestSecThisPage) oldestSecThisPage = sec;
+    }
+    // Order isn't documented either way for this endpoint, so page by the oldest timestamp seen
+    // in the page rather than assuming ascending/descending — safe regardless. Stop once a page
+    // can't move the cursor further back (a short/empty-progress page means we've hit the start).
+    if (list.length < 1000 || oldestSecThisPage >= beforeTs) break;
+    beforeTs = oldestSecThisPage;
+  }
+  return earliestDate;
+}
+
+/** Bulk-backfills an asset's full available on-chain price history across EVERY relevant pool, not
+ * just the single highest-liquidity one resolvePoolAddress() would pick for a live lookup — oldest
+ * pool first, so a since-superseded-but-older pool can still cover dates the current best pool
+ * predates. Later (generally more liquid, more current) pools' prices overwrite any overlapping
+ * days via upsertPricePoint's ON CONFLICT, so the most trustworthy source wins wherever multiple
+ * pools cover the same date, while genuinely older days only an older pool ever covers are kept
+ * rather than left blank. */
+async function backfillAssetPriceHistory(cacheAsset, tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  let pools = [];
+  try {
+    const res = await fetchGeckoTerminal(`/networks/${NETWORK}/tokens/${key}/pools`);
+    pools = res.data || [];
+  } catch (err) {
+    if (err.status !== 404) throw err;
+  }
+  if (pools.length === 0) return { earliestDate: null, poolCount: 0 };
+
+  const tokenId = `${NETWORK}_${key}`;
+  const wetnId = `${NETWORK}_${WETN_ADDRESS}`;
+  const wetnPools = pools.filter((p) => {
+    const baseId = p.relationships?.base_token?.data?.id;
+    const quoteId = p.relationships?.quote_token?.data?.id;
+    const otherId = baseId === tokenId ? quoteId : baseId;
+    return otherId === wetnId;
+  });
+  const candidates = wetnPools.length > 0 ? wetnPools : pools;
+  const sorted = [...candidates].sort(
+    (a, b) => new Date(a.attributes.pool_created_at) - new Date(b.attributes.pool_created_at)
+  );
+
+  let earliestDate = null;
+  for (const pool of sorted) {
+    const tokenIsBase = pool.relationships?.base_token?.data?.id === tokenId;
+    const poolEarliest = await backfillPoolDailyHistory(pool.attributes.address, tokenIsBase, cacheAsset);
+    if (poolEarliest && (!earliestDate || poolEarliest < earliestDate)) earliestDate = poolEarliest;
+  }
+  return { earliestDate, poolCount: sorted.length };
+}
+
+/** Runs backfillAssetPriceHistory exactly once, ever, per asset — recorded in
+ * price_history_backfill_state. Every getHistoricalPriceUsd call routes through this first, so the
+ * very first lookup for a brand-new asset triggers the bulk fetch (a handful of calls) and every
+ * lookup after that — for that date or any other, in this statement or a future one — is a pure
+ * price_points cache read. A failed backfill attempt is NOT recorded as done, so it's retried on
+ * the next call rather than permanently giving up. */
+async function ensureBackfilled(cacheAsset, tokenAddress) {
+  const state = await getBackfillState(cacheAsset);
+  if (state) return state;
+
+  try {
+    const { earliestDate, poolCount } = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
+    await markBackfilled(cacheAsset, { earliestAvailableDate: earliestDate, poolCount });
+    console.log(
+      `💰 Price history backfilled for ${cacheAsset}: earliest available ${earliestDate ? earliestDate.toISOString().slice(0, 10) : "none found"}, ${poolCount} pool(s) scanned`
+    );
+  } catch (err) {
+    console.warn(`⚠️  Price history backfill failed for ${cacheAsset}, falling back to per-date lookups:`, err.message);
+  }
+}
+
+/** Earliest date this asset actually has real price data for, per its recorded backfill — null if
+ * never backfilled yet or no history was found at all. Used to decide whether a statement's period
+ * needs the "price data may be incomplete" disclaimer (see pnlStatementGenerator.js). */
+export async function getEarliestAvailableDate(asset) {
+  const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
+  const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
+  const state = await getBackfillState(cacheAsset);
+  return state?.earliest_available_date ? new Date(state.earliest_available_date) : null;
+}
+
 // One bounded retry on 429, honoring Retry-After when CoinGecko sends it (else a flat 3s) — same
 // "bounded retry, not a runaway loop" philosophy as tokenChartRouter.js's GeckoTerminal queue, but
 // simpler: unlike that shared queue, this fallback path has no other callers to coordinate a
@@ -146,6 +262,9 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
   const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
   const bucketed = bucketToDay(timestamp);
+  const tokenAddress = isNative ? WETN_ADDRESS : asset;
+
+  await ensureBackfilled(cacheAsset, tokenAddress);
 
   const cached = await getPricePoint(cacheAsset, bucketed);
   if (cached) return Number(cached.price_usd);
@@ -153,7 +272,6 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   let priceUsd = null;
   let source = null;
 
-  const tokenAddress = isNative ? WETN_ADDRESS : asset;
   try {
     const pool = await resolvePoolAddress(tokenAddress);
     if (pool) {
