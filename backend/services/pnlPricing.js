@@ -211,6 +211,16 @@ async function backfillAssetPriceHistory(cacheAsset, tokenAddress) {
 const KUCOIN_CANDLES_URL = "https://api.kucoin.com/api/v1/market/candles";
 const KUCOIN_SYMBOL = "ETN-USDT"; // confirmed live listed, real daily data back to 2019-07-10
 const KUCOIN_PAGE_SIZE = 1500; // KuCoin's own per-request cap for this endpoint, confirmed live
+// Sanity floor for backfillEtnFromKucoin's result — comfortably after the pair's confirmed real
+// listing date (2019-07-10) but early enough to never reject a genuine full backfill. Guards
+// against exactly the failure mode observed live once already: a page fetch mid-pagination
+// returning fewer than KUCOIN_PAGE_SIZE rows (a transient truncated/short response, not "reached
+// real history") satisfies backfillEtnFromKucoin's own "no more history" loop-exit condition just
+// as a genuine end-of-history page would, silently capping coverage — and since that's a normal
+// (non-throwing) result, ensureBackfilled would otherwise record it as permanently done, never
+// retrying. If the pagination stops later than this floor, ensureBackfilled treats it as
+// incomplete instead of trusting it.
+const KUCOIN_ETN_SANITY_FLOOR = new Date("2020-01-01T00:00:00.000Z");
 
 /** Bulk-backfills native ETN's ENTIRE KuCoin trading history — paginated by narrowing `endAt`
  * backward past the oldest candle each page returns (confirmed live: KuCoin returns the most
@@ -274,6 +284,19 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
       // if it ever does; fall back to the same on-chain-pool approach every other asset uses.
       result = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
     }
+
+    // See KUCOIN_ETN_SANITY_FLOOR's comment: a mid-pagination KuCoin hiccup can produce a
+    // non-throwing but truncated result that looks identical to a genuine "reached real history"
+    // stop. Confirmed live once already (recorded earliest_available_date of 2025-02-24, when the
+    // pair's real listing is 2019-07-10). Don't let a suspiciously-recent ETN result get recorded
+    // as permanently done — leave no state row so the next call retries the full bulk fetch.
+    if (cacheAsset === "ETN" && result.earliestDate && result.earliestDate > KUCOIN_ETN_SANITY_FLOOR) {
+      console.warn(
+        `⚠️  ETN KuCoin backfill only reached ${result.earliestDate.toISOString().slice(0, 10)} (expected back to ~2019-07-10) — treating as incomplete, not recording as backfilled. Will retry next call.`
+      );
+      return null;
+    }
+
     await markBackfilled(cacheAsset, { earliestAvailableDate: result.earliestDate, poolCount: result.poolCount });
     console.log(
       `💰 Price history backfilled for ${cacheAsset}: earliest available ${result.earliestDate ? result.earliestDate.toISOString().slice(0, 10) : "none found"}, ${result.poolCount} source(s) scanned`
