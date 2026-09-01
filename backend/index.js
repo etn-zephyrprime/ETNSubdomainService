@@ -108,8 +108,9 @@ app.listen(PORT, () => {
 
   // Premium Feature #1 (per-wallet PnL statements) — see backend/services/pnlStatementGenerator.js
   // and the PremiumSubscription contract in the PlanetZephyros repo. All three no-op cleanly if
-  // their required env vars (DATABASE_URL / PREMIUM_SUBSCRIPTION_ADDRESS /
-  // CORE_CLASH_BACKEND_PRIVATE_KEY) aren't set, same as every other optional feature above.
+  // their required env vars (DATABASE_URL / PREMIUM_SUBSCRIPTION_ADDRESS / BACKEND_PRIVATE_KEY —
+  // deliberately NOT CORE_CLASH_BACKEND_PRIVATE_KEY, a separate key used only by the Core Clash
+  // bots above) aren't set, same as every other optional feature above.
   safeStart("Premium subscription watcher", startPremiumSubscriptionWatcher);
   safeStart("PnL auto-finalize scheduler", startPnlAutoFinalizeScheduler);
   safeStart("PnL split execution scheduler", startPnlSplitExecutionScheduler);

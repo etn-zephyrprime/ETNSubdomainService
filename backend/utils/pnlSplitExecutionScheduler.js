@@ -3,8 +3,11 @@
 // Executes PremiumSubscription.executeSplitForPeriod() for every statement request that just
 // transitioned to FINALIZED (see PremiumSubscription.sol's header comment: this contract has no
 // visibility into that state machine, and trusts the operator to call this with the right amount
-// — that operator is this backend, via CORE_CLASH_BACKEND_PRIVATE_KEY). Modeled directly on
-// coreClashDripBot.js's wallet-signing pattern: separate read-only `contract` vs write-capable
+// — that operator is this backend, via BACKEND_PRIVATE_KEY). Confirmed design choice: NOT
+// CORE_CLASH_BACKEND_PRIVATE_KEY — PremiumSubscription's operator is deliberately this repo's own
+// BACKEND_PRIVATE_KEY wallet, a separate key from the Core Clash drip bot's, even though an
+// earlier deploy briefly (and incorrectly) had it wired to a Core-Clash-adjacent address. Modeled
+// directly on coreClashDripBot.js's wallet-signing pattern: separate read-only `contract` vs write-capable
 // `contractWithSigner`, a startup sanity check that logs CRITICAL but doesn't crash if this
 // wallet isn't actually the contract's operator, per-tick try/catch with no rethrow, fixed
 // gasLimit (this chain's eth_estimateGas is unreliable — see rpcProvider.js and every other write
@@ -107,12 +110,12 @@ async function checkAndExecute(ctx) {
 
 /**
  * Starts the background executor. No-ops cleanly (logs and returns) if
- * CORE_CLASH_BACKEND_PRIVATE_KEY, PREMIUM_SUBSCRIPTION_ADDRESS, or DATABASE_URL isn't configured
- * — same guard shape as startCoreClashDripBot().
+ * BACKEND_PRIVATE_KEY, PREMIUM_SUBSCRIPTION_ADDRESS, or DATABASE_URL isn't configured — same
+ * guard shape as startCoreClashDripBot().
  */
 export async function startPnlSplitExecutionScheduler() {
-  if (!process.env.CORE_CLASH_BACKEND_PRIVATE_KEY) {
-    console.log("ℹ️  CORE_CLASH_BACKEND_PRIVATE_KEY not set — PnL split execution scheduler disabled");
+  if (!process.env.BACKEND_PRIVATE_KEY) {
+    console.log("ℹ️  BACKEND_PRIVATE_KEY not set — PnL split execution scheduler disabled");
     return;
   }
   if (!PREMIUM_SUBSCRIPTION_ADDRESS) {
@@ -125,7 +128,7 @@ export async function startPnlSplitExecutionScheduler() {
   }
 
   const provider = createRpcProvider();
-  const wallet = new ethers.Wallet(process.env.CORE_CLASH_BACKEND_PRIVATE_KEY, provider);
+  const wallet = new ethers.Wallet(process.env.BACKEND_PRIVATE_KEY, provider);
   const contract = new ethers.Contract(PREMIUM_SUBSCRIPTION_ADDRESS, PREMIUM_SUBSCRIPTION_ABI, provider);
   const contractWithSigner = contract.connect(wallet);
 

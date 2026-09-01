@@ -99,7 +99,10 @@ router.post("/pnl/statement/:requestId/view", async (req, res) => {
 });
 
 router.post("/pnl/statement/:requestId/refund", async (req, res) => {
-  if (!process.env.CORE_CLASH_BACKEND_PRIVATE_KEY || !PREMIUM_SUBSCRIPTION_ADDRESS) {
+  // BACKEND_PRIVATE_KEY, not CORE_CLASH_BACKEND_PRIVATE_KEY — PremiumSubscription's operator is a
+  // deliberately separate key from the Core Clash drip bot's (see pnlSplitExecutionScheduler.js's
+  // header comment for the same confirmed design choice).
+  if (!process.env.BACKEND_PRIVATE_KEY || !PREMIUM_SUBSCRIPTION_ADDRESS) {
     return res.status(503).json({ error: "Refunds are not configured on this backend" });
   }
 
@@ -114,7 +117,7 @@ router.post("/pnl/statement/:requestId/refund", async (req, res) => {
 
   try {
     const provider = createRpcProvider();
-    const wallet = new ethers.Wallet(process.env.CORE_CLASH_BACKEND_PRIVATE_KEY, provider);
+    const wallet = new ethers.Wallet(process.env.BACKEND_PRIVATE_KEY, provider);
     const contract = new ethers.Contract(PREMIUM_SUBSCRIPTION_ADDRESS, PREMIUM_SUBSCRIPTION_ABI, wallet);
 
     const tx = await contract.refundPnlPeriod(request.payer_wallet, request.amount_paid_wei, { gasLimit: REFUND_GAS_LIMIT });
