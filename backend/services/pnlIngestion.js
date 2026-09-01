@@ -31,6 +31,9 @@ import { isCexAddress } from "../db/cexAddresses.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
+// Blockscout's legacy Etherscan-compatible API — the v2 REST API above has no block-by-timestamp
+// equivalent. Used only by getBlockByTimestamp below.
+const BLOCKSCOUT_LEGACY_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api`;
 const MAX_RETRIES = 3;
 const PAGE_DELAY_MS = process.env.PNL_INGESTION_PAGE_DELAY_MS ? parseInt(process.env.PNL_INGESTION_PAGE_DELAY_MS, 10) : 150;
 
@@ -41,6 +44,48 @@ const SWAP_IFACE = new ethers.Interface([
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Resolves the block number closest to `timestamp` via Blockscout's legacy Etherscan-compatible
+ * API (module=block&action=getblocknobytime) — informational only, for showing a human-checkable
+ * block range on a generated statement (see pnlStatementGenerator.js). Never used for the actual
+ * period slicing, which stays timestamp-based (see that file's header comment on why: ingestion
+ * pages through Blockscout's v2 endpoints by keyset cursor, not block range). `closest` is
+ * Blockscout's own param — "before" or "after". */
+export async function getBlockByTimestamp(timestamp, closest = "before") {
+  const unixSeconds = Math.floor(timestamp.getTime() / 1000);
+  const url = `${BLOCKSCOUT_LEGACY_API_BASE}?module=block&action=getblocknobytime&timestamp=${unixSeconds}&closest=${closest}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} resolving block by timestamp`);
+  const json = await res.json();
+  if (json.status !== "1" || !json.result?.blockNumber) {
+    throw new Error(`Unexpected response resolving block by timestamp: ${JSON.stringify(json)}`);
+  }
+  return Number(json.result.blockNumber);
+}
+
+// Token name/symbol never changes post-deploy in any way this app cares about — no TTL needed,
+// unlike the price caches elsewhere in this feature.
+const tokenMetadataCache = new Map(); // address (lowercase) -> { name, symbol } | null
+
+/** Resolves a token's name/symbol via Blockscout, cached indefinitely per address. Returns null
+ * (not a throw) on any failure — callers treat missing metadata as "show the raw address instead",
+ * never as a reason to fail statement generation. */
+export async function getTokenMetadata(tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  if (tokenMetadataCache.has(key)) return tokenMetadataCache.get(key);
+
+  let result = null;
+  try {
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}/tokens/${tokenAddress}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json.name || json.symbol) result = { name: json.name || null, symbol: json.symbol || null };
+  } catch (err) {
+    console.warn(`⚠️  Could not fetch token metadata for ${tokenAddress}:`, err.message);
+  }
+  tokenMetadataCache.set(key, result);
+  return result;
 }
 
 async function fetchPage(path, cursorParams, attempt = 0) {
