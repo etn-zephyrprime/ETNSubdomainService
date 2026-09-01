@@ -18,7 +18,7 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
-import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const THEME = {
   background: "#081c0a",
   green: "#18bb1a",
+  orange: "#ff8a3d", // theme.js's warning/attention color — used for the price-coverage disclaimer
   white: "#ffffff",
   bodyText: "#e5e5e5", // slightly softer than pure white for dense paragraph/detail text
   muted: "#9a9a9a", // theme.js's mutedLight
@@ -119,7 +120,30 @@ async function collectTokenMetadata(openingLots, closingLots, unrealizedPerToken
       if (meta) tokenMeta.set(addr, meta);
     })
   );
-  return tokenMeta;
+  return { tokenMeta, addresses };
+}
+
+/** Compares periodStart against every relevant asset's actual earliest-available price data (per
+ * price_history_backfill_state — real discovered boundaries, not a guessed date) and returns a
+ * disclaimer string if the period predates full coverage for any of them, or null if the whole
+ * period is covered. Free-tier price sources (GeckoTerminal, CoinGecko) both impose a rolling
+ * historical window rather than exposing full history — confirmed live: ~184 days for
+ * GeckoTerminal regardless of a pool's actual age, ~365 days for CoinGecko (native ETN only, no
+ * equivalent fallback exists for arbitrary tokens) — so any statement reaching far enough back WILL
+ * have incomplete pricing for its earliest portion, and that's expected, not a bug to chase. */
+async function buildPriceCoverageDisclaimer(periodStart, tokenAddresses) {
+  const assets = ["NATIVE", ...tokenAddresses];
+  let latestBoundary = null; // the latest (most restrictive) earliest-available-date across all relevant assets
+  for (const asset of assets) {
+    const earliest = await getEarliestAvailableDate(asset);
+    if (earliest && (!latestBoundary || earliest > latestBoundary)) latestBoundary = earliest;
+  }
+  if (!latestBoundary || periodStart >= latestBoundary) return null;
+  return (
+    `Price data for this period is incomplete before ${latestBoundary.toISOString().slice(0, 10)} — free-tier price ` +
+    `sources only expose a rolling recent window (not a fixed calendar date), so cost-basis/proceeds for ` +
+    `transactions earlier than that show as unavailable rather than an estimated or incorrect figure.`
+  );
 }
 
 function transferToEvent(t) {
@@ -183,48 +207,64 @@ function summarizeFlows(transfersInPeriod) {
   return summary;
 }
 
-async function computeUnrealizedPnl(closingLots, periodEnd) {
+/** Values a set of lots (opening or closing inventory) at a given point in time — quantity, cost
+ * basis, and market value per token, plus (for closing inventory specifically) the unrealized P&L
+ * that comparing market value against cost basis gives. Shared by both Opening and Closing
+ * Inventory: opening only ever uses quantity/marketValueUsd (there's no "opening unrealized P&L"
+ * concept), closing uses everything including totalUnrealizedUsd for the Summary section.
+ * totalUnrealizedUsd only ever includes a token if ITS OWN price resolved — a token with an
+ * unresolved price contributes to neither side of that delta, rather than only being subtracted as
+ * cost basis with no offsetting market value (which would wrongly read as a full loss on that
+ * token instead of "unknown"). */
+async function valueInventoryAtTimestamp(lots, timestamp) {
   const byToken = new Map();
-  for (const lot of closingLots) {
+  for (const lot of lots) {
     if (!byToken.has(lot.tokenAddress)) byToken.set(lot.tokenAddress, []);
     byToken.get(lot.tokenAddress).push(lot);
   }
 
+  let totalMarketValueUsd = new Decimal(0);
   let totalUnrealizedUsd = new Decimal(0);
   const perToken = [];
-  for (const [tokenAddress, lots] of byToken) {
-    const quantity = lots.reduce((sum, l) => sum.plus(l.quantityRemaining), new Decimal(0));
-    const costBasis = lots.reduce((sum, l) => sum.plus(l.quantityRemaining.times(l.unitCostUsd)), new Decimal(0));
+  for (const [tokenAddress, tokenLots] of byToken) {
+    const quantity = tokenLots.reduce((sum, l) => sum.plus(l.quantityRemaining), new Decimal(0));
+    const costBasis = tokenLots.reduce((sum, l) => sum.plus(l.quantityRemaining.times(l.unitCostUsd)), new Decimal(0));
     let marketValue = null;
     try {
-      const priceUsd = await getHistoricalPriceUsd(tokenAddress, periodEnd);
+      const priceUsd = await getHistoricalPriceUsd(tokenAddress, timestamp);
       marketValue = quantity.times(priceUsd);
+      totalMarketValueUsd = totalMarketValueUsd.plus(marketValue);
       totalUnrealizedUsd = totalUnrealizedUsd.plus(marketValue.minus(costBasis));
     } catch (err) {
-      console.warn(`⚠️  Statement generator: could not mark ${tokenAddress} to market at period end:`, err.message);
+      console.warn(`⚠️  Statement generator: could not price ${tokenAddress} at ${timestamp.toISOString()}:`, err.message);
     }
     perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: marketValue?.toString() ?? null });
   }
-  return { totalUnrealizedUsd, perToken };
+  return { totalMarketValueUsd, totalUnrealizedUsd, perToken };
 }
 
-/** Sums lot quantities per token and renders one line per distinct asset, using formatAssetLabel
- * for the "Name (SYMBOL) (0xAddress)" formatting — shared by both the Opening and Closing
- * Inventory sections below, which are otherwise identical in shape. */
-function renderInventorySection(doc, lots, tokenMeta, emptyText) {
-  if (lots.length === 0) {
+/** Renders one line per distinct asset — quantity plus its USD market value at that point in time
+ * (from valueInventoryAtTimestamp's already-aggregated perToken array) — followed by a total
+ * value line. Shared by both Opening and Closing Inventory, which are otherwise identical in
+ * shape. A null marketValueUsd (price didn't resolve — see valueInventoryAtTimestamp) shows as
+ * "price unavailable" rather than a silent $0, and is excluded from the total rather than making
+ * it read as lower than it really is. */
+function renderInventorySection(doc, valuation, tokenMeta, emptyText) {
+  if (valuation.perToken.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text(emptyText);
     return;
   }
-  const byToken = new Map();
-  for (const lot of lots) {
-    const key = lot.tokenAddress;
-    const cur = byToken.get(key) || new Decimal(0);
-    byToken.set(key, cur.plus(lot.quantityRemaining));
+  let anyUnpriced = false;
+  for (const t of valuation.perToken) {
+    const usdText = t.marketValueUsd != null ? `$${Number(t.marketValueUsd).toFixed(2)}` : "price unavailable";
+    if (t.marketValueUsd == null) anyUnpriced = true;
+    doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(t.tokenAddress, tokenMeta)}: ${Number(t.quantity).toFixed(6)}  —  ${usdText}`);
   }
-  for (const [token, qty] of byToken) {
-    doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(token, tokenMeta)}: ${qty.toFixed(6)}`);
-  }
+  doc.moveDown(0.2);
+  const totalNote = anyUnpriced ? " (excludes assets with no price data — see above)" : "";
+  doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold")
+    .text(`Total value: $${valuation.totalMarketValueUsd.toFixed(2)}${totalNote}`);
+  doc.font("Helvetica");
 }
 
 function shortHash(hash) {
@@ -258,7 +298,7 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
   return items;
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines }) {
+function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer }) {
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
   let hasOrbitron = true;
   try {
@@ -314,6 +354,11 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closin
   }
   doc.text(`Request ID: ${request.id}`);
   doc.text(`Generated: ${new Date().toISOString()}`);
+  if (priceCoverageDisclaimer) {
+    doc.moveDown(0.4);
+    doc.fontSize(9).fillColor(THEME.orange).text(`⚠ ${priceCoverageDisclaimer}`);
+    doc.fillColor(THEME.bodyText).fontSize(11);
+  }
   doc.moveDown(1);
 
   const line = (label, value) => doc.fontSize(11).fillColor(THEME.bodyText).text(`${label}: ${value}`);
@@ -335,11 +380,11 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closin
   doc.moveDown(1);
 
   sectionHeader("Opening Inventory");
-  renderInventorySection(doc, opening.lots, tokenMeta, "No open positions at period start (this appears to be the wallet's first reporting period).");
+  renderInventorySection(doc, openingValuation, tokenMeta, "No open positions at period start (this appears to be the wallet's first reporting period).");
   doc.moveDown(1);
 
   sectionHeader("Closing Inventory");
-  renderInventorySection(doc, closing.lots, tokenMeta, "No open positions at period end.");
+  renderInventorySection(doc, closingValuation, tokenMeta, "No open positions at period end.");
   doc.moveDown(1);
 
   sectionHeader("Transaction History");
@@ -364,6 +409,13 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closin
     doc.fillColor(THEME.white).font("Helvetica-Bold").text("Block range");
     doc.fillColor(THEME.muted).font("Helvetica").text(
       "The Block range shown above is derived by looking up which block was nearest each period boundary's exact timestamp — it's provided so you can independently cross-check this statement's activity against the block explorer directly. It is not what this statement itself used to decide which transactions to include: that decision is based on each transaction's own timestamp falling within the period, not its block number."
+    );
+    doc.moveDown(0.4);
+  }
+  if (priceCoverageDisclaimer) {
+    doc.fillColor(THEME.white).font("Helvetica-Bold").text("Price data availability");
+    doc.fillColor(THEME.muted).font("Helvetica").text(
+      `${priceCoverageDisclaimer} This reflects a real limit of the underlying free price data sources (they only expose a recent rolling window, not full history), not a bug in how this statement was produced — every figure that IS shown is a real historical price, never an estimate or placeholder.`
     );
     doc.moveDown(0.4);
   }
@@ -416,15 +468,16 @@ export async function generateStatement(requestId) {
     return ts >= periodStart && ts < periodEnd;
   });
 
-  const [gas, unrealized] = await Promise.all([
+  const [gas, closingValuation, openingValuation] = await Promise.all([
     computeGasFeesUsd(transfersInPeriod),
-    computeUnrealizedPnl(closing.lots, periodEnd),
+    valueInventoryAtTimestamp(closing.lots, periodEnd),
+    valueInventoryAtTimestamp(opening.lots, periodStart),
   ]);
   const flows = summarizeFlows(transfersInPeriod);
 
   const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
   const realizedPnlUsd = realizedEventsInPeriod.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
-  const netPnlUsd = realizedPnlUsd.plus(unrealized.totalUnrealizedUsd).minus(gas.totalGasUsd);
+  const netPnlUsd = realizedPnlUsd.plus(closingValuation.totalUnrealizedUsd).minus(gas.totalGasUsd);
 
   // Informational only (see getBlockByTimestamp's own comment) — never lets a lookup failure fail
   // the whole statement, since this is purely a cross-checking convenience, not load-bearing data.
@@ -440,9 +493,10 @@ export async function generateStatement(requestId) {
     console.warn(`⚠️  Statement generator: could not resolve block range for request ${requestId}:`, err.message);
   }
 
-  const tokenMeta = await collectTokenMetadata(opening.lots, closing.lots, unrealized.perToken, realizedEventsInPeriod, transfersInPeriod, swapsInPeriod);
+  const { tokenMeta, addresses: tokenAddresses } = await collectTokenMetadata(opening.lots, closing.lots, closingValuation.perToken, realizedEventsInPeriod, transfersInPeriod, swapsInPeriod);
   const withAssetLabel = (obj, tokenAddress) => ({ ...obj, tokenAddress, assetLabel: formatAssetLabel(tokenAddress, tokenMeta) });
   const transactionLines = buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta);
+  const priceCoverageDisclaimer = await buildPriceCoverageDisclaimer(periodStart, [...tokenAddresses]);
 
   const jsonArtifact = {
     schemaVersion: 1,
@@ -455,8 +509,15 @@ export async function generateStatement(requestId) {
     periodEnd: periodEnd.toISOString(),
     blockRange,
     generatedAt: new Date().toISOString(),
-    openingInventory: opening.lots.map((l) => withAssetLabel({ quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() }, l.tokenAddress)),
-    closingInventory: closing.lots.map((l) => withAssetLabel({ quantity: l.quantityRemaining.toString(), unitCostUsd: l.unitCostUsd.toString() }, l.tokenAddress)),
+    priceCoverageDisclaimer,
+    openingInventory: {
+      totalValueUsd: openingValuation.totalMarketValueUsd.toString(),
+      perAsset: openingValuation.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
+    },
+    closingInventory: {
+      totalValueUsd: closingValuation.totalMarketValueUsd.toString(),
+      perAsset: closingValuation.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
+    },
     flows: { onChainIn: flows.onChainIn.toString(), onChainOut: flows.onChainOut.toString(), cexIn: flows.cexIn.toString(), cexOut: flows.cexOut.toString() },
     fees: { gasEtn: gas.totalGasEtn, gasUsd: gas.totalGasUsd.toString() },
     realizedPnlEvents: realizedEventsInPeriod.map((e) => withAssetLabel({
@@ -468,18 +529,18 @@ export async function generateStatement(requestId) {
       realizedPnlUsd: e.realizedPnlUsd.toString(),
     }, e.tokenAddress)),
     unrealizedPnl: {
-      totalUsd: unrealized.totalUnrealizedUsd.toString(),
-      perToken: unrealized.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
+      totalUsd: closingValuation.totalUnrealizedUsd.toString(),
+      perToken: closingValuation.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
     },
     // Every in-period transfer/swap, chronological — the same ledger the PDF's Transaction History
     // pages show (see buildTransactionLines), just machine-readable here instead of pre-formatted.
     transactions: transactionLines.map((item) => ({ timestamp: item.timestamp.toISOString(), description: item.text })),
-    summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: unrealized.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
+    summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: closingValuation.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
     summaryExplanations: Object.fromEntries(SUMMARY_EXPLANATIONS),
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd: unrealized.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;
