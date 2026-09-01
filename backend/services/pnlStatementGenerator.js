@@ -11,6 +11,8 @@ import PDFDocument from "pdfkit";
 import { ethers } from "ethers";
 import Decimal from "decimal.js";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import path from "path";
+import { fileURLToPath } from "url";
 import { getById, markGenerated } from "../db/statementRequests.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
@@ -18,6 +20,23 @@ import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata } from "./pn
 import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Planet Zephyros brand palette — kept in exact sync with src/dashboard/theme.js by hand (this
+// backend has no build step that could import that frontend file directly). If the dashboard's
+// palette ever changes, update both.
+const THEME = {
+  background: "#081c0a",
+  green: "#18bb1a",
+  white: "#ffffff",
+  bodyText: "#e5e5e5", // slightly softer than pure white for dense paragraph/detail text
+  muted: "#9a9a9a", // theme.js's mutedLight
+  border: "#333333",
+};
+const LOGO_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosLogo.png");
+const WORDMARK_PATH = path.resolve(__dirname, "..", "assets", "PlanetZephyrosText.png");
+const ORBITRON_BOLD_PATH = path.resolve(__dirname, "..", "fonts", "Orbitron-Bold.ttf");
 
 const NATIVE_SENTINEL = "NATIVE";
 const DISCLAIMER =
@@ -77,15 +96,21 @@ function formatAssetLabel(tokenAddress, tokenMeta) {
 }
 
 /** Resolves and caches name/symbol for every distinct token address appearing anywhere in this
- * statement (opening/closing inventory, unrealized holdings, realized disposal events) in one
- * pass, so formatAssetLabel/JSON enrichment never has to do it ad hoc per line item. Native ETN is
- * never looked up (formatAssetLabel special-cases it directly). */
-async function collectTokenMetadata(openingLots, closingLots, unrealizedPerToken, realizedEvents) {
+ * statement (opening/closing inventory, unrealized holdings, realized disposal events, plus every
+ * in-period transfer/swap for the Transaction History section) in one pass, so
+ * formatAssetLabel/JSON enrichment never has to do it ad hoc per line item. Native ETN is never
+ * looked up (formatAssetLabel special-cases it directly). */
+async function collectTokenMetadata(openingLots, closingLots, unrealizedPerToken, realizedEvents, transfersInPeriod, swapsInPeriod) {
   const addresses = new Set();
   for (const l of openingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
   for (const l of closingLots) if (l.tokenAddress !== NATIVE_SENTINEL) addresses.add(l.tokenAddress.toLowerCase());
   for (const t of unrealizedPerToken) if (t.tokenAddress !== NATIVE_SENTINEL) addresses.add(t.tokenAddress.toLowerCase());
   for (const e of realizedEvents) if (e.tokenAddress !== NATIVE_SENTINEL) addresses.add(e.tokenAddress.toLowerCase());
+  for (const t of transfersInPeriod) if (t.token_address) addresses.add(t.token_address.toLowerCase());
+  for (const s of swapsInPeriod) {
+    if (s.token_sold_address && s.token_sold_address !== NATIVE_SENTINEL) addresses.add(s.token_sold_address.toLowerCase());
+    if (s.token_bought_address && s.token_bought_address !== NATIVE_SENTINEL) addresses.add(s.token_bought_address.toLowerCase());
+  }
 
   const tokenMeta = new Map();
   await Promise.all(
@@ -188,7 +213,7 @@ async function computeUnrealizedPnl(closingLots, periodEnd) {
  * Inventory sections below, which are otherwise identical in shape. */
 function renderInventorySection(doc, lots, tokenMeta, emptyText) {
   if (lots.length === 0) {
-    doc.fontSize(10).text(emptyText);
+    doc.fontSize(10).fillColor(THEME.muted).text(emptyText);
     return;
   }
   const byToken = new Map();
@@ -198,36 +223,102 @@ function renderInventorySection(doc, lots, tokenMeta, emptyText) {
     byToken.set(key, cur.plus(lot.quantityRemaining));
   }
   for (const [token, qty] of byToken) {
-    doc.fontSize(10).text(`${formatAssetLabel(token, tokenMeta)}: ${qty.toFixed(6)}`);
+    doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(token, tokenMeta)}: ${qty.toFixed(6)}`);
   }
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta }) {
-  const doc = new PDFDocument({ margin: 50 });
+function shortHash(hash) {
+  return hash ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : "—";
+}
+
+/** Builds the chronological, page-spanning transaction list — every in-period transfer (native +
+ * token, excluding pure gas-fee bookkeeping rows, which have no asset movement of their own and
+ * are already totaled in the Fees summary) plus every in-period swap, sorted oldest first. This is
+ * the literal ledger a statement's "Transaction History" section shows — separate from
+ * realizedPnlEvents (FIFO disposals only) and from the flows/gas totals (aggregated, not
+ * itemized). */
+function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
+  const items = [];
+  for (const t of transfersInPeriod) {
+    if (t.gas_fee_wei != null || Number(t.amount_raw) === 0) continue;
+    const tag = t.is_self_transfer ? " (self)" : t.is_cex ? " (CEX)" : "";
+    const usd = t.usd_value != null ? `$${Number(t.usd_value).toFixed(2)}` : "price unavailable";
+    items.push({
+      timestamp: new Date(t.timestamp),
+      text: `${t.direction === "in" ? "IN " : "OUT"}${tag}  ${Number(t.amount_decimal).toFixed(6)} ${formatAssetLabel(t.token_address || NATIVE_SENTINEL, tokenMeta)}  —  ${usd}  —  tx ${shortHash(t.tx_hash)}`,
+    });
+  }
+  for (const s of swapsInPeriod) {
+    items.push({
+      timestamp: new Date(s.timestamp),
+      text: `SWAP  ${Number(s.amount_sold).toFixed(6)} ${formatAssetLabel(s.token_sold_address, tokenMeta)}  ->  ${Number(s.amount_bought).toFixed(6)} ${formatAssetLabel(s.token_bought_address, tokenMeta)}  —  tx ${shortHash(s.tx_hash)}`,
+    });
+  }
+  items.sort((a, b) => a.timestamp - b.timestamp);
+  return items;
+}
+
+function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines }) {
+  const doc = new PDFDocument({ margin: 50, bufferPages: true });
+  let hasOrbitron = true;
+  try {
+    doc.registerFont("Orbitron-Bold", ORBITRON_BOLD_PATH);
+  } catch (err) {
+    hasOrbitron = false;
+    console.warn("⚠️  Statement PDF: could not register Orbitron-Bold, falling back to Helvetica-Bold:", err.message);
+  }
   const chunks = [];
   doc.on("data", (c) => chunks.push(c));
   const done = new Promise((resolve) => doc.on("end", () => resolve(Buffer.concat(chunks))));
 
-  doc.fontSize(18).text("Profit & Loss Statement", { align: "center" });
-  doc.moveDown(0.5);
-  doc.fontSize(10).fillColor("#555").text("Planet Zephyros — Electroneum Dashboard", { align: "center" });
-  doc.moveDown(1.5);
+  // Dark background on every page, including ones pdfkit auto-adds when content overflows (the
+  // transaction history below can easily run to several pages for an active wallet) — pageAdded
+  // fires after the new page exists but before anything's drawn on it, and .rect().fill() changes
+  // the current fill color as a side effect, so every draw call below re-sets its own color rather
+  // than assuming what the background fill left behind.
+  const paintBackground = () => doc.rect(0, 0, doc.page.width, doc.page.height).fill(THEME.background);
+  paintBackground();
+  doc.on("pageAdded", paintBackground);
 
-  doc.fillColor("#000").fontSize(11);
+  const sectionHeader = (text) => {
+    doc.moveDown(0.2);
+    doc.fontSize(13).fillColor(THEME.green).font("Helvetica-Bold").text(text);
+    doc.moveDown(0.3);
+  };
+
+  // Header: logo + wordmark side by side, matching DashboardHeader.jsx's own layout.
+  const logoHeight = 46;
+  const logoY = doc.y;
+  try {
+    doc.image(LOGO_PATH, doc.page.width / 2 - 140, logoY, { height: logoHeight });
+    doc.image(WORDMARK_PATH, doc.page.width / 2 - 80, logoY + 8, { height: 30 });
+  } catch (err) {
+    console.warn("⚠️  Statement PDF: could not embed logo/wordmark images:", err.message);
+  }
+  doc.y = logoY + logoHeight + 16;
+
+  doc.font(hasOrbitron ? "Orbitron-Bold" : "Helvetica-Bold").fontSize(18).fillColor(THEME.white)
+    .text("Profit & Loss Statement", { align: "center" });
+  doc.font("Helvetica");
+  doc.moveDown(0.4);
+  doc.fontSize(10).fillColor(THEME.muted).text("Planet Zephyros — Electroneum Dashboard", { align: "center" });
+  doc.moveDown(1.3);
+
+  doc.fillColor(THEME.bodyText).fontSize(11);
   doc.text(`Wallet: ${request.tracked_wallet}`);
   doc.text(`Reporting period: ${periodTypeLabel(request.period_type)} ${request.year}`);
   doc.text(`Period: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)}`);
   if (blockRange) {
-    doc.text(`Block range: ${blockRange.startBlock} to ${blockRange.endBlock} (for cross-checking against the block explorer — informational only, not what determined which transactions were included; see the explanation below)`);
+    doc.fillColor(THEME.muted).text(`Block range: ${blockRange.startBlock} to ${blockRange.endBlock} (for cross-checking against the block explorer — see the explanation below)`);
+    doc.fillColor(THEME.bodyText);
   }
   doc.text(`Request ID: ${request.id}`);
   doc.text(`Generated: ${new Date().toISOString()}`);
   doc.moveDown(1);
 
-  const line = (label, value) => doc.fontSize(11).text(`${label}: ${value}`);
+  const line = (label, value) => doc.fontSize(11).fillColor(THEME.bodyText).text(`${label}: ${value}`);
 
-  doc.fontSize(14).text("Summary", { underline: true });
-  doc.moveDown(0.3);
+  sectionHeader("Summary");
   line("On-chain inflows (USD)", flows.onChainIn.toFixed(2));
   line("On-chain outflows (USD)", flows.onChainOut.toFixed(2));
   line("CEX deposits (USD)", flows.cexIn.toFixed(2));
@@ -239,38 +330,46 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, opening, closin
   line("Realized P&L (USD)", realizedPnlUsd.toFixed(2));
   line("Unrealized P&L (USD)", unrealizedPnlUsd.toFixed(2));
   doc.moveDown(0.3);
-  doc.fontSize(12).text(`Net P&L after fees (USD): ${netPnlUsd.toFixed(2)}`, { underline: true });
+  doc.fontSize(13).fillColor(THEME.white).font("Helvetica-Bold").text(`Net P&L after fees (USD): ${netPnlUsd.toFixed(2)}`);
+  doc.font("Helvetica");
   doc.moveDown(1);
 
-  doc.fontSize(14).text("Opening Inventory", { underline: true });
-  doc.moveDown(0.3);
+  sectionHeader("Opening Inventory");
   renderInventorySection(doc, opening.lots, tokenMeta, "No open positions at period start (this appears to be the wallet's first reporting period).");
   doc.moveDown(1);
 
-  doc.fontSize(14).text("Closing Inventory", { underline: true });
-  doc.moveDown(0.3);
+  sectionHeader("Closing Inventory");
   renderInventorySection(doc, closing.lots, tokenMeta, "No open positions at period end.");
   doc.moveDown(1);
 
-  doc.fontSize(14).text("Understanding This Statement", { underline: true });
-  doc.moveDown(0.3);
-  doc.fontSize(9).fillColor("#333");
+  sectionHeader("Transaction History");
+  if (transactionLines.length === 0) {
+    doc.fontSize(10).fillColor(THEME.muted).text("No transactions in this period.");
+  } else {
+    doc.fontSize(8).fillColor(THEME.bodyText);
+    for (const item of transactionLines) {
+      doc.text(`${item.timestamp.toISOString().slice(0, 16).replace("T", " ")}  ${item.text}`);
+    }
+  }
+  doc.moveDown(1);
+
+  sectionHeader("Understanding This Statement");
+  doc.fontSize(9);
   for (const [label, explanation] of SUMMARY_EXPLANATIONS) {
-    doc.font("Helvetica-Bold").text(label);
-    doc.font("Helvetica").text(explanation);
+    doc.fillColor(THEME.white).font("Helvetica-Bold").text(label);
+    doc.fillColor(THEME.muted).font("Helvetica").text(explanation);
     doc.moveDown(0.4);
   }
   if (blockRange) {
-    doc.font("Helvetica-Bold").text("Block range");
-    doc.font("Helvetica").text(
+    doc.fillColor(THEME.white).font("Helvetica-Bold").text("Block range");
+    doc.fillColor(THEME.muted).font("Helvetica").text(
       "The Block range shown above is derived by looking up which block was nearest each period boundary's exact timestamp — it's provided so you can independently cross-check this statement's activity against the block explorer directly. It is not what this statement itself used to decide which transactions to include: that decision is based on each transaction's own timestamp falling within the period, not its block number."
     );
     doc.moveDown(0.4);
   }
-  doc.fillColor("#000");
   doc.moveDown(0.6);
 
-  doc.fontSize(8).fillColor("#777").text(DISCLAIMER, { align: "left" });
+  doc.fontSize(8).fillColor(THEME.muted).text(DISCLAIMER, { align: "left" });
 
   doc.end();
   return done;
@@ -312,6 +411,10 @@ export async function generateStatement(requestId) {
     const ts = new Date(t.timestamp);
     return ts >= periodStart && ts < periodEnd;
   });
+  const swapsInPeriod = swaps.filter((s) => {
+    const ts = new Date(s.timestamp);
+    return ts >= periodStart && ts < periodEnd;
+  });
 
   const [gas, unrealized] = await Promise.all([
     computeGasFeesUsd(transfersInPeriod),
@@ -337,8 +440,9 @@ export async function generateStatement(requestId) {
     console.warn(`⚠️  Statement generator: could not resolve block range for request ${requestId}:`, err.message);
   }
 
-  const tokenMeta = await collectTokenMetadata(opening.lots, closing.lots, unrealized.perToken, realizedEventsInPeriod);
+  const tokenMeta = await collectTokenMetadata(opening.lots, closing.lots, unrealized.perToken, realizedEventsInPeriod, transfersInPeriod, swapsInPeriod);
   const withAssetLabel = (obj, tokenAddress) => ({ ...obj, tokenAddress, assetLabel: formatAssetLabel(tokenAddress, tokenMeta) });
+  const transactionLines = buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta);
 
   const jsonArtifact = {
     schemaVersion: 1,
@@ -367,12 +471,15 @@ export async function generateStatement(requestId) {
       totalUsd: unrealized.totalUnrealizedUsd.toString(),
       perToken: unrealized.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
     },
+    // Every in-period transfer/swap, chronological — the same ledger the PDF's Transaction History
+    // pages show (see buildTransactionLines), just machine-readable here instead of pre-formatted.
+    transactions: transactionLines.map((item) => ({ timestamp: item.timestamp.toISOString(), description: item.text })),
     summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: unrealized.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
     summaryExplanations: Object.fromEntries(SUMMARY_EXPLANATIONS),
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd: unrealized.totalUnrealizedUsd, netPnlUsd, tokenMeta });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, opening, closing, gas, flows, realizedPnlUsd, unrealizedPnlUsd: unrealized.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;
