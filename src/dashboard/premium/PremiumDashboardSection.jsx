@@ -22,7 +22,7 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
           Premium
         </div>
         <h2 style={{ fontSize: 26, fontWeight: 900, margin: "0 0 12px 0", color: "#fff", textShadow: `0 0 16px ${greenGlow}` }}>
-          Membership &amp; PnL Statements
+          PnL Statements
         </h2>
         <div style={{ width: 40, height: 2, background: green, margin: "0 auto", borderRadius: 2, boxShadow: `0 0 8px ${greenGlow}` }} />
       </div>
@@ -54,7 +54,10 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
         />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <MembershipPurchase wallet={wallet} />
+          {/* Membership purchase is turned off for now (2026-09-01) — not used yet, since
+              membership currently unlocks nothing the discount paths (whitelist/Erevos/activated
+              domain) don't already cover. Re-enable by restoring this line once membership grants
+              something real. Import kept above rather than removed, for exactly that reason. */}
           <PnlStatementRequest wallet={wallet} />
 
           <button
