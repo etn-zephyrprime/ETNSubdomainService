@@ -392,6 +392,18 @@ async function valueInventoryAtTimestamp(lots, timestamp) {
  * shape. A null marketValueUsd (price didn't resolve — see valueInventoryAtTimestamp) shows as
  * "price unavailable" rather than a silent $0, and is excluded from the total rather than making
  * it read as lower than it really is. */
+/** PDF-display-only number formatting: 2 decimal places, but the trailing ".00" is dropped
+ * entirely when the rounded value has no fractional part — "10.000000" displays as "10",
+ * "16.048500" as "16.05". Accepts a Decimal, a numeric string, or a plain number. Never touches
+ * the underlying data (jsonArtifact keeps every value's full precision via Decimal#toString() —
+ * this is purely how the PDF chooses to show a number, not what's actually stored/computed). */
+function fmtAmount(value) {
+  const num = value instanceof Decimal ? value.toNumber() : Number(value);
+  if (!Number.isFinite(num)) return "—";
+  const fixed = num.toFixed(2);
+  return fixed.endsWith(".00") ? fixed.slice(0, -3) : fixed;
+}
+
 function renderInventorySection(doc, valuation, tokenMeta, emptyText) {
   if (valuation.perToken.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text(emptyText);
@@ -403,20 +415,79 @@ function renderInventorySection(doc, valuation, tokenMeta, emptyText) {
     // key guard) — that's expected, not counted toward "excludes assets with no price data" below,
     // which is specifically about a genuine fungible-token pricing gap.
     const isNft = isNftAssetKey(t.tokenAddress);
-    const usdText = isNft ? "cost basis only, no market feed" : t.marketValueUsd != null ? `$${Number(t.marketValueUsd).toFixed(2)}` : "price unavailable";
+    const usdText = isNft ? "cost basis only, no market feed" : t.marketValueUsd != null ? `$${fmtAmount(t.marketValueUsd)}` : "price unavailable";
     if (!isNft && t.marketValueUsd == null) anyUnpriced = true;
-    const qtyText = isNft ? String(Number(t.quantity)) : Number(t.quantity).toFixed(6);
+    const qtyText = isNft ? String(Number(t.quantity)) : fmtAmount(t.quantity);
     doc.fontSize(10).fillColor(THEME.bodyText).text(`${formatAssetLabel(t.tokenAddress, tokenMeta)}: ${qtyText}  —  ${usdText}`);
   }
   doc.moveDown(0.2);
   const totalNote = anyUnpriced ? " (excludes assets with no price data — see above)" : "";
   doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold")
-    .text(`Total value: $${valuation.totalMarketValueUsd.toFixed(2)}${totalNote}`);
+    .text(`Total value: $${fmtAmount(valuation.totalMarketValueUsd)}${totalNote}`);
   doc.font("Helvetica");
 }
 
-function shortHash(hash) {
-  return hash ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : "—";
+/** Real column-aligned table for Realized Gains & Losses — same explicit x/y positioning,
+ * gutter, and manual pagination approach as renderTransactionTable below (kept as a separate
+ * function rather than a shared generic-table abstraction, matching this codebase's existing
+ * "fine to drift independently" convention for structurally-similar-but-distinct renderers — see
+ * e.g. ingestSwaps/tokenChartRouter's independent GeckoTerminal queues). */
+function renderRealizedGainsTable(doc, events, tokenMeta, pageOptions) {
+  const left = doc.page.margins.left;
+  const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const cols = [
+    { label: "Date", width: tableWidth * 0.11, align: "left" },
+    { label: "Asset", width: tableWidth * 0.37, align: "left" },
+    { label: "Quantity", width: tableWidth * 0.13, align: "right" },
+    { label: "Cost Basis", width: tableWidth * 0.13, align: "right" },
+    { label: "Proceeds", width: tableWidth * 0.13, align: "right" },
+    { label: "Gain / Loss", width: tableWidth * 0.13, align: "right" },
+  ];
+  let x = left;
+  for (const col of cols) {
+    col.x = x;
+    x += col.width;
+  }
+  const GUTTER = 6;
+  const rowHeight = 13;
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
+
+  function drawHeaderRow() {
+    const y = doc.y;
+    doc.fontSize(8).font("Helvetica-Bold").fillColor(THEME.green);
+    for (const col of cols) {
+      doc.text(col.label, col.x, y, { width: col.width - GUTTER, align: col.align, lineBreak: false });
+    }
+    doc.font("Helvetica");
+    doc.y = y + rowHeight;
+    doc.moveTo(left, doc.y).lineTo(left + tableWidth, doc.y).strokeColor(THEME.border).lineWidth(0.5).stroke();
+    doc.y += 4;
+  }
+
+  drawHeaderRow();
+  for (const e of events) {
+    if (doc.y + rowHeight > bottomLimit) {
+      doc.addPage(pageOptions);
+      doc.y = doc.page.margins.top;
+      drawHeaderRow();
+    }
+    const y = doc.y;
+    const isNft = isNftAssetKey(e.tokenAddress);
+    const gainLoss = e.realizedPnlUsd;
+    const gainColor = gainLoss.isNegative() ? THEME.orange : THEME.green;
+    const qtyText = isNft ? String(e.quantityConsumed) : fmtAmount(e.quantityConsumed);
+
+    doc.fontSize(8).fillColor(THEME.bodyText);
+    doc.text(e.timestamp.toISOString().slice(0, 10), cols[0].x, y, { width: cols[0].width - GUTTER, lineBreak: false });
+    doc.text(formatAssetLabel(e.tokenAddress, tokenMeta), cols[1].x, y, { width: cols[1].width - GUTTER, height: rowHeight, ellipsis: true });
+    doc.text(qtyText, cols[2].x, y, { width: cols[2].width - GUTTER, align: "right", lineBreak: false });
+    doc.text(`$${fmtAmount(e.costBasisUsd)}`, cols[3].x, y, { width: cols[3].width - GUTTER, align: "right", lineBreak: false });
+    doc.text(`$${fmtAmount(e.proceedsUsd)}`, cols[4].x, y, { width: cols[4].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(gainColor).text(`${gainLoss.isNegative() ? "" : "+"}$${fmtAmount(gainLoss)}`, cols[5].x, y, { width: cols[5].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(THEME.bodyText);
+    doc.y = y + rowHeight;
+  }
+  doc.x = left;
 }
 
 /** Real column-aligned table for Transaction History — explicit x/y positioning rather than
@@ -429,13 +500,17 @@ function shortHash(hash) {
 function renderTransactionTable(doc, rows, pageOptions) {
   const left = doc.page.margins.left;
   const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  // Tx column sized from a real measurement, not a guess: a full 66-char tx hash at this font
+  // size (8pt Helvetica) measures ~285pt — confirmed via doc.widthOfString before picking these
+  // proportions, since lineBreak:false silently clips overflow rather than erroring. Asset shrinks
+  // to make room (it already ellipsis-truncates gracefully, unlike the other columns).
   const cols = [
-    { key: "date", label: "Date", width: tableWidth * 0.16, align: "left" },
-    { key: "type", label: "Type", width: tableWidth * 0.10, align: "left" },
-    { key: "asset", label: "Asset", width: tableWidth * 0.34, align: "left" },
-    { key: "amount", label: "Amount", width: tableWidth * 0.16, align: "right" },
-    { key: "usd", label: "USD", width: tableWidth * 0.12, align: "right" },
-    { key: "tx", label: "Tx", width: tableWidth * 0.12, align: "left" },
+    { key: "date", label: "Date", width: tableWidth * 0.10, align: "left" },
+    { key: "type", label: "Type", width: tableWidth * 0.07, align: "left" },
+    { key: "asset", label: "Asset", width: tableWidth * 0.21, align: "left" },
+    { key: "amount", label: "Amount", width: tableWidth * 0.09, align: "right" },
+    { key: "usd", label: "USD", width: tableWidth * 0.09, align: "right" },
+    { key: "tx", label: "Tx (full hash)", width: tableWidth * 0.44, align: "left" },
   ];
   let x = left;
   for (const col of cols) {
@@ -485,7 +560,7 @@ function renderTransactionTable(doc, rows, pageOptions) {
     doc.text(row.asset, cols[2].x, y, { width: cols[2].width - GUTTER, height: rowHeight, ellipsis: true });
     doc.text(row.amount, cols[3].x, y, { width: cols[3].width - GUTTER, align: cols[3].align, lineBreak: false });
     doc.text(row.usd, cols[4].x, y, { width: cols[4].width - GUTTER, align: cols[4].align, lineBreak: false });
-    doc.fillColor(THEME.green).text(shortHash(row.txHash), cols[5].x, y, {
+    doc.fillColor(THEME.green).text(row.txHash || "—", cols[5].x, y, {
       width: cols[5].width - GUTTER,
       lineBreak: false,
       link: `${EXPLORER_BASE_URL}/tx/${row.txHash}`,
@@ -512,13 +587,13 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
     const assetKey = isNft ? nftAssetKey(t) : t.token_address || NATIVE_SENTINEL;
     // NFT quantity is always a whole count (1 per unique ERC-721, or an ERC-1155 batch amount) —
     // ".000000" on an NFT line reads as a fungible-token artifact, not as "1 of something unique".
-    const amount = isNft ? String(Number(t.amount_decimal)) : Number(t.amount_decimal).toFixed(6);
+    const amount = isNft ? String(Number(t.amount_decimal)) : fmtAmount(t.amount_decimal);
     const tag = t.is_self_transfer ? " (self)" : t.is_cex ? " (CEX)" : "";
     // NFTs never have a fungible-market usd_value (see pnlPricing.js's early guard on composite
     // keys) — its cost basis/proceeds, if this leg turned out to be a mint/sale, show separately in
     // Realized Gains & Losses instead; showing "price unavailable" here would misleadingly suggest
     // a missing market feed rather than "this is correctly a non-priced asset".
-    const usd = isNft ? "n/a" : t.usd_value != null ? `$${Number(t.usd_value).toFixed(2)}` : "unavailable";
+    const usd = isNft ? "n/a" : t.usd_value != null ? `$${fmtAmount(t.usd_value)}` : "unavailable";
     items.push({
       timestamp: new Date(t.timestamp),
       txHash: t.tx_hash,
@@ -534,7 +609,7 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
       txHash: s.tx_hash,
       type: "SWAP",
       asset: `${formatAssetLabel(s.token_sold_address, tokenMeta)} -> ${formatAssetLabel(s.token_bought_address, tokenMeta)}`,
-      amount: `${Number(s.amount_sold).toFixed(4)} -> ${Number(s.amount_bought).toFixed(4)}`,
+      amount: `${fmtAmount(s.amount_sold)} -> ${fmtAmount(s.amount_bought)}`,
       usd: "—",
     });
   }
@@ -653,18 +728,18 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
 
   sectionPageNumbers["Summary"] = currentPageNumber;
   sectionHeader("Summary");
-  line("On-chain inflows (USD)", flows.onChainIn.toFixed(2));
-  line("On-chain outflows (USD)", flows.onChainOut.toFixed(2));
-  line("CEX deposits (USD)", flows.cexIn.toFixed(2));
-  line("CEX withdrawals (USD)", flows.cexOut.toFixed(2));
+  line("On-chain inflows (USD)", fmtAmount(flows.onChainIn));
+  line("On-chain outflows (USD)", fmtAmount(flows.onChainOut));
+  line("CEX deposits (USD)", fmtAmount(flows.cexIn));
+  line("CEX withdrawals (USD)", fmtAmount(flows.cexOut));
   doc.moveDown(0.5);
-  line("Gas fees paid (ETN)", gas.totalGasEtn);
-  line("Gas fees paid (USD)", gas.totalGasUsd.toFixed(2));
+  line("Gas fees paid (ETN)", fmtAmount(gas.totalGasEtn));
+  line("Gas fees paid (USD)", fmtAmount(gas.totalGasUsd));
   doc.moveDown(0.5);
-  line("Realized P&L (USD)", realizedPnlUsd.toFixed(2));
-  line("Unrealized P&L (USD)", unrealizedPnlUsd.toFixed(2));
+  line("Realized P&L (USD)", fmtAmount(realizedPnlUsd));
+  line("Unrealized P&L (USD)", fmtAmount(unrealizedPnlUsd));
   doc.moveDown(0.3);
-  doc.fontSize(13).fillColor(THEME.white).font("Helvetica-Bold").text(`Net P&L after fees (USD): ${netPnlUsd.toFixed(2)}`);
+  doc.fontSize(13).fillColor(THEME.white).font("Helvetica-Bold").text(`Net P&L after fees (USD): ${fmtAmount(netPnlUsd)}`);
   doc.font("Helvetica");
   doc.moveDown(1);
 
@@ -689,18 +764,8 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   if (!realizedEventsInPeriod || realizedEventsInPeriod.length === 0) {
     doc.fontSize(10).fillColor(THEME.muted).text("No disposals (sales, swaps, or NFT sales) in this period.");
   } else {
-    doc.fontSize(8);
-    for (const e of realizedEventsInPeriod) {
-      const gainLoss = e.realizedPnlUsd;
-      const gainColor = gainLoss.isNegative() ? THEME.orange : THEME.green;
-      const dateStr = e.timestamp.toISOString().slice(0, 10);
-      const qtyStr = isNftAssetKey(e.tokenAddress) ? String(e.quantityConsumed) : e.quantityConsumed.toFixed(6);
-      doc.fillColor(THEME.bodyText).text(
-        `${dateStr}  ${qtyStr} ${formatAssetLabel(e.tokenAddress, tokenMeta)}  —  cost $${e.costBasisUsd.toFixed(2)}, proceeds $${e.proceedsUsd.toFixed(2)}  —  `,
-        { continued: true }
-      );
-      doc.fillColor(gainColor).text(`${gainLoss.isNegative() ? "" : "+"}$${gainLoss.toFixed(2)}`);
-    }
+    renderRealizedGainsTable(doc, realizedEventsInPeriod, tokenMeta, LANDSCAPE);
+    doc.x = doc.page.margins.left;
   }
   doc.moveDown(1);
 
@@ -714,8 +779,8 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
       const net = g.wonUsd.minus(g.wageredUsd);
       const netColor = net.isNegative() ? THEME.orange : THEME.green;
       const unpricedNote = g.wageredUnpriced + g.wonUnpriced > 0 ? `  (${g.wageredUnpriced + g.wonUnpriced} transaction(s) with no price data, not included above)` : "";
-      doc.fillColor(THEME.bodyText).text(`${name} — Wagered: $${g.wageredUsd.toFixed(2)}, Won: $${g.wonUsd.toFixed(2)}, `, { continued: true });
-      doc.fillColor(netColor).text(`Net: ${net.isNegative() ? "" : "+"}$${net.toFixed(2)}`, { continued: unpricedNote.length > 0 });
+      doc.fillColor(THEME.bodyText).text(`${name} — Wagered: $${fmtAmount(g.wageredUsd)}, Won: $${fmtAmount(g.wonUsd)}, `, { continued: true });
+      doc.fillColor(netColor).text(`Net: ${net.isNegative() ? "" : "+"}$${fmtAmount(net)}`, { continued: unpricedNote.length > 0 });
       if (unpricedNote) doc.fillColor(THEME.muted).text(unpricedNote);
     }
     doc.moveDown(1);
