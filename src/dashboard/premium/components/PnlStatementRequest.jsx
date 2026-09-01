@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { FileText, ExternalLink, Plus, X } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
+import PnlStatementProgress from "./PnlStatementProgress.jsx";
 import { usePnlPurchase } from "../../../hooks/usePnlPurchase.js";
 import { useOwnedNames } from "../../../hooks/useOwnedNames.js";
 import { computeNodeForName } from "../../../utils/ens.js";
@@ -64,6 +65,7 @@ export default function PnlStatementRequest({ wallet }) {
   const [stage, setStage] = useState("idle"); // idle | purchasing | waiting-for-backend | requesting | done
   const [stageError, setStageError] = useState(null);
   const [createdRequests, setCreatedRequests] = useState([]);
+  const [progressRefreshToken, setProgressRefreshToken] = useState(0);
 
   useEffect(() => {
     if (wallet?.account && !trackedWallet) setTrackedWallet(wallet.account);
@@ -197,6 +199,7 @@ export default function PnlStatementRequest({ wallet }) {
       setCreatedRequests(submitted);
       setSelectedPeriods([]);
       setStage("done");
+      setProgressRefreshToken((t) => t + 1);
     } catch (err) {
       console.error("PnL statement request failed:", err);
       setStageError(err?.message || "Something went wrong");
@@ -221,6 +224,8 @@ export default function PnlStatementRequest({ wallet }) {
       </div>
 
       {loadError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{loadError}</div>}
+
+      <PnlStatementProgress walletAddress={wallet?.account} refreshToken={progressRefreshToken} />
 
       <a
         href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
@@ -320,18 +325,7 @@ export default function PnlStatementRequest({ wallet }) {
       {stage === "done" && createdRequests.length > 0 && (
         <div style={{ fontSize: 12, color: green, marginBottom: 16 }}>
           ✓ {createdRequests.length} period{createdRequests.length > 1 ? "s" : ""} submitted. Generation can take a while for a wallet's
-          first-ever statement — check back on each link below:
-          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-            {createdRequests.map((r) => (
-              <a
-                key={r.id}
-                href={`/statement/${r.id}`}
-                style={{ color: green, display: "flex", alignItems: "center", gap: 6, fontWeight: 700, textDecoration: "none" }}
-              >
-                <ExternalLink size={12} /> {r.periodTypeLabel} {r.year} statement
-              </a>
-            ))}
-          </div>
+          first-ever statement — track progress above.
         </div>
       )}
 

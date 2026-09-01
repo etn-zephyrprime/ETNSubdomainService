@@ -30,6 +30,19 @@ export async function getByTxHash(txHash) {
   return res?.rows || [];
 }
 
+/** Every request a wallet has ever paid for, oldest first — powers the frontend's "N of M ready"
+ * progress tracker (see PnlStatementProgress.jsx). payer_wallet, not tracked_wallet: someone can
+ * buy a statement for a wallet other than their own connected one, and it's the payer's own
+ * purchase history this is meant to show them, mirroring how purchasePnlPeriods' on-chain
+ * PnlPeriodsPurchased event keys off msg.sender, not the tracked wallet argument. */
+export async function getByPayerWallet(payerWallet) {
+  const res = await query(
+    "SELECT * FROM statement_requests WHERE payer_wallet = $1 ORDER BY created_at ASC",
+    [payerWallet.toLowerCase()]
+  );
+  return res?.rows || [];
+}
+
 /** PENDING_GENERATION with the user-supplied self-owned-addresses list — only legal from PAID.
  * Unlike the earlier design, no period metadata is submitted here: period_type/year are already
  * known from the purchase event itself (see createFromPurchase). */
