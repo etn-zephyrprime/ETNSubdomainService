@@ -547,7 +547,13 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
 }
 
 const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own queryLogsChunked floor
-const DEFI_LOG_CONCURRENCY = 8; // bounded worker pool — see queryDefiLogsChunked's own comment
+// Bounded worker pool — see queryDefiLogsChunked's own comment. Confirmed live that 8 concurrent
+// requests, once the primary's cooldown routes all of them to the secondary at once (see
+// rpcProvider.js), was enough to trip a transient 403 from that endpoint (a public node with no
+// published rate-limit contract). Lowered to 4 as a real reduction in burst pressure, not a
+// guaranteed-safe number — rpcProvider.js's own short retry-on-403 is the actual safety net for
+// whatever residual burst pressure remains.
+const DEFI_LOG_CONCURRENCY = 4;
 
 /** Fetches one [start, end] window, shrinking ONLY within this window on a "block range too
  * large" error and never touching any other window's size — see queryDefiLogsChunked's own
