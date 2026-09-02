@@ -44,3 +44,33 @@ export function bucketDailyCounts(items, timestampField = "timestamp", windowDay
   }
   return series;
 }
+
+/**
+ * Same bucketing/zero-fill shape as bucketDailyCounts above, but SUMS a numeric field per day
+ * instead of counting occurrences — for a per-day total (e.g. ETN revenue) rather than an event
+ * count. `valueField` reads a plain number already converted to the display unit (e.g. ETN, not
+ * wei) — callers are responsible for that conversion before calling this, same as they already
+ * convert `priceWei` strings elsewhere in this codebase before formatting.
+ */
+export function bucketDailySums(items, timestampField = "timestamp", valueField = "value", windowDays = 30) {
+  const sums = new Map();
+  const now = Date.now();
+  const cutoff = now - windowDays * ONE_DAY_MS;
+
+  for (const item of items) {
+    const ts = item[timestampField];
+    if (!ts) continue;
+    const t = new Date(ts).getTime();
+    if (!Number.isFinite(t) || t < cutoff) continue;
+    const key = dayKey(ts);
+    const v = Number(item[valueField]) || 0;
+    sums.set(key, (sums.get(key) || 0) + v);
+  }
+
+  const series = [];
+  for (let i = windowDays - 1; i >= 0; i--) {
+    const key = dayKey(new Date(now - i * ONE_DAY_MS).toISOString());
+    series.push({ label: key, value: sums.get(key) || 0 });
+  }
+  return series;
+}

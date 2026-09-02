@@ -1,11 +1,13 @@
 import React, { useMemo } from "react";
-import { green, blue, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { ethers } from "ethers";
+import { green, blue, orange, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useNameServiceStats } from "../hooks/useNameServiceStats.js";
-import { bucketDailyCounts } from "../utils/history.js";
+import { bucketDailyCounts, bucketDailySums } from "../utils/history.js";
 import { formatCompact, formatInt, formatChartDate, formatEtnBalance, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL, SITE_URL } from "../config.js";
 import SparklineChart from "./SparklineChart.jsx";
 import ActivityComboChart from "./ActivityComboChart.jsx";
+import RevenueBarChart from "./RevenueBarChart.jsx";
 
 const TREND_WINDOW_DAYS = 30;
 
@@ -89,6 +91,25 @@ export default function NameServiceStats() {
     return { total: recentSales.reduce((sum, e) => sum + BigInt(e.priceWei), 0n), count: recentSales.length };
   }, [recentSales]);
 
+  // The actual seller cut (80% of price, per SELLER_BPS — see nameServiceStatsCache.js's own
+  // comment) from BOTH revenue-generating event types combined: a subname sale and a marketplace
+  // resale are two different mechanisms but the same underlying "money this service's users
+  // actually earned" figure, unlike Domain Activations/Subname Registrations above (deliberately
+  // kept separate there since those are just event counts, not comparable amounts). sellerAmountWei
+  // is only present on events published after nameServiceStatsCache.js's v4 schema bump — older
+  // cached events (pre-rescan) fall back to 0 via bucketDailySums' own Number(...) || 0 guard
+  // rather than throwing, so this never crashes on a not-yet-rescanned cache, it just under-reports
+  // until the rescan (triggered by the version bump) completes.
+  const revenueTrendData = useMemo(() => {
+    if (!stats?.events) return [];
+    const toEtnAmount = (type) =>
+      stats.events
+        .filter((e) => e.type === type && e.sellerAmountWei)
+        .map((e) => ({ timestamp: new Date(e.timestampMs).toISOString(), etn: Number(ethers.formatEther(e.sellerAmountWei)) }));
+    const combined = [...toEtnAmount("subname_registered"), ...toEtnAmount("listing_sold")];
+    return bucketDailySums(combined, "timestamp", "etn", TREND_WINDOW_DAYS);
+  }, [stats]);
+
   if (error) {
     return <div style={{ fontSize: 12, color: errorColor, padding: 16, textAlign: "center" }}>{error}</div>;
   }
@@ -147,6 +168,20 @@ export default function NameServiceStats() {
           seriesBLabel="Subname Registrations"
           colorA={green}
           colorB={blue}
+        />
+      </div>
+
+      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
+          Seller revenue per day, last {TREND_WINDOW_DAYS} days — the 80% seller cut from subname
+          sales and marketplace resales combined
+        </div>
+        <RevenueBarChart
+          data={revenueTrendData}
+          height={140}
+          formatLabel={formatChartDate}
+          formatValue={(v) => `${v.toFixed(v >= 100 ? 0 : 2)} ETN`}
+          color={orange}
         />
       </div>
 

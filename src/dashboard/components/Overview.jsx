@@ -94,7 +94,41 @@ function ShowMoreButton({ onClick, loading, label }) {
   );
 }
 
+// Lazily fetches and sums the native ETN `value` field across every tx in this one block — no
+// list/detail Blockscout endpoint publishes a block-level value total (confirmed live: a /blocks
+// item's own fields are all gas/fee/reward related), so this is the only way to get it. Fetched
+// once per row on mount, not up front for the whole list, so opening the Overview tab doesn't fire
+// a burst of requests before the user has even scrolled to Recent Blocks. A block with zero
+// value-carrying txs (all zero-value contract calls) legitimately shows "0.00 ETN moved", not an
+// error — only a genuine fetch failure leaves the amount blank.
+function useBlockValueMoved(height) {
+  const { getBlockTransactions } = useBlockscout();
+  const [totalWei, setTotalWei] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setTotalWei(null);
+    (async () => {
+      try {
+        let total = 0n;
+        let cursor = null;
+        for (;;) {
+          const page = await getBlockTransactions(height, cursor);
+          for (const tx of page.items || []) total += BigInt(tx.value || "0");
+          if (!page.next_page_params) break;
+          cursor = page.next_page_params;
+        }
+        if (!cancelled) setTotalWei(total);
+      } catch {
+        // Informational only — a failed lookup just leaves this block's row without an amount.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [height, getBlockTransactions]);
+  return totalWei;
+}
+
 function BlockRow({ block }) {
+  const totalWei = useBlockValueMoved(block.height);
   return (
     <a
       href={`${EXPLORER_BASE_URL}/block/${block.height}`}
@@ -106,6 +140,7 @@ function BlockRow({ block }) {
         <div style={{ fontSize: 12, color: "#fff", fontWeight: 600 }}>#{formatInt(block.height)}</div>
         <div style={{ fontSize: 11, color: mutedLight }}>
           {block.transaction_count} tx{block.transaction_count === 1 ? "" : "s"} · miner {shortHash(block.miner?.hash)}
+          {totalWei != null && ` · ${formatEtnBalance(totalWei)} ETN moved`}
         </div>
       </div>
       <div style={{ fontSize: 10, color: muted, flexShrink: 0 }}>{timeAgo(block.timestamp)}</div>
@@ -378,7 +413,7 @@ export default function Overview({ onSelectAddress }) {
     // only ever be "however many hourly snapshots this backend has collected so far", growing by
     // one real hour every hour, same as the day it was first built.
     totalAddresses: snapshots.length > 0 ? `Total addresses — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
-    totalBlocks: `Daily tx-count heatmap, last 90 days (darker = fewer, brighter = more) — ${validatorDaysTracked} day(s) of real data so far. Hover a day for its validator breakdown.`,
+    totalBlocks: `Daily tx-count heatmap, last 120 days (darker = fewer, brighter = more) — ${validatorDaysTracked} day(s) of real data so far. Hover a day for its validator breakdown.`,
     avgBlockTime: blockTimeIsConstant
       ? "Block time — every real hourly reading from Blockscout has been identical so far (see below)"
       : `Average block time (seconds) — ${snapshots.length} hourly snapshot(s) collected so far`,

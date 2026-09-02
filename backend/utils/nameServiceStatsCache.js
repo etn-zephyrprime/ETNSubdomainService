@@ -44,7 +44,12 @@ const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_
 // a v2 cache's lastScannedBlock is already advanced past EARLIEST_DEPLOY_BLOCK, so without a full
 // rescan this running total would silently start from 0 and only ever count *future* sales,
 // permanently missing every SubnameRegistered/ListingSold that happened before this change shipped.
-const CACHE_SCHEMA_VERSION = 3;
+// v4: added sellerAmountWei on individual subname_registered/listing_sold events (previously only
+// folded into the running totalSellerRevenueWei total, never kept per-event) — powers the
+// dashboard's daily seller-revenue bar chart. Same rescan requirement as v3, for the same reason:
+// an event pushed before this change has no sellerAmountWei field, so the dashboard's per-day sum
+// would silently treat every pre-upgrade sale as $0 revenue without a full rescan.
+const CACHE_SCHEMA_VERSION = 4;
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
@@ -225,14 +230,14 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
           } else if (event.eventName === "DomainActivated") {
             events.push({ type: "domain_activated", timestampMs });
           } else if (event.eventName === "SubnameRegistered") {
-            events.push({ type: "subname_registered", label: event.args.label, priceWei: event.args.price.toString(), timestampMs });
+            events.push({ type: "subname_registered", label: event.args.label, priceWei: event.args.price.toString(), sellerAmountWei: event.args.sellerAmount.toString(), timestampMs });
             totalSellerRevenueWei += event.args.sellerAmount;
           } else if (event.eventName === "ListingSold") {
             // txHash included so the frontend can link each sale straight to the block explorer —
             // no name/label available here either (ListingSold carries a listingId, not a label;
             // resolving one would mean an extra per-sale contract call this cache doesn't
             // otherwise need), so the link is the primary way to see what actually sold.
-            events.push({ type: "listing_sold", priceWei: event.args.price.toString(), timestampMs, txHash: event.transactionHash });
+            events.push({ type: "listing_sold", priceWei: event.args.price.toString(), sellerAmountWei: event.args.sellerAmount.toString(), timestampMs, txHash: event.transactionHash });
             totalSellerRevenueWei += event.args.sellerAmount;
           }
         }
