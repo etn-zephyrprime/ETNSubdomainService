@@ -28,6 +28,7 @@ import { getIngestionState, upsertIngestionState } from "../db/walletIngestionSt
 import { insertTransfers } from "../db/ingestedTransfers.js";
 import { insertSwapTrades } from "../db/swapTrades.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
+import { insertDefiActivity } from "../db/defiActivity.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
@@ -54,6 +55,34 @@ const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,addre
 const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
 ]);
+
+// DeFi (yield farm / staking) activity — detected by EVENT TOPIC across the whole chain, not a
+// hardcoded contract address list. Confirmed live: the "YieldFarm" LP-farm template and the
+// "CoreAscension"-style staking template are each reused verbatim across multiple deployed
+// instances (3 separate YieldFarm contracts, 2 separate staking contracts, byte-for-byte identical
+// event signatures) — so scanning by these fixed topic hashes picks up any *future* instance of
+// either template automatically, with zero code change or address list to maintain. See
+// pnlStatementGenerator.js's buildDefiFarmEvents for how token identity gets resolved (live
+// contract reads on whichever address actually emitted the event, cached — never hardcoded here
+// either).
+const DEFI_IFACE = new ethers.Interface([
+  "event FarmDeposit(uint256 indexed farmId, address indexed farmer, uint256 amount0Added, uint256 amount1Added, uint256 liquidityAdded)",
+  "event FarmWithdrawl(uint256 indexed farmId, address indexed farmer, uint256 amount0Withdrawn, uint256 amount1Withdrawn, uint256 amountRewards, uint256 fees0Collected, uint256 fees1Collected, uint256 thirdPartyRewardsCollected)",
+  "event CoreStaked(address indexed user, uint256 amount)",
+  "event CoreWithdrawn(address indexed user, uint256 requestedAmount, uint256 returnedAmount, uint256 penaltyToPool, uint256 penaltyBurned)",
+  "event RewardPaid(address indexed user, uint256 paidAmount, uint256 slashedAmount)",
+]);
+const FARM_DEPOSIT_TOPIC = DEFI_IFACE.getEvent("FarmDeposit").topicHash;
+const FARM_WITHDRAW_TOPIC = DEFI_IFACE.getEvent("FarmWithdrawl").topicHash;
+const CORE_STAKED_TOPIC = DEFI_IFACE.getEvent("CoreStaked").topicHash;
+const CORE_WITHDRAWN_TOPIC = DEFI_IFACE.getEvent("CoreWithdrawn").topicHash;
+const REWARD_PAID_TOPIC = DEFI_IFACE.getEvent("RewardPaid").topicHash;
+// farmer is FarmDeposit/FarmWithdrawl's SECOND indexed param (topics[2]) — farmId is the first.
+const FARM_EVENT_WALLET_TOPIC_INDEX = 2;
+// user is CoreStaked/CoreWithdrawn/RewardPaid's ONLY indexed param besides the signature itself
+// (topics[1]).
+const STAKING_EVENT_WALLET_TOPIC_INDEX = 1;
+const DEFI_LOG_CHUNK_SIZE = 500; // same conservative window every other raw getLogs scan in this codebase uses (see coreClashBurnWatcher.js's own MAX_BLOCK_RANGE)
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -505,6 +534,104 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
   return highestBlock;
 }
 
+/** Chunked raw eth_getLogs scan across the WHOLE chain (no `address` filter) for one topic-0
+ * signature, with the tracked wallet pinned at `walletTopicIndex`. Deliberately not Blockscout's
+ * REST pagination (unlike every other walk in this file) — there's no per-wallet Blockscout
+ * endpoint for "every log anywhere naming this address in topic N", so this goes straight to the
+ * RPC provider instead, same as coreClashBurnWatcher.js's own queryLogsChunked. 500-block windows,
+ * same conservative default every other raw getLogs scan in this codebase uses. */
+async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock) {
+  const logs = [];
+  const topics = [];
+  topics[0] = topic0;
+  topics[walletTopicIndex] = walletTopic;
+  for (let start = fromBlock; start <= toBlock; start += DEFI_LOG_CHUNK_SIZE) {
+    const end = Math.min(start + DEFI_LOG_CHUNK_SIZE - 1, toBlock);
+    try {
+      const chunk = await provider.getLogs({ topics, fromBlock: start, toBlock: end });
+      logs.push(...chunk);
+    } catch (err) {
+      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${start}-${end}:`, err.message);
+      // No shrink-and-retry here (unlike queryLogsChunked elsewhere) — 500 blocks is already
+      // conservative, and a genuinely failing chunk is more likely a transient RPC issue than a
+      // range-too-large error; skipping it just means this range gets picked up again next
+      // ingestion run (stopAtBlock only advances once every requested chunk succeeds — see below).
+      throw err;
+    }
+  }
+  return logs;
+}
+
+/** Scans for yield-farm/staking activity involving `trackedWallet` — see DEFI_IFACE's own comment
+ * for why this is topic-based (works for any contract reusing either template) rather than a
+ * hardcoded address list. Returns the highest block actually reached, same "resumable cursor"
+ * contract as every other ingest* function in this file. */
+async function ingestDefiActivity(trackedWallet, stopAtBlock) {
+  const provider = createRpcProvider();
+  const latestBlock = await provider.getBlockNumber();
+  const fromBlock = (stopAtBlock ?? -1) + 1;
+  if (fromBlock > latestBlock) return stopAtBlock ?? -1;
+
+  const walletTopic = ethers.zeroPadValue(trackedWallet, 32);
+  const [farmDeposits, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
+    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+  ]);
+
+  const allLogs = [...farmDeposits, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
+  if (allLogs.length === 0) return latestBlock;
+
+  const uniqueBlocks = [...new Set(allLogs.map((l) => l.blockNumber))];
+  const blockTimestamps = new Map();
+  await Promise.all(
+    uniqueBlocks.map(async (blockNumber) => {
+      try {
+        const block = await provider.getBlock(blockNumber);
+        blockTimestamps.set(blockNumber, block ? new Date(block.timestamp * 1000) : null);
+      } catch (err) {
+        console.warn(`⚠️  DeFi activity scan: failed to fetch timestamp for block ${blockNumber}:`, err.message);
+        blockTimestamps.set(blockNumber, null);
+      }
+    })
+  );
+
+  const rows = [];
+  for (const log of allLogs) {
+    const timestamp = blockTimestamps.get(log.blockNumber);
+    if (!timestamp) continue; // couldn't get a real timestamp — skip rather than fake one, same convention as every other ingest* function
+    let parsed;
+    try {
+      parsed = DEFI_IFACE.parseLog(log);
+    } catch (err) {
+      console.warn(`⚠️  DeFi activity scan: could not decode log in tx ${log.transactionHash}:`, err.message);
+      continue;
+    }
+    const eventType = { FarmDeposit: "farm_deposit", FarmWithdrawl: "farm_withdraw", CoreStaked: "core_staked", CoreWithdrawn: "core_withdrawn", RewardPaid: "reward_paid" }[parsed.name];
+    const rawArgs = {};
+    for (const frag of parsed.fragment.inputs) {
+      const v = parsed.args[frag.name];
+      rawArgs[frag.name] = typeof v === "bigint" ? v.toString() : v;
+    }
+    rows.push({
+      trackedWallet,
+      txHash: log.transactionHash,
+      logIndex: log.index,
+      contractAddress: log.address,
+      eventType,
+      farmId: rawArgs.farmId != null ? rawArgs.farmId : null,
+      rawArgs,
+      blockNumber: log.blockNumber,
+      timestamp,
+    });
+  }
+
+  if (rows.length > 0) await insertDefiActivity(rows);
+  return latestBlock;
+}
+
 /**
  * Ingests (or backfills) `trackedWallet`'s on-chain history. `selfOwnedAddresses` are the user's
  * other addresses, used to flag self-transfers (excluded from FIFO disposal — see fifoLotEngine.js).
@@ -523,17 +650,22 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}`);
 
   // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
-  // other two need to correctly skip a swap's legs. Those two are independent of each other, so
-  // they run concurrently rather than sequentially — see each function's own comment for why this
-  // is a meaningful restructure, not just a stylistic change: /transactions used to be walked
-  // twice (once here, once in a separate swap-detection pass) and all three walks used to run
-  // fully sequentially.
-  const { swapTxHashes, highestBlock: highestFromTx } = await ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock);
+  // internal-transactions/token-transfers walks need to correctly skip a swap's legs. DeFi activity
+  // scanning has no such dependency (it's a separate topic-based getLogs scan, not a Blockscout
+  // REST walk at all — see ingestDefiActivity's own comment), so it runs alongside the
+  // /transactions walk from the start rather than waiting for it. Once swapTxHashes is known, the
+  // two swap-dependent walks run concurrently with each other too — see each function's own
+  // comment for why this whole restructure is deliberate: /transactions used to be walked twice
+  // and everything used to run fully sequentially.
+  const [{ swapTxHashes, highestBlock: highestFromTx }, highestFromDefi] = await Promise.all([
+    ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock),
+    ingestDefiActivity(trackedWallet, stopAtBlock),
+  ]);
   const [highestFromInternal, highestFromTokens] = await Promise.all([
     ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
     ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
   ]);
-  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
+  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens, highestFromDefi);
 
   if (highestBlock >= 0) {
     await upsertIngestionState(trackedWallet, {
