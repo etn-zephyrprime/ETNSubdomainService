@@ -1,0 +1,15 @@
+-- DeFi activity scanning (see pnlIngestion.js's ingestDefiActivity) was added to
+-- ingestWalletHistory AFTER many wallets had already been fully ingested via the other four
+-- walks, which all share wallet_ingestion_state.last_ingested_block. Confirmed live: reusing that
+-- same shared cursor for ingestDefiActivity meant it computed fromBlock = last_ingested_block + 1
+-- for an already-ingested wallet — i.e. it only ever looked at blocks AFTER that wallet's last
+-- ordinary ingestion checkpoint, silently skipping its entire pre-existing DeFi history. Same class
+-- of bug as the is_cex staleness issue documented in migration 004's own history — a value computed
+-- once at ingestion time (here, "how far has this wallet been scanned") doesn't retroactively cover
+-- newly-added scan logic.
+--
+-- Fix: DeFi activity gets its own independent cursor. This column starts NULL for every existing
+-- wallet, which ingestDefiActivity treats as "cold start — full history" (see its own stopAtBlock
+-- handling) — no separate backfill script needed, the next statement generated for any
+-- already-ingested wallet self-heals by re-scanning its full DeFi history exactly once.
+ALTER TABLE wallet_ingestion_state ADD COLUMN IF NOT EXISTS last_ingested_defi_block BIGINT;

@@ -646,8 +646,15 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   const [state, cexAddressList] = await Promise.all([getIngestionState(trackedWallet), listCexAddresses()]);
   const cexAddressSet = new Set(cexAddressList.map((r) => r.address.toLowerCase()));
   const stopAtBlock = state?.last_ingested_block > 0 ? state.last_ingested_block : null;
+  // Deliberately a SEPARATE cursor from stopAtBlock (see migration 006's own comment) — DeFi
+  // activity scanning was added after many wallets already had a non-null last_ingested_block from
+  // the other four walks, and reusing that shared cursor here would mean ingestDefiActivity only
+  // ever looked at blocks after each wallet's PRE-EXISTING checkpoint, silently skipping its entire
+  // real DeFi history. A wallet with last_ingested_defi_block still NULL always gets a full
+  // cold-start DeFi scan here, regardless of how far its ordinary ingestion has already progressed.
+  const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
 
-  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}`);
+  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}${stopAtDefiBlock == null ? ", DeFi activity cold start" : ""}`);
 
   // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
   // internal-transactions/token-transfers walks need to correctly skip a swap's legs. DeFi activity
@@ -659,18 +666,19 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   // and everything used to run fully sequentially.
   const [{ swapTxHashes, highestBlock: highestFromTx }, highestFromDefi] = await Promise.all([
     ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock),
-    ingestDefiActivity(trackedWallet, stopAtBlock),
+    ingestDefiActivity(trackedWallet, stopAtDefiBlock),
   ]);
   const [highestFromInternal, highestFromTokens] = await Promise.all([
     ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
     ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
   ]);
-  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens, highestFromDefi);
+  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
 
-  if (highestBlock >= 0) {
+  if (highestBlock >= 0 || highestFromDefi >= 0) {
     await upsertIngestionState(trackedWallet, {
-      lastIngestedBlock: highestBlock,
+      lastIngestedBlock: highestBlock >= 0 ? highestBlock : stopAtBlock,
       coldStartCompletedAt: state?.cold_start_completed_at || new Date(),
+      lastIngestedDefiBlock: highestFromDefi >= 0 ? highestFromDefi : null,
     });
   }
 
