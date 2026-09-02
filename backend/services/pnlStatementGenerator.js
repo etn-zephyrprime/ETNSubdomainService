@@ -459,7 +459,17 @@ function aggregateRealizedGains(events) {
  * explicit x/y + gutter approach as the other tables here, but simple enough (short, fixed number
  * of rows — one per distinct asset, never paginates) that it doesn't need drawHeaderRow/pagination
  * machinery of its own. */
-function renderRealizedGainsAggregateTable(doc, aggregated, tokenMeta) {
+/** Real column-aligned table for the "By Asset" aggregate — same explicit x/y positioning, gutter,
+ * and manual pagination approach as renderRealizedGainsTable/renderTransactionTable below. Was
+ * previously missing any page-break handling at all: for a wallet with enough distinct disposed
+ * assets to overflow one page, pdfkit's own automatic pagination took over — which calls a *bare*
+ * addPage() reverting to the document's original construction options (portrait), not this
+ * section's landscape layout. Confirmed live on a real high-activity wallet's statement: a long
+ * run of alternating portrait/landscape pages through the Realized Gains & Losses section, and
+ * pages with unexplained blank space at the top (rows drawn past a landscape page's real bottom
+ * edge because the overflow was never actually detected). Fixed by adopting the identical
+ * pageOptions + bottomLimit + drawHeaderRow pattern already proven in renderRealizedGainsTable. */
+function renderRealizedGainsAggregateTable(doc, aggregated, tokenMeta, pageOptions) {
   const left = doc.page.margins.left;
   const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const cols = [
@@ -476,16 +486,25 @@ function renderRealizedGainsAggregateTable(doc, aggregated, tokenMeta) {
   }
   const GUTTER = 6;
   const rowHeight = 13;
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
 
-  const y0 = doc.y;
-  doc.fontSize(8).font("Helvetica-Bold").fillColor(THEME.green);
-  for (const col of cols) doc.text(col.label, col.x, y0, { width: col.width - GUTTER, align: col.align, lineBreak: false });
-  doc.font("Helvetica");
-  doc.y = y0 + rowHeight;
-  doc.moveTo(left, doc.y).lineTo(left + tableWidth, doc.y).strokeColor(THEME.border).lineWidth(0.5).stroke();
-  doc.y += 4;
+  function drawHeaderRow() {
+    const y = doc.y;
+    doc.fontSize(8).font("Helvetica-Bold").fillColor(THEME.green);
+    for (const col of cols) doc.text(col.label, col.x, y, { width: col.width - GUTTER, align: col.align, lineBreak: false });
+    doc.font("Helvetica");
+    doc.y = y + rowHeight;
+    doc.moveTo(left, doc.y).lineTo(left + tableWidth, doc.y).strokeColor(THEME.border).lineWidth(0.5).stroke();
+    doc.y += 4;
+  }
 
+  drawHeaderRow();
   for (const [assetKey, agg] of aggregated) {
+    if (doc.y + rowHeight > bottomLimit) {
+      doc.addPage(pageOptions);
+      doc.y = doc.page.margins.top;
+      drawHeaderRow();
+    }
     const y = doc.y;
     const gainColor = agg.gainLossUsd.isNegative() ? THEME.orange : THEME.green;
     doc.fontSize(8).fillColor(THEME.bodyText);
@@ -840,7 +859,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("By Asset");
     doc.font("Helvetica");
     doc.moveDown(0.2);
-    renderRealizedGainsAggregateTable(doc, realizedGainsByAsset, tokenMeta);
+    renderRealizedGainsAggregateTable(doc, realizedGainsByAsset, tokenMeta, LANDSCAPE);
     doc.moveDown(0.8);
 
     doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("Every Disposal");
