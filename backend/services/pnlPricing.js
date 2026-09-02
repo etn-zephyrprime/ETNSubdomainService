@@ -273,15 +273,31 @@ async function backfillEtnFromKucoin() {
   return { earliestDate, poolCount: totalCandles > 0 ? 1 : 0 };
 }
 
+// In-memory only, never persisted — an asset whose backfill attempt THREW (not just "found no
+// data", which markBackfilled below already records permanently) gets skipped for the rest of
+// this process's lifetime, not forever. Confirmed live: a token whose pool OHLCV endpoint returns
+// a hard 401 from GeckoTerminal re-ran the ENTIRE bulk backfill sequence (a `pools` lookup and up
+// to 20 OHLCV pages per candidate pool) on every single distinct date that token needed pricing at
+// during one statement generation, since a thrown error never reached markBackfilled and so never
+// left a price_history_backfill_state row for getBackfillState to short-circuit on next call — for
+// a wallet with many transactions in that one token, this took a real, growing multiple of what it
+// should have. Deliberately NOT persisted to the DB the way a genuine "no data" result is: a 401
+// might be transient (an outage, a temporary API-tier issue) and a later process run — or even a
+// later statement generation in the same deploy — should still get to retry it for real, rather
+// than being permanently told "no price data exists" by a state row born from an exception.
+const failedBackfillThisRun = new Set();
+
 /** Runs the appropriate bulk backfill exactly once, ever, per asset — recorded in
  * price_history_backfill_state. Every getHistoricalPriceUsd call routes through this first, so the
  * very first lookup for a brand-new asset triggers the bulk fetch (a handful of calls) and every
  * lookup after that — for that date or any other, in this statement or a future one — is a pure
- * price_points cache read. A failed backfill attempt is NOT recorded as done, so it's retried on
- * the next call rather than permanently giving up. */
+ * price_points cache read. A failed backfill attempt (the bulk fetch itself throwing) is NOT
+ * recorded as permanently done in the DB, so a future process run still retries it — but see
+ * failedBackfillThisRun above for why it IS skipped for the rest of THIS run. */
 async function ensureBackfilled(cacheAsset, tokenAddress) {
   const state = await getBackfillState(cacheAsset);
   if (state) return state;
+  if (failedBackfillThisRun.has(cacheAsset)) return null;
 
   try {
     let result = cacheAsset === "ETN" ? await backfillEtnFromKucoin() : null;
@@ -310,6 +326,7 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
     );
   } catch (err) {
     console.warn(`⚠️  Price history backfill failed for ${cacheAsset}, falling back to per-date lookups:`, err.message);
+    failedBackfillThisRun.add(cacheAsset);
   }
 }
 
