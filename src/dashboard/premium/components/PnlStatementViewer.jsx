@@ -81,6 +81,23 @@ export default function PnlStatementViewer({ initialRequestId = null, onBack = n
     }
   }, [markViewed]);
 
+  // Auto-opens the PDF when arriving via a direct /statement/:requestId link (initialRequestId set)
+  // — confirmed live this was a real gap: someone following a "View statement" link reasonably
+  // expects that to count as viewing it, but the finalize-on-view trigger only fires once the PDF's
+  // actual bytes are fetched (see markViewed's own comment above on why), which previously required
+  // a *second*, non-obvious click on "View / Download PDF" below. The manual lookup flow (typing in
+  // a request ID/tx hash) deliberately keeps the extra click — there, showing the result before
+  // committing to a fetch makes sense since the visitor is still exploring. openStatement's own
+  // pdfBlobUrl guard (never re-fetches once already open) keeps this from looping.
+  useEffect(() => {
+    if (!initialRequestId || !requests || requests.length === 0 || pdfBlobUrl) return;
+    const request = requests.find((r) => r.id === initialRequestId) || requests[0];
+    if (request && (request.status === "GENERATED" || request.status === "FINALIZED")) {
+      openStatement(request);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRequestId, requests]);
+
   return (
     <div style={{ width: "100%" }}>
       {onBack && (
