@@ -49,15 +49,21 @@ export default function PnlStatementViewer({ initialRequestId = null, onBack = n
   }, [initialRequestId, lookup]);
 
   // Fires the finalize-on-view trigger the moment the PDF's actual bytes have been fetched — not
-  // on mount, not on a bare download-link click. Uses sendBeacon so the POST survives even if the
-  // user navigates away before the fetch below fully resolves in a slow-connection edge case;
-  // falls back to a keepalive fetch if sendBeacon isn't available.
+  // on mount, not on a bare download-link click. Fires BOTH a keepalive fetch and sendBeacon (when
+  // available) rather than sendBeacon-with-fetch-fallback — confirmed live this was a real gap: a
+  // real customer's statement stayed un-finalized despite the PDF loading correctly and no console
+  // error at all, because sendBeacon gives zero success/failure feedback to the page and is a
+  // common target for ad-blocker/privacy-extension blocking specifically because it's so heavily
+  // associated with tracking pixels elsewhere on the web. A plain fetch doesn't carry that same
+  // reputation and is far less likely to be blanket-blocked. The /view endpoint's own idempotency
+  // (see pnlStatementRouter.js — only the first successful call actually transitions state) makes
+  // firing both simultaneously safe: whichever one actually gets through does the job, and a
+  // redundant second call is a no-op.
   const markViewed = useCallback((requestId) => {
     const url = `${PNL_BACKEND_URL}/api/pnl/statement/${requestId}/view`;
+    fetch(url, { method: "POST", keepalive: true }).catch(() => {});
     if (navigator.sendBeacon) {
       navigator.sendBeacon(url, new Blob([], { type: "application/json" }));
-    } else {
-      fetch(url, { method: "POST", keepalive: true }).catch(() => {});
     }
   }, []);
 
