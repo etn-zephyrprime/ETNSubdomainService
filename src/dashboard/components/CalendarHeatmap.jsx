@@ -29,7 +29,11 @@ export default function CalendarHeatmap({ days }) {
   const [hoverDate, setHoverDate] = useState(null);
 
   const { cells, weeks, maxTx, validatorColors, topValidators } = useMemo(() => {
-    const daysBack = 90;
+    // 90 -> 120: at this grid's fixed cell size, 90 days (13 weeks) left visible empty space next
+    // to this chart's siblings in the same panel — see dailyBlockStatsCache.js's DAYS_TO_KEEP
+    // comment for the matching backend retention bump (this frontend value can never usefully
+    // exceed what that cache actually retains).
+    const daysBack = 120;
     const today = new Date();
     const list = [];
     for (let i = daysBack - 1; i >= 0; i--) {

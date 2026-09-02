@@ -32,6 +32,16 @@ export function useBlockscout() {
     const params = { type: "block", ...(nextPageParams || {}) };
     return fetchJson(`/blocks?${new URLSearchParams(params).toString()}`);
   }, []);
+  // Powers Overview.jsx's "ETN moved" aggregate per row in Recent Blocks — the block list/detail
+  // endpoints above never include a block-level value total (confirmed live: a /blocks item's
+  // fields are all gas/fee/reward related, nothing sums the native value actually transferred), so
+  // this is the only way to get it: fetch every tx in the block and sum `value` client-side.
+  // Confirmed live a real block's txs come back in one page (next_page_params: null) even at ~30
+  // txs, but nextPageParams is still threaded through in case a busier block ever paginates.
+  const getBlockTransactions = useCallback((height, nextPageParams = null) => {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    return fetchJson(`/blocks/${height}/transactions${query}`);
+  }, []);
 
   // `type` is a Blockscout token type filter, e.g. "ERC-20" or "ERC-721,ERC-1155" — confirmed
   // live that the API supports both single and comma-separated multi-type filtering server-side,
@@ -66,6 +76,7 @@ export function useBlockscout() {
     getIndexingStatus,
     getTransactions,
     getBlocks,
+    getBlockTransactions,
     getTokens,
     getToken,
     getTokenHolders,

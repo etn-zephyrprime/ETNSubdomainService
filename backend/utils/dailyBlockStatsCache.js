@@ -24,9 +24,21 @@ import { getDailyBlockStatsCache, setDailyBlockStatsCache } from "../state/daily
 // `next_page_params` isn't a block number), so CACHE_SCHEMA_VERSION bumped — the published `days`
 // shape is unchanged (still `{ txCount, blockCount, validators }` per day, same as before, so no
 // frontend change was needed), but the backfill starts over from scratch once on deploy, same
-// "thin at first, growing toward the full 90 days" shape this cache has always had.
-const DAYS_TO_KEEP = 90;
-const CACHE_SCHEMA_VERSION = 2;
+// "thin at first, growing toward the full window" shape this cache has always had.
+//
+// DAYS_TO_KEEP 90 -> 120: the "Total Blocks" heatmap (CalendarHeatmap.jsx) was visibly narrower
+// than its sibling charts sharing the same panel width — each extra day only adds ~2px at the
+// grid's fixed cell size (one week = 14px), so 90 -> 120 was the requested step-change to actually
+// read as filling the space, not a small increment. lowCursorParams is already permanently null on
+// a wallet that finished its original 90-day backfill (see scanAndPublish's own comment: once
+// backfill completes, that branch never re-runs), so growing this constant alone would NOT
+// retroactively fetch the extra 30 days — it'd just sit thin for 30 real calendar days while the
+// forward tip-catchup slowly grows into it. Bumping the schema version instead forces the exact
+// same full-restart backfill this file already did once for the RPC->Blockscout migration above,
+// so the extra days are real data within the same backfill window as any other run
+// (proportionally longer than the original ~1 day for 90 days, per that migration's own numbers).
+const DAYS_TO_KEEP = 120;
+const CACHE_SCHEMA_VERSION = 3;
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 const CACHE_INTERVAL_MS = process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS
   ? parseInt(process.env.DAILY_BLOCK_STATS_CACHE_INTERVAL_MS, 10)
