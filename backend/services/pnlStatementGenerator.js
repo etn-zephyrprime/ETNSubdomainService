@@ -21,6 +21,8 @@ import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
+import { getAllDefiActivityBefore } from "../db/defiActivity.js";
+import { createRpcProvider } from "../utils/rpcProvider.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -310,6 +312,226 @@ function swapToEvent(s) {
     boughtQuantity: s.amount_bought,
     boughtUnitCostUsd: s.price_usd_bought_leg ?? 0,
   };
+}
+
+// ---- DeFi (yield farm / staking) activity -------------------------------------------------
+//
+// Raw events detected via topic-signature scanning in pnlIngestion.js's ingestDefiActivity — see
+// that function's own header comment for why this is topic-based rather than a hardcoded contract
+// address list, and defiActivity.js/005_defi_activity.sql's comments for why token identity is
+// deliberately NOT stored on those rows. Resolved live here instead, via the exact view functions
+// confirmed against the real deployed contracts (Blockscout-verified ABI, fetched and checked by
+// hand against https://blockexplorer.electroneum.com/api/v2/smart-contracts/<address> for one
+// YieldFarm instance and one CoreAscensionV2 instance before writing this):
+//   - YieldFarm template: getFarmById(farmId) -> {token0, token1, name, ...}, rewardToken(),
+//     getThirdPartyRewardConfigByFarmId(farmId) -> {token, ...}
+//   - CoreAscensionV2 staking template: core() -> the single token that's both staked AND paid out
+//     as rewards (confirmed live: this template has no separate reward-token concept at all — it
+//     stakes CORE and pays rewards in CORE).
+// Every result is cached indefinitely per (contractAddress[, farmId]) — none of this changes for an
+// already-deployed farm/stake, same "resolve once, cache indefinitely" pattern as pnlIngestion.js's
+// own tokenMetadataCache.
+const DEFI_VIEW_IFACE = new ethers.Interface([
+  "function getFarmById(uint256 _farmId) view returns (tuple(uint256 id, uint8 version, string name, address poolAddr, uint256 liquidity, uint256 allocPoint, uint256 lastCalcBlock, uint256 accRewardsPerShare, uint256 accThirdPartyRewardsPerShare, address[] farmers, uint256 farmerCount, address token0, address token1, uint256 tokenId, int24 tickLower, int24 tickUpper, uint24 fee, uint256 accFees0PerShare, uint256 accFees1PerShare, bool active))",
+  "function rewardToken() view returns (address)",
+  "function getThirdPartyRewardConfigByFarmId(uint256 _farmId) view returns (tuple(address token, address tokenManager, uint256 tokensPerBlock, uint256 endBlock))",
+  "function core() view returns (address)",
+]);
+const ERC20_DECIMALS_IFACE = new ethers.Interface(["function decimals() view returns (uint8)"]);
+
+let defiRpcProvider = null;
+function getDefiRpcProvider() {
+  if (!defiRpcProvider) defiRpcProvider = createRpcProvider({ batchMaxCount: 1 });
+  return defiRpcProvider;
+}
+
+const farmTokensCache = new Map(); // `${contract}:${farmId}` -> { token0, token1, name }
+async function getFarmTokens(contractAddress, farmId) {
+  const key = `${contractAddress.toLowerCase()}:${farmId}`;
+  if (farmTokensCache.has(key)) return farmTokensCache.get(key);
+  const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
+  const farm = await contract.getFarmById(farmId);
+  const result = { token0: farm.token0, token1: farm.token1, name: farm.name || null };
+  farmTokensCache.set(key, result);
+  return result;
+}
+
+const rewardTokenCache = new Map(); // contractAddress -> address
+async function getFarmRewardToken(contractAddress) {
+  const key = contractAddress.toLowerCase();
+  if (rewardTokenCache.has(key)) return rewardTokenCache.get(key);
+  const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
+  const token = await contract.rewardToken();
+  rewardTokenCache.set(key, token);
+  return token;
+}
+
+const thirdPartyRewardCache = new Map(); // `${contract}:${farmId}` -> address | null
+async function getThirdPartyRewardToken(contractAddress, farmId) {
+  const key = `${contractAddress.toLowerCase()}:${farmId}`;
+  if (thirdPartyRewardCache.has(key)) return thirdPartyRewardCache.get(key);
+  const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
+  const config = await contract.getThirdPartyRewardConfigByFarmId(farmId);
+  const token = config.token && config.token !== ethers.ZeroAddress ? config.token : null;
+  thirdPartyRewardCache.set(key, token);
+  return token;
+}
+
+const stakingTokenCache = new Map(); // contractAddress -> address (also the reward token — see header comment)
+async function getStakingToken(contractAddress) {
+  const key = contractAddress.toLowerCase();
+  if (stakingTokenCache.has(key)) return stakingTokenCache.get(key);
+  const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
+  const token = await contract.core();
+  stakingTokenCache.set(key, token);
+  return token;
+}
+
+// Token decimals aren't part of getTokenMetadata's cache (see pnlIngestion.js — that one only ever
+// needed name/symbol), and DeFi event amounts are raw uint256s straight off the chain, same as
+// pnlIngestion.js's own token-transfer ingestion (see weiToDecimal there) — so this needs its own
+// live decimals() read per token, cached indefinitely (an ERC-20's decimals never changes post-
+// deploy). Falls back to 18 (the overwhelmingly common case, and what every token seen live in this
+// integration — CLUB, DYNO, CORE — actually uses) only if the call itself fails.
+const tokenDecimalsCache = new Map();
+async function getTokenDecimals(tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  if (tokenDecimalsCache.has(key)) return tokenDecimalsCache.get(key);
+  let decimals = 18;
+  try {
+    const contract = new ethers.Contract(tokenAddress, ERC20_DECIMALS_IFACE, getDefiRpcProvider());
+    decimals = Number(await contract.decimals());
+  } catch (err) {
+    console.warn(`⚠️  Statement generator: could not read decimals() for ${tokenAddress}, assuming 18:`, err.message);
+  }
+  tokenDecimalsCache.set(key, decimals);
+  return decimals;
+}
+
+async function formatTokenAmount(tokenAddress, rawAmount) {
+  const decimals = await getTokenDecimals(tokenAddress);
+  return ethers.formatUnits(rawAmount, decimals);
+}
+
+/** Turns raw defi_activity rows into FIFO events, per the confirmed tax treatment:
+ *   - Farm/stake DEPOSIT = a disposal (FIFO "out") of the deposited token(s) at their own FMV —
+ *     the same "proceeds = FMV of what's given up" treatment swapToEvent already uses for a swap's
+ *     sold leg, since a farm/staking position isn't itself a priceable, fungible asset to record as
+ *     the "proceeds" received in exchange.
+ *   - Farm/stake WITHDRAWAL of principal = a reacquisition (FIFO "in") of the returned token(s), at
+ *     their own FMV cost basis.
+ *   - Every reward/fee amount (a farm's own reward token, its third-party reward token, LP fees on
+ *     withdrawal, staking rewards) = a FIFO "in" acquisition at ZERO cost basis — confirmed design:
+ *     rewards are typically non-ETN tokens (DYNO/CORE) and shouldn't register as income at receipt,
+ *     only affect Net P&L later if/when actually disposed of (sold, swapped, sent to a CEX).
+ * A row whose contract/farm view-function calls all fail (e.g. a genuinely unknown future contract
+ * template reusing one of the five topic signatures by coincidence) is skipped with a warning
+ * rather than failing the whole statement — same "never let one enrichment failure take down
+ * generation" posture as getBlockByTimestamp/buildPriceCoverageDisclaimer elsewhere in this file.
+ * Returns { events, perLabel } — perLabel is the labeled per-farm/per-stake breakdown Map for the
+ * new PDF section (see buildDefiActivitySummary below), keyed by a human label (the farm's own
+ * on-chain name, or the staking template's fixed label) rather than a raw contract address, so nothing
+ * in this file ever hardcodes one of the specific addresses the user originally supplied. */
+async function buildDefiFarmEvents(defiActivity) {
+  const events = [];
+  const perLabel = new Map(); // label -> { depositedUsd, withdrawnUsd, rewardsUsd (Decimal), unpriced count }
+  const bumpLabel = (label) => {
+    if (!perLabel.has(label)) perLabel.set(label, { depositedUsd: new Decimal(0), withdrawnUsd: new Decimal(0), rewardsUsd: new Decimal(0), unpriced: 0 });
+    return perLabel.get(label);
+  };
+  const priceAt = (tokenAddress, timestamp) => getHistoricalPriceUsd(tokenAddress, timestamp).catch(() => null);
+
+  for (const row of defiActivity) {
+    const timestamp = new Date(row.timestamp);
+    const raw = row.raw_args || {};
+    const txHash = row.tx_hash;
+    try {
+      if (row.event_type === "farm_deposit") {
+        const { token0, token1, name } = await getFarmTokens(row.contract_address, row.farm_id);
+        const agg = bumpLabel(name || `Yield Farm #${row.farm_id}`);
+        for (const [tokenAddress, rawAmount] of [[token0, raw.amount0Added], [token1, raw.amount1Added]]) {
+          if (!tokenAddress || tokenAddress === ethers.ZeroAddress || !rawAmount || BigInt(rawAmount) === 0n) continue;
+          const quantity = await formatTokenAmount(tokenAddress, rawAmount);
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          const proceedsUsd = priceUsd != null ? new Decimal(quantity).times(priceUsd).toString() : 0;
+          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(proceedsUsd); else agg.unpriced++;
+          events.push({ kind: "out", tokenAddress, txHash, timestamp, quantity, proceedsUsd });
+        }
+      } else if (row.event_type === "farm_withdraw") {
+        const { token0, token1, name } = await getFarmTokens(row.contract_address, row.farm_id);
+        const agg = bumpLabel(name || `Yield Farm #${row.farm_id}`);
+        for (const [tokenAddress, rawAmount] of [[token0, raw.amount0Withdrawn], [token1, raw.amount1Withdrawn]]) {
+          if (!tokenAddress || tokenAddress === ethers.ZeroAddress || !rawAmount || BigInt(rawAmount) === 0n) continue;
+          const quantity = await formatTokenAmount(tokenAddress, rawAmount);
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          if (priceUsd != null) agg.withdrawnUsd = agg.withdrawnUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: priceUsd ?? 0 });
+        }
+        // Farm's own reward token, LP fees (fees0/fees1 — the same tokens as token0/token1, but
+        // acquired at zero cost basis, so tracked as separate "in" events rather than folded into
+        // the principal reacquisition above), and the third-party reward token — all zero-cost-
+        // basis acquisitions (see this function's header comment).
+        const rewardLegs = [];
+        if (raw.amountRewards && BigInt(raw.amountRewards) > 0n) {
+          const rewardToken = await getFarmRewardToken(row.contract_address).catch(() => null);
+          if (rewardToken) rewardLegs.push([rewardToken, raw.amountRewards]);
+        }
+        if (raw.fees0Collected && BigInt(raw.fees0Collected) > 0n && token0) rewardLegs.push([token0, raw.fees0Collected]);
+        if (raw.fees1Collected && BigInt(raw.fees1Collected) > 0n && token1) rewardLegs.push([token1, raw.fees1Collected]);
+        if (raw.thirdPartyRewardsCollected && BigInt(raw.thirdPartyRewardsCollected) > 0n) {
+          const tpToken = await getThirdPartyRewardToken(row.contract_address, row.farm_id).catch(() => null);
+          if (tpToken) rewardLegs.push([tpToken, raw.thirdPartyRewardsCollected]);
+        }
+        for (const [tokenAddress, rawAmount] of rewardLegs) {
+          const quantity = await formatTokenAmount(tokenAddress, rawAmount);
+          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: 0 });
+          // The labeled breakdown still shows rewards at their real FMV (informational) even
+          // though the FIFO math above records them at $0 cost basis — otherwise the PDF's
+          // "Rewards Earned" figure would misleadingly read as $0 for a farm that's actually paying out.
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          if (priceUsd != null) agg.rewardsUsd = agg.rewardsUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+        }
+      } else if (row.event_type === "core_staked") {
+        const tokenAddress = await getStakingToken(row.contract_address);
+        const agg = bumpLabel("Core Ascension Staking");
+        if (raw.amount && BigInt(raw.amount) > 0n) {
+          const quantity = await formatTokenAmount(tokenAddress, raw.amount);
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          const proceedsUsd = priceUsd != null ? new Decimal(quantity).times(priceUsd).toString() : 0;
+          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(proceedsUsd); else agg.unpriced++;
+          events.push({ kind: "out", tokenAddress, txHash, timestamp, quantity, proceedsUsd });
+        }
+      } else if (row.event_type === "core_withdrawn") {
+        const tokenAddress = await getStakingToken(row.contract_address);
+        const agg = bumpLabel("Core Ascension Staking");
+        if (raw.returnedAmount && BigInt(raw.returnedAmount) > 0n) {
+          const quantity = await formatTokenAmount(tokenAddress, raw.returnedAmount);
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          if (priceUsd != null) agg.withdrawnUsd = agg.withdrawnUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: priceUsd ?? 0 });
+        }
+      } else if (row.event_type === "reward_paid") {
+        const tokenAddress = await getStakingToken(row.contract_address);
+        const agg = bumpLabel("Core Ascension Staking");
+        // Confirmed live via a real RewardPaid event where paidAmount === slashedAmount (the
+        // entire reward clawed back by an early-withdrawal penalty): the actual net amount
+        // received is paidAmount - slashedAmount, never paidAmount alone.
+        const paid = BigInt(raw.paidAmount || 0);
+        const slashed = BigInt(raw.slashedAmount || 0);
+        const net = paid > slashed ? paid - slashed : 0n;
+        if (net > 0n) {
+          const quantity = await formatTokenAmount(tokenAddress, net);
+          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: 0 });
+          const priceUsd = await priceAt(tokenAddress, timestamp);
+          if (priceUsd != null) agg.rewardsUsd = agg.rewardsUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️  Statement generator: could not resolve DeFi event ${row.event_type} for tx ${txHash} (contract ${row.contract_address}):`, err.message);
+    }
+  }
+
+  return { events, perLabel };
 }
 
 async function computeGasFeesUsd(transfersInPeriod) {
@@ -722,7 +944,7 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta, cexA
   return items;
 }
 
-function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset }) {
+function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, defiActivitySummary, realizedPnlUsd, unrealizedPnlUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset }) {
   const PORTRAIT = { margin: 50, layout: "portrait" };
   const LANDSCAPE = { margin: 50, layout: "landscape" };
   const doc = new PDFDocument({ margin: 50, bufferPages: true });
@@ -818,6 +1040,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   // sectionHeader() calls below exactly, including Game Activity being conditional.
   const contentsEntries = ["Summary", "Opening Inventory", "Closing Inventory", "Realized Gains & Losses"];
   if (gameActivity.size > 0) contentsEntries.push("Game Activity");
+  if (defiActivitySummary.size > 0) contentsEntries.push("DeFi / Yield Farming");
   contentsEntries.push("Transaction History", "Understanding This Statement");
   const contentsPageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.fontSize(10).fillColor(THEME.white).font("Helvetica-Bold").text("Contents");
@@ -900,6 +1123,22 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.moveDown(1);
   }
 
+  if (defiActivitySummary.size > 0) {
+    sectionPageNumbers["DeFi / Yield Farming"] = currentPageNumber;
+    sectionHeader("DeFi / Yield Farming");
+    doc.fontSize(9).fillColor(THEME.muted).text(
+      "Deposits and withdrawals are already counted in Realized Gains & Losses above (treated as a disposal at deposit and a reacquisition at withdrawal, at fair market value). Rewards are recorded at $0 cost basis when received and only affect Net P&L later if you go on to sell, swap, or send them to an exchange — this line shows their value at the time received purely for visibility, not as income already counted above."
+    );
+    doc.moveDown(0.3);
+    doc.fontSize(10);
+    for (const [name, d] of defiActivitySummary) {
+      const unpricedNote = d.unpriced > 0 ? `  (${d.unpriced} amount(s) with no price data, not included above)` : "";
+      doc.fillColor(THEME.bodyText).text(`${name} — Deposited: $${fmtAmount(d.depositedUsd)}, Withdrawn: $${fmtAmount(d.withdrawnUsd)}, Rewards Earned: $${fmtAmount(d.rewardsUsd)}`, { continued: unpricedNote.length > 0 });
+      if (unpricedNote) doc.fillColor(THEME.muted).text(unpricedNote);
+    }
+    doc.moveDown(1);
+  }
+
   doc.addPage(LANDSCAPE);
   doc.x = doc.page.margins.left;
   doc.y = doc.page.margins.top;
@@ -953,6 +1192,13 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
     doc.fillColor(THEME.muted).font("Helvetica").text(nftDisclaimer);
     doc.moveDown(0.4);
   }
+  if (defiActivitySummary.size > 0) {
+    doc.fillColor(THEME.white).font("Helvetica-Bold").text("DeFi / Yield Farming");
+    doc.fillColor(THEME.muted).font("Helvetica").text(
+      "Yield farm and staking contracts you interacted with are detected automatically by their on-chain event signatures, not a manually maintained list — any future farm/stake deployed from the same contract template is picked up the same way. Depositing into a farm or stake is treated as disposing of the deposited token(s) at their market value at that moment (a taxable event, same as a sale); withdrawing principal is treated as reacquiring whatever comes back, at its market value at that moment. Rewards (a farm's own reward token, LP fees, third-party rewards, staking rewards) are recorded as acquired at $0 cost basis — they don't count as income when received, only affect Net P&L later if you go on to sell, swap, or send them to an exchange."
+    );
+    doc.moveDown(0.4);
+  }
   doc.moveDown(0.6);
 
   doc.fontSize(8).fillColor(THEME.muted).text(DISCLAIMER, { align: "left" });
@@ -1003,9 +1249,10 @@ export async function generateStatement(requestId) {
   const selfOwnedAddresses = Array.isArray(request.self_owned_addresses) ? request.self_owned_addresses : [];
   await ingestWalletHistory(request.tracked_wallet, selfOwnedAddresses);
 
-  const [transfers, swaps] = await Promise.all([
+  const [transfers, swaps, defiActivity] = await Promise.all([
     getAllTransfersBefore(request.tracked_wallet, periodEnd),
     getAllSwapTradesBefore(request.tracked_wallet, periodEnd),
+    getAllDefiActivityBefore(request.tracked_wallet, periodEnd),
   ]);
 
   // NFT legs are pulled out and turned into their own mint/purchase/sale FIFO events (see
@@ -1013,10 +1260,17 @@ export async function generateStatement(requestId) {
   // them there — an NFT leg must never be fed into FIFO both as a generic zero-priced transfer AND
   // as a properly cost-tracked NFT event.
   const { events: nftEvents, consumedRowIds: nftConsumedRowIds, unmatchedCount: nftUnmatchedCount } = buildNftEvents(transfers);
+  // Yield-farm/staking deposits, withdrawals, and reward claims — see buildDefiFarmEvents' own
+  // header comment for the exact tax treatment (disposal+reacquisition for principal, zero-cost-
+  // basis acquisition for rewards). Resolved over the wallet's FULL history (like transfers/swaps
+  // above), not just this period, so opening inventory correctly reflects farm/stake activity from
+  // prior periods too.
+  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity);
   const events = [
     ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
     ...swaps.map(swapToEvent),
     ...nftEvents,
+    ...defiEvents,
   ].sort((a, b) => a.timestamp - b.timestamp);
   const { opening, closing } = replayFifo(events, periodStart, periodEnd);
 
@@ -1028,6 +1282,14 @@ export async function generateStatement(requestId) {
     const ts = new Date(s.timestamp);
     return ts >= periodStart && ts < periodEnd;
   });
+  const defiActivityInPeriod = defiActivity.filter((row) => {
+    const ts = new Date(row.timestamp);
+    return ts >= periodStart && ts < periodEnd;
+  });
+  // Re-run just for the labeled breakdown, scoped to this period only (mirrors
+  // transfersInPeriod/swapsInPeriod above) — cheap: every contract/farm view-function read and
+  // price lookup here already got cached by the full-history call just above.
+  const { perLabel: defiActivitySummary } = await buildDefiFarmEvents(defiActivityInPeriod);
 
   const [gas, closingValuation, openingValuation, cexAddressList] = await Promise.all([
     computeGasFeesUsd(transfersInPeriod),
@@ -1090,6 +1352,16 @@ export async function generateStatement(requestId) {
       wonUsd: g.wonUsd.toString(),
       netUsd: g.wonUsd.minus(g.wageredUsd).toString(),
     })),
+    // Breakdown only — deposits/withdrawals are already counted in realizedPnlEvents above (a
+    // disposal+reacquisition, per buildDefiFarmEvents' header comment); rewards are already
+    // counted in the FIFO ledger at $0 cost basis, so they only surface in Net P&L later if/when
+    // actually disposed of. Not additive to Net P&L on its own.
+    defiActivity: [...defiActivitySummary.entries()].map(([name, d]) => ({
+      name,
+      depositedUsd: d.depositedUsd.toString(),
+      withdrawnUsd: d.withdrawnUsd.toString(),
+      rewardsUsd: d.rewardsUsd.toString(),
+    })),
     openingInventory: {
       totalValueUsd: openingValuation.totalMarketValueUsd.toString(),
       perAsset: openingValuation.perToken.map((t) => withAssetLabel(t, t.tokenAddress)),
@@ -1136,7 +1408,7 @@ export async function generateStatement(requestId) {
     disclaimer: DISCLAIMER,
   };
 
-  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset });
+  const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, defiActivitySummary, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset });
 
   const baseKey = `pnl-statements/${request.tracked_wallet.toLowerCase()}/${request.id}`;
   const jsonKey = `${baseKey}.json`;
