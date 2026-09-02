@@ -534,28 +534,44 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
   return highestBlock;
 }
 
+const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own queryLogsChunked floor
+
 /** Chunked raw eth_getLogs scan across the WHOLE chain (no `address` filter) for one topic-0
  * signature, with the tracked wallet pinned at `walletTopicIndex`. Deliberately not Blockscout's
  * REST pagination (unlike every other walk in this file) — there's no per-wallet Blockscout
  * endpoint for "every log anywhere naming this address in topic N", so this goes straight to the
- * RPC provider instead, same as coreClashBurnWatcher.js's own queryLogsChunked. 500-block windows,
- * same conservative default every other raw getLogs scan in this codebase uses. */
+ * RPC provider instead. 500-block windows to start, with the exact same shrink-and-retry-on-
+ * "block range too large" behavior as coreClashBurnWatcher.js's own queryLogsChunked — confirmed
+ * live this genuinely happens even at 500 blocks: this file's two RPC endpoints (see
+ * rpcProvider.js's failover) don't share one max-range limit, and a full cold-start DeFi scan
+ * (fromBlock 0) makes enough eth_getLogs calls to trip the primary's rate limit and fail over to
+ * the secondary mid-scan, whose own limit turned out to be stricter. An earlier version of this
+ * function assumed 500 blocks was already conservative enough to skip shrink-and-retry entirely —
+ * that assumption was wrong, confirmed by this exact error crashing a real statement regeneration. */
 async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock) {
   const logs = [];
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
-  for (let start = fromBlock; start <= toBlock; start += DEFI_LOG_CHUNK_SIZE) {
-    const end = Math.min(start + DEFI_LOG_CHUNK_SIZE - 1, toBlock);
+  let chunkSize = DEFI_LOG_CHUNK_SIZE;
+  let start = fromBlock;
+  while (start <= toBlock) {
+    const end = Math.min(start + chunkSize - 1, toBlock);
     try {
       const chunk = await provider.getLogs({ topics, fromBlock: start, toBlock: end });
       logs.push(...chunk);
+      start = end + 1;
     } catch (err) {
+      const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
+      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+      if (isRangeError && chunkSize > DEFI_LOG_MIN_CHUNK_SIZE) {
+        chunkSize = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(chunkSize / 2));
+        continue; // retry the same `start` with a smaller window
+      }
       console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${start}-${end}:`, err.message);
-      // No shrink-and-retry here (unlike queryLogsChunked elsewhere) — 500 blocks is already
-      // conservative, and a genuinely failing chunk is more likely a transient RPC issue than a
-      // range-too-large error; skipping it just means this range gets picked up again next
-      // ingestion run (stopAtBlock only advances once every requested chunk succeeds — see below).
+      // A genuinely non-range failure (transient RPC issue) — skipping it just means this range
+      // gets picked up again next ingestion run (stopAtBlock only advances once every requested
+      // chunk succeeds — see ingestDefiActivity below).
       throw err;
     }
   }
