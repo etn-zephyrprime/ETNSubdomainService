@@ -1226,6 +1226,9 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
  * a GENERATED/FINALIZED request only in the sense that markGenerated's own WHERE clause simply
  * won't apply a second time — callers should not call this on an already-generated request. */
 export async function generateStatement(requestId) {
+  const generationStartedAt = new Date();
+  console.log(`📄 Statement generation started for request ${requestId} at ${generationStartedAt.toISOString()}`);
+
   const request = await getById(requestId);
   if (!request) throw new Error(`Statement request ${requestId} not found`);
   if (request.status !== "PENDING_GENERATION") {
@@ -1420,6 +1423,7 @@ export async function generateStatement(requestId) {
   ]);
 
   const updated = await markGenerated(requestId, { artifactPdfKey: pdfKey, artifactJsonKey: jsonKey });
-  console.log(`📄 Statement generated for request ${requestId} (wallet ${request.tracked_wallet}, net P&L $${netPnlUsd.toFixed(2)})`);
+  const totalSec = Math.round((Date.now() - generationStartedAt.getTime()) / 1000);
+  console.log(`📄 Statement generated for request ${requestId} (wallet ${request.tracked_wallet}, net P&L $${netPnlUsd.toFixed(2)}) — started ${generationStartedAt.toISOString()}, took ${totalSec}s`);
   return updated;
 }

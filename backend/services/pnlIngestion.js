@@ -51,6 +51,13 @@ const PAGE_DELAY_MS = process.env.PNL_INGESTION_PAGE_DELAY_MS ? parseInt(process
 // conditions; a real hang is caught well before a customer notices something's "just slow."
 const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env.PNL_FETCH_TIMEOUT_MS, 10) : 20000;
 
+// Render log visibility into a run that can take many minutes — per the user's own words, "I am
+// blind to know what is going on" while a statement generates. Throttled to at most once every
+// PROGRESS_LOG_INTERVAL_MS per walk/scan so a page-heavy wallet doesn't flood the log stream.
+const PROGRESS_LOG_INTERVAL_MS = process.env.PNL_PROGRESS_LOG_INTERVAL_MS
+  ? parseInt(process.env.PNL_PROGRESS_LOG_INTERVAL_MS, 10)
+  : 15000;
+
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
@@ -197,9 +204,30 @@ async function fetchPage(path, cursorParams, attempt = 0) {
 /** Walks every page of a Blockscout address-scoped endpoint, calling `onPage(items)` for each,
  * until next_page_params is exhausted or an item's block is at/below `stopAtBlock` (exclusive —
  * used for incremental catch-up, where we only want blocks newer than the last ingested one;
- * pass null to walk the endpoint's entire available history, used for cold start). */
-async function walkAllPages(path, stopAtBlock, onPage) {
+ * pass null to walk the endpoint's entire available history, used for cold start).
+ *
+ * `label`, if given, turns on throttled progress logging (see PROGRESS_LOG_INTERVAL_MS) — each
+ * line shows how far BACK into the wallet's history this walk has reached (pages come newest-first,
+ * confirmed live, so the LAST item on a page is always the furthest-back one seen so far) plus an
+ * approximate % of the SCANNED BLOCK RANGE (latest chain block down to stopAtBlock, or down to
+ * block 0 for a cold start) — not the wallet's own true history span, which isn't knowable up front
+ * without an extra lookup, but a real, monotonically-increasing number regardless. Fetching
+ * latestBlockAtStart is itself wrapped in try/catch — this is purely informational and must never
+ * fail or slow down the actual walk. */
+async function walkAllPages(path, stopAtBlock, onPage, label) {
+  const startedAt = Date.now();
+  let lastLoggedAt = 0;
+  let latestBlockAtStart = null;
+  if (label) {
+    try {
+      latestBlockAtStart = await createRpcProvider().getBlockNumber();
+    } catch {
+      // Progress logging is informational only — an RPC hiccup here just means no % this run.
+    }
+  }
+
   let cursor;
+  let itemCount = 0;
   for (;;) {
     const page = await fetchPage(path, cursor);
     const items = page.items || [];
@@ -207,6 +235,27 @@ async function walkAllPages(path, stopAtBlock, onPage) {
 
     const relevant = stopAtBlock != null ? items.filter((it) => Number(it.block_number) > stopAtBlock) : items;
     if (relevant.length > 0) await onPage(relevant);
+    itemCount += relevant.length;
+
+    if (label && relevant.length > 0) {
+      const now = Date.now();
+      if (now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
+        lastLoggedAt = now;
+        const oldest = relevant[relevant.length - 1];
+        const oldestBlock = Number(oldest.block_number);
+        const oldestDate = oldest.timestamp ? new Date(oldest.timestamp).toISOString().slice(0, 10) : "unknown date";
+        const elapsedSec = Math.round((now - startedAt) / 1000);
+        let pctText = "";
+        if (latestBlockAtStart != null) {
+          const totalSpan = latestBlockAtStart - (stopAtBlock ?? 0);
+          if (totalSpan > 0) {
+            const pct = Math.min(100, Math.max(0, Math.round(((latestBlockAtStart - oldestBlock) / totalSpan) * 100)));
+            pctText = `, ~${pct}% of scanned block range`;
+          }
+        }
+        console.log(`📊 [${label}] reached ${oldestDate} (block ${oldestBlock}) — ${itemCount} item(s) so far, ${elapsedSec}s elapsed${pctText}`);
+      }
+    }
 
     if (relevant.length < items.length || !page.next_page_params) break; // rest of this page (and everything after) is already-ingested territory
     cursor = page.next_page_params;
@@ -400,7 +449,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
         });
       }
     }
-  });
+  }, "transactions");
 
   if (rows.length > 0) await insertTransfers(rows);
   if (swapRows.length > 0) await insertSwapTrades(swapRows);
@@ -452,7 +501,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
         timestamp,
       });
     }
-  });
+  }, "internal-transactions");
 
   if (rows.length > 0) await insertTransfers(rows);
   return highestBlock;
@@ -540,7 +589,7 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
         timestamp,
       });
     }
-  });
+  }, "token-transfers");
 
   if (rows.length > 0) await insertTransfers(rows);
   return highestBlock;
@@ -606,7 +655,7 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
  *      that's ~782 sequential round-trips per topic even at the current 20000-block chunk size.
  *      The worker pool below cuts that by roughly DEFI_LOG_CONCURRENCY.
  */
-async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock) {
+async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt) {
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
@@ -619,11 +668,26 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
 
   const results = new Array(windows.length);
   let nextIndex = 0;
+  // Unlike walkAllPages' progress logging (an approximation — the true wallet history span isn't
+  // knowable up front), this denominator is exact: the window list is built in full before any
+  // fetch starts, so completedCount/windows.length is a real % of this topic's scan.
+  let completedCount = 0;
+  let lastLoggedAt = 0;
   async function worker() {
     while (nextIndex < windows.length) {
       const myIndex = nextIndex++;
       const [start, end] = windows[myIndex];
       results[myIndex] = await fetchDefiLogWindow(provider, topics, start, end);
+      completedCount++;
+      if (label) {
+        const now = Date.now();
+        if (now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
+          lastLoggedAt = now;
+          const pct = Math.round((completedCount / windows.length) * 100);
+          const elapsedSec = Math.round((now - startedAt) / 1000);
+          console.log(`📊 [DeFi:${label}] ${completedCount}/${windows.length} windows (~${pct}%) — ${elapsedSec}s elapsed`);
+        }
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
@@ -640,13 +704,18 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
   const fromBlock = (stopAtBlock ?? -1) + 1;
   if (fromBlock > latestBlock) return stopAtBlock ?? -1;
 
+  const startedAt = Date.now();
+  if (stopAtBlock == null) {
+    console.log(`📥 DeFi activity cold-start scan for ${trackedWallet}: blocks ${fromBlock}-${latestBlock} (${(latestBlock - fromBlock + 1).toLocaleString()} blocks) started at ${new Date(startedAt).toISOString()}`);
+  }
+
   const walletTopic = ethers.zeroPadValue(trackedWallet, 32);
   const [farmDeposits, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
-    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
-    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
-    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
-    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
-    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock),
+    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt),
+    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt),
+    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt),
+    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt),
+    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt),
   ]);
 
   const allLogs = [...farmDeposits, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
