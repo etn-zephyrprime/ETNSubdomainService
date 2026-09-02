@@ -15,6 +15,7 @@ import { sendZephyrosAnimation, escapeHtml, zephyrosBotConfigured } from "./core
 import { EXPLORER_BASE_URL, CORE_TOKEN_ADDRESS, REVERSE_REGISTRAR_ADDRESS, POLL_INTERVAL_MS, LOOKBACK_BLOCKS } from "./coreClashConfig.js";
 import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
+import { labelBurnSource } from "./burnSourceLabels.js";
 
 const STATE_KEY = "burn-watcher";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -96,6 +97,18 @@ async function poll(token, symbol, decimals, resolveDisplayName) {
         const donor = addressFromTopic(log.topics[1]);
         const donorDisplay = await resolveDisplayName(donor);
 
+        // Which app mechanism triggered this — looks at the *transaction's* own destination
+        // contract, not `donor` above, since CORE's own fee-on-transfer tax means donor is often
+        // just whoever happened to be moving tokens at that moment (a swap pool, a user's wallet
+        // mid-swap), not itself a meaningful label. See burnSourceLabels.js's own header comment.
+        let source = "Manual burn";
+        try {
+          const tx = await provider.getTransaction(log.transactionHash);
+          source = await labelBurnSource(tx?.to, EXPLORER_BASE_URL);
+        } catch (err) {
+          console.warn(`⚠️  Burn watcher: could not classify source for tx ${log.transactionHash}:`, err.message);
+        }
+
         const totalSupplyRaw = await token.totalSupply({ blockTag: log.blockNumber });
         const totalSupplyFormatted = Number(ethers.formatUnits(totalSupplyRaw, decimals));
         const totalBurnedRaw = INITIAL_SUPPLY - totalSupplyFormatted;
@@ -107,6 +120,7 @@ async function poll(token, symbol, decimals, resolveDisplayName) {
         const caption =
           `🔥🔥 <b>${escapeHtml(symbol)} Burned!</b> 🔥🔥\n\n` +
           `<b>${escapeHtml(prettyAmount)} ${escapeHtml(symbol)}</b> is gone forever!\n\n` +
+          `Source: <b>${escapeHtml(source)}</b>\n\n` +
           `Donor: <a href="${escapeHtml(donorUrl)}">${escapeHtml(donorDisplay)}</a>\n\n` +
           `Total Burned: <b>${escapeHtml(totalBurned)} ${escapeHtml(symbol)}</b> (${escapeHtml(burnPercent)}%)\n\n` +
           `<a href="${escapeHtml(txUrl)}">View Transaction</a>`;
