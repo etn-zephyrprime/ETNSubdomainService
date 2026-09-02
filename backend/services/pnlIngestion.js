@@ -547,47 +547,81 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
 }
 
 const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own queryLogsChunked floor
+const DEFI_LOG_CONCURRENCY = 8; // bounded worker pool — see queryDefiLogsChunked's own comment
+
+/** Fetches one [start, end] window, shrinking ONLY within this window on a "block range too
+ * large" error and never touching any other window's size — see queryDefiLogsChunked's own
+ * comment for why a shared/global shrink was a real, confirmed-live bug. */
+async function fetchDefiLogWindow(provider, topics, start, end) {
+  const logs = [];
+  let size = end - start + 1;
+  let curStart = start;
+  while (curStart <= end) {
+    const curEnd = Math.min(curStart + size - 1, end);
+    try {
+      const chunk = await provider.getLogs({ topics, fromBlock: curStart, toBlock: curEnd });
+      logs.push(...chunk);
+      curStart = curEnd + 1;
+    } catch (err) {
+      const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
+      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+      if (isRangeError && size > DEFI_LOG_MIN_CHUNK_SIZE) {
+        size = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(size / 2));
+        continue; // retry the same curStart with a smaller window, LOCAL to this window only
+      }
+      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd}:`, err.message);
+      // A genuinely non-range failure (transient RPC issue) — skipping it just means this range
+      // gets picked up again next ingestion run (stopAtBlock only advances once every requested
+      // window succeeds — see ingestDefiActivity below).
+      throw err;
+    }
+  }
+  return logs;
+}
 
 /** Chunked raw eth_getLogs scan across the WHOLE chain (no `address` filter) for one topic-0
  * signature, with the tracked wallet pinned at `walletTopicIndex`. Deliberately not Blockscout's
  * REST pagination (unlike every other walk in this file) — there's no per-wallet Blockscout
  * endpoint for "every log anywhere naming this address in topic N", so this goes straight to the
- * RPC provider instead. 500-block windows to start, with the exact same shrink-and-retry-on-
- * "block range too large" behavior as coreClashBurnWatcher.js's own queryLogsChunked — confirmed
- * live this genuinely happens even at 500 blocks: this file's two RPC endpoints (see
- * rpcProvider.js's failover) don't share one max-range limit, and a full cold-start DeFi scan
- * (fromBlock 0) makes enough eth_getLogs calls to trip the primary's rate limit and fail over to
- * the secondary mid-scan, whose own limit turned out to be stricter. An earlier version of this
- * function assumed 500 blocks was already conservative enough to skip shrink-and-retry entirely —
- * that assumption was wrong, confirmed by this exact error crashing a real statement regeneration. */
+ * RPC provider instead.
+ *
+ * Splits [fromBlock, toBlock] into DEFI_LOG_CHUNK_SIZE-sized windows and fetches them through a
+ * bounded worker pool (DEFI_LOG_CONCURRENCY concurrent requests), each window independently
+ * shrinking-and-retrying on its own "block range too large" error via fetchDefiLogWindow.
+ * Confirmed live and fixed two real bugs from an earlier single-cursor sequential version:
+ *   1. A shrunk chunk size used to be a single variable shared across the ENTIRE scan, never
+ *      reset after a successful call — one unlucky window failing early (e.g. shrinking to the
+ *      50-block floor) permanently degraded every later window too, turning a ~782-window scan
+ *      into 300,000+ windows. Confirmed live: a real regeneration stalled for 25+ minutes with
+ *      zero progress after exactly this happened. Now every window starts fresh at
+ *      DEFI_LOG_CHUNK_SIZE regardless of what any other window needed.
+ *   2. Windows were fetched one at a time, fully sequential — a wallet's first-ever DeFi scan
+ *      covers the chain's entire history (see ingestDefiActivity's stopAtDefiBlock handling), so
+ *      that's ~782 sequential round-trips per topic even at the current 20000-block chunk size.
+ *      The worker pool below cuts that by roughly DEFI_LOG_CONCURRENCY.
+ */
 async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock) {
-  const logs = [];
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
-  let chunkSize = DEFI_LOG_CHUNK_SIZE;
-  let start = fromBlock;
-  while (start <= toBlock) {
-    const end = Math.min(start + chunkSize - 1, toBlock);
-    try {
-      const chunk = await provider.getLogs({ topics, fromBlock: start, toBlock: end });
-      logs.push(...chunk);
-      start = end + 1;
-    } catch (err) {
-      const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
-      if (isRangeError && chunkSize > DEFI_LOG_MIN_CHUNK_SIZE) {
-        chunkSize = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(chunkSize / 2));
-        continue; // retry the same `start` with a smaller window
-      }
-      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${start}-${end}:`, err.message);
-      // A genuinely non-range failure (transient RPC issue) — skipping it just means this range
-      // gets picked up again next ingestion run (stopAtBlock only advances once every requested
-      // chunk succeeds — see ingestDefiActivity below).
-      throw err;
+
+  const windows = [];
+  for (let start = fromBlock; start <= toBlock; start += DEFI_LOG_CHUNK_SIZE) {
+    windows.push([start, Math.min(start + DEFI_LOG_CHUNK_SIZE - 1, toBlock)]);
+  }
+  if (windows.length === 0) return [];
+
+  const results = new Array(windows.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < windows.length) {
+      const myIndex = nextIndex++;
+      const [start, end] = windows[myIndex];
+      results[myIndex] = await fetchDefiLogWindow(provider, topics, start, end);
     }
   }
-  return logs;
+  await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
+  return results.flat();
 }
 
 /** Scans for yield-farm/staking activity involving `trackedWallet` — see DEFI_IFACE's own comment
