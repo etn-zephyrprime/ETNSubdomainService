@@ -82,7 +82,19 @@ const FARM_EVENT_WALLET_TOPIC_INDEX = 2;
 // user is CoreStaked/CoreWithdrawn/RewardPaid's ONLY indexed param besides the signature itself
 // (topics[1]).
 const STAKING_EVENT_WALLET_TOPIC_INDEX = 1;
-const DEFI_LOG_CHUNK_SIZE = 500; // same conservative window every other raw getLogs scan in this codebase uses (see coreClashBurnWatcher.js's own MAX_BLOCK_RANGE)
+// Confirmed live (direct RPC probes, not a guess) that this scan's two endpoints have wildly
+// different real limits for an eth_getLogs call with NO address filter (matching by topic alone
+// across the whole chain — inherently more expensive for an RPC backend to serve than the
+// address-scoped calls every other getLogs scan in this codebase uses, which is why
+// coreClashBurnWatcher.js's 500-block MAX_BLOCK_RANGE doesn't apply here): the primary (Ankr)
+// rejects a filterless request anywhere above ~1000-2000 blocks with "Block range is too large",
+// while the secondary (Electroneum's own public node) served a 100,000-block filterless request
+// with zero issue. A wallet's first-ever DeFi scan covers the chain's ENTIRE history (see
+// ingestDefiActivity's stopAtDefiBlock handling) — at a 500-block window that's tens of thousands
+// of sequential round-trips per topic and took long enough in practice to be impractical. 20000
+// keeps real margin below the proven-safe 100000 while cutting chunk count by ~40x; queryDefiLogsChunked's
+// shrink-and-retry still exists as the safety net for whichever specific window a request lands on.
+const DEFI_LOG_CHUNK_SIZE = 20000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
