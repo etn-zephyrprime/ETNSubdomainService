@@ -340,6 +340,20 @@ export async function getEarliestAvailableDate(asset) {
   return state?.earliest_available_date ? new Date(state.earliest_available_date) : null;
 }
 
+// In-memory only, never persisted — same "don't retry a proven-broken lookup for the rest of this
+// run" reasoning as failedBackfillThisRun above, one level down: even with that Set short-
+// circuiting ensureBackfilled's bulk retry, getHistoricalPriceUsd's own per-date LIVE fallback
+// (resolvePoolAddress + fetchNearestCandleUsd, right below) still runs unconditionally on every
+// call for a date price_points doesn't already have cached — and a token whose pool 401s
+// permanently never gets a successful upsertPricePoint to short-circuit on. Confirmed live: the
+// exact same (token, day) pair reappeared verbatim in the logs across multiple checks minutes
+// apart during one statement generation, for a wallet with several genuinely different call sites
+// (gas, cost basis, disposal valuation, etc.) all needing that one unresolvable day's price —
+// each one repeating the identical failing live lookup. Keyed by "asset|isoDate", scoped to the
+// process lifetime like failedBackfillThisRun, for the identical reason: a live fetch failure here
+// might be transient and shouldn't become a permanent "no price data" claim for a future run.
+const failedPriceLookupThisRun = new Set();
+
 // One bounded retry on 429, honoring Retry-After when CoinGecko sends it (else a flat 3s) — same
 // "bounded retry, not a runaway loop" philosophy as tokenChartRouter.js's GeckoTerminal queue, but
 // simpler: unlike that shared queue, this fallback path has no other callers to coordinate a
@@ -392,6 +406,11 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   const cached = await getPricePoint(cacheAsset, bucketed);
   if (cached) return Number(cached.price_usd);
 
+  const failKey = `${cacheAsset}|${bucketed.toISOString()}`;
+  if (failedPriceLookupThisRun.has(failKey)) {
+    throw new Error(`Could not resolve historical USD price for ${cacheAsset} at ${bucketed.toISOString()} (cached failure this run)`);
+  }
+
   let priceUsd = null;
   let source = null;
 
@@ -415,6 +434,7 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   }
 
   if (priceUsd == null) {
+    failedPriceLookupThisRun.add(failKey);
     throw new Error(`Could not resolve historical USD price for ${cacheAsset} at ${bucketed.toISOString()}`);
   }
 
