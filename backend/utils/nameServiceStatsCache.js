@@ -40,7 +40,11 @@ const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_
 // skip the entire BaseRegistrar pre-Marketplace block range forever (the cursor logic below only
 // bootstraps from EARLIEST_DEPLOY_BLOCK when there's *no* valid cache) — same fix shape as
 // ownedNamesCache.js's CACHE_SCHEMA_VERSION history.
-const CACHE_SCHEMA_VERSION = 2;
+// v3: added totalSellerRevenueWei (see its own comment below) — bumped again for the same reason:
+// a v2 cache's lastScannedBlock is already advanced past EARLIEST_DEPLOY_BLOCK, so without a full
+// rescan this running total would silently start from 0 and only ever count *future* sales,
+// permanently missing every SubnameRegistered/ListingSold that happened before this change shipped.
+const CACHE_SCHEMA_VERSION = 3;
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
@@ -160,6 +164,15 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
     const rawCached = await getNameServiceStatsCache();
     const cached = rawCached?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCached : null;
     const events = Array.isArray(cached?.events) ? cached.events.slice() : [];
+    // Lifetime sum of sellerAmount (the contract's own emitted 80% cut — see SELLER_BPS in
+    // PlanetZephyrosSubdomainNameServiceV3.sol, not something this cache recomputes itself) across
+    // every SubnameRegistered and ListingSold ever seen. Deliberately a running total seeded from
+    // the cache, NOT derived by summing the `events` array above — that array is trimmed to
+    // MAX_HISTORY_EVENTS (oldest dropped first), which would silently undercount a lifetime total
+    // once the ecosystem has more sales than that cap. Mirrors the Marketplace contract's own
+    // totalCoreBurned pattern (a running counter, not replayed from history each time) — see
+    // useBurnPool.js's getTotalCoreBurned for the on-chain equivalent of this same idea.
+    let totalSellerRevenueWei = BigInt(cached?.totalSellerRevenueWei || "0");
 
     const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : EARLIEST_DEPLOY_BLOCK;
     const latestBlock = await marketplace.runner.getBlockNumber();
@@ -213,12 +226,14 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
             events.push({ type: "domain_activated", timestampMs });
           } else if (event.eventName === "SubnameRegistered") {
             events.push({ type: "subname_registered", label: event.args.label, priceWei: event.args.price.toString(), timestampMs });
+            totalSellerRevenueWei += event.args.sellerAmount;
           } else if (event.eventName === "ListingSold") {
             // txHash included so the frontend can link each sale straight to the block explorer —
             // no name/label available here either (ListingSold carries a listingId, not a label;
             // resolving one would mean an extra per-sale contract call this cache doesn't
             // otherwise need), so the link is the primary way to see what actually sold.
             events.push({ type: "listing_sold", priceWei: event.args.price.toString(), timestampMs, txHash: event.transactionHash });
+            totalSellerRevenueWei += event.args.sellerAmount;
           }
         }
       }
@@ -256,11 +271,12 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
       events: trimmedEvents,
       floorPriceWei,
       activeListingsCount,
+      totalSellerRevenueWei: totalSellerRevenueWei.toString(),
       lastScannedBlock: toBlock,
       schemaVersion: CACHE_SCHEMA_VERSION,
     });
 
-    console.log(`📡 Name Service stats cache updated — ${trimmedEvents.length} event(s) tracked, ${activeListingsCount} active listing(s), scanned to block ${toBlock}`);
+    console.log(`📡 Name Service stats cache updated — ${trimmedEvents.length} event(s) tracked, ${activeListingsCount} active listing(s), ${ethers.formatEther(totalSellerRevenueWei)} ETN lifetime seller revenue, scanned to block ${toBlock}`);
   } catch (err) {
     console.error("⚠️  Name Service stats scan failed:", err.message);
   } finally {

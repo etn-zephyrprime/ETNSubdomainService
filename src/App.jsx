@@ -13,6 +13,7 @@ import Footer from "./components/Footer.jsx";
 import NeonButton from "./components/NeonButton.jsx";
 import BurnPoolCard from "./components/BurnPoolCard.jsx";
 import CoreBurnedCard from "./components/CoreBurnedCard.jsx";
+import DomainRevenueCard from "./components/DomainRevenueCard.jsx";
 import ActivatedDomainsTable from "./components/ActivatedDomainsTable.jsx";
 
 function AppContent() {
@@ -286,6 +287,7 @@ function AppContent() {
             <HowItWorks />
             <BurnPoolCard wallet={wallet} />
             <CoreBurnedCard />
+            <DomainRevenueCard />
             <ActivatedDomainsTable />
           </>
         ) : selectedName ? (
