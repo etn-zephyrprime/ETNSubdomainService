@@ -52,13 +52,24 @@ class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
   // request layer for that reason — every other fetch() elsewhere here already used the native
   // one anyway (r2CacheProxyRouter.js, validatorRewardsCache.js, etc.), this is just the first
   // time it mattered for an ethers provider specifically.
-  async _sendViaSecondary(payload) {
+  // A handful of retries with a short backoff for a non-ok HTTP response specifically (never for a
+  // valid JSON-RPC error response, which callers handle themselves) — confirmed live: a burst of
+  // concurrent calls to this endpoint (pnlIngestion.js's DeFi log scan, which fans out several
+  // requests at once once the primary's cooldown routes everything here) can trip a transient 403,
+  // which cleared on its own within a couple seconds on retry. This endpoint is a public node with
+  // no published rate-limit contract, so a short retry is the only real option — there's no
+  // documented threshold to stay under.
+  async _sendViaSecondary(payload, attempt = 0) {
     const res = await fetch(this._secondaryUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+        return this._sendViaSecondary(payload, attempt + 1);
+      }
       throw new Error(`secondary RPC server response ${res.status} ${res.statusText}`);
     }
     let resp = await res.json();
