@@ -20,6 +20,7 @@ import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata, resolveEnsD
 import { replayFifo } from "./fifoLotEngine.js";
 import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js";
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
+import { listCexAddresses } from "../db/cexAddresses.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -327,14 +328,18 @@ async function computeGasFeesUsd(transfersInPeriod) {
   return { totalGasEtn: ethers.formatEther(totalGasWei), totalGasUsd };
 }
 
-function summarizeFlows(transfersInPeriod, swapsInPeriod) {
+function summarizeFlows(transfersInPeriod, swapsInPeriod, cexAddressSet) {
   // Categorized purely for the statement's readable line items — the FIFO math itself doesn't
   // care about these categories, only about in/out/self/swap (see transferToEvent above).
   const summary = { onChainIn: new Decimal(0), onChainOut: new Decimal(0), cexIn: new Decimal(0), cexOut: new Decimal(0) };
   for (const t of transfersInPeriod) {
     if (t.gas_fee_wei != null || Number(t.amount_raw) === 0 || t.is_self_transfer) continue;
     const usd = new Decimal(t.usd_value ?? 0);
-    if (t.is_cex) {
+    // cexAddressSet, not the row's own stored is_cex — see buildTransactionLines' identical comment
+    // below for why: is_cex is baked in at ingestion time, and ingestion is incremental, so a CEX
+    // address added *after* a wallet's history was already ingested would never retroactively
+    // apply without this.
+    if (cexAddressSet.has(String(t.counterparty_address).toLowerCase())) {
       if (t.direction === "in") summary.cexIn = summary.cexIn.plus(usd);
       else summary.cexOut = summary.cexOut.plus(usd);
     } else {
@@ -671,7 +676,7 @@ function renderTransactionTable(doc, rows, pageOptions) {
  * itemized). Each item is pre-formatted into the exact column strings the table renders (date,
  * type, asset, amount, usd, tx) rather than one joined line, so buildPdf can lay them out as real
  * table columns instead of parsing a sentence back apart. */
-function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
+function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta, cexAddressSet) {
   const items = [];
   for (const t of transfersInPeriod) {
     if (t.gas_fee_wei != null || Number(t.amount_raw) === 0) continue;
@@ -680,7 +685,15 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta) {
     // NFT quantity is always a whole count (1 per unique ERC-721, or an ERC-1155 batch amount) —
     // ".000000" on an NFT line reads as a fungible-token artifact, not as "1 of something unique".
     const amount = isNft ? String(Number(t.amount_decimal)) : fmtAmount(t.amount_decimal);
-    const tag = t.is_self_transfer ? " (self)" : t.is_cex ? " (CEX)" : "";
+    // cexAddressSet (loaded fresh in generateStatement), not the row's own stored is_cex — that
+    // flag is computed and baked in once, at ingestion time, and ingestion is incremental (only
+    // scans blocks newer than last_ingested_block). Confirmed live: a CEX address added to
+    // cex_addresses *after* a wallet's history was already fully ingested never retroactively
+    // applied to already-ingested rows, no matter how many times the statement was regenerated —
+    // there was nothing new left to ingest, so the stale is_cex=false on every existing row never
+    // got revisited. Recomputing live here means adding a CEX address always takes effect on the
+    // very next regeneration, for every wallet, not just newly-ingested activity.
+    const tag = t.is_self_transfer ? " (self)" : cexAddressSet.has(String(t.counterparty_address).toLowerCase()) ? " (CEX)" : "";
     // NFTs never have a fungible-market usd_value (see pnlPricing.js's early guard on composite
     // keys) — its cost basis/proceeds, if this leg turned out to be a mint/sale, show separately in
     // Realized Gains & Losses instead; showing "price unavailable" here would misleadingly suggest
@@ -1016,12 +1029,16 @@ export async function generateStatement(requestId) {
     return ts >= periodStart && ts < periodEnd;
   });
 
-  const [gas, closingValuation, openingValuation] = await Promise.all([
+  const [gas, closingValuation, openingValuation, cexAddressList] = await Promise.all([
     computeGasFeesUsd(transfersInPeriod),
     valueInventoryAtTimestamp(closing.lots, periodEnd),
     valueInventoryAtTimestamp(opening.lots, periodStart),
+    listCexAddresses(),
   ]);
-  const flows = summarizeFlows(transfersInPeriod, swapsInPeriod);
+  // Loaded fresh on every generation (not trusted from the stored per-row is_cex flag) — see
+  // buildTransactionLines' own comment on why that flag can go stale.
+  const cexAddressSet = new Set(cexAddressList.map((r) => r.address.toLowerCase()));
+  const flows = summarizeFlows(transfersInPeriod, swapsInPeriod, cexAddressSet);
   const gameActivity = buildGameActivitySummary(transfersInPeriod);
 
   const realizedEventsInPeriod = closing.realizedEvents.filter((e) => e.timestamp >= periodStart);
@@ -1045,7 +1062,7 @@ export async function generateStatement(requestId) {
 
   const { tokenMeta, addresses: tokenAddresses } = await collectTokenMetadata(opening.lots, closing.lots, closingValuation.perToken, realizedEventsInPeriod, transfersInPeriod, swapsInPeriod);
   const withAssetLabel = (obj, tokenAddress) => ({ ...obj, tokenAddress, assetLabel: formatAssetLabel(tokenAddress, tokenMeta) });
-  const transactionLines = buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta);
+  const transactionLines = buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta, cexAddressSet);
   const priceCoverageDisclaimer = await buildPriceCoverageDisclaimer(periodStart, [...tokenAddresses]);
   const nftDisclaimer = nftUnmatchedCount > 0
     ? `${nftUnmatchedCount} NFT transfer${nftUnmatchedCount === 1 ? "" : "s"} in this wallet's history had no matching payment found in the same transaction — recorded with $0 cost basis / proceeds for that leg. This is correct for a genuine free mint, airdrop, or gift; it would understate a real cost or gain if the actual payment happened in a separate transaction from the NFT transfer itself.`
