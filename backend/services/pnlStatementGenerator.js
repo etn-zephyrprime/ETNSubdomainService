@@ -242,6 +242,11 @@ function nftAssetKey(t) {
  * would understate cost basis (or overstate a sale's gain) for a genuinely unmatched paid
  * transaction, so `unmatchedCount` is surfaced on the returned object for the statement to flag.
  *
+ * When multiple NFTs are disposed/acquired in ONE transaction against a single shared payment/
+ * proceeds leg (e.g. a Seaport batch settlement paying one combined amount), that leg's value is
+ * split evenly across every NFT leg sharing it rather than applied in full to each — see the
+ * inNftQtyTotal/outNftQtyTotal comment below.
+ *
  * Returns { events: FIFO events (kind 'in'/'out'/'self_in'/'self_out', tokenAddress = the NFT's
  * composite key) for every NFT leg, consumedRowIds: Set of row `id`s already turned into one of
  * those events — the caller excludes these from the generic transferToEvent mapping so an NFT leg
@@ -260,6 +265,22 @@ function buildNftEvents(transfers) {
   for (const rows of byTx.values()) {
     const nftLegs = rows.filter((r) => NFT_ASSET_TYPES.has(r.asset_type));
     if (nftLegs.length === 0) continue;
+
+    // Multiple NFTs disposed/acquired in ONE transaction (e.g. a Seaport `fulfillAvailableAdvancedOrders`
+    // batch settlement) commonly share a SINGLE payment/proceeds leg — the marketplace contract pays
+    // out one combined amount (often as one internal transaction), not one per NFT. Both `rows.find()`
+    // calls below always resolve to the same first-matching leg regardless of which NFT leg triggered
+    // them, so without dividing here, that leg's FULL value would get credited/charged against EACH NFT
+    // independently — confirmed live: an 8-NFT batch sale recorded the same proceeds figure against all
+    // 8 NFTs instead of splitting the one shared leg across them (8x overstated proceeds). Since the
+    // match is leg-independent, every non-self NFT leg in this tx is presumed to share whichever leg it
+    // resolves to, so the shared quantity is just every non-self NFT leg's quantity summed per direction.
+    const inNftQtyTotal = nftLegs
+      .filter((r) => r.direction === "in" && !r.is_self_transfer)
+      .reduce((sum, r) => sum + (Number(r.amount_decimal) || 1), 0);
+    const outNftQtyTotal = nftLegs
+      .filter((r) => r.direction === "out" && !r.is_self_transfer)
+      .reduce((sum, r) => sum + (Number(r.amount_decimal) || 1), 0);
 
     for (const nftLeg of nftLegs) {
       consumedRowIds.add(nftLeg.id);
@@ -280,7 +301,10 @@ function buildNftEvents(transfers) {
           (r) => r !== nftLeg && r.direction === "out" && !NFT_ASSET_TYPES.has(r.asset_type) && Number(r.amount_raw) > 0
         );
         if (!paymentLeg) unmatchedCount++;
-        const unitCostUsd = paymentLeg?.usd_value != null ? Number(paymentLeg.usd_value) / quantity : 0;
+        // Divide by the TOTAL quantity across every NFT leg sharing this same matched leg (not just
+        // this leg's own quantity) — see the comment above the totals. Reduces to the prior
+        // single-NFT-per-tx behavior when inNftQtyTotal === quantity.
+        const unitCostUsd = paymentLeg?.usd_value != null ? Number(paymentLeg.usd_value) / inNftQtyTotal : 0;
         events.push({ kind: "in", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity, unitCostUsd });
       } else {
         if (nftLeg.is_self_transfer) {
@@ -291,7 +315,11 @@ function buildNftEvents(transfers) {
           (r) => r !== nftLeg && r.direction === "in" && !NFT_ASSET_TYPES.has(r.asset_type) && Number(r.amount_raw) > 0
         );
         if (!proceedsLeg) unmatchedCount++;
-        const proceedsUsd = proceedsLeg?.usd_value != null ? Number(proceedsLeg.usd_value) : 0;
+        // proceedsUsd is the TOTAL for this leg's own quantity (fifoLotEngine.js's dispose() divides
+        // it internally by `quantity` to get a per-unit figure) — so this leg's fair share of the
+        // shared proceeds leg is (this leg's quantity / total shared quantity) of that leg's value.
+        // Reduces to the prior single-NFT-per-tx behavior when outNftQtyTotal === quantity.
+        const proceedsUsd = proceedsLeg?.usd_value != null ? (Number(proceedsLeg.usd_value) * quantity) / outNftQtyTotal : 0;
         events.push({ kind: "out", tokenAddress, txHash: nftLeg.tx_hash, timestamp, quantity, proceedsUsd });
       }
     }
