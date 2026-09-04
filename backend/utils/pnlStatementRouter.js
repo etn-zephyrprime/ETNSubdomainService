@@ -10,7 +10,8 @@
 import express from "express";
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
-import { getById, getByTxHash, getByPayerWallet, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
+import { getById, getByTxHash, getByPayerWallet, getCumulativeGeneratedSeries, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
+import { getTotalCoreBurned } from "../db/buyAndBurnLog.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
 import { periodTypeLabel } from "../services/periodTypes.js";
 import { verifyWalletOwnership } from "./walletAuth.js";
@@ -88,6 +89,17 @@ router.get("/pnl/statements", async (req, res) => {
 
   const requests = await getByPayerWallet(payerWallet);
   res.json(requests.map(serializeRequest));
+});
+
+// Site-wide, non-sensitive aggregates for the PnL Statements tab's "CORE Burned" card and
+// cumulative "Statements Generated" chart — no auth needed (same posture as GET /games-style
+// endpoints elsewhere in this codebase): nothing here is keyed to any one wallet or request.
+router.get("/pnl/stats", async (req, res) => {
+  const [totalCoreBurned, cumulativeGenerated] = await Promise.all([
+    getTotalCoreBurned(),
+    getCumulativeGeneratedSeries(),
+  ]);
+  res.json({ totalCoreBurned, cumulativeGenerated });
 });
 
 // Fills in the user-supplied self-owned-addresses list (watcher already created the row, fully
