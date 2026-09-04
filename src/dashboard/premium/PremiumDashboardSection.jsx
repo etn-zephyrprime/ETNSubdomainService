@@ -190,7 +190,7 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
 
               <DashboardPanel>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                  Statements Generated (Cumulative)
+                  Statements Requested (Cumulative)
                 </div>
                 {!stats ? (
                   <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
@@ -198,7 +198,7 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
                   </div>
                 ) : (
                   <SparklineChart
-                    data={stats.cumulativeGenerated}
+                    data={stats.cumulativeRequested}
                     height={140}
                     formatValue={(v) => String(Math.round(v))}
                     formatLabel={fmtDateLabel}

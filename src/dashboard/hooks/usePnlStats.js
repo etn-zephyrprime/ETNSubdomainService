@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { PNL_BACKEND_URL } from "../../config.js";
 
 // Site-wide, non-sensitive PnL statement stats (total CORE burned via this contract's own
-// buy-and-burn flow, cumulative statements-generated series) — GET /api/pnl/stats, no wallet/auth
+// buy-and-burn flow, cumulative statements-requested series) — GET /api/pnl/stats, no wallet/auth
 // needed. Same "no caching/state here, each screen owns its own loading/error state" shape as
 // useBlockscout.js and this directory's other hooks.
 export function usePnlStats() {
