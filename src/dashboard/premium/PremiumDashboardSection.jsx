@@ -2,10 +2,28 @@ import React, { useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useReverseRecord } from "../../hooks/useReverseRecord.js";
+import { usePnlStats } from "../hooks/usePnlStats.js";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
 import PnlStatementRequest from "./components/PnlStatementRequest.jsx";
 import PnlStatementViewer from "./components/PnlStatementViewer.jsx";
-import { green, greenGlow, muted, border, panel, error as errorColor } from "../theme.js";
+import DashboardPanel from "./components/DashboardPanel.jsx";
+import StatCard from "../components/StatCard.jsx";
+import SparklineChart from "../components/SparklineChart.jsx";
+import { green, greenGlow, muted, mutedLight, border, panel, error as errorColor } from "../theme.js";
+
+function fmtCore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "—";
+  return `${num.toLocaleString(undefined, { maximumFractionDigits: 2 })} CORE`;
+}
+
+function fmtDateLabel(label, full = false) {
+  const d = new Date(label);
+  if (Number.isNaN(d.getTime())) return String(label);
+  return full
+    ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 function shortAddress(address) {
   if (!address) return "";
@@ -48,6 +66,27 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
     })();
     return () => { cancelled = true; };
   }, [wallet.account, getPrimaryName]);
+
+  // Site-wide stats (CORE burned via this contract's own buy-and-burn flow, cumulative statements
+  // generated) — same for every visitor, doesn't depend on a connected wallet, so this fetches
+  // regardless of wallet.isConnected/showViewer state.
+  const { getStats } = usePnlStats();
+  const [stats, setStats] = useState(null);
+  const [statsError, setStatsError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getStats();
+        if (!cancelled) setStats(data);
+      } catch (err) {
+        console.error("Failed to load PnL stats:", err);
+        if (!cancelled) setStatsError(err.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getStats]);
 
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
@@ -138,6 +177,36 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
           >
             Already have a statement? Look it up by request ID or transaction hash →
           </button>
+
+          {statsError ? (
+            <div style={{ fontSize: 11, color: mutedLight, textAlign: "center" }}>Stats unavailable right now.</div>
+          ) : (
+            <>
+              <StatCard
+                label="CORE Burned"
+                value={stats ? fmtCore(stats.totalCoreBurned) : "…"}
+                sub="Via this contract's own buy-and-burn — not other burn sources on Electroneum."
+              />
+
+              <DashboardPanel>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                  Statements Generated (Cumulative)
+                </div>
+                {!stats ? (
+                  <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
+                    Loading…
+                  </div>
+                ) : (
+                  <SparklineChart
+                    data={stats.cumulativeGenerated}
+                    height={140}
+                    formatValue={(v) => String(Math.round(v))}
+                    formatLabel={fmtDateLabel}
+                  />
+                )}
+              </DashboardPanel>
+            </>
+          )}
         </div>
       )}
     </div>

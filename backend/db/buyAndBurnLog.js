@@ -5,6 +5,15 @@ import { query } from "./pool.js";
 // existence of a row here is also the split scheduler's own idempotency guard (see
 // statementRequests.findFinalizedNeedingSplit).
 
+/** Total CORE actually burned via this contract's own executeSplitForPeriod flow specifically —
+ * not any other burn source in the ecosystem (ElectroSwap fees, CoreClashGame's 1% burn, etc.),
+ * which is exactly why this reads buy_and_burn_log rather than some site-wide burn total. Powers
+ * the PnL Statements tab's "CORE Burned" card. */
+export async function getTotalCoreBurned() {
+  const res = await query(`SELECT COALESCE(SUM(core_burned), 0) AS total FROM buy_and_burn_log`);
+  return res?.rows[0]?.total || "0";
+}
+
 export async function insertBuyAndBurnLog({
   statementRequestId,
   splitWalletAmountWei,

@@ -17,6 +17,25 @@ export async function createFromPurchase({ txHash, logIndex, periodType, year, t
   return res?.rows[0] || null; // null if this exact (tx_hash, log_index) was already recorded
 }
 
+/** Cumulative count of statements that have reached GENERATED (or later — GENERATED is a
+ * one-way transition, see markGenerated) over time, one point per day that had at least one
+ * generation, oldest first. Powers the PnL Statements tab's cumulative chart. Computed with a
+ * window function server-side rather than shipping every row's raw timestamp to the client for
+ * it to count there itself. */
+export async function getCumulativeGeneratedSeries() {
+  const res = await query(
+    `SELECT day, SUM(day_count) OVER (ORDER BY day) AS cumulative
+     FROM (
+       SELECT generated_at::date AS day, COUNT(*) AS day_count
+       FROM statement_requests
+       WHERE generated_at IS NOT NULL
+       GROUP BY generated_at::date
+     ) per_day
+     ORDER BY day ASC`
+  );
+  return (res?.rows || []).map((r) => ({ label: r.day, value: Number(r.cumulative) }));
+}
+
 export async function getById(id) {
   const res = await query("SELECT * FROM statement_requests WHERE id = $1", [id]);
   return res?.rows[0] || null;
