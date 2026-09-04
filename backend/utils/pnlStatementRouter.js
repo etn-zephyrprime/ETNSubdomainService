@@ -2,12 +2,18 @@
 //
 // HTTP surface for the PnL statement feature — tx-hash/request-ID based access, no login (see the
 // build plan's confirmed decision on this). Mounted at /api/pnl in backend/index.js.
+//
+// One exception: GET /pnl/statements (list-by-wallet, below) requires a signed proof of wallet
+// ownership (see walletAuth.js) — everything else here is keyed by something you have to already
+// possess (a request ID or tx hash), but that one was keyed on nothing but a public wallet
+// address, which isn't a secret at all. See that route's own comment for the full reasoning.
 import express from "express";
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getById, getByTxHash, getByPayerWallet, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
 import { periodTypeLabel } from "../services/periodTypes.js";
+import { verifyWalletOwnership } from "./walletAuth.js";
 
 const PREMIUM_SUBSCRIPTION_ADDRESS = process.env.PREMIUM_SUBSCRIPTION_ADDRESS;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
@@ -59,14 +65,27 @@ router.get("/pnl/statement/by-tx/:txHash", async (req, res) => {
 
 // Powers the "N of M ready" progress tracker on the PnL Statement tab — a wallet's full order
 // history, oldest first, so a returning visitor (or one who just closed the tab mid-generation)
-// can still see where things stand without needing the original tx hash or request IDs. No auth,
-// same as every other endpoint here: payer_wallet is public on-chain via PnlPeriodsPurchased
-// regardless, this just saves a Blockscout round-trip.
+// can still see where things stand without needing the original tx hash or request IDs.
+//
+// Unlike the rest of this router, this one DOES require proof of wallet ownership (see
+// walletAuth.js). Every other endpoint here is keyed by a request ID or tx hash — something you
+// have to already have been given or have paid for yourself, an intentional "anyone with the
+// link can view" design. This endpoint took a bare `payerWallet` and hands back that wallet's
+// entire order history keyed on nothing but the address itself — always public, so with no auth
+// this was a one-call way to list anyone's statement history knowing only their wallet address,
+// no link or tx hash needed at all. Confirmed and fixed 2026-09-04.
 router.get("/pnl/statements", async (req, res) => {
-  const { payerWallet } = req.query;
+  const { payerWallet, signature, timestamp } = req.query;
   if (!payerWallet || !ethers.isAddress(payerWallet)) {
     return res.status(400).json({ error: "Query param payerWallet must be a valid address" });
   }
+
+  try {
+    verifyWalletOwnership(payerWallet, signature, timestamp);
+  } catch (err) {
+    return res.status(401).json({ error: err.message });
+  }
+
   const requests = await getByPayerWallet(payerWallet);
   res.json(requests.map(serializeRequest));
 });

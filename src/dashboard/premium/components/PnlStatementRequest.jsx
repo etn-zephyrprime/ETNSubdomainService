@@ -225,7 +225,7 @@ export default function PnlStatementRequest({ wallet }) {
 
       {loadError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{loadError}</div>}
 
-      <PnlStatementProgress walletAddress={wallet?.account} refreshToken={progressRefreshToken} />
+      <PnlStatementProgress wallet={wallet} refreshToken={progressRefreshToken} />
 
       <a
         href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
