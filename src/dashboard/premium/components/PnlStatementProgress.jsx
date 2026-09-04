@@ -4,6 +4,7 @@ import { ExternalLink } from "lucide-react";
 import { PNL_BACKEND_URL } from "../../../config.js";
 import { green, mutedLight, muted, border, panel2, error as errorColor } from "../../theme.js";
 import DashboardButton from "./DashboardButton.jsx";
+import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
 
 // "N of M ready" progress tracker for a wallet's own order history — pulls from
 // GET /api/pnl/statements?payerWallet=..., not from PnlStatementRequest's own createdRequests
@@ -101,23 +102,34 @@ function FinishSetupForm({ request, onDone }) {
   );
 }
 
-export default function PnlStatementProgress({ walletAddress, refreshToken }) {
+export default function PnlStatementProgress({ wallet, refreshToken }) {
+  const walletAddress = wallet?.account;
   const [requests, setRequests] = useState(null); // null = not loaded yet; [] = loaded, no orders
   const [loadError, setLoadError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
 
+  // GET /pnl/statements is the one endpoint on this API that requires proof of wallet ownership
+  // (see backend/utils/walletAuth.js for why) -- everything else here is keyed by a request ID or
+  // tx hash, this one was keyed on nothing but the address itself, which isn't a secret.
+  const getAuthParams = useWalletAuthSignature(wallet);
+
   const fetchRequests = useCallback(async () => {
     if (!walletAddress) return;
     try {
-      const res = await fetch(`${PNL_BACKEND_URL}/api/pnl/statements?payerWallet=${walletAddress}`);
-      if (!res.ok) throw new Error(`Failed to load your statement orders (${res.status})`);
+      const { signature, timestamp } = await getAuthParams();
+      const url = `${PNL_BACKEND_URL}/api/pnl/statements?payerWallet=${walletAddress}&signature=${encodeURIComponent(signature)}&timestamp=${timestamp}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Failed to load your statement orders (${res.status})`);
+      }
       setRequests(await res.json());
       setLoadError(null);
     } catch (err) {
       console.error("Failed to load PnL statement progress:", err);
-      setLoadError(err.message);
+      setLoadError(err.message || "Failed to load your statement orders");
     }
-  }, [walletAddress]);
+  }, [walletAddress, getAuthParams]);
 
   // refreshToken deliberately unused inside the effect body — bumping it from the purchase flow
   // (see PnlStatementRequest.jsx) is what forces an immediate re-fetch right after a new order is
