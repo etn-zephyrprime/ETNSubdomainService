@@ -109,14 +109,22 @@ function formatAssetLabel(assetKey, tokenMeta) {
   if (assetKey === NATIVE_SENTINEL) return "Electroneum (ETN)";
   if (isNftAssetKey(assetKey)) {
     const [collectionAddress, tokenId] = assetKey.split(":");
-    const meta = tokenMeta.get(collectionAddress.toLowerCase());
-    const collectionLabel = meta?.name || meta?.symbol || collectionAddress;
-    return `${collectionLabel} #${tokenId} (${collectionAddress})`;
+    // Normalized once and reused for both the metadata lookup and the displayed address itself —
+    // the lookup already lowercased on its own, but the displayed "(0xAddress)" segment used to
+    // echo back whatever casing assetKey happened to arrive with, so the exact same contract could
+    // display with two different casings depending on which event/row produced this particular
+    // assetKey. Every call site normalizes its own key before it ever reaches here too (see
+    // transferToEvent/swapToEvent/nftAssetKey), so this is defense in depth, not the only fix.
+    const normalizedAddress = collectionAddress.toLowerCase();
+    const meta = tokenMeta.get(normalizedAddress);
+    const collectionLabel = meta?.name || meta?.symbol || normalizedAddress;
+    return `${collectionLabel} #${tokenId} (${normalizedAddress})`;
   }
-  const meta = tokenMeta.get(assetKey.toLowerCase());
-  if (meta?.name && meta?.symbol) return `${meta.name} (${meta.symbol}) (${assetKey})`;
-  if (meta?.symbol) return `${meta.symbol} (${assetKey})`;
-  return assetKey;
+  const normalizedAddress = assetKey.toLowerCase();
+  const meta = tokenMeta.get(normalizedAddress);
+  if (meta?.name && meta?.symbol) return `${meta.name} (${meta.symbol}) (${normalizedAddress})`;
+  if (meta?.symbol) return `${meta.symbol} (${normalizedAddress})`;
+  return normalizedAddress;
 }
 
 /** Resolves and caches name/symbol for every distinct token/NFT-collection address appearing
@@ -173,7 +181,13 @@ async function buildPriceCoverageDisclaimer(periodStart, tokenAddresses) {
 }
 
 function transferToEvent(t) {
-  const tokenAddress = t.token_address || NATIVE_SENTINEL;
+  // Lowercased so the same real contract never splits into two different FIFO/aggregation
+  // buckets over checksum-vs-lowercase casing inconsistency between data sources (confirmed live:
+  // the exact same token showing as two separate rows in the Realized Gains & Losses "By Asset"
+  // table, e.g. one bucket's disposals under "0x043faa1b..." and the rest under
+  // "0x043fAa1b..."). Guarded so NATIVE_SENTINEL itself (a fixed sentinel string, not an address —
+  // see formatAssetLabel's exact-match check against it) is never touched.
+  const tokenAddress = t.token_address ? t.token_address.toLowerCase() : NATIVE_SENTINEL;
   const timestamp = new Date(t.timestamp);
   if (t.is_self_transfer) {
     return t.direction === "out"
@@ -229,7 +243,9 @@ const NFT_ASSET_TYPES = new Set(["erc721", "erc1155"]);
  * lots by whatever string it's given — never pools two different NFTs (or an NFT and a same-
  * collection fungible token, if that were ever possible) into one FIFO queue. */
 function nftAssetKey(t) {
-  return `${t.token_address}:${t.token_id}`;
+  // Same lowercasing reasoning as transferToEvent — an NFT collection address is never native
+  // ETN, so this can lowercase unconditionally.
+  return `${t.token_address.toLowerCase()}:${t.token_id}`;
 }
 
 /** Detects NFT (ERC-721/1155) mint/purchase and sale/transfer-out events by correlating each NFT
@@ -329,14 +345,17 @@ function buildNftEvents(transfers) {
 }
 
 function swapToEvent(s) {
+  // Same lowercasing reasoning as transferToEvent — passed through unchanged if null/undefined
+  // (whatever a native-ETN leg's actual representation is here, this doesn't change it, only
+  // normalizes casing when a real address string is present).
   return {
     kind: "swap",
     txHash: s.tx_hash,
     timestamp: new Date(s.timestamp),
-    soldTokenAddress: s.token_sold_address,
+    soldTokenAddress: s.token_sold_address ? s.token_sold_address.toLowerCase() : s.token_sold_address,
     soldQuantity: s.amount_sold,
     soldProceedsUsd: new Decimal(s.amount_sold).times(s.price_usd_sold_leg ?? 0).toString(),
-    boughtTokenAddress: s.token_bought_address,
+    boughtTokenAddress: s.token_bought_address ? s.token_bought_address.toLowerCase() : s.token_bought_address,
     boughtQuantity: s.amount_bought,
     boughtUnitCostUsd: s.price_usd_bought_leg ?? 0,
   };
@@ -767,7 +786,7 @@ function renderRealizedGainsAggregateTable(doc, aggregated, tokenMeta, pageOptio
     doc.text(String(agg.disposalCount), cols[1].x, y, { width: cols[1].width - GUTTER, align: "right", lineBreak: false });
     doc.text(`$${fmtAmount(agg.costBasisUsd)}`, cols[2].x, y, { width: cols[2].width - GUTTER, align: "right", lineBreak: false });
     doc.text(`$${fmtAmount(agg.proceedsUsd)}`, cols[3].x, y, { width: cols[3].width - GUTTER, align: "right", lineBreak: false });
-    doc.fillColor(gainColor).text(`${agg.gainLossUsd.isNegative() ? "" : "+"}$${fmtAmount(agg.gainLossUsd)}`, cols[4].x, y, { width: cols[4].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(gainColor).text(`${agg.gainLossUsd.isNegative() ? "-" : "+"}$${fmtAmount(agg.gainLossUsd.abs())}`, cols[4].x, y, { width: cols[4].width - GUTTER, align: "right", lineBreak: false });
     doc.fillColor(THEME.bodyText);
     doc.y = y + rowHeight;
   }
@@ -830,7 +849,7 @@ function renderRealizedGainsTable(doc, events, tokenMeta, pageOptions) {
     doc.text(qtyText, cols[2].x, y, { width: cols[2].width - GUTTER, align: "right", lineBreak: false });
     doc.text(`$${fmtAmount(e.costBasisUsd)}`, cols[3].x, y, { width: cols[3].width - GUTTER, align: "right", lineBreak: false });
     doc.text(`$${fmtAmount(e.proceedsUsd)}`, cols[4].x, y, { width: cols[4].width - GUTTER, align: "right", lineBreak: false });
-    doc.fillColor(gainColor).text(`${gainLoss.isNegative() ? "" : "+"}$${fmtAmount(gainLoss)}`, cols[5].x, y, { width: cols[5].width - GUTTER, align: "right", lineBreak: false });
+    doc.fillColor(gainColor).text(`${gainLoss.isNegative() ? "-" : "+"}$${fmtAmount(gainLoss.abs())}`, cols[5].x, y, { width: cols[5].width - GUTTER, align: "right", lineBreak: false });
     doc.fillColor(THEME.bodyText);
     doc.y = y + rowHeight;
   }
@@ -931,7 +950,8 @@ function buildTransactionLines(transfersInPeriod, swapsInPeriod, tokenMeta, cexA
   for (const t of transfersInPeriod) {
     if (t.gas_fee_wei != null || Number(t.amount_raw) === 0) continue;
     const isNft = NFT_ASSET_TYPES.has(t.asset_type);
-    const assetKey = isNft ? nftAssetKey(t) : t.token_address || NATIVE_SENTINEL;
+    // Same lowercasing reasoning as transferToEvent (nftAssetKey already lowercases its own half).
+    const assetKey = isNft ? nftAssetKey(t) : t.token_address ? t.token_address.toLowerCase() : NATIVE_SENTINEL;
     // NFT quantity is always a whole count (1 per unique ERC-721, or an ERC-1155 batch amount) —
     // ".000000" on an NFT line reads as a fungible-token artifact, not as "1 of something unique".
     const amount = isNft ? String(Number(t.amount_decimal)) : fmtAmount(t.amount_decimal);
@@ -1145,7 +1165,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
       const netColor = net.isNegative() ? THEME.orange : THEME.green;
       const unpricedNote = g.wageredUnpriced + g.wonUnpriced > 0 ? `  (${g.wageredUnpriced + g.wonUnpriced} transaction(s) with no price data, not included above)` : "";
       doc.fillColor(THEME.bodyText).text(`${name} — Wagered: $${fmtAmount(g.wageredUsd)}, Won: $${fmtAmount(g.wonUsd)}, `, { continued: true });
-      doc.fillColor(netColor).text(`Net: ${net.isNegative() ? "" : "+"}$${fmtAmount(net)}`, { continued: unpricedNote.length > 0 });
+      doc.fillColor(netColor).text(`Net: ${net.isNegative() ? "-" : "+"}$${fmtAmount(net.abs())}`, { continued: unpricedNote.length > 0 });
       if (unpricedNote) doc.fillColor(THEME.muted).text(unpricedNote);
     }
     doc.moveDown(1);
