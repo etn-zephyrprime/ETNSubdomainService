@@ -1,17 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, Lock, TriangleAlert } from "lucide-react";
+import { Wallet as WalletIcon, TriangleAlert } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
-import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
-import { useTrackedWallets } from "../../hooks/useTrackedWallets.js";
+import CoreTierGate from "./CoreTierGate.jsx";
+import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
-const AUTH_PURPOSE = "Premium Dashboard";
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 const MAX_PRICED_HOLDINGS = 25; // matches AddressLookup.jsx's own cap — how many fungible tokens
 // get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below (how many rows show at
@@ -77,46 +76,21 @@ function CooldownNotice({ children }) {
 // (handlePendingConfirm below) with the consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-// Access re-check retry after a fresh subscribe (see the membershipVersion effect below) — the
-// backend's own membership record only updates once premiumSubscriptionWatcher.js has polled and
-// processed the purchase event (up to its own POLL_INTERVAL_MS, ~a minute by default), so a
-// single immediate re-check right after the tx confirms would very often still see "not a member"
-// even though the purchase genuinely went through. Retries every 10s for up to 2 minutes — past
-// that, something's actually wrong (watcher down, RPC issue) rather than just normal lag, and
-// this stops nagging the backend and shows a plain "try refreshing" message instead.
-const ACCESS_RETRY_INTERVAL_MS = 10 * 1000;
-const ACCESS_RETRY_MAX_ATTEMPTS = 12;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
-  const getAuthParams = useWalletAuthSignature(wallet);
-  const { getTrackedWallets, addTrackedWallet, removeTrackedWallet } = useTrackedWallets();
+  // Access + tracked-wallet-list state/effects live in useCoreTierAccess.js — shared with
+  // CoreTierBalanceHistory.jsx, which needs the exact same "is this member allowed, and which
+  // wallets do they track" data without either duplicating this state machine a second time or
+  // reaching into this component's internals.
+  const {
+    hasAccess, accessError, awaitingActivation, manualCheckLoading,
+    active, cooling, maxWallets, cooldownDays,
+    refresh, checkAccessOnce, addWallet, removeWallet,
+  } = useCoreTierAccess(wallet, membershipVersion);
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
 
-  // null = not checked yet (or wallet not connected), true/false once known — reset on every
-  // account change so a previous account's answer never leaks into the new one for even one
-  // render.
-  const [hasAccess, setHasAccess] = useState(null);
-  const [accessError, setAccessError] = useState(null);
-  // True while re-checking access after a fresh subscribe (see the membershipVersion effect
-  // below) — distinct from the plain "Checking Core tier access…" of the very first load, since
-  // this one can legitimately take up to ACCESS_RETRY_MAX_ATTEMPTS * ACCESS_RETRY_INTERVAL_MS and
-  // deserves its own "hang on, this is expected" message rather than looking stuck.
-  const [awaitingActivation, setAwaitingActivation] = useState(false);
-  const [manualCheckLoading, setManualCheckLoading] = useState(false);
-  const prevMembershipVersionRef = useRef(membershipVersion);
-
-  const [active, setActive] = useState([]); // [{ address, addedAt, removableAt }]
-  const [cooling, setCooling] = useState([]); // [{ address, removedAt, retrackableAt }]
-  const [maxWallets, setMaxWallets] = useState(3);
-  const [cooldownDays, setCooldownDays] = useState(30);
   const [managing, setManaging] = useState(false);
-
   const [addInput, setAddInput] = useState("");
   const [addInputError, setAddInputError] = useState(null);
 
@@ -133,116 +107,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
 
-  const refreshTrackedWallets = useCallback(async () => {
-    const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-    const res = await getTrackedWallets(wallet.account, signature, timestamp);
-    setActive(res.active || []);
-    setCooling(res.cooling || []);
-    if (res.maxWallets) setMaxWallets(res.maxWallets);
-    if (res.cooldownDays) setCooldownDays(res.cooldownDays);
-    return res;
-  }, [getAuthParams, getTrackedWallets, wallet.account]);
-
-  // One-shot manual recheck — the "Already subscribed? Check again" button below, for a member
-  // who comes back after the automatic retry (see the membershipVersion effect) already gave up,
-  // or who reloaded the page and landed straight on the plain "membership required" message with
-  // no retry in flight at all.
-  const checkAccessOnce = useCallback(async () => {
-    setManualCheckLoading(true);
-    setAccessError(null);
-    try {
-      await refreshTrackedWallets();
-      setHasAccess(true);
-    } catch (err) {
-      if (err.message !== "CORE_ACCESS_REQUIRED") {
-        console.error("Failed to re-check Core tier access:", err);
-        setAccessError(err.message || "Couldn't check Core tier access");
-      }
-      // else: still not a member — leave the plain message showing, nothing new to say
-    } finally {
-      setManualCheckLoading(false);
-    }
-  }, [refreshTrackedWallets]);
-
-  // Load Core tier access + the tracked-wallet list whenever the connected account changes — also
-  // drops any in-progress action, since one built for the previous account has no business
-  // surviving a disconnect/account switch.
+  // Drops any in-progress editor state on an account change — one built for the previous account
+  // has no business surviving a disconnect/switch. The access/tracked-wallet state itself resets
+  // inside useCoreTierAccess.
   useEffect(() => {
     setManaging(false);
     setPending(null);
     setPendingError(null);
     setAddInput("");
     setAddInputError(null);
-
-    if (!wallet.isConnected || !wallet.account) {
-      setHasAccess(null);
-      setActive([]);
-      setCooling([]);
-      return;
-    }
-    let cancelled = false;
-    setHasAccess(null);
-    setAccessError(null);
-    (async () => {
-      try {
-        await refreshTrackedWallets();
-        if (!cancelled) setHasAccess(true);
-      } catch (err) {
-        if (cancelled) return;
-        if (err.message === "CORE_ACCESS_REQUIRED") {
-          setHasAccess(false);
-        } else {
-          console.error("Failed to load tracked wallets:", err);
-          setAccessError(err.message || "Couldn't check Core tier access");
-          setHasAccess(false);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallet.isConnected, wallet.account]);
-
-  // Re-checks access when MembershipPurchase reports a fresh subscribe (membershipVersion bump)
-  // — skipped on the very first render (prevMembershipVersionRef starts equal to the initial
-  // value, so there's nothing to react to yet) and whenever there's no connected wallet to check.
-  // Retries with a delay instead of a single immediate check: see ACCESS_RETRY_* comment above for
-  // why the backend's own membership record can genuinely still say "not a member" for a while
-  // after a real, confirmed purchase.
-  useEffect(() => {
-    if (membershipVersion === prevMembershipVersionRef.current) return;
-    prevMembershipVersionRef.current = membershipVersion;
-    if (!wallet.isConnected || !wallet.account) return;
-
-    let cancelled = false;
-    setAwaitingActivation(true);
-    setAccessError(null);
-    (async () => {
-      for (let attempt = 0; attempt < ACCESS_RETRY_MAX_ATTEMPTS; attempt++) {
-        try {
-          await refreshTrackedWallets();
-          if (cancelled) return;
-          setHasAccess(true);
-          return;
-        } catch (err) {
-          if (cancelled) return;
-          if (err.message !== "CORE_ACCESS_REQUIRED") {
-            console.error("Failed to re-check Core tier access:", err);
-            setAccessError(err.message || "Couldn't check Core tier access");
-            setHasAccess(false);
-            return;
-          }
-          // Not active yet — this is the expected/common case right after a purchase, not an
-          // error, so it's silently retried rather than surfaced.
-          if (attempt < ACCESS_RETRY_MAX_ATTEMPTS - 1) await sleep(ACCESS_RETRY_INTERVAL_MS);
-        }
-      }
-      // Gave up — leaves hasAccess false (the plain "membership required" message shows again,
-      // with the standing "already subscribed?" hint below covering this exact case) rather than
-      // claiming anything went wrong, since nothing necessarily did.
-    })().finally(() => { if (!cancelled) setAwaitingActivation(false); });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [membershipVersion]);
 
   // Combined portfolio loads whenever the active tracked-wallet list changes.
   useEffect(() => {
@@ -319,16 +193,13 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
     setPendingLoading(true);
     setPendingError(null);
     try {
-      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
       if (pending.type === "add") {
-        const res = await addTrackedWallet(wallet.account, signature, timestamp, pending.address);
-        setActive(res.active || []);
+        await addWallet(pending.address);
         setAddInput("");
       } else {
-        const res = await removeTrackedWallet(wallet.account, signature, timestamp, pending.address);
-        setActive(res.active || []);
+        await removeWallet(pending.address);
       }
-      await refreshTrackedWallets().catch(() => {}); // also refreshes `cooling` — non-fatal if it fails
+      await refresh().catch(() => {}); // also refreshes `cooling` — non-fatal if it fails
       setPending(null);
     } catch (err) {
       console.error(`Failed to ${pending.type} wallet:`, err);
@@ -419,61 +290,15 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
         </div>
       </div>
 
-      {!wallet.isConnected ? (
-        <div>
-          <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
-            Connect your wallet to track up to {maxWallets} wallets and see their combined ETN + token balances in one view.
-          </div>
-          <DashboardButton onClick={wallet.connectWallet} style={{ width: "100%", justifyContent: "center" }}>
-            Connect Wallet
-          </DashboardButton>
-        </div>
-      ) : hasAccess === null ? (
-        <div style={{ fontSize: 12, color: mutedLight }}>Checking Core tier access…</div>
-      ) : accessError ? (
-        <div style={{ fontSize: 12, color: errorColor }}>{accessError}</div>
-      ) : hasAccess === false && awaitingActivation ? (
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-          <Lock size={16} color={green} style={{ flexShrink: 0, marginTop: 2 }} />
-          <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-            Confirming your subscription — this can take up to a couple of minutes while it's
-            picked up on our end. This will update on its own once it's through.
-          </div>
-        </div>
-      ) : hasAccess === false ? (
-        <div>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
-            <Lock size={16} color={muted} style={{ flexShrink: 0, marginTop: 2 }} />
-            <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-              Core tier membership required — track up to {maxWallets} wallets and see their
-              combined portfolio in one view. Subscribe (monthly or annual — either works) below to
-              unlock it.
-            </div>
-          </div>
-          <div style={{ marginLeft: 26 }}>
-            <div style={{ fontSize: 11, color: muted, marginBottom: 6 }}>
-              Already subscribed? It can take a minute or two to activate after purchase.
-            </div>
-            <button
-              type="button"
-              onClick={checkAccessOnce}
-              disabled={manualCheckLoading}
-              style={{
-                background: "none",
-                border: `1px solid ${border}`,
-                borderRadius: 8,
-                padding: "5px 10px",
-                color: manualCheckLoading ? muted : green,
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: manualCheckLoading ? "not-allowed" : "pointer",
-              }}
-            >
-              {manualCheckLoading ? "Checking…" : "Check again"}
-            </button>
-          </div>
-        </div>
-      ) : (
+      <CoreTierGate
+        wallet={wallet}
+        hasAccess={hasAccess}
+        accessError={accessError}
+        awaitingActivation={awaitingActivation}
+        manualCheckLoading={manualCheckLoading}
+        checkAccessOnce={checkAccessOnce}
+        featureDescription={`track up to ${maxWallets} wallets and see their combined ETN + token balances in one view`}
+      >
         <div>
           {!managing ? (
             <>
@@ -767,7 +592,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
             </div>
           )}
         </div>
-      )}
+      </CoreTierGate>
     </DashboardPanel>
   );
 }
