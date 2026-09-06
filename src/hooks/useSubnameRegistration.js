@@ -164,6 +164,23 @@ export function useSubnameRegistration() {
     return owner === ethers.ZeroAddress;
   }, [getReadContracts]);
 
+  // A subname can only actually be sold if the marketplace is still authorized to act on the
+  // parent's *current* owner's behalf. That authorization (NameWrapper.setApprovalForAll) is
+  // granted per-address, not per-token — unlike subnamePricePerYear (a per-node setting), it does
+  // NOT carry over when a domain is transferred to a new wallet. Confirmed live: zypto.etn kept
+  // showing up as "selling subnames" (price never got reset by the transfer) after moving to a
+  // new owner who had never approved the marketplace themselves, so every purchase attempt was
+  // doomed before it even reached the chain — surfacing to the buyer as an opaque wallet-level
+  // rejection instead of a clear "this isn't actually for sale right now" message. Checked here,
+  // ahead of checkSubnameAvailable, so a stale/broken domain fails fast with a clear reason rather
+  // than after also spending a round trip confirming the specific label is free.
+  const isParentReadyForSale = useCallback(async (parentNode) => {
+    const { nameWrapper } = getReadContracts();
+    const owner = await nameWrapper.ownerOf(parentNode);
+    const approved = await nameWrapper.isApprovedForAll(owner, MARKETPLACE_ADDRESS);
+    return { owner, approved };
+  }, [getReadContracts]);
+
   // backend/utils/subnameDomainsCache.js keeps a small public JSON file in R2 with exactly this —
   // scanned server-side on a timer instead of by every visitor's browser on every page load (that
   // full-history scan is ~112 chunked RPC round trips as of writing, and grows by roughly one more
@@ -216,6 +233,7 @@ export function useSubnameRegistration() {
     quoteSubname,
     getParentExpiry,
     checkSubnameAvailable,
+    isParentReadyForSale,
     getAvailableParentDomains,
     registerSubname,
     loading,

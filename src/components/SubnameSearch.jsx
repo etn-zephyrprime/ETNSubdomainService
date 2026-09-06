@@ -64,6 +64,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
     getSubnamePricePerYear,
     getParentExpiry,
     checkSubnameAvailable,
+    isParentReadyForSale,
     getAvailableParentDomains,
     registerSubname,
   } = useSubnameRegistration();
@@ -143,6 +144,16 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
 
       if (pricePerYear === 0n) {
         setCheckError(`"${parentLabel}.etn" isn't selling subnames`);
+        return;
+      }
+
+      // Price alone doesn't mean a sale can actually complete — see isParentReadyForSale's own
+      // comment (useSubnameRegistration.js) for why a transferred domain can look sellable here
+      // while every purchase attempt is doomed to fail on-chain. Checked before availability so a
+      // broken domain fails fast with a clear reason instead of after also confirming the label.
+      const { approved } = await isParentReadyForSale(parentNode);
+      if (!approved) {
+        setCheckError(`This domain isn't ready for sale yet. Please contact the domain owner of ${parentLabel}.etn.`);
         return;
       }
 
