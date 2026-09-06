@@ -7,12 +7,20 @@ import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js
 import { useTrackedWallets } from "../../hooks/useTrackedWallets.js";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
+import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
-const MAX_PRICED_HOLDINGS = 25; // matches AddressLookup.jsx's own cap
+const MAX_PRICED_HOLDINGS = 25; // matches AddressLookup.jsx's own cap — how many fungible tokens
+// get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below (how many rows show at
+// once); a token beyond this cap can still be shown via "Show more", just without a $ value.
+const HOLDING_CATEGORIES = [
+  { id: "tokens", label: "Tokens" },
+  { id: "nfts", label: "NFT's" },
+];
+const HOLDINGS_PAGE_SIZE = 10;
 
 function fmtDate(iso) {
   const d = new Date(iso);
@@ -88,6 +96,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
   const { getTrackedWallets, addTrackedWallet, removeTrackedWallet } = useTrackedWallets();
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
+  const etnUsdPrice = useEtnPrice();
 
   // null = not checked yet (or wallet not connected), true/false once known — reset on every
   // account change so a previous account's answer never leaks into the new one for even one
@@ -121,6 +130,8 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
+  const [holdingsCategory, setHoldingsCategory] = useState("tokens");
+  const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
 
   const refreshTrackedWallets = useCallback(async () => {
     const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
@@ -243,6 +254,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
     setPortfolio(null);
     setPortfolioError(null);
     setTokenPrices({});
+    setHoldingsShown(HOLDINGS_PAGE_SIZE);
     getCombinedPortfolio(active.map((w) => w.address))
       .then((res) => { if (!cancelled) setPortfolio(res); })
       .catch((err) => {
@@ -332,9 +344,14 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
   // no resolved price yet (tokenPrices hasn't caught up — see that effect above, prices trickle in
   // one request per token) sinks to the bottom instead of counting as $0, so it doesn't briefly
   // occupy a top slot before its real price arrives.
+  // Split by category (fungible tokens vs NFTs — same NFT_TOKEN_TYPES membership check the price-
+  // fetching effect above uses to skip NFTs, since Blockscout's own `type` field is the only
+  // signal available), same convention as AddressLookup.jsx's own Tokens/NFT's toggle. Only the
+  // fungible list is meaningfully sortable by USD value — NFTs never get a price (no ElectroSwap
+  // trading pair), so they stay in whatever order useCombinedPortfolio.js's merge produced them.
   const visibleTokens = portfolio
     ? portfolio.tokens
-        .filter((t) => !isSpamTokenName(t.token?.name))
+        .filter((t) => !isSpamTokenName(t.token?.name) && !NFT_TOKEN_TYPES.has(t.token?.type))
         .map((t) => ({ ...t, usdValue: tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]) }))
         .sort((a, b) => {
           if (a.usdValue == null && b.usdValue == null) return 0;
@@ -343,6 +360,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
           return b.usdValue - a.usdValue;
         })
     : [];
+  const visibleNfts = portfolio
+    ? portfolio.tokens.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
+    : [];
+  const visibleHoldings = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
+
+  const combinedEtnAmount = portfolio ? parseFloat(ethers.formatEther(portfolio.totalCoinBalance)) : null;
+  const combinedUsdValue =
+    etnUsdPrice != null && combinedEtnAmount != null && Number.isFinite(combinedEtnAmount)
+      ? combinedEtnAmount * etnUsdPrice
+      : null;
 
   const renderPending = () => {
     if (!pending) return null;
@@ -639,8 +666,13 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                       Combined ETN Balance
                     </div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
-                      {formatEtnBalance(portfolio.totalCoinBalance)} ETN
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
+                        {formatEtnBalance(portfolio.totalCoinBalance)} ETN
+                      </div>
+                      {combinedUsdValue != null && (
+                        <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedUsdValue)}</div>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
                       Across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
@@ -650,39 +682,85 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
                   <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                     Combined Holdings
                   </div>
-                  {visibleTokens.length === 0 ? (
-                    <div style={{ fontSize: 12, color: muted }}>No token balances across your tracked wallets.</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    {HOLDING_CATEGORIES.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => { setHoldingsCategory(c.id); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
+                        style={{
+                          flex: "1 1 100px",
+                          padding: "8px 8px",
+                          borderRadius: 10,
+                          border: `1px solid ${c.id === holdingsCategory ? green : border}`,
+                          background: c.id === holdingsCategory ? "rgba(24,187,26,0.12)" : panel2,
+                          color: c.id === holdingsCategory ? green : mutedLight,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                  {visibleHoldings.length === 0 ? (
+                    <div style={{ fontSize: 12, color: muted }}>
+                      {holdingsCategory === "nfts" ? "No NFTs held across your tracked wallets." : "No token balances across your tracked wallets."}
+                    </div>
                   ) : (
-                    visibleTokens.slice(0, 25).map((t, i) => {
-                      const { usdValue } = t;
-                      return (
-                        <div
-                          key={`${t.token?.address}-${i}`}
+                    <>
+                      {visibleHoldings.slice(0, holdingsShown).map((t, i) => {
+                        const usdValue = t.usdValue ?? null;
+                        return (
+                          <div
+                            key={`${t.token?.address}-${i}`}
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              padding: "8px 0",
+                              borderBottom: `1px solid ${border}`,
+                            }}
+                          >
+                            <span style={{ fontSize: 12, color: "#fff" }}>
+                              {t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span>
+                              {t.heldBy.length > 1 && (
+                                <span style={{ display: "block", fontSize: 10, color: muted }}>
+                                  Held in {t.heldBy.length} of {active.length} wallets
+                                </span>
+                              )}
+                            </span>
+                            <span style={{ textAlign: "right" }}>
+                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
+                              {usdValue != null && (
+                                <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {visibleHoldings.length > holdingsShown && (
+                        <button
+                          type="button"
+                          onClick={() => setHoldingsShown((n) => n + HOLDINGS_PAGE_SIZE)}
                           style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
+                            display: "block",
+                            width: "100%",
+                            marginTop: 10,
                             padding: "8px 0",
-                            borderBottom: `1px solid ${border}`,
+                            borderRadius: 8,
+                            border: `1px solid ${border}`,
+                            background: panel2,
+                            color: green,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: "pointer",
                           }}
                         >
-                          <span style={{ fontSize: 12, color: "#fff" }}>
-                            {t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span>
-                            {t.heldBy.length > 1 && (
-                              <span style={{ display: "block", fontSize: 10, color: muted }}>
-                                Held in {t.heldBy.length} of {active.length} wallets
-                              </span>
-                            )}
-                          </span>
-                          <span style={{ textAlign: "right" }}>
-                            <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
-                            {usdValue != null && (
-                              <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
-                            )}
-                          </span>
-                        </div>
-                      );
-                    })
+                          Show more ({visibleHoldings.length - holdingsShown} more)
+                        </button>
+                      )}
+                    </>
                   )}
                 </>
               )}
