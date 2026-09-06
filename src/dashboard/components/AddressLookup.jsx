@@ -71,7 +71,17 @@ const HOLDING_CATEGORIES = [
   { id: "nfts", label: "NFT's" },
 ];
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
-const MAX_PRICED_HOLDINGS = 25; // matches the holdings list's own render cap below
+// How many fungible tokens get a price fetched at all — NOT just a render limit: a token beyond
+// this cap never gets priced, full stop, so it necessarily sinks to the bottom of the USD-sorted
+// list regardless of its real value (confirmed live on CoreTierPortfolio.jsx's own combined
+// holdings: a wallet holding 30k of a token with a genuine ~$1,335 CLUB/WETN pool showed no $
+// value and sorted last, purely because it fell past position 25 in Blockscout's own — unordered
+// — token-balances response, not because it was actually worth less than everything above it).
+// Raised from 25 to 50: comfortably covers realistic portfolios while bounding worst-case impact
+// on the shared GeckoTerminal queue (tokenChartRouter.js) every visitor's price charts also
+// depend on — that queue enforces ~1.5s between new-token lookups site-wide, so a wallet that
+// maxes this cap can add up to ~75s of queued lookups ahead of everyone else's, not just its own.
+const MAX_PRICED_HOLDINGS = 50;
 
 // How recently a validator has to have produced a block to count as "active" here — validator-
 // rewards.json (backend/utils/validatorRewardsCache.js) is bucketed by real UTC day, so this can't
@@ -227,9 +237,14 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   // row's $ value appears as its own request resolves instead of the whole list waiting on the
   // slowest one — the backend already serializes these against GeckoTerminal's own rate limit
   // (tokenChartRouter.js), so this doesn't risk hammering it just because several rows ask at once.
-  // Capped at MAX_PRICED_HOLDINGS, matching the holdings list's own render cap.
+  // Capped at MAX_PRICED_HOLDINGS (see that constant's own comment). Spam-named tokens are
+  // excluded before the cap is applied, not just from the rendered list later, so a wallet full
+  // of airdropped junk can't burn through the priced-token budget before it ever reaches a real
+  // holding.
   useEffect(() => {
-    const fungible = tokenBalances.filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type));
+    const fungible = tokenBalances.filter(
+      (tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name)
+    );
     if (fungible.length === 0) return;
     let cancelled = false;
     fungible.slice(0, MAX_PRICED_HOLDINGS).forEach((tb) => {
