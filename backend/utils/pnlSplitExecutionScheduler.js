@@ -11,14 +11,16 @@
 // `contractWithSigner`, a startup sanity check that logs CRITICAL but doesn't crash if this
 // wallet isn't actually the contract's operator, per-tick try/catch with no rethrow, fixed
 // gasLimit (this chain's eth_estimateGas is unreliable — see rpcProvider.js and every other write
-// call in this backend). The minCoreOut slippage math is copied from the PlanetZephyros repo's
-// own scripts/autoBuyBackAndBurn.js, which runs this same swap-and-burn shape for the
-// marketplace's own fee pool.
+// call in this backend). The minCoreOut slippage math lives in premiumSplitQuote.js, shared with
+// subscriptionRevenueSweepScheduler.js (originally copied from the PlanetZephyros repo's own
+// scripts/autoBuyBackAndBurn.js, which runs this same swap-and-burn shape for the marketplace's
+// own fee pool).
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getPool } from "../db/pool.js";
 import { findFinalizedNeedingSplit } from "../db/statementRequests.js";
 import { insertBuyAndBurnLog } from "../db/buyAndBurnLog.js";
+import { quoteMinCoreOut } from "./premiumSplitQuote.js";
 
 const PREMIUM_SUBSCRIPTION_ADDRESS = process.env.PREMIUM_SUBSCRIPTION_ADDRESS;
 const CHECK_INTERVAL_MS = process.env.PNL_SPLIT_EXECUTION_CHECK_INTERVAL_MS
@@ -37,26 +39,6 @@ const PREMIUM_SUBSCRIPTION_ABI = [
   "function executeSplitForPeriod(uint256 amount, uint256 minCoreOut, uint256 deadline) external",
   "event PnlPeriodSplitExecuted(address indexed operator, uint256 amountSplit, address splitWallet, uint256 coreReceived, uint256 coreBurned)",
 ];
-const ROUTER_ABI = [
-  "function WETH() view returns (address)",
-  "function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[])",
-];
-
-async function quoteMinCoreOut(contract, provider, amount) {
-  const [coreToken, routerAddress] = await Promise.all([contract.coreToken(), contract.swapRouter()]);
-  if (coreToken === ethers.ZeroAddress || routerAddress === ethers.ZeroAddress) {
-    throw new Error("coreToken/swapRouter not configured on PremiumSubscription — cannot quote");
-  }
-
-  const router = new ethers.Contract(routerAddress, ROUTER_ABI, provider);
-  const weth = await router.WETH();
-  // executeSplitForPeriod swaps only half of `amount` (see PremiumSubscription.sol) — quote
-  // against that same half, not the full escrowed amount.
-  const toSwap = amount - amount / 2n;
-  const amounts = await router.getAmountsOut(toSwap, [weth, coreToken]);
-  const quotedOut = amounts[1];
-  return (quotedOut * (10000n - SLIPPAGE_BPS)) / 10000n;
-}
 
 let isRunning = false;
 
@@ -70,7 +52,7 @@ async function checkAndExecute(ctx) {
     for (const request of pending) {
       try {
         const amount = BigInt(request.amount_paid_wei);
-        const minCoreOut = await quoteMinCoreOut(contract, provider, amount);
+        const minCoreOut = await quoteMinCoreOut(contract, provider, amount, SLIPPAGE_BPS);
         const deadline = Math.floor(Date.now() / 1000) + 600;
 
         console.log(`🔥 Executing split for statement request ${request.id} — ${ethers.formatEther(amount)} ETN`);
