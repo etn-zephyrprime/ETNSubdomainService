@@ -12,9 +12,18 @@ import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, s
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
-const MAX_PRICED_HOLDINGS = 25; // matches AddressLookup.jsx's own cap — how many fungible tokens
-// get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below (how many rows show at
-// once); a token beyond this cap can still be shown via "Show more", just without a $ value.
+// How many fungible tokens get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below
+// (how many rows show at once) — matches AddressLookup.jsx's own cap. This is NOT just a render
+// limit: a token beyond this cap never gets priced, full stop, so it necessarily sinks to the
+// bottom of the USD-sorted list regardless of its real value (confirmed live: a wallet holding
+// 30k of a token with a genuine ~$1,335 CLUB/WETN pool showed no $ value and sorted last, purely
+// because it fell past position 25 in Blockscout's own — unordered — token-balances response, not
+// because it was actually worth less than everything above it). Raised from 25 to 50: comfortably
+// covers realistic portfolios while bounding worst-case impact on the shared GeckoTerminal queue
+// (tokenChartRouter.js) every visitor's price charts also depend on — that queue enforces ~1.5s
+// between new-token lookups site-wide, so a wallet that maxes this cap can add up to ~75s of
+// queued lookups ahead of everyone else's, not just its own.
+const MAX_PRICED_HOLDINGS = 50;
 const HOLDING_CATEGORIES = [
   { id: "tokens", label: "Tokens" },
   { id: "nfts", label: "NFT's" },
@@ -139,10 +148,15 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
   }, [hasAccess, active, getCombinedPortfolio]);
 
   // USD price per merged token — one small independent request each, same pattern (and the same
-  // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect.
+  // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
+  // are excluded before the cap is applied (not just from the rendered list later) so a wallet
+  // full of airdropped junk can't burn through the priced-token budget before it ever reaches a
+  // real holding.
   useEffect(() => {
     if (!portfolio) return;
-    const fungible = portfolio.tokens.filter((t) => t.token?.address && !NFT_TOKEN_TYPES.has(t.token?.type));
+    const fungible = portfolio.tokens.filter(
+      (t) => t.token?.address && !NFT_TOKEN_TYPES.has(t.token?.type) && !isSpamTokenName(t.token?.name)
+    );
     if (fungible.length === 0) return;
     let cancelled = false;
     fungible.slice(0, MAX_PRICED_HOLDINGS).forEach((t) => {
