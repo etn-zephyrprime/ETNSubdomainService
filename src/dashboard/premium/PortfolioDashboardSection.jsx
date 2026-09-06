@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
@@ -13,6 +13,11 @@ import { green, greenGlow, muted } from "../theme.js";
 // dashboard for every visitor who never touches either wallet-requiring tab.
 export default function PortfolioDashboardSection() {
   const wallet = useReownWallet();
+
+  // Bumped by MembershipPurchase after a successful subscribe — CoreTierPortfolio treats a change
+  // here as "re-check my access, a purchase just happened" (see that component's own comment on
+  // why this needs a bounded retry, not just one immediate re-check).
+  const [membershipVersion, setMembershipVersion] = useState(0);
 
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
@@ -31,8 +36,8 @@ export default function PortfolioDashboardSection() {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <CoreTierPortfolio wallet={wallet} />
-        <MembershipPurchase wallet={wallet} />
+        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} />
+        <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
     </div>
   );

@@ -15,7 +15,7 @@ const YEAR_OPTIONS = [1, 2, 3];
 // membership additionally grants the 50% PnL statement discount (see PnlStatementRequest.jsx) —
 // see PremiumSubscription.sol's header comment for why a cheap monthly signup deliberately can't
 // reach that discount.
-export default function MembershipPurchase({ wallet }) {
+export default function MembershipPurchase({ wallet, onMembershipChange }) {
   const {
     isConfigured,
     getMembershipPricePerMonth,
@@ -95,6 +95,14 @@ export default function MembershipPurchase({ wallet }) {
       setTxHash(result.txHash);
       setTxSuccess(true);
       await refresh();
+      // Tells CoreTierPortfolio (a sibling, not a parent/child of this component — see
+      // PortfolioDashboardSection.jsx) that a subscribe just went through, so it re-checks Core
+      // tier access instead of sitting on whatever it found on mount. This alone doesn't
+      // guarantee access flips to true immediately: the backend's own membership record only
+      // updates once premiumSubscriptionWatcher.js has polled and processed this tx's event
+      // (up to ~a minute later, see that file's own POLL_INTERVAL_MS) — CoreTierPortfolio handles
+      // that gap itself with a short bounded retry, not this component's job.
+      onMembershipChange?.();
     } catch (err) {
       // subscribe()/subscribeAnnual() already record the error via the hook's own `error` state.
     }
