@@ -7,7 +7,7 @@ import SparklineChart from "../../components/SparklineChart.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
-import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd } from "../../utils/balanceHistory.js";
+import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { formatChartDate, formatUsdPrice, shortHash } from "../../utils/format.js";
 import { green, muted, mutedLight, border, panel2 } from "../../theme.js";
 
@@ -19,6 +19,11 @@ const VALUE_MODES = [
   { id: "etn", label: "ETN" },
   { id: "usd", label: "USD" },
 ];
+
+// Every chart on this page shares this exact window — a rolling 12 months ending today — so
+// they're always directly comparable to each other, not each showing however far back that one
+// wallet's own history happens to reach.
+const WINDOW_DAYS = 365;
 
 // Core Tier's second feature: full ETN balance history — combined across every tracked wallet,
 // plus each wallet's own — reusing the exact same Blockscout endpoint (coin-balance-history-by-
@@ -102,9 +107,13 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
   const showUsd = valueMode === "usd" && usdReady;
 
   const loaded = active.length > 0 && active.every((w) => historiesByAddress[w.address] != null);
-  const combinedSeriesEtn = loaded
-    ? mergeBalanceHistories(active.map((w) => historiesByAddress[w.address]))
-    : [];
+  // buildDailySeries always returns a full WINDOW_DAYS+1-point series regardless of input (a
+  // wallet with literally no history yet still gets a flat 0 line) — hasCombinedHistory checks
+  // the underlying sparse data instead, so a tracked wallet with no activity at all shows the
+  // "not enough history" message rather than a flat, uninformative zero line.
+  const combinedSparse = loaded ? mergeBalanceHistories(active.map((w) => historiesByAddress[w.address])) : [];
+  const hasCombinedHistory = combinedSparse.length > 0;
+  const combinedSeriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS);
   const combinedSeries = showUsd ? convertSeriesToUsd(combinedSeriesEtn, priceLookup) : combinedSeriesEtn;
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
@@ -164,11 +173,12 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
                 {active.length > 1 ? "Combined Balance History" : "Balance History"}
               </div>
-              {combinedSeries.length < 2 ? (
-                <div style={{ fontSize: 12, color: muted }}>Not enough history yet to chart.</div>
+              <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
+              {!hasCombinedHistory ? (
+                <div style={{ fontSize: 12, color: muted }}>No balance history yet.</div>
               ) : (
                 <SparklineChart data={combinedSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
               )}
@@ -177,7 +187,8 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
             {active.length > 1 &&
               active.map((w) => {
                 const items = historiesByAddress[w.address] || [];
-                const seriesEtn = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
+                const sparse = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
+                const seriesEtn = buildDailySeries(sparse, WINDOW_DAYS);
                 const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
                 return (
                   <div key={w.address}>
@@ -185,8 +196,8 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
                       {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
                       {shortHash(w.address, 8)}
                     </div>
-                    {series.length < 2 ? (
-                      <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Not enough history yet to chart.</div>
+                    {sparse.length === 0 ? (
+                      <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>No balance history yet.</div>
                     ) : (
                       <SparklineChart data={series} height={100} formatValue={formatValue} formatLabel={formatChartDate} />
                     )}

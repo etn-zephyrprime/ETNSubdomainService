@@ -256,6 +256,34 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
       ? combinedEtnAmount * etnUsdPrice
       : null;
 
+  // Per-wallet total USD value (ETN + every priced fungible token holding) — uses each wallet's
+  // own UNMERGED balances (portfolio.perWallet), not the merged/combined token list above, since a
+  // real per-wallet breakdown needs what THAT wallet specifically holds, not a cross-wallet sum.
+  // A wallet holding ETN with no known price yet, or any fungible token whose price hasn't
+  // resolved (still trickling in, or beyond MAX_PRICED_HOLDINGS — see that constant's own
+  // comment), makes its own figure — and the grand total's — a lower bound, not an exact number:
+  // flagged with "≈" rather than silently understating as if it were precise.
+  const perWalletTotals = portfolio
+    ? portfolio.perWallet.map((w) => {
+        const etnAmount = w.info?.coin_balance != null ? parseFloat(ethers.formatEther(w.info.coin_balance)) : 0;
+        const etnUsd = etnUsdPrice != null ? etnAmount * etnUsdPrice : null;
+        let tokensUsd = 0;
+        let hasUnpriced = etnUsd == null && etnAmount > 0;
+        for (const tb of w.balances) {
+          if (NFT_TOKEN_TYPES.has(tb.token?.type) || isSpamTokenName(tb.token?.name)) continue;
+          const usd = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
+          if (usd != null) {
+            tokensUsd += usd;
+          } else if (BigInt(tb.value || 0) > 0n) {
+            hasUnpriced = true;
+          }
+        }
+        return { address: w.address, total: (etnUsd || 0) + tokensUsd, hasUnpriced };
+      })
+    : [];
+  const totalPortfolioUsd = perWalletTotals.length > 0 ? perWalletTotals.reduce((sum, w) => sum + w.total, 0) : null;
+  const totalPortfolioHasUnpriced = perWalletTotals.some((w) => w.hasUnpriced);
+
   const renderPending = () => {
     if (!pending) return null;
     const isAdd = pending.type === "add";
@@ -501,6 +529,37 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
                 <div style={{ fontSize: 12, color: mutedLight }}>Loading combined portfolio…</div>
               ) : (
                 <>
+                  <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                      Total Portfolio Balance (USD)
+                    </div>
+                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
+                      {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
+                    </div>
+                    {totalPortfolioHasUnpriced && (
+                      <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
+                        Lower bound — some holdings' prices haven't resolved yet
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
+                      ETN + all priced token holdings, across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
+                      {perWalletTotals.map((w) => (
+                        <div key={w.address} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                          <span style={{ color: mutedLight, fontFamily: "monospace" }}>
+                            {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                            {shortHash(w.address, 8)}
+                          </span>
+                          <span style={{ color: "#fff", fontWeight: 700 }}>
+                            {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                       Combined ETN Balance

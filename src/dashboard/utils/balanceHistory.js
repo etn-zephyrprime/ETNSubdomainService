@@ -57,6 +57,45 @@ export function buildEtnPriceLookup(points) {
   };
 }
 
+/**
+ * Turns a sparse, oldest-first `{label, value}[]` series (label a YYYY-MM-DD date string) into a
+ * DENSE one: exactly one point for every calendar day in the last `windowDays` days ending today
+ * — every chart on the page shares the same timeframe regardless of how far back any one wallet's
+ * own history reaches, AND a day with no recorded change gets that day's real (unchanged) balance
+ * carried forward rather than being skipped.
+ *
+ * Skipping unchanged days (a plain date-range filter) reads wrong on a line chart specifically
+ * because SparklineChart draws a straight line between whatever two points it's given: two sparse
+ * points with DIFFERENT values several weeks apart would draw as a gradual ramp between them, as
+ * if the balance were slowly drifting the whole time, when the real history is a flat line that
+ * jumps instantly on the one day it actually changed. Filling every day in between with the
+ * carried-forward value makes the chart draw that step correctly.
+ *
+ * A day before the series' very first entry is 0 (the account's balance before its first-ever
+ * recorded change — same convention mergeBalanceHistories itself already uses for a wallet with
+ * no history yet).
+ */
+export function buildDailySeries(series, windowDays = 365) {
+  const today = new Date();
+  let pointer = 0;
+  let currentValue = 0;
+
+  const days = [];
+  for (let i = windowDays; i >= 0; i--) {
+    const d = new Date(today);
+    d.setUTCDate(d.getUTCDate() - i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  return days.map((day) => {
+    while (pointer < series.length && series[pointer].label <= day) {
+      currentValue = series[pointer].value;
+      pointer += 1;
+    }
+    return { label: day, value: currentValue };
+  });
+}
+
 /** Converts an ETN-denominated `{label, value}[]` series to USD using `priceLookup` (see
  * buildEtnPriceLookup) — a point whose date has no known price (shouldn't happen given how dense
  * the series is, but see that function's own fallback) is dropped rather than shown as $0, same
