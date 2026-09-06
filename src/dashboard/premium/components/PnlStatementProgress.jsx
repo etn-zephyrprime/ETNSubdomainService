@@ -116,7 +116,7 @@ export default function PnlStatementProgress({ wallet, refreshToken }) {
   const fetchRequests = useCallback(async () => {
     if (!walletAddress) return;
     try {
-      const { signature, timestamp } = await getAuthParams();
+      const { signature, timestamp } = await getAuthParams("PnL Statements");
       const url = `${PNL_BACKEND_URL}/api/pnl/statements?payerWallet=${walletAddress}&signature=${encodeURIComponent(signature)}&timestamp=${timestamp}`;
       const res = await fetch(url);
       if (!res.ok) {

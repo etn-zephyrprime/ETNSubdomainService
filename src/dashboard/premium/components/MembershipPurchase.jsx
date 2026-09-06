@@ -10,10 +10,11 @@ const MONTH_OPTIONS = [1, 3, 6, 12];
 const YEAR_OPTIONS = [1, 2, 3];
 
 // Shows the connected wallet's current membership status for both independent tiers and lets
-// them extend either. Monthly unlocks nothing on its own yet (reserved for future premium
-// features to gate on); ONLY annual membership grants the 50% PnL statement discount (see
-// PnlStatementRequest.jsx) — see PremiumSubscription.sol's header comment for why a cheap monthly
-// signup deliberately can't reach that discount.
+// them extend either. Both tiers now unlock Core Tier's multi-wallet portfolio tracking (see
+// CoreTierPortfolio.jsx / backend/utils/premiumAccess.js's hasCoreAccess) — but ONLY annual
+// membership additionally grants the 50% PnL statement discount (see PnlStatementRequest.jsx) —
+// see PremiumSubscription.sol's header comment for why a cheap monthly signup deliberately can't
+// reach that discount.
 export default function MembershipPurchase({ wallet }) {
   const {
     isConfigured,
@@ -129,12 +130,13 @@ export default function MembershipPurchase({ wallet }) {
 
       {isAnnual ? (
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12 }}>
-          Grants the 50% PnL statement discount. Monthly membership does not.
+          Unlocks Core Tier (multi-wallet portfolio tracking) and grants the 50% PnL statement
+          discount. Monthly unlocks Core Tier too, just not the discount.
         </div>
       ) : (
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12 }}>
-          Reserved for future premium features — does not grant the PnL statement discount, no
-          matter how many months you hold.
+          Unlocks Core Tier (multi-wallet portfolio tracking) — does not grant the PnL statement
+          discount, no matter how many months you hold.
         </div>
       )}
 

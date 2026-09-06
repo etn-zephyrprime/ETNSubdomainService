@@ -29,6 +29,7 @@ import { startPremiumSubscriptionWatcher } from "./utils/premiumSubscriptionWatc
 import { startPnlAutoFinalizeScheduler } from "./utils/pnlAutoFinalizeScheduler.js";
 import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionScheduler.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
+import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 
 dotenv.config();
 
@@ -63,6 +64,7 @@ app.use("/api", telegramLinkRouter);
 app.use("/api", tokenChartRouter);
 app.use("/api", r2CacheProxyRouter);
 app.use("/api", pnlStatementRouter);
+app.use("/api", premiumDashboardRouter);
 
 const PORT = process.env.PORT || 3001;
 

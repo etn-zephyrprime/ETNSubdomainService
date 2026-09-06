@@ -82,7 +82,7 @@ router.get("/pnl/statements", async (req, res) => {
   }
 
   try {
-    verifyWalletOwnership(payerWallet, signature, timestamp);
+    verifyWalletOwnership(payerWallet, signature, timestamp, "PnL Statements");
   } catch (err) {
     return res.status(401).json({ error: err.message });
   }
