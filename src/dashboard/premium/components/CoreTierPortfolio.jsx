@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, Lock, X as XIcon } from "lucide-react";
+import { Wallet as WalletIcon, Lock, TriangleAlert } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
@@ -8,12 +8,16 @@ import { useTrackedWallets } from "../../hooks/useTrackedWallets.js";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
+import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
-const MAX_TRACKED_WALLETS = 3;
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 const MAX_PRICED_HOLDINGS = 25; // matches AddressLookup.jsx's own cap
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 // Same "no known price yet -> omit the $ figure, never fake one" convention as AddressLookup.jsx's
 // own tokenUsdValue.
@@ -41,14 +45,33 @@ const smallInputStyle = {
   fontFamily: "monospace",
 };
 
+// A standing, always-visible warning (not just something shown mid-action) — the cooldown is a
+// real lock, not a soft suggestion, so a member deciding whether to track a wallet at all should
+// see this before they ever reach the confirm step below.
+function CooldownNotice({ children }) {
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, background: "rgba(255,138,61,0.08)", border: `1px solid ${border}`, marginBottom: 12 }}>
+      <TriangleAlert size={14} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
+      <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6 }}>{children}</div>
+    </div>
+  );
+}
+
 // Core tier's flagship feature: track up to MAX_TRACKED_WALLETS wallets (your own, cold storage,
 // a friend's — anything; no ownership proof is required of the *tracked* wallets, only of the
 // member's own connected one) and see their combined ETN + token balances as one merged
 // portfolio. Always mounted regardless of wallet/membership state — same "decide what to show
 // internally, don't gate at the call site" pattern as PnlStatementRequest.jsx.
+//
+// Tracking and untracking each carry a real 30-day cooldown (see trackedWallets.js) specifically
+// to stop "untrack A, track B, untrack B, retrack A" from being a free way to see more than
+// MAX_TRACKED_WALLETS wallets' data over time. Both actions require an explicit confirm step
+// (handlePendingConfirm below) with the consequence spelled out in the confirmation itself, not
+// just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
+// see coming.
 export default function CoreTierPortfolio({ wallet }) {
   const getAuthParams = useWalletAuthSignature(wallet);
-  const { getTrackedWallets, setTrackedWallets } = useTrackedWallets();
+  const { getTrackedWallets, addTrackedWallet, removeTrackedWallet } = useTrackedWallets();
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
 
@@ -58,30 +81,50 @@ export default function CoreTierPortfolio({ wallet }) {
   const [hasAccess, setHasAccess] = useState(null);
   const [accessError, setAccessError] = useState(null);
 
-  const [trackedWallets, setSavedWallets] = useState([]); // the saved list, from the backend
-  const [editedWallets, setEditedWallets] = useState([]); // draft list the editor below mutates
-  const [editing, setEditing] = useState(false);
-  const [saveLoading, setSaveLoading] = useState(false);
-  const [saveError, setSaveError] = useState(null);
+  const [active, setActive] = useState([]); // [{ address, addedAt, removableAt }]
+  const [cooling, setCooling] = useState([]); // [{ address, removedAt, retrackableAt }]
+  const [maxWallets, setMaxWallets] = useState(3);
+  const [cooldownDays, setCooldownDays] = useState(30);
+  const [managing, setManaging] = useState(false);
+
   const [addInput, setAddInput] = useState("");
-  const [addError, setAddError] = useState(null);
+  const [addInputError, setAddInputError] = useState(null);
+
+  // The one action currently awaiting confirmation — null | { type: "add"|"remove", address }.
+  // Nothing is sent to the backend until the member confirms, and the confirm panel itself states
+  // the exact consequence (see renderPending below).
+  const [pending, setPending] = useState(null);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingError, setPendingError] = useState(null);
 
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
 
-  // Load Core tier access + the saved tracked-wallet list whenever the connected account
-  // changes — also drops any in-progress edit, since a draft list built for the previous account
-  // has no business surviving a disconnect/account switch.
+  const refreshTrackedWallets = useCallback(async () => {
+    const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+    const res = await getTrackedWallets(wallet.account, signature, timestamp);
+    setActive(res.active || []);
+    setCooling(res.cooling || []);
+    if (res.maxWallets) setMaxWallets(res.maxWallets);
+    if (res.cooldownDays) setCooldownDays(res.cooldownDays);
+    return res;
+  }, [getAuthParams, getTrackedWallets, wallet.account]);
+
+  // Load Core tier access + the tracked-wallet list whenever the connected account changes — also
+  // drops any in-progress action, since one built for the previous account has no business
+  // surviving a disconnect/account switch.
   useEffect(() => {
-    setEditing(false);
-    setSaveError(null);
+    setManaging(false);
+    setPending(null);
+    setPendingError(null);
     setAddInput("");
-    setAddError(null);
+    setAddInputError(null);
 
     if (!wallet.isConnected || !wallet.account) {
       setHasAccess(null);
-      setSavedWallets([]);
+      setActive([]);
+      setCooling([]);
       return;
     }
     let cancelled = false;
@@ -89,11 +132,8 @@ export default function CoreTierPortfolio({ wallet }) {
     setAccessError(null);
     (async () => {
       try {
-        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        const res = await getTrackedWallets(wallet.account, signature, timestamp);
-        if (cancelled) return;
-        setHasAccess(true);
-        setSavedWallets(res.wallets || []);
+        await refreshTrackedWallets();
+        if (!cancelled) setHasAccess(true);
       } catch (err) {
         if (cancelled) return;
         if (err.message === "CORE_ACCESS_REQUIRED") {
@@ -106,12 +146,12 @@ export default function CoreTierPortfolio({ wallet }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [wallet.isConnected, wallet.account, getAuthParams, getTrackedWallets]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.isConnected, wallet.account]);
 
-  // Combined portfolio loads whenever the *saved* tracked-wallet list changes (editing a draft
-  // doesn't refetch anything until it's actually saved).
+  // Combined portfolio loads whenever the active tracked-wallet list changes.
   useEffect(() => {
-    if (!hasAccess || trackedWallets.length === 0) {
+    if (!hasAccess || active.length === 0) {
       setPortfolio(null);
       return;
     }
@@ -119,14 +159,14 @@ export default function CoreTierPortfolio({ wallet }) {
     setPortfolio(null);
     setPortfolioError(null);
     setTokenPrices({});
-    getCombinedPortfolio(trackedWallets)
+    getCombinedPortfolio(active.map((w) => w.address))
       .then((res) => { if (!cancelled) setPortfolio(res); })
       .catch((err) => {
         console.error("Failed to load combined portfolio:", err);
         if (!cancelled) setPortfolioError("Couldn't load portfolio data — try again shortly.");
       });
     return () => { cancelled = true; };
-  }, [hasAccess, trackedWallets, getCombinedPortfolio]);
+  }, [hasAccess, active, getCombinedPortfolio]);
 
   // USD price per merged token — one small independent request each, same pattern (and the same
   // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect.
@@ -147,73 +187,105 @@ export default function CoreTierPortfolio({ wallet }) {
     return () => { cancelled = true; };
   }, [portfolio, getTokenChart]);
 
-  const startEditing = () => {
-    setEditedWallets(trackedWallets);
-    setAddInput("");
-    setAddError(null);
-    setSaveError(null);
-    setEditing(true);
-  };
-
-  const handleAddWallet = () => {
-    setAddError(null);
-    const trimmed = addInput.trim();
+  const requestAdd = (rawAddress) => {
+    setAddInputError(null);
+    const trimmed = rawAddress.trim();
     if (!trimmed) return;
     if (!ethers.isAddress(trimmed)) {
-      setAddError("Enter a valid wallet address");
+      setAddInputError("Enter a valid wallet address");
       return;
     }
-    if (editedWallets.length >= MAX_TRACKED_WALLETS) {
-      setAddError(`You can track up to ${MAX_TRACKED_WALLETS} wallets`);
+    if (active.some((w) => w.address.toLowerCase() === trimmed.toLowerCase())) {
+      setAddInputError("Already tracking that wallet");
       return;
     }
-    if (editedWallets.some((w) => w.toLowerCase() === trimmed.toLowerCase())) {
-      setAddError("Already tracking that wallet");
+    if (active.length >= maxWallets) {
+      setAddInputError(`You can track up to ${maxWallets} wallets — untrack one first`);
       return;
     }
-    setEditedWallets((prev) => [...prev, trimmed]);
-    setAddInput("");
+    const stillCooling = cooling.find((w) => w.address.toLowerCase() === trimmed.toLowerCase());
+    setPendingError(null);
+    setPending({ type: "add", address: trimmed, blockedUntil: stillCooling ? stillCooling.retrackableAt : null });
   };
 
-  const handleTrackMine = () => {
-    setAddError(null);
-    if (editedWallets.some((w) => w.toLowerCase() === wallet.account.toLowerCase())) return;
-    if (editedWallets.length >= MAX_TRACKED_WALLETS) {
-      setAddError(`You can track up to ${MAX_TRACKED_WALLETS} wallets`);
-      return;
-    }
-    setEditedWallets((prev) => [...prev, wallet.account]);
+  const requestRemove = (address) => {
+    setPendingError(null);
+    setPending({ type: "remove", address });
   };
 
-  const handleRemoveWallet = (address) => {
-    setEditedWallets((prev) => prev.filter((w) => w.toLowerCase() !== address.toLowerCase()));
+  const cancelPending = () => {
+    setPending(null);
+    setPendingError(null);
   };
 
-  const handleSave = async () => {
-    setSaveError(null);
-    setSaveLoading(true);
+  const confirmPending = async () => {
+    if (!pending) return;
+    setPendingLoading(true);
+    setPendingError(null);
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-      const res = await setTrackedWallets(wallet.account, signature, timestamp, editedWallets);
-      setSavedWallets(res.wallets || editedWallets);
-      setEditing(false);
+      if (pending.type === "add") {
+        const res = await addTrackedWallet(wallet.account, signature, timestamp, pending.address);
+        setActive(res.active || []);
+        setAddInput("");
+      } else {
+        const res = await removeTrackedWallet(wallet.account, signature, timestamp, pending.address);
+        setActive(res.active || []);
+      }
+      await refreshTrackedWallets().catch(() => {}); // also refreshes `cooling` — non-fatal if it fails
+      setPending(null);
     } catch (err) {
-      console.error("Failed to save tracked wallets:", err);
-      setSaveError(err.message || "Couldn't save your tracked wallets");
+      console.error(`Failed to ${pending.type} wallet:`, err);
+      setPendingError(err.message || "That didn't go through — try again.");
     } finally {
-      setSaveLoading(false);
+      setPendingLoading(false);
     }
   };
 
-  // Raw on-chain amounts aren't comparable across tokens with different decimals, so this only
-  // sorts biggest-holding-of-its-own-token first within a fixed rendering position, not by any
-  // notion of relative value — same caveat as AddressLookup.jsx's own (unsorted) holdings list,
-  // just made deterministic here since merging can reorder tokens run to run otherwise.
   const visibleTokens = portfolio
     ? portfolio.tokens
         .filter((t) => !isSpamTokenName(t.token?.name))
         .sort((a, b) => (b.value > a.value ? 1 : b.value < a.value ? -1 : 0))
     : [];
+
+  const renderPending = () => {
+    if (!pending) return null;
+    const isAdd = pending.type === "add";
+    return (
+      <div style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${isAdd ? orange : errorColor}`, background: isAdd ? "rgba(255,138,61,0.08)" : "rgba(255,107,107,0.08)", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>
+          <TriangleAlert size={15} color={isAdd ? orange : errorColor} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div style={{ fontSize: 12, color: "#fff", lineHeight: 1.6 }}>
+            {isAdd ? (
+              pending.blockedUntil ? (
+                <>You untracked <b>{shortHash(pending.address, 8)}</b> too recently — it can't be re-tracked until <b>{fmtDate(pending.blockedUntil)}</b>.</>
+              ) : (
+                <>Track <b>{shortHash(pending.address, 8)}</b>? Once added, it's locked in — you won't be able to untrack it for <b>{cooldownDays} days</b>.</>
+              )
+            ) : (
+              <>Untrack <b>{shortHash(pending.address, 8)}</b>? You won't be able to re-track this exact wallet for <b>{cooldownDays} days</b> afterward.</>
+            )}
+          </div>
+        </div>
+        {pendingError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 10 }}>{pendingError}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          {!(isAdd && pending.blockedUntil) && (
+            <DashboardButton onClick={confirmPending} disabled={pendingLoading} loading={pendingLoading} style={{ flex: 1, justifyContent: "center", padding: "8px 12px", fontSize: 12 }}>
+              {isAdd ? "Confirm Track" : "Confirm Untrack"}
+            </DashboardButton>
+          )}
+          <button
+            type="button"
+            onClick={cancelPending}
+            disabled={pendingLoading}
+            style={{ flex: 1, padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: mutedLight, fontSize: 12, fontWeight: 700, cursor: pendingLoading ? "not-allowed" : "pointer" }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <DashboardPanel>
@@ -227,7 +299,7 @@ export default function CoreTierPortfolio({ wallet }) {
       {!wallet.isConnected ? (
         <div>
           <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
-            Connect your wallet to track up to {MAX_TRACKED_WALLETS} wallets and see their combined ETN + token balances in one view.
+            Connect your wallet to track up to {maxWallets} wallets and see their combined ETN + token balances in one view.
           </div>
           <DashboardButton onClick={wallet.connectWallet} style={{ width: "100%", justifyContent: "center" }}>
             Connect Wallet
@@ -241,24 +313,24 @@ export default function CoreTierPortfolio({ wallet }) {
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
           <Lock size={16} color={muted} style={{ flexShrink: 0, marginTop: 2 }} />
           <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-            Core tier membership required — track up to {MAX_TRACKED_WALLETS} wallets and see their
+            Core tier membership required — track up to {maxWallets} wallets and see their
             combined portfolio in one view. Subscribe (monthly or annual — either works) below to
             unlock it.
           </div>
         </div>
       ) : (
         <div>
-          {!editing ? (
+          {!managing ? (
             <>
-              {trackedWallets.length === 0 ? (
+              {active.length === 0 ? (
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 14 }}>
-                  No wallets tracked yet — add up to {MAX_TRACKED_WALLETS} to see your combined portfolio.
+                  No wallets tracked yet — add up to {maxWallets} to see your combined portfolio.
                 </div>
               ) : (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                  {trackedWallets.map((w) => (
+                  {active.map((w) => (
                     <div
-                      key={w}
+                      key={w.address}
                       style={{
                         padding: "6px 10px",
                         borderRadius: 8,
@@ -269,69 +341,106 @@ export default function CoreTierPortfolio({ wallet }) {
                         fontFamily: "monospace",
                       }}
                     >
-                      {w.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                      {shortHash(w)}
+                      {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                      {shortHash(w.address)}
                     </div>
                   ))}
                 </div>
               )}
-              <DashboardButton onClick={startEditing} style={{ width: "100%", justifyContent: "center" }}>
-                {trackedWallets.length === 0 ? "Add Wallets" : "Manage Tracked Wallets"}
+              <DashboardButton onClick={() => setManaging(true)} style={{ width: "100%", justifyContent: "center" }}>
+                {active.length === 0 ? "Add Wallets" : "Manage Tracked Wallets"}
               </DashboardButton>
             </>
           ) : (
             <div>
-              <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-                Any address works — your own, cold storage, or anyone else's you want to watch. You
-                only ever prove ownership of your own connected wallet, never of the ones you track.
-              </div>
+              <CooldownNotice>
+                Tracking a wallet locks it in for {cooldownDays} days before you can untrack it.
+                Untracking a wallet then locks that same address out from being re-tracked for
+                another {cooldownDays} days. Any address works — your own, cold storage, or
+                anyone else's you want to watch; you only ever prove ownership of your own
+                connected wallet, never of the ones you track.
+              </CooldownNotice>
 
-              {editedWallets.length > 0 && (
+              {renderPending()}
+
+              {active.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-                  {editedWallets.map((w) => (
-                    <div
-                      key={w}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 8,
-                        padding: "8px 10px",
-                        borderRadius: 8,
-                        border: `1px solid ${border}`,
-                        background: panel2,
-                      }}
-                    >
-                      <span style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>
-                        {w.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                        {shortHash(w, 8)}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveWallet(w)}
-                        style={{ background: "none", border: "none", cursor: "pointer", padding: 2, display: "flex" }}
-                        aria-label={`Stop tracking ${w}`}
+                  {active.map((w) => {
+                    const locked = new Date(w.removableAt).getTime() > Date.now();
+                    return (
+                      <div
+                        key={w.address}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          border: `1px solid ${border}`,
+                          background: panel2,
+                        }}
                       >
-                        <XIcon size={14} color={errorColor} />
-                      </button>
-                    </div>
-                  ))}
+                        <div>
+                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>
+                            {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                            {shortHash(w.address, 8)}
+                          </div>
+                          <div style={{ fontSize: 10, color: locked ? orange : mutedLight, marginTop: 2 }}>
+                            {locked ? `Locked until ${fmtDate(w.removableAt)}` : "Eligible to untrack"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => requestRemove(w.address)}
+                          disabled={locked}
+                          style={{
+                            background: "none",
+                            border: `1px solid ${locked ? border : errorColor}`,
+                            borderRadius: 8,
+                            padding: "5px 10px",
+                            color: locked ? muted : errorColor,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: locked ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          Untrack
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
-              {editedWallets.length < MAX_TRACKED_WALLETS && (
-                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              {cooling.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
+                    Recently Untracked
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {cooling.map((w) => (
+                      <div key={w.address} style={{ fontSize: 10, color: muted, fontFamily: "monospace" }}>
+                        {shortHash(w.address, 8)} — re-trackable {fmtDate(w.retrackableAt)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {active.length < maxWallets && (
+                <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
                   <input
                     type="text"
                     placeholder="0x... wallet address"
                     value={addInput}
                     onChange={(e) => setAddInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleAddWallet(); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") requestAdd(addInput); }}
                     style={smallInputStyle}
                   />
                   <button
                     type="button"
-                    onClick={handleAddWallet}
+                    onClick={() => requestAdd(addInput)}
                     style={{
                       padding: "10px 14px",
                       borderRadius: 10,
@@ -343,16 +452,17 @@ export default function CoreTierPortfolio({ wallet }) {
                       cursor: "pointer",
                     }}
                   >
-                    Add
+                    Track
                   </button>
                 </div>
               )}
+              {addInputError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 8 }}>{addInputError}</div>}
 
-              {editedWallets.length < MAX_TRACKED_WALLETS &&
-                !editedWallets.some((w) => w.toLowerCase() === wallet.account?.toLowerCase()) && (
+              {active.length < maxWallets &&
+                !active.some((w) => w.address.toLowerCase() === wallet.account?.toLowerCase()) && (
                 <button
                   type="button"
-                  onClick={handleTrackMine}
+                  onClick={() => requestAdd(wallet.account)}
                   style={{
                     display: "block",
                     background: "none",
@@ -368,36 +478,28 @@ export default function CoreTierPortfolio({ wallet }) {
                 </button>
               )}
 
-              {addError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 10 }}>{addError}</div>}
-              {saveError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 10 }}>{saveError}</div>}
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <DashboardButton onClick={handleSave} disabled={saveLoading} loading={saveLoading} style={{ flex: 1, justifyContent: "center" }}>
-                  Save
-                </DashboardButton>
-                <button
-                  type="button"
-                  onClick={() => setEditing(false)}
-                  disabled={saveLoading}
-                  style={{
-                    flex: 1,
-                    padding: "12px 16px",
-                    borderRadius: 12,
-                    border: `1px solid ${border}`,
-                    background: panel2,
-                    color: mutedLight,
-                    fontSize: 14,
-                    fontWeight: 700,
-                    cursor: saveLoading ? "not-allowed" : "pointer",
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setManaging(false)}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "center",
+                  fontSize: 12,
+                  color: mutedLight,
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "8px 0 0",
+                  textDecoration: "underline",
+                }}
+              >
+                Done
+              </button>
             </div>
           )}
 
-          {!editing && trackedWallets.length > 0 && (
+          {!managing && active.length > 0 && (
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               {portfolioError ? (
                 <div style={{ fontSize: 12, color: errorColor }}>{portfolioError}</div>
@@ -413,7 +515,7 @@ export default function CoreTierPortfolio({ wallet }) {
                       {formatEtnBalance(portfolio.totalCoinBalance)} ETN
                     </div>
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
-                      Across {trackedWallets.length} tracked wallet{trackedWallets.length === 1 ? "" : "s"}
+                      Across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
                     </div>
                   </div>
 
@@ -440,7 +542,7 @@ export default function CoreTierPortfolio({ wallet }) {
                             {t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span>
                             {t.heldBy.length > 1 && (
                               <span style={{ display: "block", fontSize: 10, color: muted }}>
-                                Held in {t.heldBy.length} of {trackedWallets.length} wallets
+                                Held in {t.heldBy.length} of {active.length} wallets
                               </span>
                             )}
                           </span>

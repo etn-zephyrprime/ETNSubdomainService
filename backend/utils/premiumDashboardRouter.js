@@ -2,21 +2,46 @@
 //
 // HTTP surface for Core tier — the first premium dashboard feature beyond PnL Statements: up to
 // MAX_TRACKED_WALLETS wallets a member can track for the combined portfolio view (see
-// src/dashboard/premium/components/CoreTierPortfolio.jsx). Both endpoints require the same signed
-// proof of wallet ownership GET /pnl/statements uses (walletAuth.js) — keyed on nothing but a bare
-// wallet address otherwise, same reasoning as that route's own comment — AND an active Core tier
-// membership (hasCoreAccess: either PremiumSubscription tier, see premiumAccess.js). Mounted at
-// /api/premium in backend/index.js.
+// src/dashboard/premium/components/CoreTierPortfolio.jsx). Every endpoint here requires the same
+// signed proof of wallet ownership GET /pnl/statements uses (walletAuth.js) — keyed on nothing but
+// a bare wallet address otherwise, same reasoning as that route's own comment — AND an active
+// Core tier membership (hasCoreAccess: either PremiumSubscription tier, see premiumAccess.js).
+// Mounted at /api/premium in backend/index.js.
+//
+// Add/remove are separate endpoints (not a single "PUT the whole list") deliberately: each of the
+// two 30-day cooldowns (can't untrack a just-added wallet, can't re-track a just-removed one — see
+// trackedWallets.js / migrations/007_tracked_wallets.sql) is checked against ONE wallet's own
+// add/remove history. A whole-list replace would have to diff the old and new arrays to even know
+// which addresses are "new adds" needing a cooldown check in the first place — fragile, and an
+// easy place for the cooldown to quietly stop applying. One wallet per call sidesteps that
+// entirely.
 import express from "express";
 import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { getTrackedWallets, setTrackedWallets, MAX_TRACKED_WALLETS } from "../db/trackedWallets.js";
+import {
+  getActiveTrackedWallets,
+  getCoolingDownWallets,
+  addTrackedWallet,
+  removeTrackedWallet,
+  MAX_TRACKED_WALLETS,
+  TRACK_COOLDOWN_DAYS,
+} from "../db/trackedWallets.js";
 
-// Folded into the signed message (see walletAuth.js) — must stay a single literal shared by both
-// routes below, since a lapsed-then-renewed member re-fetching and re-saving in the same session
-// should be able to reuse one cached signature (see useWalletAuthSignature.js) across both calls.
+// Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
+// so a signature cached client-side (see useWalletAuthSignature.js) works across all of them
+// within its lifetime instead of forcing a fresh signature per action.
 const AUTH_PURPOSE = "Premium Dashboard";
+
+function requireAuthAndAccess(req, res, wallet, signature, timestamp) {
+  try {
+    verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
+    return true;
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+    return false;
+  }
+}
 
 const router = express.Router();
 
@@ -25,49 +50,61 @@ router.get("/premium/tracked-wallets", async (req, res) => {
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
-
-  try {
-    verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
-  } catch (err) {
-    return res.status(401).json({ error: err.message });
-  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
 
   if (!(await hasCoreAccess(wallet))) {
     return res.status(403).json({ error: "Core tier membership required" });
   }
 
-  const wallets = await getTrackedWallets(wallet);
-  res.json({ wallets, maxWallets: MAX_TRACKED_WALLETS });
+  const [active, cooling] = await Promise.all([
+    getActiveTrackedWallets(wallet),
+    getCoolingDownWallets(wallet),
+  ]);
+  res.json({ active, cooling, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
 });
 
-router.put("/premium/tracked-wallets", async (req, res) => {
-  const { wallet, signature, timestamp, wallets } = req.body || {};
+router.post("/premium/tracked-wallets", async (req, res) => {
+  const { wallet, signature, timestamp, walletToTrack } = req.body || {};
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "wallet must be a valid address" });
   }
-
-  try {
-    verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
-  } catch (err) {
-    return res.status(401).json({ error: err.message });
+  if (!walletToTrack || !ethers.isAddress(walletToTrack)) {
+    return res.status(400).json({ error: "walletToTrack must be a valid address" });
   }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
 
   if (!(await hasCoreAccess(wallet))) {
     return res.status(403).json({ error: "Core tier membership required" });
   }
 
-  if (!Array.isArray(wallets)) {
-    return res.status(400).json({ error: "wallets must be an array" });
+  try {
+    const active = await addTrackedWallet(wallet, walletToTrack);
+    res.json({ active, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
+  } catch (err) {
+    res.status(409).json({ error: err.message });
   }
-  if (wallets.length > MAX_TRACKED_WALLETS) {
-    return res.status(400).json({ error: `Cannot track more than ${MAX_TRACKED_WALLETS} wallets` });
+});
+
+router.delete("/premium/tracked-wallets", async (req, res) => {
+  const { wallet, signature, timestamp, walletToUntrack } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
   }
-  for (const w of wallets) {
-    if (!ethers.isAddress(w)) return res.status(400).json({ error: `Invalid address: ${w}` });
+  if (!walletToUntrack || !ethers.isAddress(walletToUntrack)) {
+    return res.status(400).json({ error: "walletToUntrack must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
   }
 
-  const saved = await setTrackedWallets(wallet, wallets);
-  res.json({ wallets: saved, maxWallets: MAX_TRACKED_WALLETS });
+  try {
+    const active = await removeTrackedWallet(wallet, walletToUntrack);
+    res.json({ active, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
+  } catch (err) {
+    res.status(409).json({ error: err.message });
+  }
 });
 
 export default router;
