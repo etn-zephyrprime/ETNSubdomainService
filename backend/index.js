@@ -28,6 +28,7 @@ import { startCoreClashDripBot } from "./utils/coreClashDripBot.js";
 import { startPremiumSubscriptionWatcher } from "./utils/premiumSubscriptionWatcher.js";
 import { startPnlAutoFinalizeScheduler } from "./utils/pnlAutoFinalizeScheduler.js";
 import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionScheduler.js";
+import { startSubscriptionRevenueSweepScheduler } from "./utils/subscriptionRevenueSweepScheduler.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 
@@ -116,4 +117,5 @@ app.listen(PORT, () => {
   safeStart("Premium subscription watcher", startPremiumSubscriptionWatcher);
   safeStart("PnL auto-finalize scheduler", startPnlAutoFinalizeScheduler);
   safeStart("PnL split execution scheduler", startPnlSplitExecutionScheduler);
+  safeStart("Subscription revenue sweep scheduler", startSubscriptionRevenueSweepScheduler);
 });

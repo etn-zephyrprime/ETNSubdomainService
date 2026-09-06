@@ -141,6 +141,30 @@ export async function findFinalizedNeedingSplit() {
   return res?.rows || [];
 }
 
+/** Total ETN still owed to the PnL side of PlanetZephyrosPnLStatement's escrowed balance right
+ * now — i.e. every wei that subscriptionRevenueSweepScheduler.js must NOT touch. Two conditions,
+ * each copied byte-for-byte from the one existing function that actually acts on it, rather than
+ * re-derived, so this can never quietly drift out of sync with what markRefunded/
+ * findFinalizedNeedingSplit themselves consider in-scope:
+ *   - still refundable: exactly markRefunded's own WHERE clause (PAID/PENDING_GENERATION/
+ *     GENERATED, never viewed) — this money could still leave via refundPnlPeriod, not just a
+ *     future split.
+ *   - finalized, not yet split: exactly findFinalizedNeedingSplit's own WHERE clause.
+ * A REFUNDED row or one with an existing buy_and_burn_log row already left the contract's actual
+ * balance too (via refundPnlPeriod / executeSplitForPeriod), so correctly excluded here — this is
+ * "still sitting in the contract, spoken for", not "every PnL request that ever existed". */
+export async function getTotalPnlEscrowOwed() {
+  const res = await query(
+    `SELECT COALESCE(SUM(sr.amount_paid_wei), 0) AS total
+     FROM statement_requests sr
+     LEFT JOIN buy_and_burn_log bb ON bb.statement_request_id = sr.id
+     WHERE
+       (sr.status IN ('PAID', 'PENDING_GENERATION', 'GENERATED') AND sr.first_viewed_at IS NULL)
+       OR (sr.status = 'FINALIZED' AND sr.amount_paid_wei > 0 AND bb.id IS NULL)`
+  );
+  return res?.rows[0]?.total || "0";
+}
+
 /** Only legal before either finalize trigger (PAID/PENDING_GENERATION/GENERATED-and-unviewed). */
 export async function markRefunded(id, refundTxHash) {
   const res = await query(
