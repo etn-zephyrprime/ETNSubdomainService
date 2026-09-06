@@ -6,7 +6,7 @@ const TABS = [
   { id: "tokens", label: "Tokens" },
   { id: "address", label: "Address Lookup" },
   { id: "nameservice", label: "Name Service" },
-  { id: "portfolio", label: "Portfolio" },
+  { id: "portfolio", label: "Premium" },
   { id: "premium", label: "PnL Statement" },
 ];
 
