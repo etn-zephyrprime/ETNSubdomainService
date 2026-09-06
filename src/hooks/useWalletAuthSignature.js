@@ -6,26 +6,31 @@ import { signWalletAuth } from "../utils/walletAuth.js";
 // the wallet for a new one once it's genuinely close to expiring, so a component that polls an
 // auth-gated endpoint (PnlStatementProgress.jsx) doesn't trigger a new signature popup on every
 // single poll tick. Re-signs immediately if the connected account has changed since the last one.
+//
+// `purpose` (see walletAuth.js) is part of what gets signed, so it's part of the cache key too —
+// one hook instance asked for two different purposes (unusual, but not prevented) must not hand
+// back a cached signature for the wrong one.
 const AUTH_LIFETIME_MS = 5 * 60 * 1000; // must match the backend's AUTH_MAX_SKEW_MS
 const REFRESH_BEFORE_EXPIRY_MS = 60 * 1000; // re-sign with a minute of buffer left
 
 export function useWalletAuthSignature(wallet) {
-  const cacheRef = useRef(null); // { address, signature, timestamp } | null
+  const cacheRef = useRef(null); // { address, purpose, signature, timestamp } | null
 
-  const getAuthParams = useCallback(async () => {
+  const getAuthParams = useCallback(async (purpose) => {
     if (!wallet?.account) throw new Error("Wallet not connected");
 
     const cached = cacheRef.current;
     const stillFresh =
       cached &&
       cached.address === wallet.account &&
+      cached.purpose === purpose &&
       Date.now() - cached.timestamp < AUTH_LIFETIME_MS - REFRESH_BEFORE_EXPIRY_MS;
 
     if (stillFresh) return cached;
 
     const signer = await wallet.getSigner();
-    const { signature, timestamp } = await signWalletAuth(signer, wallet.account);
-    const result = { address: wallet.account, signature, timestamp };
+    const { signature, timestamp } = await signWalletAuth(signer, wallet.account, purpose);
+    const result = { address: wallet.account, purpose, signature, timestamp };
     cacheRef.current = result;
     return result;
   }, [wallet]);

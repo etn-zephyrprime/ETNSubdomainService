@@ -16,6 +16,9 @@ import NameServiceStats from "./components/NameServiceStats.jsx";
 // all for a dashboard visitor who never touches this" property the rest of this file's own
 // original comment already established for every other tab.
 const PremiumDashboardSection = lazy(() => import("./premium/PremiumDashboardSection.jsx"));
+// Core Tier — the second wallet-requiring tab, its own lazy chunk for the same reason as
+// PremiumDashboardSection above (see that file's own header comment on why the two stay split).
+const PortfolioDashboardSection = lazy(() => import("./premium/PortfolioDashboardSection.jsx"));
 
 // Free-tier Electroneum on-chain dashboard — read-only, no login required for every tab except
 // Premium (see that lazy import above). Everything else here stays exactly as walletless as
@@ -114,6 +117,11 @@ export default function DashboardApp() {
         )}
         {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
         {tab === "nameservice" && <NameServiceStats />}
+        {tab === "portfolio" && (
+          <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
+            <PortfolioDashboardSection />
+          </Suspense>
+        )}
         {tab === "premium" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
             <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
