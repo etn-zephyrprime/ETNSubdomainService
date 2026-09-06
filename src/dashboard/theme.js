@@ -11,6 +11,11 @@ export const orange = "#ff8a3d";
 export const orangeGlow = "rgba(255,122,0,0.25)";
 export const blue = "#3ea6ff";
 export const blueGlow = "rgba(0,198,255,0.25)";
+// Reserved for marking something as premium/paid specifically — deliberately not reused for
+// anything else, so gold keeps meaning "premium" everywhere it appears rather than becoming just
+// another accent color in the mix (DashboardNav.jsx's Premium tab is the first user).
+export const gold = "#e8bf4c";
+export const goldGlow = "rgba(232,191,76,0.35)";
 export const panel = "#0f0f0f";
 export const panel2 = "#111";
 export const border = "#333";
