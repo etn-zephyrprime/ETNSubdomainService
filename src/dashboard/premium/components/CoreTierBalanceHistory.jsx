@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { LineChart } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
@@ -6,13 +6,19 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
-import { mergeBalanceHistories } from "../../utils/balanceHistory.js";
-import { formatChartDate, shortHash } from "../../utils/format.js";
-import { green, muted, mutedLight, border } from "../../theme.js";
+import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
+import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd } from "../../utils/balanceHistory.js";
+import { formatChartDate, formatUsdPrice, shortHash } from "../../utils/format.js";
+import { green, muted, mutedLight, border, panel2 } from "../../theme.js";
 
 function fmtEtn(v) {
   return `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
 }
+
+const VALUE_MODES = [
+  { id: "etn", label: "ETN" },
+  { id: "usd", label: "USD" },
+];
 
 // Core Tier's second feature: full ETN balance history — combined across every tracked wallet,
 // plus each wallet's own — reusing the exact same Blockscout endpoint (coin-balance-history-by-
@@ -23,6 +29,11 @@ function fmtEtn(v) {
 // live snapshot CoreTierPortfolio.jsx already shows — reconstructing token balance-over-time would
 // mean indexing every transfer ourselves, a materially bigger feature than this one.
 //
+// The ETN/USD toggle converts using the REAL historical price on each date (useEtnPriceHistory's
+// own dense, gap-free daily series — confirmed live back to 2019-07-10), not today's price applied
+// retroactively — the latter would just be a rescaled copy of the ETN chart, not an actual "what
+// was this worth" answer.
+//
 // Shares useCoreTierAccess with CoreTierPortfolio.jsx (same membershipVersion prop, passed down
 // from PortfolioDashboardSection.jsx) rather than each maintaining its own copy of "is this member
 // allowed, and which wallets do they track" — see that hook's own header comment.
@@ -32,9 +43,12 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
     active, checkAccessOnce,
   } = useCoreTierAccess(wallet, membershipVersion);
   const { getAddressCoinBalanceHistory } = useBlockscout();
+  const { getEtnPriceHistory } = useEtnPriceHistory();
 
   const [historiesByAddress, setHistoriesByAddress] = useState({}); // address -> items[] | null (loading)
   const [error, setError] = useState(null);
+  const [pricePoints, setPricePoints] = useState(null); // null until loaded
+  const [valueMode, setValueMode] = useState("etn");
 
   useEffect(() => {
     if (!hasAccess || active.length === 0) {
@@ -62,18 +76,71 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
     return () => { cancelled = true; };
   }, [hasAccess, active, getAddressCoinBalanceHistory]);
 
+  // Full daily ETN/USD price history — site-wide, not per-wallet, so fetched once (not per
+  // tracked wallet) whenever there's anything to convert. "all" (not "1y") since a wallet's own
+  // balance history can reach back further than a year.
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setPricePoints(null);
+      return;
+    }
+    let cancelled = false;
+    getEtnPriceHistory("all")
+      .then((res) => { if (!cancelled) setPricePoints(Array.isArray(res?.points) ? res.points : []); })
+      .catch((err) => {
+        console.error("Failed to load ETN price history:", err.message);
+        if (!cancelled) setPricePoints([]);
+      });
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getEtnPriceHistory]);
+
+  const priceLookup = useMemo(
+    () => (pricePoints && pricePoints.length > 0 ? buildEtnPriceLookup(pricePoints) : null),
+    [pricePoints]
+  );
+  const usdReady = priceLookup != null;
+  const showUsd = valueMode === "usd" && usdReady;
+
   const loaded = active.length > 0 && active.every((w) => historiesByAddress[w.address] != null);
-  const combinedSeries = loaded
+  const combinedSeriesEtn = loaded
     ? mergeBalanceHistories(active.map((w) => historiesByAddress[w.address]))
     : [];
+  const combinedSeries = showUsd ? convertSeriesToUsd(combinedSeriesEtn, priceLookup) : combinedSeriesEtn;
+  const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
   return (
     <DashboardPanel>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <LineChart size={18} color={green} />
-        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          Core Tier — Balance History
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <LineChart size={18} color={green} />
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
+            Core Tier — Balance History
+          </div>
         </div>
+        {loaded && active.length > 0 && (
+          <div style={{ display: "flex", gap: 6 }}>
+            {VALUE_MODES.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setValueMode(m.id)}
+                disabled={m.id === "usd" && !usdReady}
+                title={m.id === "usd" && !usdReady ? "Loading price history…" : undefined}
+                style={{
+                  padding: "5px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${m.id === valueMode ? green : border}`,
+                  background: m.id === valueMode ? "rgba(24,187,26,0.12)" : panel2,
+                  color: m.id === "usd" && !usdReady ? muted : m.id === valueMode ? green : mutedLight,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: m.id === "usd" && !usdReady ? "not-allowed" : "pointer",
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <CoreTierGate
@@ -98,19 +165,20 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                {active.length > 1 ? "Combined ETN Balance History" : "ETN Balance History"}
+                {active.length > 1 ? "Combined Balance History" : "Balance History"}
               </div>
               {combinedSeries.length < 2 ? (
                 <div style={{ fontSize: 12, color: muted }}>Not enough history yet to chart.</div>
               ) : (
-                <SparklineChart data={combinedSeries} height={140} formatValue={fmtEtn} formatLabel={formatChartDate} />
+                <SparklineChart data={combinedSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
               )}
             </div>
 
             {active.length > 1 &&
               active.map((w) => {
                 const items = historiesByAddress[w.address] || [];
-                const series = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
+                const seriesEtn = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
+                const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
                 return (
                   <div key={w.address}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
@@ -120,7 +188,7 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }
                     {series.length < 2 ? (
                       <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>Not enough history yet to chart.</div>
                     ) : (
-                      <SparklineChart data={series} height={100} formatValue={fmtEtn} formatLabel={formatChartDate} />
+                      <SparklineChart data={series} height={100} formatValue={formatValue} formatLabel={formatChartDate} />
                     )}
                   </div>
                 );

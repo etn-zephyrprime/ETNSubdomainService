@@ -33,3 +33,39 @@ export function mergeBalanceHistories(perWalletItems) {
     return { label: date, value: parseFloat(ethers.formatEther(totalWei)) };
   });
 }
+
+/**
+ * Builds a `date (YYYY-MM-DD) -> USD price` lookup from useEtnPriceHistory's own `points`
+ * (`{timestamp, priceUsd}[]`) — backed by price_points (see that hook's own comment), which is
+ * DENSE in practice (confirmed live: one point per calendar day, no gaps, back to 2019-07-10), so
+ * this is mostly a plain exact-date lookup. Still falls back to the closest earlier date for any
+ * date not present, same defensive spirit as mergeBalanceHistories's forward-fill, in case a given
+ * day is ever genuinely missing from price_points.
+ */
+export function buildEtnPriceLookup(points) {
+  const sorted = [...points]
+    .map((p) => ({ date: p.timestamp.slice(0, 10), priceUsd: p.priceUsd }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  return (date) => {
+    let price = null;
+    for (const p of sorted) {
+      if (p.date > date) break;
+      price = p.priceUsd;
+    }
+    return price;
+  };
+}
+
+/** Converts an ETN-denominated `{label, value}[]` series to USD using `priceLookup` (see
+ * buildEtnPriceLookup) — a point whose date has no known price (shouldn't happen given how dense
+ * the series is, but see that function's own fallback) is dropped rather than shown as $0, same
+ * "omit rather than fake a number" convention used everywhere else USD values appear in this app. */
+export function convertSeriesToUsd(series, priceLookup) {
+  return series
+    .map((point) => {
+      const price = priceLookup(point.label);
+      return price == null ? null : { label: point.label, value: point.value * price };
+    })
+    .filter(Boolean);
+}

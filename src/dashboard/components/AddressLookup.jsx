@@ -336,14 +336,29 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
 
   const chartLoading = { balance: balanceHistory === null, transactions: txHistory === null, tokenTransfers: transferHistory === null }[activeMetric];
 
+  // Ordered by USD value, descending — raw on-chain amounts aren't comparable across tokens with
+  // different decimals, so leaving the list in whatever order Blockscout happened to return (the
+  // previous behavior) put arbitrarily-sized holdings ahead of genuinely larger ones. usdValue is
+  // computed once here and reused at render time. A token with no resolved price yet (tokenPrices
+  // hasn't caught up — see that effect above, prices trickle in one request per token) sinks to
+  // the bottom instead of counting as $0, so it doesn't briefly occupy a top slot before its real
+  // price arrives — same convention CoreTierPortfolio.jsx's own Combined Holdings sort uses.
   const visibleHoldings = useMemo(() => {
     const wantNft = holdingsCategory === "nfts";
-    return tokenBalances.filter((tb) => {
-      const isNft = NFT_TOKEN_TYPES.has(tb.token?.type);
-      if (isNft !== wantNft) return false;
-      return !isSpamTokenName(tb.token?.name);
-    });
-  }, [tokenBalances, holdingsCategory]);
+    return tokenBalances
+      .filter((tb) => {
+        const isNft = NFT_TOKEN_TYPES.has(tb.token?.type);
+        if (isNft !== wantNft) return false;
+        return !isSpamTokenName(tb.token?.name);
+      })
+      .map((tb) => ({ ...tb, usdValue: tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]) }))
+      .sort((a, b) => {
+        if (a.usdValue == null && b.usdValue == null) return 0;
+        if (a.usdValue == null) return 1;
+        if (b.usdValue == null) return -1;
+        return b.usdValue - a.usdValue;
+      });
+  }, [tokenBalances, holdingsCategory, tokenPrices]);
 
   // "Show more" is available whenever there's a saved next_page_params to resume from — null
   // means fetchUntilWindow ran out of data on its own, i.e. this address's *complete* history is
@@ -508,7 +523,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
             </div>
           ) : (
             visibleHoldings.slice(0, 25).map((tb, i) => {
-              const usdValue = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
+              const { usdValue } = tb;
               return (
                 <button
                   key={`${tb.token?.address}-${i}`}
