@@ -326,10 +326,22 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
     }
   };
 
+  // Ordered by USD value, descending — raw on-chain amounts aren't comparable across tokens with
+  // different decimals, so sorting by those (the previous behavior) was effectively meaningless.
+  // usdValue is attached here once and reused at render time rather than recomputed. A token with
+  // no resolved price yet (tokenPrices hasn't caught up — see that effect above, prices trickle in
+  // one request per token) sinks to the bottom instead of counting as $0, so it doesn't briefly
+  // occupy a top slot before its real price arrives.
   const visibleTokens = portfolio
     ? portfolio.tokens
         .filter((t) => !isSpamTokenName(t.token?.name))
-        .sort((a, b) => (b.value > a.value ? 1 : b.value < a.value ? -1 : 0))
+        .map((t) => ({ ...t, usdValue: tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]) }))
+        .sort((a, b) => {
+          if (a.usdValue == null && b.usdValue == null) return 0;
+          if (a.usdValue == null) return 1;
+          if (b.usdValue == null) return -1;
+          return b.usdValue - a.usdValue;
+        })
     : [];
 
   const renderPending = () => {
@@ -642,7 +654,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
                     <div style={{ fontSize: 12, color: muted }}>No token balances across your tracked wallets.</div>
                   ) : (
                     visibleTokens.slice(0, 25).map((t, i) => {
-                      const usdValue = tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]);
+                      const { usdValue } = t;
                       return (
                         <div
                           key={`${t.token?.address}-${i}`}
