@@ -6,22 +6,30 @@
 //
 // ElectroSwap has (at least) two pool types live on this chain — confirmed live: a token's pools
 // via GeckoTerminal can come back labeled "electroswap v3" (concentrated liquidity, Uniswap-V3-
-// style — price read via slot0().sqrtPriceX96, not a simple reserve ratio), and a token can have
-// ONLY that kind with no plain V2 pair at all (confirmed live for a real token with $15k+ of
-// reserves, 100% in a V3 pool — the original V2-only version of this file reported "no pool found"
-// for it, which was simply wrong). Pool identification (which pool, which type) is resolved once
-// per token and cached forever:
-//   1. Try ElectroSwap's V2 factory directly (getPair(token, WETN)) — free, no external call.
-//   2. If no V2 pair exists, fall back to a ONE-TIME GeckoTerminal lookup (same shared queue
-//      pnlPricing.js/tokenChartRouter.js already use) for the token's best WETN-paired pool,
-//      whatever type it turns out to be. This is a per-NEW-alert-token cost, not a per-poll one —
-//      it doesn't compete with that queue's tight budget the way a live-price poll would.
-//   3. Whichever pool is found, PROBE it (try getReserves(), then slot0()) to determine its actual
-//      type rather than trusting a dex-id string — self-healing if ElectroSwap's naming or pool
-//      mix ever changes, and works regardless of which discovery path found it.
-// Every poll after that reads the cached pool directly on-chain — zero GeckoTerminal involvement
-// for the recurring/expensive part, which is the whole reason this file exists instead of just
-// calling GeckoTerminal every tick the way pnlPricing.js's historical lookups do.
+// style — price read via slot0().sqrtPriceX96, not a simple reserve ratio) alongside plain V2-style
+// pairs, and EITHER can be "the" real pool for a given token — confirmed live for a real token with
+// $15k+ of reserves 100% in a V3 pool and no V2 pair at all. A token can also have BOTH: an early,
+// now-thin legacy V2 pair alongside a newer, far more liquid V3 one. Picking "whichever pool type
+// happens to be checked first" (this file's original design: try V2, only look at V3 if V2 is
+// completely absent) gets that case backwards — it would confidently price off the stale, thin V2
+// pool while ignoring the pool that's actually carrying the real liquidity.
+//
+// So pool identification is LIQUIDITY-RANKED, not type-prioritized: GeckoTerminal's per-token pools
+// list (same shared queue pnlPricing.js/tokenChartRouter.js already use) already reports every
+// WETN-paired pool of every type with a real reserve_in_usd figure, so asking it directly and
+// taking the highest-liquidity one naturally picks the actual main pool regardless of which type
+// that turns out to be. This is a ONE-TIME, cached-forever lookup per token (not per poll), so it
+// doesn't compete with that queue's tight budget the way a live-price poll would. If GeckoTerminal
+// has nothing at all for a token (a pool too new to be indexed yet), this falls back to checking
+// ElectroSwap's V2 factory directly on-chain — better than nothing for that edge case, but never
+// preferred over a GeckoTerminal-ranked result when one exists.
+//
+// Whichever pool is found (either path), it's PROBED on-chain (try getReserves(), then slot0()) to
+// determine its actual interface rather than trusting a dex-id string — self-healing if
+// ElectroSwap's naming or pool mix ever changes. Every poll after this one-time resolution reads
+// the cached pool directly on-chain — zero GeckoTerminal involvement for the recurring/expensive
+// part, which is the whole reason this file exists instead of just calling GeckoTerminal every
+// tick the way pnlPricing.js's historical lookups do.
 //
 // V3 price math deliberately uses plain JS Number rather than exact BigInt fixed-point: converting
 // sqrtPriceX96 to a Number retains ~15-16 significant digits of RELATIVE precision regardless of
@@ -70,11 +78,11 @@ async function findViaV2Factory(provider, tokenAddress) {
   return pairAddress && pairAddress !== ethers.ZeroAddress ? pairAddress : null;
 }
 
-/** One-time-per-token fallback for when ElectroSwap's V2 factory has no direct pair — asks
- * GeckoTerminal which pool(s) it knows about for this token and picks the best WETN-paired one,
- * same selection logic pnlPricing.js's resolvePoolAddress already uses (prefer WETN pairs, highest
- * reserve_in_usd). See this file's own header comment for why this is a one-time, not per-poll,
- * cost. */
+/** Primary discovery path: asks GeckoTerminal which pool(s) it knows about for this token and
+ * picks the highest-liquidity WETN-paired one, regardless of pool type — same selection logic
+ * pnlPricing.js's resolvePoolAddress already uses (prefer WETN pairs, highest reserve_in_usd). See
+ * this file's own header comment for why liquidity-ranking (not "try V2 first") is what correctly
+ * finds a token's actual main pool, and why this is a one-time, not per-poll, cost. */
 async function findViaGeckoTerminal(tokenAddress) {
   let pools = [];
   try {
@@ -121,8 +129,12 @@ async function resolvePairInfo(provider, tokenAddress) {
   const key = tokenAddress.toLowerCase();
   if (pairInfoCache.has(key)) return pairInfoCache.get(key);
 
-  let poolAddress = await findViaV2Factory(provider, tokenAddress);
-  if (!poolAddress) poolAddress = await findViaGeckoTerminal(tokenAddress);
+  // GeckoTerminal first — it ranks every pool type by real liquidity, so it naturally finds the
+  // actual main pool regardless of whether that's V2 or V3 (see this file's header comment for why
+  // "prefer V2 because it's simpler to check" was the bug). The on-chain V2 factory is only a
+  // fallback for a pool too new for GeckoTerminal to have indexed yet.
+  let poolAddress = await findViaGeckoTerminal(tokenAddress);
+  if (!poolAddress) poolAddress = await findViaV2Factory(provider, tokenAddress);
   if (!poolAddress) {
     pairInfoCache.set(key, null); // genuinely no WETN-paired pool anywhere — nothing to derive a price from
     return null;
