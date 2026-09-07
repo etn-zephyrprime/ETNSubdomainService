@@ -10,6 +10,14 @@
 // — each with its own optional topic thread. Reusing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID for
 // either would collide with this repo's own already-configured bot, hence the COREBOT_ prefix on
 // every env var below.
+//
+// COREBOT_ZEPHYROS_BOT_TOKEN (the "Zephyros" bot, @PlanetZephyrosNotisBot) now has a SECOND,
+// independent integration: notisLinkRouter.js uses the same token to DM Core tier premium alerts
+// directly to individual users, alongside (not instead of) this file's own group broadcasts. The
+// two don't conflict — this file only ever sends (sendMessage/sendAnimation to the one fixed
+// COREBOT_TELEGRAM_CHAT_ID group), it has never registered a webhook, so notisLinkRouter.js
+// registering one for /start-based linking doesn't take anything away from what happens here.
+
 const COREBOT_TELEGRAM_CHAT_ID = process.env.COREBOT_TELEGRAM_CHAT_ID;
 const COREBOT_TELEGRAM_BOT_TOKEN = process.env.COREBOT_TELEGRAM_BOT_TOKEN; // "Core Clash" bot — adverts only
 const COREBOT_ZEPHYROS_BOT_TOKEN = process.env.COREBOT_ZEPHYROS_BOT_TOKEN; // "Zephyros" bot — everything else

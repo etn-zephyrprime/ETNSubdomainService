@@ -9,16 +9,24 @@
 // createTelegramLinkRouter.js so both bots share one implementation of the security-sensitive
 // signature-verification/webhook code rather than keeping two hand-copied versions in sync.
 //
+// This IS the same bot/token as COREBOT_ZEPHYROS_BOT_TOKEN (coreClashTelegram.js's "Zephyros"
+// bot) — confirmed by the user, not a coincidence of naming. That file only ever SENDS to one
+// fixed group chat via sendMessage/sendAnimation; it has never registered a webhook, so this
+// router's own webhook registration (below, via createTelegramLinkRouter's registerWebhook) is the
+// first thing on this bot that receives updates at all — the two uses don't conflict (setWebhook
+// only affects inbound updates, never outbound sendMessage). One bot, two independent integrations
+// in this codebase; see coreClashTelegram.js's own comment pointing back here.
+//
 // Mounted at /api in backend/index.js, alongside (not replacing) telegramLinkRouter.js — a wallet
 // can be linked to neither, either, or both bots independently.
 import { createTelegramLinkRouter } from "./createTelegramLinkRouter.js";
 import { getNotisLinkState, setNotisLinkState } from "../state/notisLinkState.js";
 
 const instance = createTelegramLinkRouter({
-  botToken: process.env.NOTIS_BOT_TOKEN,
-  webhookSecret: process.env.NOTIS_WEBHOOK_SECRET || null,
+  botToken: process.env.COREBOT_ZEPHYROS_BOT_TOKEN,
+  webhookSecret: process.env.COREBOT_ZEPHYROS_WEBHOOK_SECRET || null,
   backendPublicUrl: process.env.BACKEND_PUBLIC_URL || null,
-  botUsername: process.env.NOTIS_BOT_USERNAME || null,
+  botUsername: process.env.COREBOT_ZEPHYROS_BOT_USERNAME || "PlanetZephyrosNotisBot",
   getState: getNotisLinkState,
   setState: setNotisLinkState,
   // Must stay byte-for-byte in sync with buildNotisLinkMessage() in src/utils/notisLinkAuth.js
