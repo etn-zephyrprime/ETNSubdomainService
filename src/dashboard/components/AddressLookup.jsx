@@ -129,6 +129,11 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [counters, setCounters] = useState(null);
   const [tokenBalances, setTokenBalances] = useState([]);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
+  // Addresses confirmed to have no ElectroSwap pool at all — see CoreTierPortfolio.jsx's own
+  // identical state for why this is tracked separately from "not in tokenPrices yet" (which just
+  // means still loading, or a transient fetch error — never hidden on that basis alone).
+  const [noLiquidityTokens, setNoLiquidityTokens] = useState(new Set());
+  const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [loadError, setLoadError] = useState(null);
 
   const [balanceHistory, setBalanceHistory] = useState(null);
@@ -215,6 +220,8 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     // instead of a blank slate — see that file's own comment for why. The effect below still
     // fetches fresh values for every held token regardless.
     setTokenPrices(readCachedTokenPrices());
+    setNoLiquidityTokens(new Set());
+    setShowHiddenTokens(false);
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -255,7 +262,16 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       const addr = tb.token.address.toLowerCase();
       getTokenChart(tb.token.address, "7")
         .then((res) => {
-          if (cancelled || !res?.hasData || !res.candles?.length) return;
+          if (cancelled) return;
+          // hasData:false covers two different things — no pool at all (no `pool` on the
+          // response — genuinely no-liquidity/dead) vs. a real pool with no trades in this
+          // specific 7-day window (`pool` present — a real market, just thin recently, not dead).
+          // Only the former is safe to hide — see CoreTierPortfolio.jsx's identical comment.
+          if (res?.hasData === false && !res.pool) {
+            setNoLiquidityTokens((prev) => (prev.has(addr) ? prev : new Set(prev).add(addr)));
+            return;
+          }
+          if (!res?.candles?.length) return;
           const price = res.candles[res.candles.length - 1].close;
           setTokenPrices((prev) => ({ ...prev, [addr]: price }));
           cacheTokenPrice(addr, price); // so the NEXT lookup/reload can show this immediately too
@@ -370,7 +386,9 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       .filter((tb) => {
         const isNft = NFT_TOKEN_TYPES.has(tb.token?.type);
         if (isNft !== wantNft) return false;
-        return !isSpamTokenName(tb.token?.name);
+        if (isSpamTokenName(tb.token?.name)) return false;
+        if (!showHiddenTokens && !isNft && noLiquidityTokens.has(tb.token?.address?.toLowerCase())) return false;
+        return true;
       })
       .map((tb) => ({ ...tb, usdValue: tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]) }))
       .sort((a, b) => {
@@ -379,7 +397,11 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
         if (b.usdValue == null) return -1;
         return b.usdValue - a.usdValue;
       });
-  }, [tokenBalances, holdingsCategory, tokenPrices]);
+  }, [tokenBalances, holdingsCategory, tokenPrices, noLiquidityTokens, showHiddenTokens]);
+  const hiddenNoLiquidityCount = useMemo(
+    () => tokenBalances.filter((tb) => !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name) && noLiquidityTokens.has(tb.token?.address?.toLowerCase())).length,
+    [tokenBalances, noLiquidityTokens]
+  );
 
   // "Show more" is available whenever there's a saved next_page_params to resume from — null
   // means fetchUntilWindow ran out of data on its own, i.e. this address's *complete* history is
@@ -538,7 +560,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               </button>
             ))}
           </div>
-          {visibleHoldings.length === 0 ? (
+          {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
             <div style={{ fontSize: 12, color: muted }}>
               {holdingsCategory === "nfts" ? "No NFTs held." : "No token balances."}
             </div>
@@ -575,6 +597,14 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                 </button>
               );
             })
+          )}
+          {holdingsCategory === "tokens" && !showHiddenTokens && hiddenNoLiquidityCount > 0 && (
+            <div style={{ marginTop: 10, fontSize: 11, color: muted, textAlign: "center" }}>
+              {hiddenNoLiquidityCount} token{hiddenNoLiquidityCount === 1 ? "" : "s"} hidden (no ElectroSwap pool found) —{" "}
+              <button type="button" onClick={() => setShowHiddenTokens(true)} style={{ background: "none", border: "none", padding: 0, color: green, cursor: "pointer", textDecoration: "underline", fontSize: 11 }}>
+                Show
+              </button>
+            </div>
           )}
         </div>
       )}

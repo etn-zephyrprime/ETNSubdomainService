@@ -47,7 +47,8 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
   const [history, setHistory] = useState(null); // { combined: [{date,...}] } | null
   const [historyError, setHistoryError] = useState(null);
 
-  const { resolve: resolveTokenName } = useTokenNames((snapshot?.combined?.holdings || []).map((h) => h.tokenAddress));
+  const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((snapshot?.combined?.holdings || []).map((h) => h.tokenAddress));
+  const [showHiddenTokens, setShowHiddenTokens] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
     setSnapshotLoading(true);
@@ -182,44 +183,65 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
 
                 <div style={{ marginBottom: 20 }}>
                   <div style={sectionHeaderStyle}>Current Holdings</div>
-                  {combined.holdings.length === 0 ? (
-                    <div style={{ fontSize: 12, color: muted }}>No holdings across your tracked wallets right now.</div>
-                  ) : (
-                    combined.holdings
+                  {(() => {
+                    // isSpam(address) checks the token's actual resolved name (never a hex
+                    // fallback — see useTokenNames.js's own comment on why). marketValueUsd null
+                    // means dexPriceQuote.js found no ElectroSwap pool at all for this token
+                    // (checked server-side against GeckoTerminal's full pool list, not a narrow
+                    // recent-activity window) — a confirmed negative, safe to hide by default.
+                    const allHoldings = combined.holdings.filter((h) => !isSpamToken(h.tokenAddress));
+                    const hiddenCount = allHoldings.filter((h) => h.marketValueUsd == null).length;
+                    const shown = (showHiddenTokens ? allHoldings : allHoldings.filter((h) => h.marketValueUsd != null))
                       .slice()
-                      .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0))
-                      .map((h) => {
-                        const unrealized = h.marketValueUsd != null ? Number(h.marketValueUsd) - Number(h.costBasisUsd) : null;
-                        return (
-                          <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
-                            <span style={{ fontSize: 12, color: "#fff" }}>
-                              {onSelectToken ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onSelectToken(h.tokenAddress)}
-                                  style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
-                                  onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
-                                  title="View on the Tokens page"
-                                >
-                                  {resolveTokenName(h.tokenAddress)}
-                                </button>
-                              ) : (
-                                resolveTokenName(h.tokenAddress)
-                              )}
-                            </span>
-                            <span style={{ textAlign: "right" }}>
-                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                                {h.marketValueUsd != null ? formatUsdPrice(Number(h.marketValueUsd)) : "price unavailable"}
+                      .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0));
+
+                    if (allHoldings.length === 0) {
+                      return <div style={{ fontSize: 12, color: muted }}>No holdings across your tracked wallets right now.</div>;
+                    }
+                    return (
+                      <>
+                        {shown.map((h) => {
+                          const unrealized = h.marketValueUsd != null ? Number(h.marketValueUsd) - Number(h.costBasisUsd) : null;
+                          return (
+                            <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
+                              <span style={{ fontSize: 12, color: "#fff" }}>
+                                {onSelectToken ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onSelectToken(h.tokenAddress)}
+                                    style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
+                                    title="View on the Tokens page"
+                                  >
+                                    {resolveTokenName(h.tokenAddress)}
+                                  </button>
+                                ) : (
+                                  resolveTokenName(h.tokenAddress)
+                                )}
                               </span>
-                              {unrealized != null && (
-                                <span style={{ display: "block", fontSize: 10, color: pnlColor(unrealized) }}>{fmtSigned(unrealized)}</span>
-                              )}
-                            </span>
+                              <span style={{ textAlign: "right" }}>
+                                <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                  {h.marketValueUsd != null ? formatUsdPrice(Number(h.marketValueUsd)) : "price unavailable"}
+                                </span>
+                                {unrealized != null && (
+                                  <span style={{ display: "block", fontSize: 10, color: pnlColor(unrealized) }}>{fmtSigned(unrealized)}</span>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        {!showHiddenTokens && hiddenCount > 0 && (
+                          <div style={{ marginTop: 10, fontSize: 11, color: muted, textAlign: "center" }}>
+                            {hiddenCount} token{hiddenCount === 1 ? "" : "s"} hidden (no ElectroSwap pool found) —{" "}
+                            <button type="button" onClick={() => setShowHiddenTokens(true)} style={{ background: "none", border: "none", padding: 0, color: green, cursor: "pointer", textDecoration: "underline", fontSize: 11 }}>
+                              Show
+                            </button>
                           </div>
-                        );
-                      })
-                  )}
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </>
             ) : null}
