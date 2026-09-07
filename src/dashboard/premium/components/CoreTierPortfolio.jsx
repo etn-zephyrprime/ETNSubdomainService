@@ -117,6 +117,13 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
+  // Addresses CoreTierPortfolio has confirmed have no ElectroSwap pool at all (getTokenChart came
+  // back hasData:false) — distinct from simply "not in tokenPrices yet", which just means the
+  // price fetch hasn't resolved (or errored transiently) and may still arrive. Only a CONFIRMED
+  // negative ever hides a holding — never "we haven't heard back yet" — so a real token can't
+  // vanish from the list just because its price is slow to load.
+  const [noLiquidityTokens, setNoLiquidityTokens] = useState(new Set());
+  const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
 
@@ -146,6 +153,8 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
     // values for every held token regardless, overwriting these as they arrive — this only makes
     // the FIRST paint show real numbers instead of "still pricing...".
     setTokenPrices(readCachedTokenPrices());
+    setNoLiquidityTokens(new Set());
+    setShowHiddenTokens(false);
     setHoldingsShown(HOLDINGS_PAGE_SIZE);
     getCombinedPortfolio(active.map((w) => w.address))
       .then((res) => { if (!cancelled) setPortfolio(res); })
@@ -172,7 +181,17 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
       const addr = t.token.address.toLowerCase();
       getTokenChart(t.token.address, "7")
         .then((res) => {
-          if (cancelled || !res?.hasData || !res.candles?.length) return;
+          if (cancelled) return;
+          // hasData:false covers TWO different things (see tokenChartRouter.js's own
+          // loadTokenChart): no pool found at all (no `pool` on the response — genuinely
+          // no-liquidity/dead), vs. a real pool that just has no trades in this specific 7-day
+          // window (`reason: "no_recent_activity"`, `pool` present — a real market, just thin
+          // recently, NOT dead). Only the former is safe to hide.
+          if (res?.hasData === false && !res.pool) {
+            setNoLiquidityTokens((prev) => (prev.has(addr) ? prev : new Set(prev).add(addr)));
+            return;
+          }
+          if (!res?.candles?.length) return;
           const price = res.candles[res.candles.length - 1].close;
           setTokenPrices((prev) => ({ ...prev, [addr]: price }));
           cacheTokenPrice(addr, price); // so the NEXT reload/reconnect can show this immediately too
@@ -245,7 +264,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   // signal available), same convention as AddressLookup.jsx's own Tokens/NFT's toggle. Only the
   // fungible list is meaningfully sortable by USD value — NFTs never get a price (no ElectroSwap
   // trading pair), so they stay in whatever order useCombinedPortfolio.js's merge produced them.
-  const visibleTokens = portfolio
+  const allVisibleTokens = portfolio
     ? portfolio.tokens
         .filter((t) => !isSpamTokenName(t.token?.name) && !NFT_TOKEN_TYPES.has(t.token?.type))
         .map((t) => ({ ...t, usdValue: tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]) }))
@@ -256,6 +275,10 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
           return b.usdValue - a.usdValue;
         })
     : [];
+  const hiddenNoLiquidityCount = allVisibleTokens.filter((t) => noLiquidityTokens.has(t.token?.address?.toLowerCase())).length;
+  const visibleTokens = showHiddenTokens
+    ? allVisibleTokens
+    : allVisibleTokens.filter((t) => !noLiquidityTokens.has(t.token?.address?.toLowerCase()));
   const visibleNfts = portfolio
     ? portfolio.tokens.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
     : [];
@@ -615,7 +638,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       </button>
                     ))}
                   </div>
-                  {visibleHoldings.length === 0 ? (
+                  {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
                     <div style={{ fontSize: 12, color: muted }}>
                       {holdingsCategory === "nfts" ? "No NFTs held across your tracked wallets." : "No token balances across your tracked wallets."}
                     </div>
@@ -684,6 +707,14 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                         >
                           Show more ({visibleHoldings.length - holdingsShown} more)
                         </button>
+                      )}
+                      {holdingsCategory === "tokens" && !showHiddenTokens && hiddenNoLiquidityCount > 0 && (
+                        <div style={{ marginTop: 10, fontSize: 11, color: muted, textAlign: "center" }}>
+                          {hiddenNoLiquidityCount} token{hiddenNoLiquidityCount === 1 ? "" : "s"} hidden (no ElectroSwap pool found) —{" "}
+                          <button type="button" onClick={() => setShowHiddenTokens(true)} style={{ background: "none", border: "none", padding: 0, color: green, cursor: "pointer", textDecoration: "underline", fontSize: 11 }}>
+                            Show
+                          </button>
+                        </div>
                       )}
                     </>
                   )}

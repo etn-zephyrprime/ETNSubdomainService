@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useBlockscout } from "./useBlockscout.js";
+import { isSpamTokenName } from "../utils/format.js";
 
 // Resolves a token symbol/name for CoreTierAlerts.jsx's Token Price Alerts list, which used to
 // show the raw contract address only. Same shared-cache/subscriber shape as useDisplayNames.js
@@ -48,6 +49,17 @@ export function useTokenNames(addresses) {
       if (!address) return "Unknown";
       const cached = cache.get(address.toLowerCase());
       return typeof cached === "string" ? cached : shortAddr(address);
+    },
+    // Deliberately checks the RAW cached value, never resolve()'s short-hex fallback — a token
+    // whose name hasn't resolved yet must never be flagged spam off a coincidental match against
+    // its own address text (e.g. a "0xdead..."-style burn/vanity address would otherwise
+    // wrongly look like a "dead"-named spam token before its real name/symbol ever loads).
+    // Resolves to false (never spam) for anything not yet a confirmed string, same "never hide on
+    // uncertainty" principle as noLiquidityTokens elsewhere.
+    isSpam(address) {
+      if (!address) return false;
+      const cached = cache.get(address.toLowerCase());
+      return typeof cached === "string" && isSpamTokenName(cached);
     },
   };
 }

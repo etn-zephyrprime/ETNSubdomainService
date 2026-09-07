@@ -48,9 +48,12 @@ export function formatEtnBalance(wei) {
   }
 }
 
-// Airdrop-spam filter for token lists (TokenLeaderboard.jsx, AddressLookup.jsx's holdings) — a
-// name-substring blocklist rather than anything cleverer, matching exactly what was asked for.
-// Applied client-side since Blockscout's /tokens has no name-exclusion query param.
+// Airdrop-spam filter for token lists (TokenLeaderboard.jsx, AddressLookup.jsx's holdings,
+// CoreTierPortfolio.jsx, CoreTierPnl.jsx) — a name-substring blocklist rather than anything
+// cleverer, matching exactly what was asked for. Applied client-side since Blockscout's /tokens
+// has no name-exclusion query param. Also hand-copied into backend/utils/portfolioValuation.js
+// (no shared build step between frontend/backend in this repo) — keep both in sync if this
+// pattern ever changes.
 const SPAM_NAME_PATTERN = /dead|test|token/i;
 export function isSpamTokenName(name) {
   return SPAM_NAME_PATTERN.test(name || "");

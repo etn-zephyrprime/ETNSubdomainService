@@ -20,11 +20,14 @@ import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
-// Same heuristic src/dashboard/utils/format.js's isSpamTokenName applies client-side — kept as its
-// own small copy here rather than importing a frontend module from the backend.
+// MUST stay byte-for-byte in sync with src/dashboard/utils/format.js's SPAM_NAME_PATTERN — kept as
+// its own small copy here rather than importing a frontend module from the backend (no shared
+// build step between them, same reasoning as pnlStatementGenerator.js's own hand-synced THEME
+// constant). Confirmed drifted from that canonical pattern once already (this copy checked for a
+// URL/TLD in the name, the real one is a plain "dead"/"test"/"token" substring match) — fixed here
+// to match exactly; if the frontend pattern ever changes, update this too.
 function isSpamTokenName(name) {
-  if (!name) return false;
-  return /https?:\/\//i.test(name) || /\.(com|io|xyz|org|net)\b/i.test(name);
+  return /dead|test|token/i.test(name || "");
 }
 // Same reasoning/value as CoreTierPortfolio.jsx's own MAX_PRICED_HOLDINGS — bounds worst-case
 // per-wallet RPC volume for a wallet holding a large number of distinct tokens (airdropped spam in
