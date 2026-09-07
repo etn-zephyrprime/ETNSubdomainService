@@ -5,6 +5,7 @@ import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
 import CoreTierPortfolio from "./components/CoreTierPortfolio.jsx";
 import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
+import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import { green, greenGlow, muted } from "../theme.js";
 
@@ -45,6 +46,7 @@ export default function PortfolioDashboardSection({ onSelectToken }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
         <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
+        <CoreTierPnl wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
         <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>

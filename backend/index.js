@@ -34,6 +34,8 @@ import { startWalletAlertScheduler } from "./utils/walletAlertScheduler.js";
 import { startTokenPriceAlertScheduler } from "./utils/tokenPriceAlertScheduler.js";
 import { startPortfolioAlertScheduler } from "./utils/portfolioAlertScheduler.js";
 import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.js";
+import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
+import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
@@ -74,6 +76,7 @@ app.use("/api", r2CacheProxyRouter);
 app.use("/api", pnlStatementRouter);
 app.use("/api", premiumDashboardRouter);
 app.use("/api", premiumAlertsRouter);
+app.use("/api", pnlSnapshotRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -134,4 +137,5 @@ app.listen(PORT, () => {
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
   safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);
   safeStart("Portfolio digest scheduler", startPortfolioDigestScheduler);
+  safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);
 });
