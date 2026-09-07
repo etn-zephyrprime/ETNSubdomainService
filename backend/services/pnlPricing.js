@@ -324,9 +324,13 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
     console.log(
       `💰 Price history backfilled for ${cacheAsset}: earliest available ${result.earliestDate ? result.earliestDate.toISOString().slice(0, 10) : "none found"}, ${result.poolCount} source(s) scanned`
     );
+    // Constructed rather than re-fetched via getBackfillState — markBackfilled doesn't return the
+    // row, and we already have everything it would contain right here.
+    return { earliest_available_date: result.earliestDate, pool_count: result.poolCount };
   } catch (err) {
     console.warn(`⚠️  Price history backfill failed for ${cacheAsset}, falling back to per-date lookups:`, err.message);
     failedBackfillThisRun.add(cacheAsset);
+    return null;
   }
 }
 
@@ -401,10 +405,27 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   const bucketed = bucketToDay(timestamp);
   const tokenAddress = isNative ? WETN_ADDRESS : asset;
 
-  await ensureBackfilled(cacheAsset, tokenAddress);
+  const backfillState = await ensureBackfilled(cacheAsset, tokenAddress);
 
   const cached = await getPricePoint(cacheAsset, bucketed);
   if (cached) return Number(cached.price_usd);
+
+  // The bulk backfill already walked this asset's ENTIRE available on-chain history (or ETN's full
+  // KuCoin history) and recorded exactly how far back real data goes — see backfillPoolDailyHistory
+  // and this file's own top comment on GeckoTerminal's ~184-day OHLCV ceiling (a hard account-tier
+  // restriction, not a per-request quirk: the bulk pass can't reach further back regardless of how
+  // many pages it requests, and neither can a live per-date lookup against the same source). A date
+  // older than that recorded ceiling — or a backfill that found no data at all — can never resolve
+  // here; fail fast instead of repeating the same doomed live GeckoTerminal/CoinGecko call for every
+  // individual day beyond it. Confirmed live: without this, backfillPnlHistory's up-to-365-day scan
+  // tripped GeckoTerminal's rate limit hammering this exact live fallback once per (token, old day).
+  if (backfillState && (!backfillState.earliest_available_date || bucketed < new Date(backfillState.earliest_available_date))) {
+    throw new Error(
+      `No price data available for ${cacheAsset} before ${
+        backfillState.earliest_available_date ? new Date(backfillState.earliest_available_date).toISOString().slice(0, 10) : "any date"
+      } (known bulk-backfill ceiling) — requested ${bucketed.toISOString().slice(0, 10)}`
+    );
+  }
 
   const failKey = `${cacheAsset}|${bucketed.toISOString()}`;
   if (failedPriceLookupThisRun.has(failKey)) {
