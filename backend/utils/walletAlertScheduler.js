@@ -20,12 +20,15 @@
 //     ETN-denominated. Token-transfer activity alerts are a reasonable fast-follow, not v1 scope.
 //     A per-alert last_seen_tx_hash cursor (seeded at creation to the wallet's then-current newest
 //     tx — see walletAlerts.js's addWalletAlert) is what makes "new since last poll" detectable.
+//
+// Delivered via the Planet Zephyros Notis bot (notisLinkRouter.js) — NOT telegramNotifier.js/
+// telegramLinkRouter.js, which is a different bot used for marketplace sale-alerts. See
+// notisLinkRouter.js's own header comment for why these must stay separate.
 import { ethers } from "ethers";
 import { getPool } from "../db/pool.js";
 import { getActiveTrackedWallets } from "../db/trackedWallets.js";
 import { getActiveWalletAlertsByWallet, setWalletAlertBalanceState, setWalletAlertTxCursor, deactivateWalletAlerts } from "../db/walletAlerts.js";
-import { getLinkedChatId } from "./telegramLinkRouter.js";
-import { sendTelegramDirectMessage } from "./telegramNotifier.js";
+import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { EXPLORER_BASE_URL, getTokenMetadata } from "../services/pnlIngestion.js";
 
@@ -92,16 +95,16 @@ async function checkBalanceThresholdAlerts(alerts, walletAddress, addressInfo, t
     const crossed = alert.lastBalanceState != null && newState !== alert.lastBalanceState && newState === alert.direction;
 
     if (crossed && (await ownerHasAccess(caches, alert.ownerWallet))) {
-      const chatId = await getLinkedChatId(alert.ownerWallet);
+      const chatId = await getNotisLinkedChatId(alert.ownerWallet);
       if (chatId != null) {
         const denomLabel =
           alert.denomination === "ETN" ? "ETN" : (await getTokenMetadata(alert.denomination))?.symbol || "tokens";
         const shortAddr = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
-        await sendTelegramDirectMessage(
+        await sendNotisDirectMessage(
           chatId,
           `${newState === "above" ? "📈" : "📉"} Wallet \`${shortAddr}\` balance is now ${newState} your threshold\n\n` +
             `${balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${denomLabel} (threshold: ${alert.thresholdValue} ${denomLabel})\n\n` +
-            `[View on the dashboard](${DASHBOARD_URL}/premium)`
+            `[View wallet](${EXPLORER_BASE_URL}/address/${walletAddress}) · [Dashboard](${DASHBOARD_URL}/premium)`
         );
       }
       await setWalletAlertBalanceState(alert.id, newState, { triggered: true });
@@ -143,15 +146,17 @@ async function checkTxActivityAlerts(alerts, walletAddress, caches) {
       if (alert.thresholdValue != null && valueEtn < alert.thresholdValue) continue; // below the configured minimum — not "activity" for this alert
 
       if (!(await ownerHasAccess(caches, alert.ownerWallet))) continue;
-      const chatId = await getLinkedChatId(alert.ownerWallet);
+      const chatId = await getNotisLinkedChatId(alert.ownerWallet);
       if (chatId == null) continue;
 
       const direction = tx.to?.hash?.toLowerCase() === walletAddress ? "in" : "out";
+      const counterparty = direction === "in" ? tx.from?.hash : tx.to?.hash;
       const shortAddr = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
-      await sendTelegramDirectMessage(
+      const shortCounterparty = counterparty ? `${counterparty.slice(0, 6)}...${counterparty.slice(-4)}` : "unknown";
+      await sendNotisDirectMessage(
         chatId,
-        `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${shortAddr}\`: ${valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN ${direction === "in" ? "received" : "sent"}\n\n` +
-          `[View on the dashboard](${DASHBOARD_URL}/premium)`
+        `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${shortAddr}\`: ${valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN ${direction === "in" ? "received from" : "sent to"} \`${shortCounterparty}\`\n\n` +
+          `[View transaction](${EXPLORER_BASE_URL}/tx/${tx.hash}) · [Dashboard](${DASHBOARD_URL}/premium)`
       );
       triggeredAny = true;
     }
