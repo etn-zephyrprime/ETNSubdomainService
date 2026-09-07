@@ -9,7 +9,7 @@ import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
-import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
+import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
@@ -101,7 +101,6 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
-  const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
 
   const [managing, setManaging] = useState(false);
   const [addInput, setAddInput] = useState("");
@@ -113,6 +112,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const [pending, setPending] = useState(null);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState(null);
+
+  // Every wallet address shown anywhere on this panel — tracked, recently-untracked (still
+  // cooling), and whatever's currently pending confirmation (a fresh address the member just
+  // typed in counts too, so its name resolves in time for the confirm dialog to use it instead
+  // of a raw hex string).
+  const { resolve: resolveName } = useDisplayNames([
+    ...active.map((w) => w.address),
+    ...cooling.map((w) => w.address),
+    ...(pending?.address ? [pending.address] : []),
+  ]);
 
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
@@ -328,12 +337,12 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
           <div style={{ fontSize: 12, color: "#fff", lineHeight: 1.6 }}>
             {isAdd ? (
               pending.blockedUntil ? (
-                <>You untracked <b>{shortHash(pending.address, 8)}</b> too recently — it can't be re-tracked until <b>{fmtDate(pending.blockedUntil)}</b>.</>
+                <>You untracked <b>{resolveName(pending.address)}</b> too recently — it can't be re-tracked until <b>{fmtDate(pending.blockedUntil)}</b>.</>
               ) : (
-                <>Track <b>{shortHash(pending.address, 8)}</b>? Once added, it's locked in — you won't be able to untrack it for <b>{cooldownDays} days</b>.</>
+                <>Track <b>{resolveName(pending.address)}</b>? Once added, it's locked in — you won't be able to untrack it for <b>{cooldownDays} days</b>.</>
               )
             ) : (
-              <>Untrack <b>{shortHash(pending.address, 8)}</b>? You won't be able to re-track this exact wallet for <b>{cooldownDays} days</b> afterward.</>
+              <>Untrack <b>{resolveName(pending.address)}</b>? You won't be able to re-track this exact wallet for <b>{cooldownDays} days</b> afterward.</>
             )}
           </div>
         </div>
@@ -398,7 +407,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       }}
                     >
                       {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                      {shortHash(w.address)}
+                      {resolveName(w.address)}
                     </div>
                   ))}
                 </div>
@@ -440,7 +449,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                         <div>
                           <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>
                             {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                            {shortHash(w.address, 8)}
+                            {resolveName(w.address)}
                           </div>
                           <div style={{ fontSize: 10, color: locked ? orange : mutedLight, marginTop: 2 }}>
                             {locked ? `Locked until ${fmtDate(w.removableAt)}` : "Eligible to untrack"}
@@ -477,7 +486,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {cooling.map((w) => (
                       <div key={w.address} style={{ fontSize: 10, color: muted, fontFamily: "monospace" }}>
-                        {shortHash(w.address, 8)} — re-trackable {fmtDate(w.retrackableAt)}
+                        {resolveName(w.address)} — re-trackable {fmtDate(w.retrackableAt)}
                       </div>
                     ))}
                   </div>
