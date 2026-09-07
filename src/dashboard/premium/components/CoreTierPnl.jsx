@@ -137,9 +137,19 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
             </div>
 
             {snapshotError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{snapshotError}</div>}
+            {snapshot?.failed?.length > 0 && snapshot?.combined && (
+              <div style={{ fontSize: 11, color: errorColor, marginBottom: 12 }}>
+                Couldn't compute PnL for {snapshot.failed.map((a) => resolveWalletName(a)).join(", ")} right now — the figures below only
+                reflect your other tracked wallet{snapshot.failed.length === active.length - 1 ? "" : "s"}. Try Refresh.
+              </div>
+            )}
 
             {!snapshot && !snapshotError ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>Computing your live PnL — this can take a moment…</div>
+            ) : !combined && snapshot ? (
+              <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
+                Couldn't compute PnL for any of your tracked wallets right now — try Refresh.
+              </div>
             ) : combined ? (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
