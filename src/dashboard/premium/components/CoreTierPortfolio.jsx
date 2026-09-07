@@ -9,6 +9,7 @@ import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
+import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -85,16 +86,17 @@ function CooldownNotice({ children }) {
 // (handlePendingConfirm below) with the consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
+export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAuthParams }) {
   // Access + tracked-wallet-list state/effects live in useCoreTierAccess.js — shared with
   // CoreTierBalanceHistory.jsx, which needs the exact same "is this member allowed, and which
   // wallets do they track" data without either duplicating this state machine a second time or
-  // reaching into this component's internals.
+  // reaching into this component's internals. `getAuthParams` comes from
+  // PortfolioDashboardSection.jsx's single shared signature — see that hook's own comment on why.
   const {
     hasAccess, accessError, awaitingActivation, manualCheckLoading,
     active, cooling, maxWallets, cooldownDays,
     refresh, checkAccessOnce, addWallet, removeWallet,
-  } = useCoreTierAccess(wallet, membershipVersion);
+  } = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
@@ -136,7 +138,12 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
     let cancelled = false;
     setPortfolio(null);
     setPortfolioError(null);
-    setTokenPrices({});
+    // Seed from the last-known-price cache (tokenPriceCache.js) instead of a blank slate — a
+    // reload/reconnect otherwise had to wait out the same rate-limited per-token trickle below all
+    // over again for prices it already knew moments earlier. The effect below still fetches fresh
+    // values for every held token regardless, overwriting these as they arrive — this only makes
+    // the FIRST paint show real numbers instead of "still pricing...".
+    setTokenPrices(readCachedTokenPrices());
     setHoldingsShown(HOLDINGS_PAGE_SIZE);
     getCombinedPortfolio(active.map((w) => w.address))
       .then((res) => { if (!cancelled) setPortfolio(res); })
@@ -164,7 +171,9 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0 }) {
       getTokenChart(t.token.address, "7")
         .then((res) => {
           if (cancelled || !res?.hasData || !res.candles?.length) return;
-          setTokenPrices((prev) => ({ ...prev, [addr]: res.candles[res.candles.length - 1].close }));
+          const price = res.candles[res.candles.length - 1].close;
+          setTokenPrices((prev) => ({ ...prev, [addr]: price }));
+          cacheTokenPrice(addr, price); // so the NEXT reload/reconnect can show this immediately too
         })
         .catch((err) => console.error(`Failed to load price for ${addr}:`, err.message));
     });

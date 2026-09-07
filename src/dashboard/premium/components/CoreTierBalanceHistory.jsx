@@ -42,11 +42,11 @@ const WINDOW_DAYS = 365;
 // Shares useCoreTierAccess with CoreTierPortfolio.jsx (same membershipVersion prop, passed down
 // from PortfolioDashboardSection.jsx) rather than each maintaining its own copy of "is this member
 // allowed, and which wallets do they track" — see that hook's own header comment.
-export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0 }) {
+export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, getAuthParams }) {
   const {
     hasAccess, accessError, awaitingActivation, manualCheckLoading,
     active, checkAccessOnce,
-  } = useCoreTierAccess(wallet, membershipVersion);
+  } = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { getAddressCoinBalanceHistory } = useBlockscout();
   const { getEtnPriceHistory } = useEtnPriceHistory();
 

@@ -5,7 +5,6 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
-import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
 import { useNotisTelegramLink } from "../../hooks/useNotisTelegramLink.js";
 import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
@@ -41,10 +40,13 @@ function shortAddr(a) {
 // use (telegramLinkRouter.js/useTelegramLink.js). Don't reuse that hook here even though the
 // linking mechanics are identical — see notisLinkRouter.js's own header comment for why an earlier
 // version of this feature did exactly that and shipped every alert branded as the wrong bot.
-export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
+export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthParams }) {
+  // `getAuthParams` comes from PortfolioDashboardSection.jsx's single shared signature — see
+  // useCoreTierAccess.js's own comment on why this component doesn't create its own instance the
+  // way it originally did (that, plus the other two sibling components each doing the same, was
+  // exactly what caused several redundant wallet signature prompts on one page load).
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } =
-    useCoreTierAccess(wallet, membershipVersion);
-  const getAuthParams = useWalletAuthSignature(wallet);
+    useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { getStatus, requestLinkCode, unlink } = useNotisTelegramLink();
   const { getWalletAlerts, addWalletAlert, removeWalletAlert } = useWalletAlerts();
   const { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert } = useTokenPriceAlerts();
