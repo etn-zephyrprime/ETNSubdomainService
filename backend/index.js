@@ -32,6 +32,8 @@ import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionSchedu
 import { startSubscriptionRevenueSweepScheduler } from "./utils/subscriptionRevenueSweepScheduler.js";
 import { startWalletAlertScheduler } from "./utils/walletAlertScheduler.js";
 import { startTokenPriceAlertScheduler } from "./utils/tokenPriceAlertScheduler.js";
+import { startPortfolioAlertScheduler } from "./utils/portfolioAlertScheduler.js";
+import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
@@ -130,4 +132,6 @@ app.listen(PORT, () => {
   // link every premium feature already authenticates against; no separate linking flow.
   safeStart("Wallet alert scheduler", startWalletAlertScheduler);
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
+  safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);
+  safeStart("Portfolio digest scheduler", startPortfolioDigestScheduler);
 });

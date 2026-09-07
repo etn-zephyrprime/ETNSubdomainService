@@ -30,32 +30,27 @@ import { getActiveTrackedWallets } from "../db/trackedWallets.js";
 import { getActiveWalletAlertsByWallet, setWalletAlertBalanceState, setWalletAlertTxCursor, deactivateWalletAlerts } from "../db/walletAlerts.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { EXPLORER_BASE_URL, getTokenMetadata } from "../services/pnlIngestion.js";
+import { EXPLORER_BASE_URL, getTokenMetadata, resolveEnsDisplayName } from "../services/pnlIngestion.js";
+import { fetchBlockscoutJson as fetchJson } from "./blockscoutClient.js";
 
-const BLOCKSCOUT_API_BASE = `${EXPLORER_BASE_URL}/api/v2`;
 const CHECK_INTERVAL_MS = process.env.WALLET_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.WALLET_ALERT_CHECK_INTERVAL_MS, 10)
   : 10 * 60 * 1000; // mid-point of the brief's 5-15 min range
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
-const FETCH_TIMEOUT_MS = 20000;
 // Safety ceiling on how many newly-seen transactions get their own notification in one poll — a
 // wallet with a genuine burst of activity (or an alert whose cursor somehow fell far behind)
 // shouldn't be able to fire dozens of Telegram messages in one tick. Anything beyond this is still
 // covered by the NEXT poll picking up where the cursor was left, nothing is silently dropped.
 const MAX_TX_NOTIFICATIONS_PER_POLL = 5;
 
-async function fetchJson(path, attempt = 0) {
-  try {
-    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
-    return await res.json();
-  } catch (err) {
-    if (attempt < 2) {
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      return fetchJson(path, attempt + 1);
-    }
-    throw err;
-  }
+/** Primary name if this address has one, else its short hex form — same fallback convention
+ * primaryNameResolver.js's own resolveDisplayName uses, just built on resolveEnsDisplayName
+ * (already exported by pnlIngestion.js, cached indefinitely per address) since that's what's
+ * already wired up for every other Telegram message this backend sends. */
+async function displayName(address) {
+  if (!address) return "unknown";
+  const name = await resolveEnsDisplayName(address);
+  return name || `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 // Per-owner caches, scoped to ONE poll tick (module-level state would leak access changes across
@@ -99,10 +94,10 @@ async function checkBalanceThresholdAlerts(alerts, walletAddress, addressInfo, t
       if (chatId != null) {
         const denomLabel =
           alert.denomination === "ETN" ? "ETN" : (await getTokenMetadata(alert.denomination))?.symbol || "tokens";
-        const shortAddr = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
+        const walletName = await displayName(walletAddress);
         await sendNotisDirectMessage(
           chatId,
-          `${newState === "above" ? "📈" : "📉"} Wallet \`${shortAddr}\` balance is now ${newState} your threshold\n\n` +
+          `${newState === "above" ? "📈" : "📉"} Wallet \`${walletName}\` balance is now ${newState} your threshold\n\n` +
             `${balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${denomLabel} (threshold: ${alert.thresholdValue} ${denomLabel})\n\n` +
             `[View wallet](${EXPLORER_BASE_URL}/address/${walletAddress}) · [Dashboard](${DASHBOARD_URL}/premium)`
         );
@@ -151,11 +146,10 @@ async function checkTxActivityAlerts(alerts, walletAddress, caches) {
 
       const direction = tx.to?.hash?.toLowerCase() === walletAddress ? "in" : "out";
       const counterparty = direction === "in" ? tx.from?.hash : tx.to?.hash;
-      const shortAddr = `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
-      const shortCounterparty = counterparty ? `${counterparty.slice(0, 6)}...${counterparty.slice(-4)}` : "unknown";
+      const [walletName, counterpartyName] = await Promise.all([displayName(walletAddress), displayName(counterparty)]);
       await sendNotisDirectMessage(
         chatId,
-        `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${shortAddr}\`: ${valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN ${direction === "in" ? "received from" : "sent to"} \`${shortCounterparty}\`\n\n` +
+        `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${walletName}\`: ${valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN ${direction === "in" ? "received from" : "sent to"} \`${counterpartyName}\`\n\n` +
           `[View transaction](${EXPLORER_BASE_URL}/tx/${tx.hash}) · [Dashboard](${DASHBOARD_URL}/premium)`
       );
       triggeredAny = true;

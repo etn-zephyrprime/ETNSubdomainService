@@ -16,7 +16,10 @@ import { hasCoreAccess } from "./premiumAccess.js";
 import { getActiveTrackedWallets } from "../db/trackedWallets.js";
 import { getWalletAlerts, addWalletAlert, removeWalletAlert, MAX_WALLET_ALERTS_PER_OWNER } from "../db/walletAlerts.js";
 import { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert, MAX_TOKEN_PRICE_ALERTS_PER_OWNER } from "../db/tokenPriceAlerts.js";
+import { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert, MAX_PORTFOLIO_ALERTS_PER_OWNER } from "../db/portfolioAlerts.js";
+import { getDigestSubscription, setDigestEnabled } from "../db/portfolioDigestSubscriptions.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
+import { getPortfolioUsdValue } from "./portfolioValuation.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { createRpcProvider } from "./rpcProvider.js";
 import { EXPLORER_BASE_URL } from "../services/pnlIngestion.js";
@@ -240,6 +243,102 @@ router.delete("/premium/token-alerts", async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: err.message });
   }
+});
+
+// ---- Portfolio alerts (combined tracked-wallet USD %-move) ----
+
+router.get("/premium/portfolio-alerts", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  const alerts = await getPortfolioAlerts(wallet);
+  res.json({ alerts, maxAlerts: MAX_PORTFOLIO_ALERTS_PER_OWNER });
+});
+
+router.post("/premium/portfolio-alerts", async (req, res) => {
+  const { wallet, signature, timestamp, direction, thresholdPct } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!["up", "down"].includes(direction)) {
+    return res.status(400).json({ error: "direction must be up or down" });
+  }
+  const pct = Number(thresholdPct);
+  if (!Number.isFinite(pct) || pct <= 0) {
+    return res.status(400).json({ error: "thresholdPct must be a positive number" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  let totalUsd;
+  try {
+    ({ totalUsd } = await getPortfolioUsdValue(provider, wallet));
+  } catch (err) {
+    return res.status(502).json({ error: `Couldn't value your portfolio right now: ${err.message}` });
+  }
+  if (totalUsd <= 0) {
+    return res.status(400).json({ error: "Your tracked wallets don't have a priced balance yet — track a wallet with a real ETN/token balance first" });
+  }
+
+  try {
+    const alert = await addPortfolioAlert(wallet, { direction, thresholdPct: pct, baselineUsd: totalUsd });
+    res.json({ alert, maxAlerts: MAX_PORTFOLIO_ALERTS_PER_OWNER });
+  } catch (err) {
+    res.status(409).json({ error: err.message });
+  }
+});
+
+router.delete("/premium/portfolio-alerts", async (req, res) => {
+  const { wallet, signature, timestamp, alertId } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!alertId) {
+    return res.status(400).json({ error: "alertId is required" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  try {
+    await removePortfolioAlert(wallet, alertId);
+    res.json({ removed: true });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// ---- Daily portfolio digest (opt-in toggle, no per-alert config) ----
+
+router.get("/premium/portfolio-digest", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  const sub = await getDigestSubscription(wallet);
+  res.json(sub);
+});
+
+router.post("/premium/portfolio-digest", async (req, res) => {
+  const { wallet, signature, timestamp, enabled } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "enabled must be a boolean" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  await setDigestEnabled(wallet, enabled);
+  const sub = await getDigestSubscription(wallet);
+  res.json(sub);
 });
 
 export default router;

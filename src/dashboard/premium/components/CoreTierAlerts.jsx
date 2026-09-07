@@ -9,6 +9,8 @@ import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js
 import { useNotisTelegramLink } from "../../hooks/useNotisTelegramLink.js";
 import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
+import { usePortfolioAlerts } from "../../hooks/usePortfolioAlerts.js";
+import { usePortfolioDigest } from "../../hooks/usePortfolioDigest.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoint signs — one cached signature covers all of them
@@ -46,6 +48,8 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
   const { getStatus, requestLinkCode, unlink } = useNotisTelegramLink();
   const { getWalletAlerts, addWalletAlert, removeWalletAlert } = useWalletAlerts();
   const { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert } = useTokenPriceAlerts();
+  const { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert } = usePortfolioAlerts();
+  const { getDigestStatus, setDigestEnabled } = usePortfolioDigest();
 
   // ---- Telegram link status ----
   const [linked, setLinked] = useState(null);
@@ -150,16 +154,55 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
     }
   }, [getAuthParams, getTokenPriceAlerts, wallet.account]);
 
+  // ---- Portfolio alerts (combined tracked-wallet USD %-move) ----
+  const [portfolioAlerts, setPortfolioAlerts] = useState(null);
+  const [portfolioAlertsError, setPortfolioAlertsError] = useState(null);
+  const [paDirection, setPaDirection] = useState("up");
+  const [paThreshold, setPaThreshold] = useState("");
+  const [paBusy, setPaBusy] = useState(false);
+  const [paFormError, setPaFormError] = useState(null);
+
+  const loadPortfolioAlerts = useCallback(async () => {
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await getPortfolioAlerts(wallet.account, signature, timestamp);
+      setPortfolioAlerts(res.alerts || []);
+    } catch (err) {
+      setPortfolioAlertsError(err.message || "Couldn't load portfolio alerts");
+    }
+  }, [getAuthParams, getPortfolioAlerts, wallet.account]);
+
+  // ---- Daily portfolio digest (plain on/off toggle) ----
+  const [digestEnabled, setDigestEnabledState] = useState(null); // null = not yet checked
+  const [digestBusy, setDigestBusy] = useState(false);
+  const [digestError, setDigestError] = useState(null);
+
+  const loadDigestStatus = useCallback(async () => {
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await getDigestStatus(wallet.account, signature, timestamp);
+      setDigestEnabledState(Boolean(res.enabled));
+    } catch (err) {
+      setDigestError(err.message || "Couldn't load digest setting");
+    }
+  }, [getAuthParams, getDigestStatus, wallet.account]);
+
   useEffect(() => {
     if (!hasAccess) {
       setWalletAlerts(null);
       setTokenAlerts(null);
+      setPortfolioAlerts(null);
+      setDigestEnabledState(null);
       return;
     }
     setWalletAlertsError(null);
     setTokenAlertsError(null);
+    setPortfolioAlertsError(null);
+    setDigestError(null);
     loadWalletAlerts();
     loadTokenAlerts();
+    loadPortfolioAlerts();
+    loadDigestStatus();
     if (active.length > 0 && !waWallet) setWaWallet(active[0].address);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
@@ -261,6 +304,54 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
     }
   };
 
+  const submitPortfolioAlert = async () => {
+    setPaFormError(null);
+    const pct = Number(paThreshold);
+    if (!Number.isFinite(pct) || pct <= 0) {
+      setPaFormError("Enter a valid percentage");
+      return;
+    }
+
+    setPaBusy(true);
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      await addPortfolioAlert(wallet.account, signature, timestamp, { direction: paDirection, thresholdPct: pct });
+      setPaThreshold("");
+      await loadPortfolioAlerts();
+    } catch (err) {
+      setPaFormError(err.message || "Couldn't create that alert");
+    } finally {
+      setPaBusy(false);
+    }
+  };
+
+  const deletePortfolioAlert = async (alertId) => {
+    setPaBusy(true);
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      await removePortfolioAlert(wallet.account, signature, timestamp, alertId);
+      await loadPortfolioAlerts();
+    } catch (err) {
+      setPortfolioAlertsError(err.message || "Couldn't remove that alert");
+    } finally {
+      setPaBusy(false);
+    }
+  };
+
+  const toggleDigest = async () => {
+    setDigestError(null);
+    setDigestBusy(true);
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await setDigestEnabled(wallet.account, signature, timestamp, !digestEnabled);
+      setDigestEnabledState(Boolean(res.enabled));
+    } catch (err) {
+      setDigestError(err.message || "Couldn't update that setting");
+    } finally {
+      setDigestBusy(false);
+    }
+  };
+
   return (
     <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
@@ -320,6 +411,34 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
               Connect Notis bot
             </DashboardButton>
           )}
+        </div>
+
+        {/* Daily portfolio digest — a plain toggle, not a per-alert list */}
+        <div
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+            padding: "14px 16px", borderRadius: 12, background: panel2, border: `1px solid ${border}`,
+            marginBottom: 20,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Daily portfolio summary</div>
+            <div style={{ fontSize: 11, color: mutedLight, marginTop: 2 }}>
+              One DM a day with your total tracked-wallet USD value and the change since the last summary.
+            </div>
+            {digestError && <div style={{ fontSize: 11, color: errorColor, marginTop: 4 }}>{digestError}</div>}
+          </div>
+          <DashboardButton
+            onClick={toggleDigest}
+            disabled={digestBusy || !linked || digestEnabled === null}
+            style={
+              digestEnabled
+                ? { background: "transparent", border: `1px solid ${border}`, color: mutedLight, boxShadow: "none", padding: "8px 14px", fontSize: 12 }
+                : { padding: "8px 14px", fontSize: 12 }
+            }
+          >
+            {!linked ? "Connect Notis bot first" : digestEnabled === null ? "Checking..." : digestEnabled ? "Turn off" : "Turn on"}
+          </DashboardButton>
         </div>
 
         {/* Wallet alerts */}
@@ -397,6 +516,55 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
 
                 {waFormError && <div style={{ fontSize: 12, color: errorColor }}>{waFormError}</div>}
                 <DashboardButton onClick={submitWalletAlert} disabled={waBusy || !linked} style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}>
+                  {!linked ? "Connect Notis bot first" : "Add alert"}
+                </DashboardButton>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Portfolio alerts — combined tracked-wallet USD %-move, distinct from a single wallet's
+            balance threshold above */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={sectionHeaderStyle}>Portfolio Alerts</div>
+          {active.length === 0 ? (
+            <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
+              Track a wallet under Core Tier — Portfolio above to alert on your combined portfolio value.
+            </div>
+          ) : (
+            <>
+              {portfolioAlertsError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 8 }}>{portfolioAlertsError}</div>}
+              {portfolioAlerts && portfolioAlerts.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                  {portfolioAlerts.map((a) => (
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
+                      <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
+                        Notify when your combined portfolio goes <span style={{ color: "#fff", fontWeight: 700 }}>{a.direction} {a.thresholdPct}%</span>
+                      </div>
+                      <button type="button" onClick={() => deletePortfolioAlert(a.id)} disabled={paBusy} style={{ background: "none", border: "none", cursor: paBusy ? "not-allowed" : "pointer", padding: 4, flexShrink: 0 }}>
+                        <Trash2 size={14} color={mutedLight} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 10, border: `1px dashed ${border}` }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ flex: "1 1 120px" }}>
+                    <label style={labelStyle}>Direction</label>
+                    <select value={paDirection} onChange={(e) => setPaDirection(e.target.value)} style={{ ...inputStyle, width: "100%" }}>
+                      <option value="up">Up</option>
+                      <option value="down">Down</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: "1 1 100px" }}>
+                    <label style={labelStyle}>Move (%)</label>
+                    <input type="number" min="0" step="0.1" value={paThreshold} onChange={(e) => setPaThreshold(e.target.value)} style={{ ...inputStyle, width: "100%" }} />
+                  </div>
+                </div>
+                {paFormError && <div style={{ fontSize: 12, color: errorColor }}>{paFormError}</div>}
+                <DashboardButton onClick={submitPortfolioAlert} disabled={paBusy || !linked} style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}>
                   {!linked ? "Connect Notis bot first" : "Add alert"}
                 </DashboardButton>
               </div>
