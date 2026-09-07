@@ -76,3 +76,26 @@ export async function getAllSwapTradesBefore(trackedWallet, beforeTs) {
   );
   return res?.rows || [];
 }
+
+/** Swap rows with at least one leg left unpriced (either leg independently — either a
+ * deliberately-deferred non-priority asset or a genuine historical lookup failure). See
+ * ingestedTransfers.js's getUnpricedTransfers for the same reasoning. */
+export async function getSwapTradesWithUnpricedLegs(trackedWallet) {
+  const res = await query(
+    `SELECT id, token_sold_address, amount_sold, price_usd_sold_leg, token_bought_address, amount_bought, price_usd_bought_leg, "timestamp"
+     FROM swap_trades
+     WHERE tracked_wallet = $1 AND (price_usd_sold_leg IS NULL OR price_usd_bought_leg IS NULL)`,
+    [trackedWallet.toLowerCase()]
+  );
+  return res?.rows || [];
+}
+
+/** Fills in both leg prices at once, in place — pass the row's EXISTING value for any leg that
+ * was already priced (this doesn't merge/preserve on its own), never re-walks Blockscout. */
+export async function setSwapLegPrices(id, priceUsdSoldLeg, priceUsdBoughtLeg) {
+  await query(`UPDATE swap_trades SET price_usd_sold_leg = $2, price_usd_bought_leg = $3 WHERE id = $1`, [
+    id,
+    priceUsdSoldLeg,
+    priceUsdBoughtLeg,
+  ]);
+}

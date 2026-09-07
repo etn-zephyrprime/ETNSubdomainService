@@ -94,3 +94,24 @@ export async function getAllTransfersBefore(trackedWallet, beforeTs) {
   );
   return res?.rows || [];
 }
+
+/** Rows left with no price — either a deliberately-deferred non-priority asset (see
+ * pnlIngestion.js's priorityAssets) or a genuine historical lookup failure at ingestion time.
+ * Excludes NFT rows (erc721/erc1155), which are NEVER priced this way (see pnlEventBuilder.js's
+ * buildNftEvents) — those having a null price is normal, not something to backfill.
+ * backfillDeferredPrices' own read list. */
+export async function getUnpricedTransfers(trackedWallet) {
+  const res = await query(
+    `SELECT id, asset_type, token_address, amount_decimal, "timestamp"
+     FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND asset_type IN ('native', 'erc20') AND price_usd_at_time IS NULL`,
+    [trackedWallet.toLowerCase()]
+  );
+  return res?.rows || [];
+}
+
+/** Fills in a previously-null price for one row, in place — never re-walks Blockscout, this only
+ * updates the two price columns on a row that already exists. */
+export async function setTransferPrice(id, priceUsd, usdValue) {
+  await query(`UPDATE ingested_transfers SET price_usd_at_time = $2, usd_value = $3 WHERE id = $1`, [id, priceUsd, usdValue]);
+}

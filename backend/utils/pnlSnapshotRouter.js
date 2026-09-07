@@ -12,7 +12,30 @@ import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { getActiveTrackedWallets } from "../db/trackedWallets.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
+import { getIngestionState } from "../db/walletIngestionState.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
+import { fetchBlockscoutJson } from "./blockscoutClient.js";
+
+const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
+
+/** A wallet's CURRENT token holdings, cheap to fetch (one Blockscout call, no ingestion/FIFO
+ * replay at all) — the selectable list for the cold-start token picker. Deliberately scoped to
+ * current holdings, not full historical activity: a token the wallet has fully disposed of isn't
+ * something a member is likely to want prioritized for a LIVE "how am I doing right now" view
+ * anyway, and it still gets priced eventually via the background backfill regardless of whether
+ * it was ever selectable here. */
+async function getSelectableTokens(walletAddress) {
+  try {
+    const res = await fetchBlockscoutJson(`/addresses/${walletAddress}/token-balances`);
+    const balances = Array.isArray(res) ? res : res?.items || [];
+    return balances
+      .filter((b) => b.token?.address && !NFT_TOKEN_TYPES.has(b.token?.type) && BigInt(b.value || 0) > 0n)
+      .map((b) => ({ address: b.token.address, symbol: b.token.symbol || null, name: b.token.name || null }));
+  } catch (err) {
+    console.warn(`⚠️  PnL snapshot: couldn't fetch selectable tokens for ${walletAddress}:`, err.message);
+    return [];
+  }
+}
 
 const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoint signs — one cached signature covers all of them
 // Matches CoreTierBalanceHistory.jsx's own WINDOW_DAYS default — a rolling 12 months is this
@@ -37,9 +60,19 @@ const router = express.Router();
 // wallet AND combined. Recomputed fresh on every call (see pnlSnapshotService.js's own comment on
 // why this is never cached/frozen here); a member with 3 tracked wallets and real history should
 // expect this to take real time, the same order of magnitude as generating a PnL Statement does,
-// since it's doing the same FIFO replay + live pricing work.
+// since it's doing the same FIFO replay + live pricing work — UNLESS this is a wallet's first-ever
+// computation and priorityTokens scopes it (see below), which is the whole point of that feature.
+//
+// `priorityTokens` (optional): a JSON-encoded `{ [walletAddress]: [tokenAddress, ...] }` map — the
+// cold-start speedup the member opts into by picking which tokens to prioritize (see
+// pnlSnapshotService.computeLivePnlSnapshot's own header comment for the full mechanism and its
+// safety boundary). Any wallet that's STILL mid-cold-start and has NO entry in this map doesn't
+// get computed at all on this call — it comes back in `needsSelection` instead, with its current
+// holdings as the pickable list, so the frontend can prompt for a selection before retrying. A
+// wallet that's already past cold-start never appears in `needsSelection` regardless of
+// priorityTokens — there's nothing to speed up for it anymore.
 router.get("/premium/pnl-snapshot", async (req, res) => {
-  const { wallet, signature, timestamp } = req.query;
+  const { wallet, signature, timestamp, priorityTokens: priorityTokensRaw } = req.query;
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -48,15 +81,25 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     return res.status(403).json({ error: "Core tier membership required" });
   }
 
+  let priorityTokensByWallet = {};
+  if (priorityTokensRaw) {
+    try {
+      priorityTokensByWallet = JSON.parse(priorityTokensRaw);
+    } catch {
+      return res.status(400).json({ error: "priorityTokens must be valid JSON" });
+    }
+  }
+
   const active = await getActiveTrackedWallets(wallet);
   if (active.length === 0) {
-    return res.json({ perWallet: [], combined: null });
+    return res.json({ perWallet: [], combined: null, failed: [], needsSelection: [] });
   }
 
   try {
     const addresses = active.map((w) => w.address);
     const perWallet = [];
     const failed = [];
+    const needsSelection = [];
     // Sequential, not Promise.all — same reasoning as pnlSnapshotScheduler.js's own poll loop: a
     // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 3
     // tracked wallets, so there's no responsiveness win worth the burst RPC/pricing load.
@@ -68,8 +111,21 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     // panel instead of just the one wallet that actually failed.
     for (const address of addresses) {
       const selfOwnedAddresses = addresses.filter((a) => a !== address);
+      const priorityTokens = priorityTokensByWallet[address];
+
+      if (!priorityTokens) {
+        // No selection given for this wallet on this call — check whether it actually needs one
+        // (cheap: just the stored ingestion cursor, no Blockscout/FIFO work) before deciding to
+        // skip computing it.
+        const state = await getIngestionState(address);
+        if (!state?.cold_start_completed_at) {
+          needsSelection.push({ walletAddress: address, availableTokens: await getSelectableTokens(address) });
+          continue;
+        }
+      }
+
       try {
-        const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses);
+        const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses, priorityTokens || null);
         perWallet.push({ walletAddress: address, ...snapshot });
       } catch (err) {
         console.error(`PnL snapshot computation failed for wallet ${address}:`, err);
@@ -80,7 +136,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     // and correctly reflects only the wallets that actually succeeded — `failed` tells the
     // frontend which ones didn't, rather than silently under-reporting the combined total.
     const combined = perWallet.length > 0 ? combineLivePnlSnapshots(perWallet) : null;
-    res.json({ perWallet, combined, failed });
+    res.json({ perWallet, combined, failed, needsSelection });
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });

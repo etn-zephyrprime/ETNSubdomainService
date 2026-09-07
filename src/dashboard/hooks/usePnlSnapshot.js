@@ -16,11 +16,21 @@ export function usePnlSnapshot() {
   // Live compute — same order of magnitude as generating a PnL Statement (full FIFO replay + live
   // pricing per wallet), not a quick read. Callers should treat this as a real wait, not a poll
   // tick — see CoreTierPnl.jsx's own "fetch once, refresh on request" pattern.
-  const getLiveSnapshot = useCallback(async (wallet, signature, timestamp) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp });
+  //
+  // `priorityTokens` (optional): `{ [walletAddress]: [tokenAddress, ...] }` — the cold-start
+  // speedup. Only matters for a wallet still mid-cold-start; see pnlSnapshotRouter.js's own
+  // comment for the full mechanism and its safety boundary (a wallet past cold-start ignores this
+  // entirely and always gets full pricing).
+  const getLiveSnapshot = useCallback(async (wallet, signature, timestamp, priorityTokens) => {
+    const params = new URLSearchParams({
+      wallet,
+      signature,
+      timestamp,
+      ...(priorityTokens ? { priorityTokens: JSON.stringify(priorityTokens) } : {}),
+    });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-snapshot?${params}`);
     await parseErrorOrThrow(res);
-    return res.json(); // { perWallet: [...], combined, failed: [address, ...] } — failed lists any tracked wallet whose OWN computation errored, isolated from the others (see pnlSnapshotRouter.js's own comment)
+    return res.json(); // { perWallet, combined, failed: [address,...], needsSelection: [{walletAddress, availableTokens}] }
   }, []);
 
   const getHistory = useCallback(async (wallet, signature, timestamp, days) => {

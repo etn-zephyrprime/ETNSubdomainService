@@ -50,19 +50,55 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((snapshot?.combined?.holdings || []).map((h) => h.tokenAddress));
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
 
-  const loadSnapshot = useCallback(async () => {
-    setSnapshotLoading(true);
-    setSnapshotError(null);
-    try {
-      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-      const res = await getLiveSnapshot(wallet.account, signature, timestamp);
-      setSnapshot(res);
-    } catch (err) {
-      setSnapshotError(err.message || "Couldn't compute your live PnL");
-    } finally {
-      setSnapshotLoading(false);
+  // Cold-start token picker — one entry per wallet snapshot.needsSelection names, address ->
+  // Set(tokenAddress). Defaults to every available token pre-selected the first time a wallet's
+  // picker appears (see the build brief: "select them all" is the trivial fallback), so hitting
+  // Continue with no changes just gets full pricing, same as not using this feature at all.
+  const [pickerSelections, setPickerSelections] = useState({});
+
+  const loadSnapshot = useCallback(
+    async (priorityTokens) => {
+      setSnapshotLoading(true);
+      setSnapshotError(null);
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getLiveSnapshot(wallet.account, signature, timestamp, priorityTokens);
+        setSnapshot(res);
+        // Seed the picker for any wallet that newly needs one — existing selections for a wallet
+        // already being configured are left alone, not reset, so a partial in-progress picker
+        // (e.g. one wallet already confirmed, another still needsSelection) doesn't lose its state.
+        setPickerSelections((prev) => {
+          const next = { ...prev };
+          for (const { walletAddress, availableTokens } of res.needsSelection || []) {
+            if (!next[walletAddress]) next[walletAddress] = new Set(availableTokens.map((t) => t.address));
+          }
+          return next;
+        });
+      } catch (err) {
+        setSnapshotError(err.message || "Couldn't compute your live PnL");
+      } finally {
+        setSnapshotLoading(false);
+      }
+    },
+    [getAuthParams, getLiveSnapshot, wallet.account]
+  );
+
+  const toggleTokenSelection = (walletAddress, tokenAddress) => {
+    setPickerSelections((prev) => {
+      const set = new Set(prev[walletAddress]);
+      if (set.has(tokenAddress)) set.delete(tokenAddress);
+      else set.add(tokenAddress);
+      return { ...prev, [walletAddress]: set };
+    });
+  };
+
+  const submitSelections = () => {
+    const priorityTokens = {};
+    for (const { walletAddress } of snapshot?.needsSelection || []) {
+      priorityTokens[walletAddress] = [...(pickerSelections[walletAddress] || [])];
     }
-  }, [getAuthParams, getLiveSnapshot, wallet.account]);
+    loadSnapshot(priorityTokens);
+  };
 
   const loadHistory = useCallback(async () => {
     setHistoryError(null);
@@ -101,7 +137,7 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
         </div>
         {hasAccess && active.length > 0 && (
           <DashboardButton
-            onClick={loadSnapshot}
+            onClick={() => loadSnapshot()}
             disabled={snapshotLoading}
             style={{ background: "transparent", border: `1px solid ${border}`, color: mutedLight, boxShadow: "none", padding: "6px 12px", fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}
           >
@@ -136,6 +172,52 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
               </div>
             </div>
 
+            {/* Cold-start token picker — only appears for a wallet still mid-first-ingestion (see
+                pnlSnapshotRouter.js's own comment). Prioritizing a smaller set of tokens speeds up
+                that FIRST computation a lot; everything else still gets priced automatically in
+                the background afterward, so this is purely a speed choice, never a permanent one. */}
+            {snapshot?.needsSelection?.length > 0 && (
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: panel2, border: `1px solid ${green}`, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 4 }}>
+                  Speed up your first PnL calculation
+                </div>
+                <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12, lineHeight: 1.6 }}>
+                  Building full price history for every token you've ever held can take a while the first time. Pick
+                  which tokens to prioritize — everything else will still be included automatically once it's ready
+                  in the background. Leave everything checked to prioritize all of them.
+                </div>
+                {snapshot.needsSelection.map(({ walletAddress, availableTokens }) => (
+                  <div key={walletAddress} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: mutedLight, marginBottom: 6 }}>
+                      {walletAddress.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                      {resolveWalletName(walletAddress)}
+                    </div>
+                    {availableTokens.length === 0 ? (
+                      <div style={{ fontSize: 11, color: muted }}>No priced token holdings found — nothing to prioritize, continuing normally.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {availableTokens.map((t) => {
+                          const checked = pickerSelections[walletAddress]?.has(t.address) ?? true;
+                          return (
+                            <label
+                              key={t.address}
+                              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 8, background: checked ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${checked ? green : border}`, cursor: "pointer", fontSize: 11 }}
+                            >
+                              <input type="checkbox" checked={checked} onChange={() => toggleTokenSelection(walletAddress, t.address)} style={{ accentColor: green }} />
+                              <span style={{ color: checked ? "#fff" : mutedLight }}>{t.symbol || t.name || `${t.address.slice(0, 6)}...${t.address.slice(-4)}`}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <DashboardButton onClick={submitSelections} disabled={snapshotLoading} style={{ padding: "8px 16px", fontSize: 12, marginTop: 4 }}>
+                  {snapshotLoading ? "Computing…" : "Continue"}
+                </DashboardButton>
+              </div>
+            )}
+
             {snapshotError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{snapshotError}</div>}
             {snapshot?.failed?.length > 0 && snapshot?.combined && (
               <div style={{ fontSize: 11, color: errorColor, marginBottom: 12 }}>
@@ -146,12 +228,18 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
 
             {!snapshot && !snapshotError ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>Computing your live PnL — this can take a moment…</div>
-            ) : !combined && snapshot ? (
+            ) : !combined && snapshot?.failed?.length > 0 ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
                 Couldn't compute PnL for any of your tracked wallets right now — try Refresh.
               </div>
             ) : combined ? (
               <>
+                {combined.pricingIncomplete && (
+                  <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12, fontStyle: "italic" }}>
+                    Still finishing price history for some of your other tokens in the background — the figures below will fill
+                    in further on their own. Refresh in a few minutes for the complete picture.
+                  </div>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
                   <div>
                     <div style={sectionHeaderStyle}>Current Value</div>

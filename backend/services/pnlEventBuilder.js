@@ -13,7 +13,7 @@
 // see that file's own header comment.
 import { ethers } from "ethers";
 import Decimal from "decimal.js";
-import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 
 // A fixed sentinel string (not an address) standing in for native ETN wherever an "asset" needs a
@@ -284,14 +284,21 @@ async function formatTokenAmount(tokenAddress, rawAmount) {
  * new PDF section (see buildDefiActivitySummary below), keyed by a human label (the farm's own
  * on-chain name, or the staking template's fixed label) rather than a raw contract address, so nothing
  * in this file ever hardcodes one of the specific addresses the user originally supplied. */
-export async function buildDefiFarmEvents(defiActivity) {
+export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
   const events = [];
   const perLabel = new Map(); // label -> { depositedUsd, withdrawnUsd, rewardsUsd (Decimal), unpriced count }
   const bumpLabel = (label) => {
     if (!perLabel.has(label)) perLabel.set(label, { depositedUsd: new Decimal(0), withdrawnUsd: new Decimal(0), rewardsUsd: new Decimal(0), unpriced: 0 });
     return perLabel.get(label);
   };
-  const priceAt = (tokenAddress, timestamp) => getHistoricalPriceUsd(tokenAddress, timestamp).catch(() => null);
+  // Same priorityAssets scoping as pnlIngestion.js's priceOrNull — a non-priority token here still
+  // gets priced for free if already cached, and never triggers a fresh bulk backfill on the
+  // critical path. generateStatement never passes priorityAssets, so a Statement's DeFi pricing is
+  // always full and complete, unaffected by this.
+  const priceAt = (tokenAddress, timestamp) =>
+    priorityAssets && !priorityAssets.has(tokenAddress.toLowerCase())
+      ? getCachedHistoricalPriceUsd(tokenAddress, timestamp)
+      : getHistoricalPriceUsd(tokenAddress, timestamp).catch(() => null);
 
   for (const row of defiActivity) {
     const timestamp = new Date(row.timestamp);

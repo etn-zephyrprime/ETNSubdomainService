@@ -17,7 +17,8 @@ import Decimal from "decimal.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
-import { ingestWalletHistory } from "./pnlIngestion.js";
+import { getIngestionState } from "../db/walletIngestionState.js";
+import { ingestWalletHistory, backfillDeferredPrices } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import {
   transferToEvent,
@@ -46,11 +47,32 @@ import {
  *
  * `replayFifo(events, now, now)` is deliberate: this feature has no period concept, so only the
  * `closing` snapshot (full history up to right now) is ever used — `opening` is discarded.
+ *
+ * `priorityTokens` (optional array of token addresses) — the cold-start speedup: ingestion prices
+ * JUST these tokens (plus native ETN, always) in full; everything else gets recorded with a null
+ * price for now (see pnlIngestion.js's priorityAssets) rather than paying for a full GeckoTerminal
+ * bulk-price-backfill of every token the wallet has EVER touched before showing anything. A
+ * background pass (backfillDeferredPrices, fired but not awaited below) fills the rest in
+ * afterward, without re-walking Blockscout — a later call naturally sees more complete prices as
+ * that finishes.
+ *
+ * SAFETY BOUNDARY: `priorityTokens` only ever takes effect while this wallet's cold-start
+ * ingestion is still incomplete (wallet_ingestion_state.cold_start_completed_at is null) — checked
+ * here, not left to the caller's discretion. Once cold-start is done (which it always is after
+ * the FIRST successful ingestWalletHistory call, priority-scoped or not), every subsequent call
+ * gets full, unscoped pricing regardless of what `priorityTokens` is passed — so a stale/narrow
+ * selection can never quietly under-price a wallet's PnL forever; it only ever shortens the very
+ * first computation.
  */
-export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses = []) {
+export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses = [], priorityTokens = null) {
   const now = new Date();
 
-  await ingestWalletHistory(trackedWallet, selfOwnedAddresses);
+  const ingestionState = await getIngestionState(trackedWallet);
+  const isColdStart = !ingestionState?.cold_start_completed_at;
+  const priorityAssets =
+    isColdStart && priorityTokens && priorityTokens.length > 0 ? new Set(priorityTokens.map((a) => a.toLowerCase())) : null;
+
+  await ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
 
   const [transfers, swaps, defiActivity] = await Promise.all([
     getAllTransfersBefore(trackedWallet, now),
@@ -59,7 +81,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   ]);
 
   const { events: nftEvents, consumedRowIds: nftConsumedRowIds } = buildNftEvents(transfers);
-  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity);
+  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity, priorityAssets);
   const events = [
     ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
     ...swaps.map(swapToEvent),
@@ -77,6 +99,15 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   const realizedPnlUsdGross = closing.realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   const realizedPnlUsd = realizedPnlUsdGross.minus(gas.totalGasUsd);
 
+  if (priorityAssets) {
+    // Fire-and-forget — the caller already has a usable (partial) result; this fills in the rest
+    // without making them wait for it. Errors are logged inside backfillDeferredPrices itself, per
+    // row, never thrown out to here.
+    backfillDeferredPrices(trackedWallet).catch((err) =>
+      console.error(`⚠️  Background deferred-price backfill failed for ${trackedWallet}:`, err)
+    );
+  }
+
   return {
     asOf: now,
     // [{ tokenAddress, quantity, costBasisUsd, marketValueUsd }] — marketValueUsd null for a token
@@ -87,6 +118,10 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     unrealizedPnlUsd: valuation.totalUnrealizedUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
     gasUsd: gas.totalGasUsd.toString(),
+    // True only when THIS computation used priority scoping — the figures above are a lower
+    // bound (same spirit as the rest of this app's "≈" convention) until the background backfill
+    // (already kicked off) finishes filling in the deferred prices.
+    pricingIncomplete: Boolean(priorityAssets),
   };
 }
 
@@ -101,12 +136,14 @@ export function combineLivePnlSnapshots(snapshots) {
   let unrealizedPnlUsd = new Decimal(0);
   let realizedPnlUsd = new Decimal(0);
   let gasUsd = new Decimal(0);
+  let pricingIncomplete = false;
 
   for (const snap of snapshots) {
     currentValueUsd = currentValueUsd.plus(snap.currentValueUsd);
     unrealizedPnlUsd = unrealizedPnlUsd.plus(snap.unrealizedPnlUsd);
     realizedPnlUsd = realizedPnlUsd.plus(snap.realizedPnlUsd);
     gasUsd = gasUsd.plus(snap.gasUsd);
+    if (snap.pricingIncomplete) pricingIncomplete = true;
 
     for (const h of snap.holdings) {
       const existing = holdingsByToken.get(h.tokenAddress);
@@ -138,5 +175,6 @@ export function combineLivePnlSnapshots(snapshots) {
     unrealizedPnlUsd: unrealizedPnlUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
     gasUsd: gasUsd.toString(),
+    pricingIncomplete,
   };
 }
