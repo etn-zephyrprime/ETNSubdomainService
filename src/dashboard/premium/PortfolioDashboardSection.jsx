@@ -4,6 +4,7 @@ import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
 import CoreTierPortfolio from "./components/CoreTierPortfolio.jsx";
 import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
+import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import { green, greenGlow, muted } from "../theme.js";
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
@@ -39,6 +40,7 @@ export default function PortfolioDashboardSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} />
         <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} />
+        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
     </div>
