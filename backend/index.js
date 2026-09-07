@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import telegramLinkRouter, { registerTelegramWebhook } from "./utils/telegramLinkRouter.js";
+import notisLinkRouter, { registerNotisWebhook } from "./utils/notisLinkRouter.js";
 import tokenChartRouter from "./utils/tokenChartRouter.js";
 import r2CacheProxyRouter from "./utils/r2CacheProxyRouter.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
@@ -65,6 +66,7 @@ app.get("/", (req, res) => {
 
 app.use("/api", generateNftRouter);
 app.use("/api", telegramLinkRouter);
+app.use("/api", notisLinkRouter);
 app.use("/api", tokenChartRouter);
 app.use("/api", r2CacheProxyRouter);
 app.use("/api", pnlStatementRouter);
@@ -101,6 +103,7 @@ app.listen(PORT, () => {
   startHourlyActivityCache();
   startValidatorRewardsCache();
   safeStart("Telegram webhook registration", registerTelegramWebhook);
+  safeStart("Notis (Planet Zephyros) webhook registration", registerNotisWebhook);
   safeStart("Subdomain advert scheduler", startSubdomainAdvertScheduler);
 
   // Telegram bots ported from etn-zephyrprime/CoreClashGame — see

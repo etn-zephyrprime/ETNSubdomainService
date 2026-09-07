@@ -6,7 +6,7 @@ import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
-import { useTelegramLink } from "../../../hooks/useTelegramLink.js";
+import { useNotisTelegramLink } from "../../hooks/useNotisTelegramLink.js";
 import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
@@ -34,16 +34,16 @@ function shortAddr(a) {
 }
 
 // Core Tier's third feature: Telegram alerts, split into two independent kinds sharing one
-// delivery mechanism — see backend/db/migrations/009_alerts.sql's own header comment for why
-// there's no separate "connect Telegram for alerts" flow here: it reuses the exact link
-// telegramLinkRouter.js already maintains per wallet address (the same identity every Core tier
-// feature already authenticates against), so a wallet linked for marketplace sale-alerts is
-// already linked for these too.
+// delivery mechanism — the Planet Zephyros Notis bot (notisLinkRouter.js), a DELIBERATELY
+// SEPARATE bot identity from the ETN Subdomain Service bot the main site's marketplace sale-alerts
+// use (telegramLinkRouter.js/useTelegramLink.js). Don't reuse that hook here even though the
+// linking mechanics are identical — see notisLinkRouter.js's own header comment for why an earlier
+// version of this feature did exactly that and shipped every alert branded as the wrong bot.
 export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } =
     useCoreTierAccess(wallet, membershipVersion);
   const getAuthParams = useWalletAuthSignature(wallet);
-  const { getStatus, requestLinkCode, unlink } = useTelegramLink();
+  const { getStatus, requestLinkCode, unlink } = useNotisTelegramLink();
   const { getWalletAlerts, addWalletAlert, removeWalletAlert } = useWalletAlerts();
   const { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert } = useTokenPriceAlerts();
 
@@ -291,12 +291,12 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
             {linked ? <Bell size={18} color={green} /> : <BellOff size={18} color={muted} />}
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>
-                {linked ? "Telegram connected" : "Connect Telegram"}
+                {linked ? "Planet Zephyros Notis bot connected" : "Connect the Planet Zephyros Notis bot"}
               </div>
               <div style={{ fontSize: 11, color: mutedLight, marginTop: 2 }}>
                 {linked
-                  ? "Alerts below will DM this chat. Already linked for sale alerts? Same connection."
-                  : "Required before any alert below can notify you."}
+                  ? "Alerts below will DM this chat via @PlanetZephyrosNotisBot — a separate bot from the one used for subname sale alerts."
+                  : "Required before any alert below can notify you. This is a separate connection from subname sale alerts."}
               </div>
               {linkError && <div style={{ fontSize: 11, color: errorColor, marginTop: 4 }}>{linkError}</div>}
             </div>
@@ -317,7 +317,7 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
             </DashboardButton>
           ) : (
             <DashboardButton onClick={handleLinkEnable} disabled={linkBusy} style={{ padding: "8px 14px", fontSize: 12 }}>
-              Connect Telegram
+              Connect Notis bot
             </DashboardButton>
           )}
         </div>
@@ -397,7 +397,7 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
 
                 {waFormError && <div style={{ fontSize: 12, color: errorColor }}>{waFormError}</div>}
                 <DashboardButton onClick={submitWalletAlert} disabled={waBusy || !linked} style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}>
-                  {!linked ? "Connect Telegram first" : "Add alert"}
+                  {!linked ? "Connect Notis bot first" : "Add alert"}
                 </DashboardButton>
               </div>
             </>
@@ -451,7 +451,7 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0 }) {
             </div>
             {taFormError && <div style={{ fontSize: 12, color: errorColor }}>{taFormError}</div>}
             <DashboardButton onClick={submitTokenAlert} disabled={taBusy || !linked} style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}>
-              {!linked ? "Connect Telegram first" : "Add alert"}
+              {!linked ? "Connect Notis bot first" : "Add alert"}
             </DashboardButton>
           </div>
         </div>

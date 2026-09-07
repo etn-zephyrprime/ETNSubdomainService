@@ -14,16 +14,19 @@
 // that just triggered it and the alert stays active — the next notification needs a fresh move
 // from THAT point, which also happens to be exactly what prevents re-firing every single poll
 // while the price sits past the old threshold.
+//
+// Delivered via the Planet Zephyros Notis bot (notisLinkRouter.js) — NOT telegramNotifier.js/
+// telegramLinkRouter.js, which is a different bot used for marketplace sale-alerts. See
+// notisLinkRouter.js's own header comment for why these must stay separate.
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getPool } from "../db/pool.js";
 import { getActiveTokenPriceAlertsByToken, resetTokenPriceAlertBaseline } from "../db/tokenPriceAlerts.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
-import { getLinkedChatId } from "./telegramLinkRouter.js";
-import { sendTelegramDirectMessage } from "./telegramNotifier.js";
+import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { getTokenMetadata } from "../services/pnlIngestion.js";
+import { getTokenMetadata, EXPLORER_BASE_URL } from "../services/pnlIngestion.js";
 
 const CHECK_INTERVAL_MS = process.env.TOKEN_PRICE_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.TOKEN_PRICE_ALERT_CHECK_INTERVAL_MS, 10)
@@ -61,17 +64,18 @@ async function checkOneToken(provider, tokenAddress, alerts, etnUsd) {
     // picks back up correctly if they resubscribe.
     if (!(await hasCoreAccess(alert.ownerWallet))) continue;
 
-    const chatId = await getLinkedChatId(alert.ownerWallet);
+    const chatId = await getNotisLinkedChatId(alert.ownerWallet);
     if (chatId != null) {
       const metadata = await getTokenMetadata(tokenAddress);
       const label = metadata?.symbol || metadata?.name || `${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)}`;
       const arrow = pctMove >= 0 ? "📈" : "📉";
       const denomLabel = alert.denomination === "USD" ? "USD" : "ETN";
       const priceStr = alert.denomination === "USD" ? `$${fmtPrice(price)}` : `${fmtPrice(price)} ETN`;
-      await sendTelegramDirectMessage(
+      await sendNotisDirectMessage(
         chatId,
         `${arrow} *${label}* is ${pctMove >= 0 ? "up" : "down"} ${Math.abs(pctMove).toFixed(1)}% (${denomLabel}) — now ${priceStr}\n\n` +
-          `Alert: ${alert.direction} ${alert.thresholdPct}%\n\n[View on the dashboard](${DASHBOARD_URL}/premium)`
+          `Alert: ${alert.direction} ${alert.thresholdPct}%\n\n` +
+          `[View token](${EXPLORER_BASE_URL}/token/${tokenAddress}) · [Dashboard](${DASHBOARD_URL}/premium)`
       );
     }
 
