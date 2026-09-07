@@ -10,6 +10,8 @@ import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
 import { usePortfolioAlerts } from "../../hooks/usePortfolioAlerts.js";
 import { usePortfolioDigest } from "../../hooks/usePortfolioDigest.js";
+import { useDisplayNames } from "../../hooks/useDisplayNames.js";
+import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoint signs — one cached signature covers all of them
@@ -30,17 +32,13 @@ const inputStyle = {
 const labelStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 4, display: "block" };
 const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
-function shortAddr(a) {
-  return `${a.slice(0, 6)}...${a.slice(-4)}`;
-}
-
 // Core Tier's third feature: Telegram alerts, split into two independent kinds sharing one
 // delivery mechanism — the Planet Zephyros Notis bot (notisLinkRouter.js), a DELIBERATELY
 // SEPARATE bot identity from the ETN Subdomain Service bot the main site's marketplace sale-alerts
 // use (telegramLinkRouter.js/useTelegramLink.js). Don't reuse that hook here even though the
 // linking mechanics are identical — see notisLinkRouter.js's own header comment for why an earlier
 // version of this feature did exactly that and shipped every alert branded as the wrong bot.
-export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthParams }) {
+export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthParams, onSelectToken }) {
   // `getAuthParams` comes from PortfolioDashboardSection.jsx's single shared signature — see
   // useCoreTierAccess.js's own comment on why this component doesn't create its own instance the
   // way it originally did (that, plus the other two sibling components each doing the same, was
@@ -155,6 +153,20 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthP
       setTokenAlertsError(err.message || "Couldn't load token price alerts");
     }
   }, [getAuthParams, getTokenPriceAlerts, wallet.account]);
+
+  // Wallet addresses shown anywhere below (tracked-wallet dropdown, existing wallet alerts) get a
+  // primary name where one's set — same shared cache useDisplayNames.js uses across the whole Core
+  // tier dashboard, so an address resolved elsewhere on this page doesn't cost a second lookup here.
+  const { resolve: resolveWalletName } = useDisplayNames([
+    ...active.map((w) => w.address),
+    ...(walletAlerts || []).map((a) => a.walletAddress),
+  ]);
+  // Token addresses shown below (a balance-threshold alert's token denomination, and every token
+  // price alert) get a symbol/name instead — same reasoning, shared cache with useTokenNames.js.
+  const { resolve: resolveTokenName } = useTokenNames([
+    ...(walletAlerts || []).filter((a) => a.denomination && a.denomination !== "ETN").map((a) => a.denomination),
+    ...(tokenAlerts || []).map((a) => a.tokenAddress),
+  ]);
 
   // ---- Portfolio alerts (combined tracked-wallet USD %-move) ----
   const [portfolioAlerts, setPortfolioAlerts] = useState(null);
@@ -458,10 +470,10 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthP
                   {walletAlerts.map((a) => (
                     <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                       <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
-                        <span style={{ color: "#fff", fontWeight: 700 }}>{shortAddr(a.walletAddress)}</span>
+                        <span style={{ color: "#fff", fontWeight: 700 }}>{resolveWalletName(a.walletAddress)}</span>
                         {" — "}
                         {a.alertType === "balance_threshold"
-                          ? `notify when balance goes ${a.direction} ${a.thresholdValue} ${a.denomination === "ETN" ? "ETN" : shortAddr(a.denomination)}`
+                          ? `notify when balance goes ${a.direction} ${a.thresholdValue} ${a.denomination === "ETN" ? "ETN" : resolveTokenName(a.denomination)}`
                           : `notify on any activity${a.thresholdValue != null ? ` ≥ ${a.thresholdValue} ETN` : ""}`}
                       </div>
                       <button type="button" onClick={() => deleteWalletAlert(a.id)} disabled={waBusy} style={{ background: "none", border: "none", cursor: waBusy ? "not-allowed" : "pointer", padding: 4, flexShrink: 0 }}>
@@ -478,7 +490,7 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthP
                     <label style={labelStyle}>Wallet</label>
                     <select value={waWallet} onChange={(e) => setWaWallet(e.target.value)} style={{ ...inputStyle, width: "100%" }}>
                       {active.map((w) => (
-                        <option key={w.address} value={w.address}>{shortAddr(w.address)}</option>
+                        <option key={w.address} value={w.address}>{resolveWalletName(w.address)}</option>
                       ))}
                     </select>
                   </div>
@@ -583,7 +595,20 @@ export default function CoreTierAlerts({ wallet, membershipVersion = 0, getAuthP
               {tokenAlerts.map((a) => (
                 <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                   <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
-                    <span style={{ color: "#fff", fontWeight: 700 }}>{shortAddr(a.tokenAddress)}</span>
+                    {onSelectToken ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelectToken(a.tokenAddress)}
+                        style={{ background: "none", border: "none", padding: 0, font: "inherit", fontWeight: 700, color: "#fff", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
+                        title="View on the Tokens page"
+                      >
+                        {resolveTokenName(a.tokenAddress)}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#fff", fontWeight: 700 }}>{resolveTokenName(a.tokenAddress)}</span>
+                    )}
                     {` — notify when ${a.direction} ${a.thresholdPct}% (${a.denomination})`}
                   </div>
                   <button type="button" onClick={() => deleteTokenAlert(a.id)} disabled={taBusy} style={{ background: "none", border: "none", cursor: taBusy ? "not-allowed" : "pointer", padding: 4, flexShrink: 0 }}>

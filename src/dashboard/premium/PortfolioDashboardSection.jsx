@@ -14,7 +14,7 @@ import { green, greenGlow, muted } from "../theme.js";
 // loads this module lazily (React.lazy, only once the Portfolio tab is actually clicked), same
 // reasoning as PremiumDashboardSection.jsx: keeps the WalletConnect/AppKit bundle out of the base
 // dashboard for every visitor who never touches either wallet-requiring tab.
-export default function PortfolioDashboardSection() {
+export default function PortfolioDashboardSection({ onSelectToken }) {
   const wallet = useReownWallet();
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
@@ -43,9 +43,9 @@ export default function PortfolioDashboardSection() {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
+        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
         <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
-        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
+        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
     </div>

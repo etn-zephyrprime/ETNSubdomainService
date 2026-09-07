@@ -7,8 +7,10 @@ import SparklineChart from "../../components/SparklineChart.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
+import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
-import { formatChartDate, formatUsdPrice, shortHash } from "../../utils/format.js";
+import { getHistoricalBalance } from "../../utils/historicalBalance.js";
+import { formatChartDate, formatUsdPrice } from "../../utils/format.js";
 import { green, muted, mutedLight, border, panel2 } from "../../theme.js";
 
 function fmtEtn(v) {
@@ -49,11 +51,18 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   } = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { getAddressCoinBalanceHistory } = useBlockscout();
   const { getEtnPriceHistory } = useEtnPriceHistory();
+  const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
 
   const [historiesByAddress, setHistoriesByAddress] = useState({}); // address -> items[] | null (loading)
   const [error, setError] = useState(null);
   const [pricePoints, setPricePoints] = useState(null); // null until loaded
   const [valueMode, setValueMode] = useState("etn");
+  // address -> real ETN balance at WINDOW_DAYS ago, or 0 until resolved/if unresolvable — see
+  // historicalBalance.js's own header comment for why "before the wallet's first Blockscout
+  // history entry" must NOT default to 0 the way it did before this existed. Fetched separately
+  // from (and doesn't block) historiesByAddress above — a genuine improvement to the chart's
+  // accuracy once it resolves, not something the rest of the panel needs to wait on.
+  const [historicalSeeds, setHistoricalSeeds] = useState({});
 
   useEffect(() => {
     if (!hasAccess || active.length === 0) {
@@ -81,6 +90,24 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
     return () => { cancelled = true; };
   }, [hasAccess, active, getAddressCoinBalanceHistory]);
 
+  // Backfills the stretch of the 12-month window older than Blockscout's own history retains —
+  // see historicalBalance.js's own header comment. One RPC call per wallet, run in parallel,
+  // independent of the fetch above so a slow/failed lookup here never blocks the chart itself from
+  // rendering with today's "assume 0" fallback in the meantime.
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setHistoricalSeeds({});
+      return;
+    }
+    let cancelled = false;
+    Promise.all(active.map((w) => getHistoricalBalance(w.address, WINDOW_DAYS).then((v) => [w.address, v ?? 0]))).then(
+      (entries) => {
+        if (!cancelled) setHistoricalSeeds(Object.fromEntries(entries));
+      }
+    );
+    return () => { cancelled = true; };
+  }, [hasAccess, active]);
+
   // Full daily ETN/USD price history — site-wide, not per-wallet, so fetched once (not per
   // tracked wallet) whenever there's anything to convert. "all" (not "1y") since a wallet's own
   // balance history can reach back further than a year.
@@ -107,13 +134,31 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   const showUsd = valueMode === "usd" && usdReady;
 
   const loaded = active.length > 0 && active.every((w) => historiesByAddress[w.address] != null);
+  // ETN-float seed -> wei bigint, the representation mergeBalanceHistories' own per-wallet
+  // currentWei accumulator uses. A malformed/out-of-range value (shouldn't happen given
+  // historicalBalance.js's own formatting, but defensive regardless) falls back to 0n — the same
+  // "assume 0" this whole backfill exists to improve on, never worse than before.
+  function toWeiSeed(etnValue) {
+    try {
+      return ethers.parseEther((etnValue || 0).toFixed(18));
+    } catch {
+      return 0n;
+    }
+  }
   // buildDailySeries always returns a full WINDOW_DAYS+1-point series regardless of input (a
-  // wallet with literally no history yet still gets a flat 0 line) — hasCombinedHistory checks
-  // the underlying sparse data instead, so a tracked wallet with no activity at all shows the
-  // "not enough history" message rather than a flat, uninformative zero line.
-  const combinedSparse = loaded ? mergeBalanceHistories(active.map((w) => historiesByAddress[w.address])) : [];
-  const hasCombinedHistory = combinedSparse.length > 0;
-  const combinedSeriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS);
+  // wallet with literally no history yet still gets a flat line at its own seed value) —
+  // hasCombinedHistory checks the underlying sparse data instead, so a tracked wallet with no
+  // activity AND no resolvable historical seed shows the "not enough history" message rather than
+  // a flat, uninformative zero line.
+  const combinedSparse = loaded
+    ? mergeBalanceHistories(active.map((w) => historiesByAddress[w.address]), active.map((w) => toWeiSeed(historicalSeeds[w.address])))
+    : [];
+  const combinedSeedEtn = active.reduce((sum, w) => sum + (historicalSeeds[w.address] || 0), 0);
+  // A wallet that's held a flat nonzero balance for the whole window (no actual Blockscout entries
+  // at all, but a real backfilled seed) still counts as "has history" — without this, it would
+  // wrongly show "No balance history yet" despite a real, if unchanging, balance to chart.
+  const hasCombinedHistory = combinedSparse.length > 0 || combinedSeedEtn > 0;
+  const combinedSeriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS, combinedSeedEtn);
   const combinedSeries = showUsd ? convertSeriesToUsd(combinedSeriesEtn, priceLookup) : combinedSeriesEtn;
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
@@ -188,15 +233,16 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
               active.map((w) => {
                 const items = historiesByAddress[w.address] || [];
                 const sparse = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
-                const seriesEtn = buildDailySeries(sparse, WINDOW_DAYS);
+                const seedEtn = historicalSeeds[w.address] || 0;
+                const seriesEtn = buildDailySeries(sparse, WINDOW_DAYS, seedEtn);
                 const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
                 return (
                   <div key={w.address}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                       {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                      {shortHash(w.address, 8)}
+                      {resolveName(w.address)}
                     </div>
-                    {sparse.length === 0 ? (
+                    {sparse.length === 0 && seedEtn === 0 ? (
                       <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>No balance history yet.</div>
                     ) : (
                       <SparklineChart data={series} height={100} formatValue={formatValue} formatLabel={formatChartDate} />

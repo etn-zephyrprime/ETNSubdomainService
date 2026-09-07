@@ -119,7 +119,7 @@ export default function DashboardApp() {
         {tab === "nameservice" && <NameServiceStats />}
         {tab === "portfolio" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-            <PortfolioDashboardSection />
+            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} />
           </Suspense>
         )}
         {tab === "premium" && (
