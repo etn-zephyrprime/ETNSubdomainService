@@ -29,8 +29,11 @@ import { startPremiumSubscriptionWatcher } from "./utils/premiumSubscriptionWatc
 import { startPnlAutoFinalizeScheduler } from "./utils/pnlAutoFinalizeScheduler.js";
 import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionScheduler.js";
 import { startSubscriptionRevenueSweepScheduler } from "./utils/subscriptionRevenueSweepScheduler.js";
+import { startWalletAlertScheduler } from "./utils/walletAlertScheduler.js";
+import { startTokenPriceAlertScheduler } from "./utils/tokenPriceAlertScheduler.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
+import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
 
 dotenv.config();
 
@@ -66,6 +69,7 @@ app.use("/api", tokenChartRouter);
 app.use("/api", r2CacheProxyRouter);
 app.use("/api", pnlStatementRouter);
 app.use("/api", premiumDashboardRouter);
+app.use("/api", premiumAlertsRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -118,4 +122,9 @@ app.listen(PORT, () => {
   safeStart("PnL auto-finalize scheduler", startPnlAutoFinalizeScheduler);
   safeStart("PnL split execution scheduler", startPnlSplitExecutionScheduler);
   safeStart("Subscription revenue sweep scheduler", startSubscriptionRevenueSweepScheduler);
+
+  // Premium Feature #3 (Telegram alerts) — see migrations/009_alerts.sql. Reuses the Telegram
+  // link every premium feature already authenticates against; no separate linking flow.
+  safeStart("Wallet alert scheduler", startWalletAlertScheduler);
+  safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
 });
