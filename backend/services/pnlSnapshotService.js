@@ -18,8 +18,9 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
+import { upsertPnlSnapshot, getExistingSnapshotDates } from "../db/pnlSnapshots.js";
 import { ingestWalletHistory, backfillDeferredPrices } from "./pnlIngestion.js";
-import { replayFifo } from "./fifoLotEngine.js";
+import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
 import {
   transferToEvent,
   buildNftEvents,
@@ -28,6 +29,30 @@ import {
   computeGasFeesUsd,
   valueInventoryAtTimestamp,
 } from "./pnlEventBuilder.js";
+
+/** Fetches and assembles one wallet's full, chronologically-sorted event list — the shared first
+ * half of both computeLivePnlSnapshot (below) and backfillPnlHistory: both need "every event this
+ * wallet has ever had," they just replay it differently (one point-in-time closing snapshot vs. a
+ * series of daily ones). Kept here rather than duplicated a third time alongside
+ * pnlStatementGenerator.js's own (period-scoped) event assembly. */
+async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, asOf) {
+  const [transfers, swaps, defiActivity] = await Promise.all([
+    getAllTransfersBefore(trackedWallet, asOf),
+    getAllSwapTradesBefore(trackedWallet, asOf),
+    getAllDefiActivityBefore(trackedWallet, asOf),
+  ]);
+
+  const { events: nftEvents, consumedRowIds: nftConsumedRowIds } = buildNftEvents(transfers);
+  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity, priorityAssets);
+  const events = [
+    ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
+    ...swaps.map(swapToEvent),
+    ...nftEvents,
+    ...defiEvents,
+  ].sort((a, b) => a.timestamp - b.timestamp);
+
+  return { events, transfers };
+}
 
 /**
  * Live PnL snapshot for `trackedWallet` as of right now: current holdings (per token, valued at
@@ -74,20 +99,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
 
   await ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
 
-  const [transfers, swaps, defiActivity] = await Promise.all([
-    getAllTransfersBefore(trackedWallet, now),
-    getAllSwapTradesBefore(trackedWallet, now),
-    getAllDefiActivityBefore(trackedWallet, now),
-  ]);
-
-  const { events: nftEvents, consumedRowIds: nftConsumedRowIds } = buildNftEvents(transfers);
-  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity, priorityAssets);
-  const events = [
-    ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
-    ...swaps.map(swapToEvent),
-    ...nftEvents,
-    ...defiEvents,
-  ].sort((a, b) => a.timestamp - b.timestamp);
+  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
 
   const { closing } = replayFifo(events, now, now);
 
@@ -177,4 +189,90 @@ export function combineLivePnlSnapshots(snapshots) {
     gasUsd: gasUsd.toString(),
     pricingIncomplete,
   };
+}
+
+/**
+ * One-time-per-wallet retroactive fill for the value-over-time chart: pnl_snapshots only got a
+ * ROW GOING FORWARD from whenever pnlSnapshotScheduler.js first started ticking for a given wallet
+ * (that table's own header comment is explicit about this — it's a lightweight daily rollup, never
+ * a backfill mechanism) — so until this runs, the chart only ever has however many days have
+ * elapsed since the scheduler was deployed, which for a brand-new wallet (or a brand-new feature)
+ * can be as little as "today." This reconstructs the missing days retroactively, using the exact
+ * same FIFO ledger / pricing pipeline as the live "right now" figures, so a backfilled day is never
+ * a different kind of number than a scheduler-written one.
+ *
+ * Cost shape, and why this is safe to run inline rather than treat as some rare heavy job: the
+ * expensive part of a FIFO replay is walking the event list, and replayFifoCheckpoints (see
+ * fifoLotEngine.js) does that ONCE for all `windowDays` days combined, not once per day — what's
+ * left scaling with `windowDays` is a cheap in-memory snapshot copy per day plus that day's pricing
+ * lookups, and those lookups hit getHistoricalPriceUsd's day-bucketed cache (see pnlPricing.js) for
+ * any token this wallet has already caused to be bulk-backfilled, which by the time this runs is
+ * normally every token it holds — a historical price lookup here is a cache read, not a fresh
+ * GeckoTerminal crawl, for the common case.
+ *
+ * Idempotent and resumable: only computes days that don't already have a pnl_snapshots row (a
+ * cheap existence check against the whole window, done BEFORE building the event list at all — a
+ * wallet whose backfill already completed costs one indexed query and nothing more on every later
+ * call), so an interrupted run, a redeploy mid-backfill, or calling this again after the daily
+ * scheduler has since filled in more days all just pick up whatever's still missing.
+ *
+ * `ownerWallet` is needed here (unlike computeLivePnlSnapshot) purely because pnl_snapshots rows
+ * are keyed by (owner_wallet, wallet_address, date) — see that table's own schema comment.
+ */
+export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365) {
+  const todayUtc = new Date();
+  todayUtc.setUTCHours(0, 0, 0, 0);
+
+  const days = [];
+  for (let i = windowDays; i >= 1; i--) {
+    // oldest first; i=0 (today) is deliberately excluded — the daily scheduler already writes
+    // today's row itself, right before it calls this.
+    const d = new Date(todayUtc);
+    d.setUTCDate(d.getUTCDate() - i);
+    days.push(d);
+  }
+
+  const fromDateStr = days[0].toISOString().slice(0, 10);
+  const toDateStr = days[days.length - 1].toISOString().slice(0, 10);
+  const existingDates = new Set(await getExistingSnapshotDates(ownerWallet, trackedWallet, fromDateStr, toDateStr));
+  const missingDays = days.filter((d) => !existingDates.has(d.toISOString().slice(0, 10)));
+  if (missingDays.length === 0) return; // fully backfilled already — nothing to do, and no need to touch ingestion/events at all
+
+  // No priorityAssets here — a backfill only ever runs after this wallet already has at least one
+  // successful live snapshot (see the trigger in pnlSnapshotScheduler.js), so cold-start priority
+  // scoping never applies by this point; full pricing throughout.
+  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date());
+
+  // Each checkpoint is the EXCLUSIVE end of its calendar day (start of the next day) — matches
+  // replayFifo's own "closing = snapshot as of periodEnd, events at/after periodEnd excluded"
+  // convention, so a backfilled day's figures mean exactly what a scheduler-written day's do.
+  const checkpoints = missingDays.map((d) => new Date(d.getTime() + 24 * 60 * 60 * 1000).getTime());
+  const snapshots = replayFifoCheckpoints(events, checkpoints);
+
+  for (let i = 0; i < missingDays.length; i++) {
+    const day = missingDays[i];
+    const dateStr = day.toISOString().slice(0, 10);
+    const dayEndExclusive = new Date(checkpoints[i]);
+    const { lots, realizedEvents } = snapshots[i];
+
+    try {
+      const transfersUpToDay = transfers.filter((t) => new Date(t.timestamp) < dayEndExclusive);
+      const [valuation, gas] = await Promise.all([
+        valueInventoryAtTimestamp(lots, dayEndExclusive),
+        computeGasFeesUsd(transfersUpToDay),
+      ]);
+      const realizedPnlUsdGross = realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
+      const realizedPnlUsd = realizedPnlUsdGross.minus(gas.totalGasUsd);
+
+      await upsertPnlSnapshot(ownerWallet, trackedWallet, dateStr, {
+        totalValueUsd: valuation.totalMarketValueUsd.toString(),
+        realizedPnlUsd: realizedPnlUsd.toString(),
+        unrealizedPnlUsd: valuation.totalUnrealizedUsd.toString(),
+      });
+    } catch (err) {
+      // One bad day (a pricing hiccup, an RPC blip) shouldn't abort the rest of the backfill —
+      // it's naturally retried on the next scheduler tick since this day is still missing then.
+      console.warn(`⚠️  PnL history backfill: failed for ${trackedWallet} on ${dateStr}:`, err.message);
+    }
+  }
 }

@@ -15,7 +15,12 @@
 import { getAllActiveTrackedWalletPairs, upsertPnlSnapshot } from "../db/pnlSnapshots.js";
 import { getPool, query } from "../db/pool.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { computeLivePnlSnapshot } from "../services/pnlSnapshotService.js";
+import { computeLivePnlSnapshot, backfillPnlHistory } from "../services/pnlSnapshotService.js";
+
+// How far back the value-over-time chart's retroactive backfill (see backfillPnlHistory's own
+// comment) reaches — matches CoreTierBalanceHistory.jsx's / pnlSnapshotRouter.js's own "rolling 12
+// months" convention for this dashboard.
+const BACKFILL_WINDOW_DAYS = 365;
 
 const CHECK_INTERVAL_MS = process.env.PNL_SNAPSHOT_CHECK_INTERVAL_MS
   ? parseInt(process.env.PNL_SNAPSHOT_CHECK_INTERVAL_MS, 10)
@@ -79,6 +84,18 @@ async function checkAllWallets() {
           });
         } catch (err) {
           console.warn(`⚠️  PnL snapshot failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
+          continue; // no point attempting the backfill below off a wallet whose "today" figure just failed
+        }
+
+        // Retroactive value-over-time history — see backfillPnlHistory's own comment. Idempotent
+        // (returns immediately once a wallet's window is fully filled), so calling this every day
+        // right after writing "today" costs almost nothing once it's caught up; it only does real
+        // work the first handful of times for a given wallet.
+        try {
+          const selfOwnedAddresses = wallets.filter((a) => a !== walletAddress);
+          await backfillPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
+        } catch (err) {
+          console.warn(`⚠️  PnL history backfill failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
         }
       }
     }

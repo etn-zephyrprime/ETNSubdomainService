@@ -225,3 +225,76 @@ export function replayFifo(events, periodStart, periodEnd) {
 
   return { opening, closing };
 }
+
+/**
+ * Like replayFifo, but takes N checkpoint timestamps (sorted ascending) instead of just one
+ * periodStart/periodEnd pair, and returns a snapshot AS OF each one from a single pass over
+ * `events` — same "snapshot right before any event at/after the boundary" rule replayFifo itself
+ * uses for periodEnd, applied at every checkpoint in turn. There's no "opening" concept here, only
+ * a series of cumulative closings, each one covering all of history up to that checkpoint.
+ *
+ * Built for pnlSnapshotService.js's history backfill: computing a wallet's daily PnL rollup for the
+ * last 365 days by calling replayFifo() 365 times would re-walk the ENTIRE event list from scratch
+ * on every single call — O(events × days). Walking the list once and collecting a snapshot at each
+ * day boundary as it's crossed is O(events + days) instead — the only cost that scales with `days`
+ * is the (cheap) snapshot copy itself, not re-processing every prior event again.
+ *
+ * Returns an array of { checkpoint, lots, realizedEvents } in the same order as `checkpoints` — a
+ * checkpoint past the last event (including every checkpoint, for a wallet with no activity yet)
+ * still gets an entry, just holding the ledger's final (possibly still-empty) state.
+ */
+export function replayFifoCheckpoints(events, checkpoints) {
+  const ledger = new FifoLedger();
+  const snapshots = [];
+  let checkpointIndex = 0;
+
+  for (const event of events) {
+    while (checkpointIndex < checkpoints.length && event.timestamp >= checkpoints[checkpointIndex]) {
+      snapshots.push({ checkpoint: checkpoints[checkpointIndex], ...ledger.snapshot() });
+      checkpointIndex++;
+    }
+    if (checkpointIndex >= checkpoints.length) break; // every checkpoint already captured — nothing left can change a recorded snapshot
+
+    switch (event.kind) {
+      case "in":
+        ledger.acquire(event);
+        break;
+      case "out":
+        ledger.dispose(event);
+        break;
+      case "self_out":
+        ledger.removeForSelfTransfer(event);
+        break;
+      case "self_in":
+        ledger.acquire(event);
+        break;
+      case "swap":
+        ledger.dispose({
+          tokenAddress: event.soldTokenAddress,
+          txHash: event.txHash,
+          timestamp: event.timestamp,
+          quantity: event.soldQuantity,
+          proceedsUsd: event.soldProceedsUsd,
+        });
+        ledger.acquire({
+          tokenAddress: event.boughtTokenAddress,
+          txHash: event.txHash,
+          timestamp: event.timestamp,
+          quantity: event.boughtQuantity,
+          unitCostUsd: event.boughtUnitCostUsd,
+        });
+        break;
+      default:
+        throw new Error(`replayFifoCheckpoints: unknown event kind "${event.kind}"`);
+    }
+  }
+  // Any checkpoints at/after the last event (e.g. "today", or every checkpoint for a wallet with no
+  // activity at all) never got captured inside the loop above — the ledger's final state covers all
+  // of them.
+  while (checkpointIndex < checkpoints.length) {
+    snapshots.push({ checkpoint: checkpoints[checkpointIndex], ...ledger.snapshot() });
+    checkpointIndex++;
+  }
+
+  return snapshots;
+}
