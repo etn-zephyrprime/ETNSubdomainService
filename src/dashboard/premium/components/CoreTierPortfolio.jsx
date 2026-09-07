@@ -7,6 +7,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
+import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
@@ -86,7 +87,7 @@ function CooldownNotice({ children }) {
 // (handlePendingConfirm below) with the consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAuthParams }) {
+export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAuthParams, onSelectToken }) {
   // Access + tracked-wallet-list state/effects live in useCoreTierAccess.js — shared with
   // CoreTierBalanceHistory.jsx, which needs the exact same "is this member allowed, and which
   // wallets do they track" data without either duplicating this state machine a second time or
@@ -100,6 +101,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
+  const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
 
   const [managing, setManaging] = useState(false);
   const [addInput, setAddInput] = useState("");
@@ -545,21 +547,24 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
                       {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
                     </div>
-                    {totalPortfolioHasUnpriced && (
-                      <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
-                        Lower bound — some holdings' prices haven't resolved yet
-                      </div>
-                    )}
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
                       ETN + all priced token holdings, across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
                     </div>
+                    {totalPortfolioHasUnpriced && (
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", borderRadius: 8, background: "rgba(255,138,61,0.12)", border: `1px solid ${orange}`, marginTop: 10 }}>
+                        <TriangleAlert size={14} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
+                        <div style={{ fontSize: 11, color: orange, fontWeight: 700, lineHeight: 1.5 }}>
+                          Lower bound — some holdings' prices haven't resolved yet. The real total is at least this much.
+                        </div>
+                      </div>
+                    )}
 
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
                       {perWalletTotals.map((w) => (
                         <div key={w.address} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                          <span style={{ color: mutedLight, fontFamily: "monospace" }}>
+                          <span style={{ color: mutedLight }}>
                             {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                            {shortHash(w.address, 8)}
+                            {resolveName(w.address)}
                           </span>
                           <span style={{ color: "#fff", fontWeight: 700 }}>
                             {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
@@ -630,7 +635,20 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                             }}
                           >
                             <span style={{ fontSize: 12, color: "#fff" }}>
-                              {t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span>
+                              {onSelectToken && t.token?.address ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onSelectToken(t.token.address)}
+                                  style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
+                                  title="View on the Tokens page"
+                                >
+                                  {t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span>
+                                </button>
+                              ) : (
+                                <>{t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span></>
+                              )}
                               {t.heldBy.length > 1 && (
                                 <span style={{ display: "block", fontSize: 10, color: muted }}>
                                   Held in {t.heldBy.length} of {active.length} wallets

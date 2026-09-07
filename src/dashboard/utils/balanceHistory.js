@@ -11,15 +11,22 @@ import { ethers } from "ethers";
  * balance actually moved get an entry at all. Naively summing whatever happens to land on the
  * exact same date across wallets would undercount on almost every date, since two wallets rarely
  * change balance on the same day. This forward-fills each wallet's last-known balance for any
- * date it has no entry of its own (a wallet with no entry yet as of a given date is treated as 0
- * — its balance before its first-ever recorded change) before summing.
+ * date it has no entry of its own before summing.
+ *
+ * `initialWeis` (optional, parallel to `perWalletItems`): each wallet's REAL balance (wei bigint)
+ * before its own earliest entry, rather than assuming 0 — see historicalBalance.js's own header
+ * comment for why 0 is wrong here: confirmed live, Blockscout's coin-balance-history-by-day
+ * endpoint only ever retains roughly the last ~90 days REGARDLESS of an address's actual age, so
+ * "before the first entry" does NOT mean "before the account's first-ever balance change" for
+ * most wallets on a rolling-12-month chart. Pass 0n (or omit) for a wallet with no real history to
+ * backfill (e.g. the lookup itself failed) — same as the previous unconditional behavior.
  *
  * Returns `{ label, value }[]` (value a plain float ETN number, not wei) — directly usable as
  * SparklineChart's `data` prop.
  */
-export function mergeBalanceHistories(perWalletItems) {
+export function mergeBalanceHistories(perWalletItems, initialWeis = []) {
   const pointers = perWalletItems.map(() => 0);
-  const currentWei = perWalletItems.map(() => 0n);
+  const currentWei = perWalletItems.map((_, i) => initialWeis[i] ?? 0n);
   const allDates = [...new Set(perWalletItems.flatMap((items) => items.map((i) => i.date)))].sort();
 
   return allDates.map((date) => {
@@ -71,14 +78,17 @@ export function buildEtnPriceLookup(points) {
  * jumps instantly on the one day it actually changed. Filling every day in between with the
  * carried-forward value makes the chart draw that step correctly.
  *
- * A day before the series' very first entry is 0 (the account's balance before its first-ever
- * recorded change — same convention mergeBalanceHistories itself already uses for a wallet with
- * no history yet).
+ * `initialValue` (optional, ETN float, default 0): the real balance before the series' very first
+ * entry — see mergeBalanceHistories's own comment on why 0 is usually wrong for a rolling-12-month
+ * window (Blockscout's sparse history only retains ~90 days regardless of account age). Passing
+ * the wallet's real historical balance here (historicalBalance.js) is always safe even when it
+ * turns out not to be needed: it's only ever used for days strictly before the series' first real
+ * entry, so a wallet whose sparse data already covers the whole window never actually surfaces it.
  */
-export function buildDailySeries(series, windowDays = 365) {
+export function buildDailySeries(series, windowDays = 365, initialValue = 0) {
   const today = new Date();
   let pointer = 0;
-  let currentValue = 0;
+  let currentValue = initialValue;
 
   const days = [];
   for (let i = windowDays; i >= 0; i--) {
