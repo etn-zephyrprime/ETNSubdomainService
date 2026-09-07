@@ -6,6 +6,7 @@ import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
 import { usePayment } from "../../hooks/usePayment.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
+import { readCachedTokenPrices, cacheTokenPrice } from "../utils/tokenPriceCache.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
@@ -210,7 +211,10 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     setTransferHistory(null);
     setTransferNextParams(null);
     setTransferWindowDays(DEFAULT_WINDOW_DAYS);
-    setTokenPrices({});
+    // Seed from the last-known-price cache (tokenPriceCache.js, shared with CoreTierPortfolio.jsx)
+    // instead of a blank slate — see that file's own comment for why. The effect below still
+    // fetches fresh values for every held token regardless.
+    setTokenPrices(readCachedTokenPrices());
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -252,7 +256,9 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       getTokenChart(tb.token.address, "7")
         .then((res) => {
           if (cancelled || !res?.hasData || !res.candles?.length) return;
-          setTokenPrices((prev) => ({ ...prev, [addr]: res.candles[res.candles.length - 1].close }));
+          const price = res.candles[res.candles.length - 1].close;
+          setTokenPrices((prev) => ({ ...prev, [addr]: price }));
+          cacheTokenPrice(addr, price); // so the NEXT lookup/reload can show this immediately too
         })
         .catch((err) => console.error(`Failed to load price for ${addr}:`, err.message));
     });

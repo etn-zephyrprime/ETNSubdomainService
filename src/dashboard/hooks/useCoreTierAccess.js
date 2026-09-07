@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useTrackedWallets } from "./useTrackedWallets.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -25,8 +24,14 @@ function sleep(ms) {
 // Deliberately does NOT own any track/untrack UI state (confirm-step, input text, etc.) — that
 // stays view-specific in CoreTierPortfolio.jsx, which is still the only place wallets are actually
 // added/removed from.
-export function useCoreTierAccess(wallet, membershipVersion = 0) {
-  const getAuthParams = useWalletAuthSignature(wallet);
+//
+// `getAuthParams` is passed IN (from PortfolioDashboardSection.jsx's own single
+// useWalletAuthSignature call) rather than this hook creating its own — every Core Tier component
+// (CoreTierPortfolio, CoreTierBalanceHistory, CoreTierAlerts) calls useCoreTierAccess, and each of
+// those creating its OWN independent signature cache is exactly what caused 6-7 separate wallet
+// signature prompts on one page load: same address, same purpose, but each component's cache had
+// no way to know about the others'. One shared instance, passed down, means one signature total.
+export function useCoreTierAccess(wallet, membershipVersion = 0, getAuthParams) {
   const { getTrackedWallets, addTrackedWallet, removeTrackedWallet } = useTrackedWallets();
 
   // null = not checked yet (or wallet not connected), true/false once known — reset on every

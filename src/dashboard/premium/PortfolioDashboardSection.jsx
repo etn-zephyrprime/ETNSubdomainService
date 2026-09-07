@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
+import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
 import CoreTierPortfolio from "./components/CoreTierPortfolio.jsx";
@@ -15,6 +16,10 @@ import { green, greenGlow, muted } from "../theme.js";
 // dashboard for every visitor who never touches either wallet-requiring tab.
 export default function PortfolioDashboardSection() {
   const wallet = useReownWallet();
+  // One signed-ownership proof for the whole tab, not one per child component — see
+  // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
+  // within each of those, several concurrent callers) each prompting their own wallet signature.
+  const getAuthParams = useWalletAuthSignature(wallet);
 
   // Bumped by MembershipPurchase after a successful subscribe — CoreTierPortfolio treats a change
   // here as "re-check my access, a purchase just happened" (see that component's own comment on
@@ -38,9 +43,9 @@ export default function PortfolioDashboardSection() {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} />
-        <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} />
-        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} />
+        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
+        <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
+        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
     </div>
