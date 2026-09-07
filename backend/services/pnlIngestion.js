@@ -25,11 +25,11 @@
 // be spot-checked against real trade history before this goes live.
 import { ethers } from "ethers";
 import { getIngestionState, upsertIngestionState } from "../db/walletIngestionState.js";
-import { insertTransfers } from "../db/ingestedTransfers.js";
-import { insertSwapTrades } from "../db/swapTrades.js";
+import { insertTransfers, getUnpricedTransfers, setTransferPrice } from "../db/ingestedTransfers.js";
+import { insertSwapTrades, getSwapTradesWithUnpricedLegs, setSwapLegPrices } from "../db/swapTrades.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
 import { insertDefiActivity } from "../db/defiActivity.js";
-import { getHistoricalPriceUsd } from "./pnlPricing.js";
+import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 
@@ -267,7 +267,26 @@ function weiToDecimal(wei, decimals = 18) {
   return Number(ethers.formatUnits(wei, decimals));
 }
 
-async function priceOrNull(asset, timestamp) {
+// `priorityAssets` (a Set of lowercased token addresses, or null/undefined meaning "price
+// everything fully" — the ORIGINAL, unscoped behavior) lets a caller defer the expensive part of
+// pricing a NEW-to-this-app token (ensureBackfilled's full GeckoTerminal OHLCV crawl, up to 20
+// rate-limited pages) for any asset it doesn't care about right now, while still getting a price
+// for free if that asset happens to already be cached from some OTHER wallet's activity. Native
+// ETN is NEVER deferred regardless of priorityAssets — gas fees always need pricing, and ETN is
+// essentially always already cached anyway (every wallet touches it).
+//
+// This is what backs the Core tier "ongoing dashboard PnL" cold-start speedup (see
+// pnlSnapshotService.js's own header comment): a member selects which tokens they want prioritized,
+// ingestion prices JUST those (plus ETN) in full, and everything else gets recorded with a null
+// price for now — backfillDeferredPrices below re-prices those specific rows afterward, in the
+// background, without re-walking Blockscout at all. generateStatement (pnlStatementGenerator.js)
+// NEVER passes priorityAssets — a Statement always gets full, complete pricing, no deferral, by
+// construction (it doesn't have this parameter threaded into its own ingestWalletHistory call).
+async function priceOrNull(asset, timestamp, priorityAssets) {
+  const isNative = asset === "NATIVE";
+  if (priorityAssets && !isNative && !priorityAssets.has(asset.toLowerCase())) {
+    return getCachedHistoricalPriceUsd(asset, timestamp); // never throws, already cache-only
+  }
   try {
     return await getHistoricalPriceUsd(asset, timestamp);
   } catch (err) {
@@ -283,7 +302,7 @@ async function priceOrNull(asset, timestamp) {
  * (checked by the caller), so this is never wasted on a plain ETN send. On a match, records the
  * trade into `swapRows` and the tx hash into `swapTxHashes`, and returns true so the caller skips
  * emitting this tx's native/token legs as plain transfers instead. */
-async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows) {
+async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets) {
   let logsPage;
   try {
     logsPage = await fetchPage(`/transactions/${tx.hash}/logs`, null);
@@ -336,8 +355,8 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
   const boughtAmount = bought ? weiToDecimal(BigInt(bought.total.value), Number(bought.token.decimals)) : weiToDecimal(nativeValue);
 
   const [priceSold, priceBought] = await Promise.all([
-    priceOrNull(soldAddress, timestamp),
-    priceOrNull(boughtAddress, timestamp),
+    priceOrNull(soldAddress, timestamp, priorityAssets),
+    priceOrNull(boughtAddress, timestamp, priorityAssets),
   ]);
 
   swapTxHashes.add(tx.hash.toLowerCase());
@@ -367,7 +386,7 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
  * this refactor's win comes from. Returns { swapTxHashes, highestBlock } — swapTxHashes feeds
  * ingestInternalTransactions/ingestTokenTransfers below, which still run after this completes,
  * since they filter on the now-complete set. */
-async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock) {
+async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   const swapTxHashes = new Set();
@@ -388,7 +407,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       const tokenTransfers = tx.token_transfers || [];
       const isSwap =
         tokenTransfers.length > 0 && tx.to?.is_contract
-          ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows)
+          ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets)
           : false;
 
       // Gas is only ever charged to whoever actually sent the transaction.
@@ -509,7 +528,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
 
 /** Walks /addresses/{wallet}/token-transfers — ERC20/721/1155 in/out. Independent of
  * ingestInternalTransactions above, so the caller runs the two concurrently. */
-async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes) {
+async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes, priorityAssets) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -566,7 +585,7 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
 
       const decimals = Number(tt.token?.decimals ?? 18);
       const amountRaw = BigInt(tt.total?.value || "0");
-      const priceUsd = await priceOrNull(tokenAddress, timestamp);
+      const priceUsd = await priceOrNull(tokenAddress, timestamp, priorityAssets);
       const amountDecimal = weiToDecimal(amountRaw, decimals);
 
       rows.push({
@@ -774,8 +793,13 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
  * other addresses, used to flag self-transfers (excluded from FIFO disposal — see fifoLotEngine.js).
  * Safe to call repeatedly for the same wallet — always resumes from wallet_ingestion_state's
  * last_ingested_block rather than re-scanning from scratch.
+ *
+ * `priorityAssets` (optional Set of lowercased token addresses) — see priceOrNull's own comment.
+ * Omit/pass null for full, complete pricing (generateStatement always does this). Rows for a
+ * non-priority token get inserted with a null price for now; backfillDeferredPrices below re-prices
+ * them later without touching this walk at all.
  */
-export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []) {
+export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
   const selfOwnedSet = new Set([trackedWallet.toLowerCase(), ...selfOwnedAddresses.map((a) => a.toLowerCase())]);
   // Loaded once per ingestion run rather than queried per-row (see cexAddressSet's own comment
   // below at its call sites) — the list itself is small and manually-maintained (see
@@ -791,7 +815,7 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   // cold-start DeFi scan here, regardless of how far its ordinary ingestion has already progressed.
   const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
 
-  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}${stopAtDefiBlock == null ? ", DeFi activity cold start" : ""}`);
+  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}${stopAtDefiBlock == null ? ", DeFi activity cold start" : ""}${priorityAssets ? `, priced fully for ${priorityAssets.size} priority asset(s) — others deferred` : ""}`);
 
   // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
   // internal-transactions/token-transfers walks need to correctly skip a swap's legs. DeFi activity
@@ -802,12 +826,12 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   // comment for why this whole restructure is deliberate: /transactions used to be walked twice
   // and everything used to run fully sequentially.
   const [{ swapTxHashes, highestBlock: highestFromTx }, highestFromDefi] = await Promise.all([
-    ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock),
+    ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets),
     ingestDefiActivity(trackedWallet, stopAtDefiBlock),
   ]);
   const [highestFromInternal, highestFromTokens] = await Promise.all([
     ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
-    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
+    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes, priorityAssets),
   ]);
   const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
 
@@ -820,4 +844,61 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   }
 
   console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap(s) detected`);
+}
+
+/**
+ * Re-prices every row ingestWalletHistory left with a null price for `trackedWallet` — both
+ * deliberately-deferred non-priority assets (see priorityAssets) and any genuine historical
+ * lookup failure — using the FULL getHistoricalPriceUsd (bulk-backfilling a never-priced asset as
+ * needed), then updates those specific rows in place. Never re-walks Blockscout at all: the rows
+ * already exist, only their price columns change.
+ *
+ * Meant to run in the BACKGROUND after a priority-scoped computeLivePnlSnapshot has already
+ * returned its (partial) result to the user — see pnlSnapshotService.js's own comment. Safe to
+ * call any time regardless of whether priorityAssets was ever used (e.g. a wallet with a handful
+ * of genuinely-failed historical lookups from before this feature existed benefits too) — it just
+ * does nothing if there's nothing left to price.
+ */
+export async function backfillDeferredPrices(trackedWallet) {
+  const [transferRows, swapRows] = await Promise.all([
+    getUnpricedTransfers(trackedWallet),
+    getSwapTradesWithUnpricedLegs(trackedWallet),
+  ]);
+  if (transferRows.length === 0 && swapRows.length === 0) return;
+
+  console.log(`💰 Backfilling ${transferRows.length} deferred transfer price(s) and ${swapRows.length} swap leg(s) for ${trackedWallet}`);
+
+  for (const row of transferRows) {
+    const asset = row.asset_type === "native" ? "NATIVE" : row.token_address;
+    try {
+      const priceUsd = await getHistoricalPriceUsd(asset, new Date(row.timestamp));
+      await setTransferPrice(row.id, priceUsd, Number(row.amount_decimal) * priceUsd);
+    } catch (err) {
+      console.warn(`⚠️  Deferred-price backfill: still couldn't price ${asset} for transfer ${row.id}:`, err.message);
+    }
+  }
+
+  for (const row of swapRows) {
+    const timestamp = new Date(row.timestamp);
+    let priceSold = row.price_usd_sold_leg != null ? Number(row.price_usd_sold_leg) : null;
+    let priceBought = row.price_usd_bought_leg != null ? Number(row.price_usd_bought_leg) : null;
+
+    if (priceSold == null) {
+      try {
+        priceSold = await getHistoricalPriceUsd(row.token_sold_address, timestamp);
+      } catch (err) {
+        console.warn(`⚠️  Deferred-price backfill: still couldn't price sold leg ${row.token_sold_address} for swap ${row.id}:`, err.message);
+      }
+    }
+    if (priceBought == null) {
+      try {
+        priceBought = await getHistoricalPriceUsd(row.token_bought_address, timestamp);
+      } catch (err) {
+        console.warn(`⚠️  Deferred-price backfill: still couldn't price bought leg ${row.token_bought_address} for swap ${row.id}:`, err.message);
+      }
+    }
+    if (priceSold != null || priceBought != null) await setSwapLegPrices(row.id, priceSold, priceBought);
+  }
+
+  console.log(`💰 Deferred-price backfill complete for ${trackedWallet}`);
 }

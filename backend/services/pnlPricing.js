@@ -441,3 +441,29 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
   await upsertPricePoint(cacheAsset, bucketed, priceUsd, source);
   return priceUsd;
 }
+
+/**
+ * Cache-only variant of getHistoricalPriceUsd — checks price_points and returns immediately,
+ * NEVER calls ensureBackfilled (the expensive part: a brand-new asset's full bulk OHLCV history,
+ * up to 20 GeckoTerminal pages, rate-limited through the shared queue) and never falls back to a
+ * live external lookup either. Returns null (never throws) for an asset/date this backend hasn't
+ * already priced for some OTHER reason — same "omit rather than fake" convention as the rest of
+ * this app's pricing code, just with "haven't bothered to check yet" as an additional legitimate
+ * reason for null, on top of "checked and couldn't resolve".
+ *
+ * Built for pnlIngestion.js's priorityAssets scoping (see that file's own header comment on the
+ * ongoing-dashboard-PnL cold-start speedup this exists for): a non-priority token still gets
+ * priced for free if it happens to already be cached (common — many tokens are shared across
+ * users' wallets and get backfilled once, globally, the first time ANY wallet touches them), and
+ * only genuinely never-seen-before tokens get deferred.
+ */
+export async function getCachedHistoricalPriceUsd(asset, timestamp) {
+  if (asset.includes(":")) return null; // an NFT lot key, never priced this way at all — see getHistoricalPriceUsd's own guard
+
+  const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
+  const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
+  const bucketed = bucketToDay(timestamp);
+
+  const cached = await getPricePoint(cacheAsset, bucketed);
+  return cached ? Number(cached.price_usd) : null;
+}
