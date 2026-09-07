@@ -56,18 +56,31 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
   try {
     const addresses = active.map((w) => w.address);
     const perWallet = [];
+    const failed = [];
     // Sequential, not Promise.all — same reasoning as pnlSnapshotScheduler.js's own poll loop: a
     // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 3
     // tracked wallets, so there's no responsiveness win worth the burst RPC/pricing load.
+    //
+    // Each wallet's computation is isolated in its own try/catch — confirmed live this used to be
+    // ONE try wrapping the whole loop, so a single wallet's transient failure (an RPC hiccup, a
+    // price lookup error, anything computeLivePnlSnapshot doesn't already swallow internally)
+    // discarded the OTHER wallets' already-computed results along with it, blanking the entire
+    // panel instead of just the one wallet that actually failed.
     for (const address of addresses) {
       const selfOwnedAddresses = addresses.filter((a) => a !== address);
-      const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses);
-      perWallet.push({ walletAddress: address, ...snapshot });
+      try {
+        const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses);
+        perWallet.push({ walletAddress: address, ...snapshot });
+      } catch (err) {
+        console.error(`PnL snapshot computation failed for wallet ${address}:`, err);
+        failed.push(address);
+      }
     }
     // combineLivePnlSnapshots handles a single wallet correctly too (sum of one is just that one),
-    // so no special-casing needed here for a member tracking only one wallet.
-    const combined = combineLivePnlSnapshots(perWallet);
-    res.json({ perWallet, combined });
+    // and correctly reflects only the wallets that actually succeeded — `failed` tells the
+    // frontend which ones didn't, rather than silently under-reporting the combined total.
+    const combined = perWallet.length > 0 ? combineLivePnlSnapshots(perWallet) : null;
+    res.json({ perWallet, combined, failed });
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });

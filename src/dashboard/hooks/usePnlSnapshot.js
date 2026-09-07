@@ -20,7 +20,7 @@ export function usePnlSnapshot() {
     const params = new URLSearchParams({ wallet, signature, timestamp });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-snapshot?${params}`);
     await parseErrorOrThrow(res);
-    return res.json(); // { perWallet: [...], combined }
+    return res.json(); // { perWallet: [...], combined, failed: [address, ...] } — failed lists any tracked wallet whose OWN computation errored, isolated from the others (see pnlSnapshotRouter.js's own comment)
   }, []);
 
   const getHistory = useCallback(async (wallet, signature, timestamp, days) => {
