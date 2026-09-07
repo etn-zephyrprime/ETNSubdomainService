@@ -73,6 +73,21 @@ export function combineSnapshotsByDate(perWalletRows, walletAddresses) {
   });
 }
 
+/** The set of snapshot_date values (as 'YYYY-MM-DD' strings) this wallet already has a row for,
+ * within [fromDate, toDate] inclusive — lets a caller skip days it's already filled in rather than
+ * overwrite them. Used by pnlSnapshotService.js's backfillPnlHistory to stay idempotent/resumable:
+ * a wallet interrupted partway through (a crash, a redeploy) picks up where it left off next time
+ * instead of redoing already-computed days, and re-running it after the daily scheduler has since
+ * filled in more days naturally does no wasted work either. */
+export async function getExistingSnapshotDates(ownerWallet, walletAddress, fromDate, toDate) {
+  const res = await query(
+    `SELECT snapshot_date FROM pnl_snapshots
+     WHERE owner_wallet = $1 AND wallet_address = $2 AND snapshot_date BETWEEN $3 AND $4`,
+    [ownerWallet.toLowerCase(), walletAddress.toLowerCase(), fromDate, toDate]
+  );
+  return (res?.rows || []).map((r) => (r.snapshot_date instanceof Date ? r.snapshot_date.toISOString().slice(0, 10) : String(r.snapshot_date)));
+}
+
 /** Every (owner_wallet, wallet_address) pair that's currently actively tracked, across EVERY Core
  * tier member — pnlSnapshotScheduler.js's own poll list (it has no single owner to start from the
  * way per-owner features do, it has to enumerate everyone). Deliberately a plain join against
