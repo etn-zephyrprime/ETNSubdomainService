@@ -29,7 +29,13 @@ export async function getPnlSnapshotHistory(ownerWallet, walletAddresses, sinceD
   );
   return (res?.rows || []).map((r) => ({
     walletAddress: r.wallet_address,
-    date: r.snapshot_date,
+    // node-postgres parses a DATE column into a JS Date object, not a string — normalized here to
+    // 'YYYY-MM-DD' (same as getExistingSnapshotDates already does below) so combineSnapshotsByDate's
+    // .sort()/Set/<=  all operate on a plain comparable string. Left as a raw Date object, .sort()
+    // and Set both fall back to each Date's default toString() ("Sat Jun 14 2025...") — sorting and
+    // de-duplicating by weekday-name prefix instead of by actual date, which is what was producing
+    // an out-of-order, partially-deduplicated value-over-time chart.
+    date: r.snapshot_date instanceof Date ? r.snapshot_date.toISOString().slice(0, 10) : String(r.snapshot_date),
     totalValueUsd: Number(r.total_value_usd),
     realizedPnlUsd: Number(r.realized_pnl_usd),
     unrealizedPnlUsd: Number(r.unrealized_pnl_usd),
