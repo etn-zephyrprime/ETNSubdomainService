@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, TriangleAlert } from "lucide-react";
+import { Wallet as WalletIcon, TriangleAlert, Sparkles } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
-import AddressLookup from "../../components/AddressLookup.jsx";
+import CoreTierDemo from "./CoreTierDemo.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
@@ -12,7 +12,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
+import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor } from "../../theme.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // How many fungible tokens get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below
@@ -35,13 +35,6 @@ const HOLDINGS_PAGE_SIZE = 10;
 // Same literal every Core tier endpoint signs — see e.g. CoreTierPnl.jsx's own copy of this
 // constant; a signature cached client-side (useWalletAuthSignature.js) covers all of them.
 const AUTH_PURPOSE = "Premium Dashboard";
-// planetzephyros.etn — resolved live via Blockscout's ENS reverse-index (api/v2/search) before
-// hardcoding here; a plain wallet address, not a name, since AddressLookup's own initialAddress
-// prop expects one already resolved. Fixed on purpose: the demo button exists to show a visitor
-// (including one with no wallet connected at all) exactly what Core Tier's wallet-info view looks
-// like, for one specific, always-the-same wallet — not a general-purpose lookup in disguise (see
-// AddressLookup.jsx's own `locked` prop, added for this).
-const DEMO_WALLET_ADDRESS = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099";
 
 function fmtDate(iso) {
   const d = new Date(iso);
@@ -118,11 +111,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const etnUsdPrice = useEtnPrice();
 
   const [managing, setManaging] = useState(false);
-  // Shows a locked, read-only AddressLookup for DEMO_WALLET_ADDRESS in place of CoreTierGate's own
-  // connect/subscribe messaging — available to literally anyone, including a visitor with no
-  // wallet connected at all, per the actual point of a demo. Toggled off automatically below once
-  // real access is confirmed, so a member who subscribes mid-demo doesn't get stuck looking at a
-  // stranger's wallet instead of their own.
+  // Shows CoreTierDemo.jsx (Balance History + PnL for one fixed demo wallet) in place of
+  // CoreTierGate's own connect/subscribe messaging — available to literally anyone, including a
+  // visitor with no wallet connected at all, per the actual point of a demo. Toggled off
+  // automatically below once real access is confirmed, so a member who subscribes mid-demo doesn't
+  // get stuck looking at a stranger's wallet instead of their own.
   const [showDemo, setShowDemo] = useState(false);
   const [addInput, setAddInput] = useState("");
   const [addInputError, setAddInputError] = useState(null);
@@ -490,16 +483,22 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
             type="button"
             onClick={() => setShowDemo((v) => !v)}
             style={{
-              padding: "5px 12px",
-              borderRadius: 8,
-              border: `1px solid ${showDemo ? green : border}`,
-              background: showDemo ? "rgba(24,187,26,0.12)" : panel2,
-              color: showDemo ? green : mutedLight,
-              fontSize: 11,
-              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 14px",
+              borderRadius: 20,
+              border: `1px solid ${showDemo ? border : green}`,
+              background: showDemo ? panel2 : green,
+              color: showDemo ? mutedLight : panel,
+              fontSize: 12,
+              fontWeight: 800,
+              letterSpacing: 0.2,
               cursor: "pointer",
+              boxShadow: showDemo ? "none" : `0 0 16px ${greenGlow}`,
             }}
           >
+            <Sparkles size={13} />
             {showDemo ? "Exit Demo" : "View Demo"}
           </button>
         )}
@@ -508,11 +507,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
       {showDemo && !hasAccess ? (
         <div>
           <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14, lineHeight: 1.6 }}>
-            A live preview of what Core Tier's wallet info looks like — this always shows{" "}
+            A live preview of what Core Tier actually offers — Balance History and PnL — for{" "}
             <span style={{ color: "#fff", fontWeight: 700 }}>planetzephyros.etn</span>, not your own
             wallet. Connect and subscribe above to track your own instead.
           </div>
-          <AddressLookup initialAddress={DEMO_WALLET_ADDRESS} locked onSelectToken={onSelectToken} />
+          <CoreTierDemo onSelectToken={onSelectToken} />
         </div>
       ) : (
       <CoreTierGate
