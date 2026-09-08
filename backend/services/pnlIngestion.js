@@ -867,6 +867,34 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
 }
 
 /**
+ * Runs ONLY the DeFi-activity scan — not the full five-way ingestWalletHistory walk — for a caller
+ * that needs defi_activity to be reasonably current without paying for (or requiring) a full
+ * ingestion. Built for defiPositionValuation.js's live position lookup: Combined Holdings/Total
+ * Portfolio Balance (the Portfolio page) has no other reason to ever call ingestWalletHistory at
+ * all, so without this, a wallet's open farm/staking positions would only ever surface AFTER the
+ * member happened to visit Core Tier PnL or generate a Statement for it — a confusing, silent
+ * cross-feature dependency a member browsing Portfolio alone would have no way to know about.
+ *
+ * Safe to call alongside (before, after, or concurrently with) a real ingestWalletHistory run for
+ * the same wallet: uses the exact same last_ingested_defi_block cursor that advances, and never
+ * touches last_ingested_block/cold_start_completed_at (passed through unchanged from whatever's
+ * already stored) — whichever of the two runs first on a given day, the other picks up from where
+ * it left off rather than re-scanning, and neither can regress the other's own cursor.
+ */
+export async function ensureDefiActivityIngested(trackedWallet) {
+  const state = await getIngestionState(trackedWallet);
+  const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
+  const highestFromDefi = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
+  if (highestFromDefi >= 0) {
+    await upsertIngestionState(trackedWallet, {
+      lastIngestedBlock: state?.last_ingested_block ?? null,
+      coldStartCompletedAt: state?.cold_start_completed_at || null,
+      lastIngestedDefiBlock: highestFromDefi,
+    });
+  }
+}
+
+/**
  * Re-prices every row ingestWalletHistory left with a null price for `trackedWallet` — both
  * deliberately-deferred non-priority assets (see priorityAssets) and any genuine historical
  * lookup failure — using the FULL getHistoricalPriceUsd (bulk-backfilling a never-priced asset as

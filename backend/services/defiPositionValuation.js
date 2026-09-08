@@ -34,12 +34,19 @@
 // a fresh on-chain read, though — defi_activity only ever says WHERE to look, never what a position
 // is currently worth (a withdraw row doesn't necessarily mean fully closed — could be partial; the
 // live liquidity/coreStaked read is the only source of truth for "is this still open").
+//
+// getOpenDefiPositionsUsd calls pnlIngestion.js's ensureDefiActivityIngested FIRST, every time —
+// nothing else on the Portfolio page (which is what actually calls this) ever populates
+// defi_activity at all otherwise, that only happens as a side effect of ingestWalletHistory, called
+// from the PnL Statement/Snapshot features. Without this, a member who only ever uses Portfolio
+// would never see a farm/staking position surface, with no indication why — confirmed live this
+// was exactly what was happening for a real wallet before this was added.
 import { ethers } from "ethers";
 import Decimal from "decimal.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
-import { getTokenMetadata } from "./pnlIngestion.js";
+import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
 import { getDistinctFarmPositions, getDistinctStakingContracts } from "../db/defiActivity.js";
 
 const YIELD_FARM_ABI = [
@@ -209,6 +216,18 @@ async function valueStakingPosition(contractAddress, walletAddress) {
  * `hasUnpriced`, not a blank stretch.
  */
 export async function getOpenDefiPositionsUsd(trackedWallet) {
+  // Discovery comes from defi_activity, which nothing on the Portfolio page otherwise ever
+  // populates (that only happens as a side effect of ingestWalletHistory, called from the PnL
+  // Statement/Snapshot features) — without this, a member who only ever uses Portfolio would never
+  // see their farm/staking positions surface at all, with no indication why. Same cost profile as
+  // PnL's own cold-start DeFi scan the first time this runs for a wallet (a real, possibly-slow
+  // full-history topic scan); cheap on every call after that (just "anything new since last time").
+  try {
+    await ensureDefiActivityIngested(trackedWallet);
+  } catch (err) {
+    console.warn(`⚠️  DeFi position valuation: activity ingestion failed for ${trackedWallet}, using whatever's already recorded:`, err.message);
+  }
+
   const [farmCandidates, stakingCandidates] = await Promise.all([
     getDistinctFarmPositions(trackedWallet),
     getDistinctStakingContracts(trackedWallet),
