@@ -526,25 +526,10 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         <div>
           {!managing ? (
             <>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                {active.map((w) => (
-                  <div
-                    key={w.address}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 8,
-                      border: `1px solid ${border}`,
-                      background: panel2,
-                      color: mutedLight,
-                      fontSize: 11,
-                      fontFamily: "monospace",
-                    }}
-                  >
-                    {w.isOwnWallet ? "You — " : ""}
-                    {resolveName(w.address)}
-                  </div>
-                ))}
-              </div>
+              {/* No wallet-chip list here anymore — PortfolioDashboardSection.jsx's own "Showing"
+                  filter bar, right above every Core Tier panel, already lists these same wallets
+                  (and lets you act on the list, unlike this one which was purely static) — showing
+                  both was a confirmed duplicate. */}
               <DashboardButton onClick={() => setManaging(true)} style={{ width: "100%", justifyContent: "center" }}>
                 {explicitCount === 0 ? "Track More Wallets" : "Manage Tracked Wallets"}
               </DashboardButton>
