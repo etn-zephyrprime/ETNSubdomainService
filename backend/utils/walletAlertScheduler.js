@@ -12,12 +12,16 @@
 //     of the last poll) is compared against the freshly-read balance's side; a notification fires
 //     only on a TRANSITION that matches the alert's own configured direction, never merely for
 //     "currently past it" (which would refire every single poll for as long as it stays crossed).
-//   - tx_activity: v1 is scoped to NATIVE ETN transactions only (in or out), not token transfers —
-//     Blockscout's /transactions and /token-transfers are two separate feeds that can both list the
-//     SAME transaction hash (e.g. a swap), and correctly de-duplicating "one notification per real
-//     event" across both would need real design work beyond what this alert type's brief asked for
-//     ("your call on complexity for v1"). A minimum-amount filter, when set, is therefore always
-//     ETN-denominated. Token-transfer activity alerts are a reasonable fast-follow, not v1 scope.
+//   - tx_activity: still scoped to transactions with a NATIVE ETN leg (in or out), not standalone
+//     token-transfer-only activity — Blockscout's /transactions and /token-transfers are two
+//     separate feeds that can both list the SAME transaction hash (e.g. a swap), and correctly
+//     de-duplicating "one notification per real event" across both would need real design work
+//     beyond what this alert type's brief asked for ("your call on complexity for v1"). A
+//     minimum-amount filter, when set, is therefore always ETN-denominated. A pure token-for-token
+//     swap (no ETN leg at all) still won't trigger this alert type — a reasonable fast-follow, not
+//     v1 scope. What IS covered: a transaction that moves ETN one way and a token the other way in
+//     the SAME tx (an ETN<->token swap) is recognized as one, and shown as "swapped X ETN for Y
+//     TOKEN" instead of a misleading "ETN sent to <router contract>" — see describeSwapLeg below.
 //     A per-alert last_seen_tx_hash cursor (seeded at creation to the wallet's then-current newest
 //     tx — see walletAlerts.js's addWalletAlert) is what makes "new since last poll" detectable.
 //
@@ -109,6 +113,34 @@ async function checkBalanceThresholdAlerts(alerts, walletAddress, addressInfo, t
   }
 }
 
+/** If `tx` also moved a token the OPPOSITE direction from its native-ETN leg, this wasn't really
+ * "ETN sent to"/"received from" the tx's `to` address — that address is just the router/pool
+ * contract that facilitated a swap. Detected without any extra fetch: Blockscout's
+ * /addresses/{wallet}/transactions items already embed each tx's own token_transfers (confirmed
+ * live — see pnlIngestion.js's identical observation on this same endpoint). Deliberately router-
+ * agnostic (no hardcoded ElectroSwap/Universal Router address list, unlike burnSourceLabels.js's
+ * classification) — any tx where the wallet's ETN moved one way and some token moved the other way
+ * in the same transaction reads as a swap for notification purposes, regardless of which contract
+ * mediated it. Returns null (not a swap leg) if this tx has no token movement to pair with the ETN
+ * side, or none directly touching the wallet's own address. */
+async function describeSwapLeg(tx, walletAddress, direction) {
+  const tokenTransfers = tx.token_transfers || [];
+  if (tokenTransfers.length === 0) return null;
+
+  // direction 'out' (ETN sent) pairs with the wallet RECEIVING a token in the same tx (bought it);
+  // direction 'in' (ETN received) pairs with the wallet SENDING a token (sold it).
+  const leg =
+    direction === "out"
+      ? tokenTransfers.find((t) => t.to?.hash?.toLowerCase() === walletAddress && t.from?.hash?.toLowerCase() !== walletAddress)
+      : tokenTransfers.find((t) => t.from?.hash?.toLowerCase() === walletAddress && t.to?.hash?.toLowerCase() !== walletAddress);
+  if (!leg?.token?.address || !leg.total?.value) return null;
+
+  const decimals = Number(leg.token.decimals ?? 18);
+  const amount = parseFloat(ethers.formatUnits(leg.total.value, decimals));
+  const symbol = leg.token.symbol || (await getTokenMetadata(leg.token.address))?.symbol || "tokens";
+  return { amount, symbol };
+}
+
 async function checkTxActivityAlerts(alerts, walletAddress, caches) {
   if (alerts.length === 0) return;
 
@@ -145,12 +177,25 @@ async function checkTxActivityAlerts(alerts, walletAddress, caches) {
       if (chatId == null) continue;
 
       const direction = tx.to?.hash?.toLowerCase() === walletAddress ? "in" : "out";
-      const counterparty = direction === "in" ? tx.from?.hash : tx.to?.hash;
-      const [walletName, counterpartyName] = await Promise.all([displayName(walletAddress), displayName(counterparty)]);
+      const swapLeg = await describeSwapLeg(tx, walletAddress, direction);
+      const walletName = await displayName(walletAddress);
+      const etnAmount = valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+      let summary;
+      if (swapLeg) {
+        const tokenAmount = swapLeg.amount.toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const [gaveSide, gotSide] =
+          direction === "out" ? [`${etnAmount} ETN`, `${tokenAmount} ${swapLeg.symbol}`] : [`${tokenAmount} ${swapLeg.symbol}`, `${etnAmount} ETN`];
+        summary = `🔄 Wallet \`${walletName}\`: swapped ${gaveSide} for ${gotSide}`;
+      } else {
+        const counterparty = direction === "in" ? tx.from?.hash : tx.to?.hash;
+        const counterpartyName = await displayName(counterparty);
+        summary = `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${walletName}\`: ${etnAmount} ETN ${direction === "in" ? "received from" : "sent to"} \`${counterpartyName}\``;
+      }
+
       await sendNotisDirectMessage(
         chatId,
-        `${direction === "in" ? "⬇️" : "⬆️"} Wallet \`${walletName}\`: ${valueEtn.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN ${direction === "in" ? "received from" : "sent to"} \`${counterpartyName}\`\n\n` +
-          `[View transaction](${EXPLORER_BASE_URL}/tx/${tx.hash}) · [Dashboard](${DASHBOARD_URL}/premium)`
+        `${summary}\n\n[View transaction](${EXPLORER_BASE_URL}/tx/${tx.hash}) · [Dashboard](${DASHBOARD_URL}/premium)`
       );
       triggeredAny = true;
     }
