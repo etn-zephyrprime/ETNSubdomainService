@@ -4,8 +4,8 @@ import { Wallet as WalletIcon, TriangleAlert } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
-import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
+import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
@@ -31,6 +31,9 @@ const HOLDING_CATEGORIES = [
   { id: "nfts", label: "NFT's" },
 ];
 const HOLDINGS_PAGE_SIZE = 10;
+// Same literal every Core tier endpoint signs — see e.g. CoreTierPnl.jsx's own copy of this
+// constant; a signature cached client-side (useWalletAuthSignature.js) covers all of them.
+const AUTH_PURPOSE = "Premium Dashboard";
 
 function fmtDate(iso) {
   const d = new Date(iso);
@@ -90,18 +93,19 @@ function CooldownNotice({ children }) {
 // consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAuthParams, onSelectToken }) {
-  // Access + tracked-wallet-list state/effects live in useCoreTierAccess.js — shared with
-  // CoreTierBalanceHistory.jsx, which needs the exact same "is this member allowed, and which
-  // wallets do they track" data without either duplicating this state machine a second time or
-  // reaching into this component's internals. `getAuthParams` comes from
-  // PortfolioDashboardSection.jsx's single shared signature — see that hook's own comment on why.
+export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter }) {
+  // Access + tracked-wallet-list state now lives in PortfolioDashboardSection.jsx, called ONCE for
+  // all four Core Tier panels (was: each of them calling useCoreTierAccess.js independently — four
+  // separate /premium/tracked-wallets fetches for the same data) — also the prerequisite for the
+  // page-wide wallet filter (`walletFilter`, also passed down) that replaced this panel's own,
+  // separate Combined Holdings filter.
   const {
     hasAccess, accessError, awaitingActivation, manualCheckLoading,
     active, cooling, maxWallets, cooldownDays,
     refresh, checkAccessOnce, addWallet, removeWallet,
-  } = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
+  } = coreTierAccess;
   const { getCombinedPortfolio } = useCombinedPortfolio();
+  const { getDefiPositions } = useDefiPositions();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
 
@@ -129,6 +133,13 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
 
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
+  // Live value of any currently-open yield-farm/staking position — { perWallet, combined } | null
+  // while loading. A separate load from `portfolio` above (a real on-chain lookup per known
+  // position, not just a Blockscout balance read — see useDefiPositions.js), so a member with no
+  // DeFi activity at all sees Combined Holdings load at its usual speed while this only adds a
+  // real wait for members who actually have something staked/farmed.
+  const [defiPositions, setDefiPositions] = useState(null);
+  const [defiPositionsError, setDefiPositionsError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
   // Addresses CoreTierPortfolio has confirmed have no ElectroSwap pool at all (getTokenChart came
   // back hasData:false) — distinct from simply "not in tokenPrices yet", which just means the
@@ -139,8 +150,6 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
-  // "all" | a wallet address — narrows Combined Holdings to just what one tracked wallet holds.
-  const [holdingsWalletFilter, setHoldingsWalletFilter] = useState("all");
 
   // Drops any in-progress editor state on an account change — one built for the previous account
   // has no business surviving a disconnect/switch. The access/tracked-wallet state itself resets
@@ -151,8 +160,14 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
     setPendingError(null);
     setAddInput("");
     setAddInputError(null);
-    setHoldingsWalletFilter("all");
   }, [wallet.isConnected, wallet.account]);
+
+  // Resets pagination whenever the page-wide wallet filter changes — same reasoning as the
+  // category toggle just below doing the same, so "Show more" never leaves a stale page depth from
+  // a previous filter selection.
+  useEffect(() => {
+    setHoldingsShown(HOLDINGS_PAGE_SIZE);
+  }, [walletFilter]);
 
   // Combined portfolio loads whenever the active tracked-wallet list changes.
   useEffect(() => {
@@ -180,6 +195,30 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
       });
     return () => { cancelled = true; };
   }, [hasAccess, active, getCombinedPortfolio]);
+
+  // Open DeFi positions load alongside the combined portfolio, independently — a slow/failed
+  // lookup here never blocks Combined Holdings/Total Portfolio Balance from showing what they
+  // already know from Blockscout.
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setDefiPositions(null);
+      return;
+    }
+    let cancelled = false;
+    setDefiPositions(null);
+    setDefiPositionsError(null);
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getDefiPositions(wallet.account, signature, timestamp);
+        if (!cancelled) setDefiPositions(res);
+      } catch (err) {
+        console.error("Failed to load DeFi positions:", err);
+        if (!cancelled) setDefiPositionsError("Couldn't load staked/farmed positions — try again shortly.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getAuthParams, getDefiPositions, wallet.account]);
 
   // USD price per merged token — one small independent request each, same pattern (and the same
   // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
@@ -284,8 +323,22 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   // signal available), same convention as AddressLookup.jsx's own Tokens/NFT's toggle. Only the
   // fungible list is meaningfully sortable by USD value — NFTs never get a price (no ElectroSwap
   // trading pair), so they stay in whatever order useCombinedPortfolio.js's merge produced them.
+  // Source list for the holdings breakdown: the merged cross-wallet list (portfolio.tokens) when
+  // showing all wallets, or ONE wallet's own unmerged balances when the page-wide filter picks a
+  // specific wallet — normalized to the same { token, value, heldBy } shape either way, so every
+  // computation below (usdValue, category split, sort) works unchanged regardless of source. Fixes
+  // a real bug: the filter used to narrow WHICH tokens were listed but kept showing each one's
+  // MERGED (all-wallets) quantity/value even when a single wallet was selected.
+  const holdingsSource =
+    walletFilter === "all"
+      ? portfolio?.tokens || []
+      : (portfolio?.perWallet.find((w) => w.address === walletFilter)?.balances || []).map((tb) => ({
+          token: tb.token,
+          value: BigInt(tb.value || 0),
+          heldBy: [walletFilter], // shape-compatible with the merged list; always length 1 here, so the "Held in N of M wallets" line never shows for a filtered view
+        }));
   const allVisibleTokens = portfolio
-    ? portfolio.tokens
+    ? holdingsSource
         .filter((t) => !isSpamTokenName(t.token?.name) && !NFT_TOKEN_TYPES.has(t.token?.type))
         .map((t) => ({ ...t, usdValue: tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]) }))
         .sort((a, b) => {
@@ -300,18 +353,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
     ? allVisibleTokens
     : allVisibleTokens.filter((t) => !noLiquidityTokens.has(t.token?.address?.toLowerCase()));
   const visibleNfts = portfolio
-    ? portfolio.tokens.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
+    ? holdingsSource.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
     : [];
-  // Falls back to "all" if the selected wallet was untracked since it was picked.
-  const effectiveHoldingsWalletFilter =
-    holdingsWalletFilter === "all" || active.some((w) => w.address === holdingsWalletFilter) ? holdingsWalletFilter : "all";
-  const holdingsBeforeWalletFilter = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
-  const visibleHoldings =
-    effectiveHoldingsWalletFilter === "all"
-      ? holdingsBeforeWalletFilter
-      : holdingsBeforeWalletFilter.filter((t) => t.heldBy?.includes(effectiveHoldingsWalletFilter));
+  const visibleHoldings = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
 
-  const combinedEtnAmount = portfolio ? parseFloat(ethers.formatEther(portfolio.totalCoinBalance)) : null;
+  // Combined ETN Balance: the merged total across every tracked wallet, or just the filtered
+  // wallet's own balance — same "pick the right source, same shape either way" approach as
+  // holdingsSource above.
+  const combinedEtnRaw =
+    walletFilter === "all" ? portfolio?.totalCoinBalance : portfolio?.perWallet.find((w) => w.address === walletFilter)?.info?.coin_balance;
+  const combinedEtnAmount = portfolio && combinedEtnRaw != null ? parseFloat(ethers.formatEther(combinedEtnRaw)) : null;
   const combinedUsdValue =
     etnUsdPrice != null && combinedEtnAmount != null && Number.isFinite(combinedEtnAmount)
       ? combinedEtnAmount * etnUsdPrice
@@ -342,8 +393,23 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
         return { address: w.address, total: (etnUsd || 0) + tokensUsd, hasUnpriced };
       })
     : [];
-  const totalPortfolioUsd = perWalletTotals.length > 0 ? perWalletTotals.reduce((sum, w) => sum + w.total, 0) : null;
-  const totalPortfolioHasUnpriced = perWalletTotals.some((w) => w.hasUnpriced);
+  // Scoped to the filtered wallet when one's selected — same wallets perWalletTotals already
+  // computed above, just narrowed to the one row that matters for the header figures below.
+  const filteredWalletTotals = walletFilter === "all" ? perWalletTotals : perWalletTotals.filter((w) => w.address === walletFilter);
+
+  // Live value of open farm/staking positions, scoped to the same walletFilter as everything else
+  // — folded into the total below so a member who's staked funds doesn't see a total that quietly
+  // excludes them (see useDefiPositions.js / defiPositionValuation.js).
+  const defiEntry =
+    walletFilter === "all" ? defiPositions?.combined : defiPositions?.perWallet?.find((w) => w.walletAddress === walletFilter);
+  const defiUsd = defiEntry?.totalUsd != null ? Number(defiEntry.totalUsd) : null;
+  const defiHasUnpriced = Boolean(defiEntry?.hasUnpriced);
+
+  const totalPortfolioUsd =
+    filteredWalletTotals.length > 0 || defiUsd != null
+      ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0)
+      : null;
+  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced;
 
   const renderPending = () => {
     if (!pending) return null;
@@ -595,7 +661,9 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
                     </div>
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
-                      ETN + all priced token holdings, across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
+                      {walletFilter === "all"
+                        ? `ETN + all priced token holdings, across ${active.length} tracked wallet${active.length === 1 ? "" : "s"}`
+                        : "ETN + all priced token holdings, this wallet only"}
                     </div>
                     {totalPortfolioHasUnpriced && (
                       <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", borderRadius: 8, background: "rgba(255,138,61,0.12)", border: `1px solid ${orange}`, marginTop: 10 }}>
@@ -606,37 +674,69 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       </div>
                     )}
 
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
-                      {perWalletTotals.map((w) => (
-                        <div key={w.address} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                          <span style={{ color: mutedLight }}>
-                            {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                            {resolveName(w.address)}
-                          </span>
-                          <span style={{ color: "#fff", fontWeight: 700 }}>
-                            {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    {walletFilter === "all" && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
+                        {filteredWalletTotals.map((w) => (
+                          <div key={w.address} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                            <span style={{ color: mutedLight }}>
+                              {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                              {resolveName(w.address)}
+                            </span>
+                            <span style={{ color: "#fff", fontWeight: 700 }}>
+                              {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                      Combined ETN Balance
+                      {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"}
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
-                        {formatEtnBalance(portfolio.totalCoinBalance)} ETN
+                        {combinedEtnRaw != null ? formatEtnBalance(combinedEtnRaw) : "0.00"} ETN
                       </div>
                       {combinedUsdValue != null && (
                         <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedUsdValue)}</div>
                       )}
                     </div>
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
-                      Across {active.length} tracked wallet{active.length === 1 ? "" : "s"}
+                      {walletFilter === "all"
+                        ? `Across ${active.length} tracked wallet${active.length === 1 ? "" : "s"}`
+                        : "This wallet only"}
                     </div>
                   </div>
+
+                  {defiPositionsError ? (
+                    <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{defiPositionsError}</div>
+                  ) : defiEntry?.positions?.length > 0 ? (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        Staked / Farming Positions
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {defiEntry.positions.map((p, i) => (
+                          <div
+                            key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`}
+                            style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{p.label}</span>
+                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                     Combined Holdings
@@ -662,48 +762,9 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       </button>
                     ))}
                   </div>
-                  {active.length > 1 && (
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-                      <button
-                        onClick={() => { setHoldingsWalletFilter("all"); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
-                        style={{
-                          padding: "5px 10px",
-                          borderRadius: 8,
-                          border: `1px solid ${effectiveHoldingsWalletFilter === "all" ? green : border}`,
-                          background: effectiveHoldingsWalletFilter === "all" ? "rgba(24,187,26,0.12)" : panel2,
-                          color: effectiveHoldingsWalletFilter === "all" ? green : mutedLight,
-                          fontSize: 10,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                        }}
-                      >
-                        All Wallets
-                      </button>
-                      {active.map((w) => (
-                        <button
-                          key={w.address}
-                          onClick={() => { setHoldingsWalletFilter(w.address); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
-                          style={{
-                            padding: "5px 10px",
-                            borderRadius: 8,
-                            border: `1px solid ${effectiveHoldingsWalletFilter === w.address ? green : border}`,
-                            background: effectiveHoldingsWalletFilter === w.address ? "rgba(24,187,26,0.12)" : panel2,
-                            color: effectiveHoldingsWalletFilter === w.address ? green : mutedLight,
-                            fontSize: 10,
-                            fontWeight: 700,
-                            fontFamily: "monospace",
-                            cursor: "pointer",
-                          }}
-                        >
-                          {w.isOwnWallet ? "You — " : ""}
-                          {resolveName(w.address)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                   {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
                     <div style={{ fontSize: 12, color: muted }}>
-                      {effectiveHoldingsWalletFilter === "all"
+                      {walletFilter === "all"
                         ? holdingsCategory === "nfts"
                           ? "No NFTs held across your tracked wallets."
                           : "No token balances across your tracked wallets."

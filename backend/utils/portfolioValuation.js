@@ -18,6 +18,7 @@ import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
+import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // MUST stay byte-for-byte in sync with src/dashboard/utils/format.js's SPAM_NAME_PATTERN — kept as
@@ -38,7 +39,9 @@ const MAX_PRICED_TOKENS_PER_WALLET = 50;
  * Combined USD value of every wallet `ownerWallet`'s Core tier features cover — their own
  * connected wallet plus up to 3 explicitly tracked ones (see trackedWallets.js's
  * getCoveredWallets) — ETN + every priced fungible token holding, up to
- * MAX_PRICED_TOKENS_PER_WALLET per wallet. `hasUnpriced` mirrors CoreTierPortfolio.jsx's own
+ * MAX_PRICED_TOKENS_PER_WALLET per wallet, PLUS the live value of any currently-open yield-farm/
+ * staking position (see defiPositionValuation.js) — funds moved into one of those contracts don't
+ * show up as a wallet token balance at all otherwise. `hasUnpriced` mirrors CoreTierPortfolio.jsx's own
  * convention: true when at least one non-zero holding couldn't be priced (ETN/USD cache not
  * ready, a token has no ElectroSwap pool, or the per-wallet cap was hit), meaning the real total
  * is AT LEAST this much, not exactly this much. The `{ totalUsd: 0, hasUnpriced: false }` empty
@@ -94,6 +97,19 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
         console.warn(`⚠️  Portfolio valuation: price lookup failed for ${tb.token?.address}:`, err.message);
         hasUnpriced = true;
       }
+    }
+
+    // Funds currently staked/farmed at a known YieldFarm/CoreAscension contract don't show up as a
+    // wallet token balance at all (they've moved into that contract) — without this, they'd simply
+    // be invisible from the portfolio total. See defiPositionValuation.js's own header comment for
+    // why this is always a live on-chain read, never reconstructed from ingested event history.
+    try {
+      const defi = await getOpenDefiPositionsUsd(w.address);
+      if (defi.totalUsd != null) totalUsd += Number(defi.totalUsd);
+      if (defi.hasUnpriced) hasUnpriced = true;
+    } catch (err) {
+      console.warn(`⚠️  Portfolio valuation: DeFi position lookup failed for ${w.address}:`, err.message);
+      hasUnpriced = true;
     }
   }
 

@@ -74,12 +74,20 @@ const SWAP_IFACE = new ethers.Interface([
 // either).
 const DEFI_IFACE = new ethers.Interface([
   "event FarmDeposit(uint256 indexed farmId, address indexed farmer, uint256 amount0Added, uint256 amount1Added, uint256 liquidityAdded)",
+  // Emitted instead of FarmDeposit when a farmer adds to an ALREADY-open position rather than
+  // opening a new one (confirmed live against the deployed YieldFarm ABI — same amount0Added/
+  // amount1Added/liquidityAdded shape, plus adjustedStartingBlock which this app doesn't need).
+  // Missing this meant any wallet whose first-ever farm interaction was a deposit but later
+  // top-ups went through this event instead had those top-ups silently absent from both the PnL
+  // ledger and the live position-value lookup below — confirmed live on a real wallet.
+  "event FarmIncrease(uint256 indexed farmId, address indexed farmer, uint256 amount0Added, uint256 amount1Added, uint256 liquidityAdded, uint256 adjustedStartingBlock)",
   "event FarmWithdrawl(uint256 indexed farmId, address indexed farmer, uint256 amount0Withdrawn, uint256 amount1Withdrawn, uint256 amountRewards, uint256 fees0Collected, uint256 fees1Collected, uint256 thirdPartyRewardsCollected)",
   "event CoreStaked(address indexed user, uint256 amount)",
   "event CoreWithdrawn(address indexed user, uint256 requestedAmount, uint256 returnedAmount, uint256 penaltyToPool, uint256 penaltyBurned)",
   "event RewardPaid(address indexed user, uint256 paidAmount, uint256 slashedAmount)",
 ]);
 const FARM_DEPOSIT_TOPIC = DEFI_IFACE.getEvent("FarmDeposit").topicHash;
+const FARM_INCREASE_TOPIC = DEFI_IFACE.getEvent("FarmIncrease").topicHash;
 const FARM_WITHDRAW_TOPIC = DEFI_IFACE.getEvent("FarmWithdrawl").topicHash;
 const CORE_STAKED_TOPIC = DEFI_IFACE.getEvent("CoreStaked").topicHash;
 const CORE_WITHDRAWN_TOPIC = DEFI_IFACE.getEvent("CoreWithdrawn").topicHash;
@@ -729,15 +737,16 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
   }
 
   const walletTopic = ethers.zeroPadValue(trackedWallet, 32);
-  const [farmDeposits, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
+  const [farmDeposits, farmIncreases, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
     queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt),
+    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt),
     queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt),
     queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt),
     queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt),
     queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt),
   ]);
 
-  const allLogs = [...farmDeposits, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
+  const allLogs = [...farmDeposits, ...farmIncreases, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
   if (allLogs.length === 0) return latestBlock;
 
   const uniqueBlocks = [...new Set(allLogs.map((l) => l.blockNumber))];
@@ -765,7 +774,18 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
       console.warn(`⚠️  DeFi activity scan: could not decode log in tx ${log.transactionHash}:`, err.message);
       continue;
     }
-    const eventType = { FarmDeposit: "farm_deposit", FarmWithdrawl: "farm_withdraw", CoreStaked: "core_staked", CoreWithdrawn: "core_withdrawn", RewardPaid: "reward_paid" }[parsed.name];
+    // FarmIncrease maps to the SAME 'farm_deposit' event_type as FarmDeposit — both are inflows
+    // into the farmer's position (a brand-new one vs. topping up an existing one), identical for
+    // FIFO/cost-basis purposes; buildDefiFarmEvents in pnlEventBuilder.js doesn't need to (and
+    // doesn't) distinguish them.
+    const eventType = {
+      FarmDeposit: "farm_deposit",
+      FarmIncrease: "farm_deposit",
+      FarmWithdrawl: "farm_withdraw",
+      CoreStaked: "core_staked",
+      CoreWithdrawn: "core_withdrawn",
+      RewardPaid: "reward_paid",
+    }[parsed.name];
     const rawArgs = {};
     for (const frag of parsed.fragment.inputs) {
       const v = parsed.args[frag.name];

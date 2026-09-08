@@ -4,7 +4,6 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
-import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
@@ -35,9 +34,11 @@ function fmtSigned(v) {
 // a quick read) — fetched once on load, then only again if the member explicitly asks via
 // Refresh, not on a timer. The chart below reads a cheap pre-computed daily rollup instead
 // (pnlSnapshotScheduler.js), so it loads fast even though the "right now" numbers above it don't.
-export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthParams, onSelectToken }) {
-  const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } =
-    useCoreTierAccess(wallet, membershipVersion, getAuthParams);
+export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter }) {
+  // Access + tracked-wallet-list state and the page-wide wallet filter both live in
+  // PortfolioDashboardSection.jsx now — see that file's own comment on why (one shared fetch for
+  // all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
+  const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getLiveSnapshot, getHistory } = usePnlSnapshot();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
@@ -122,8 +123,16 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
 
-  const combined = snapshot?.combined;
-  const combinedHistory = history?.combined || [];
+  // A per-wallet snapshot entry has the exact same shape as the combined one (perWallet.push in
+  // pnlSnapshotRouter.js spreads the full snapshot alongside walletAddress) — same for a
+  // per-wallet history entry vs. the combined series — so picking one or the other here is a
+  // drop-in swap, nothing downstream needs to know which it's looking at.
+  const combined = walletFilter === "all" ? snapshot?.combined : snapshot?.perWallet?.find((w) => w.walletAddress === walletFilter);
+  const combinedHistory =
+    walletFilter === "all" ? history?.combined || [] : history?.perWallet?.find((w) => w.walletAddress === walletFilter)?.points || [];
+  // True only when the filtered wallet's PnL failed to compute this round (see snapshot.failed
+  // below) — distinct from `!combined`, which is also true before the very first load completes.
+  const filteredWalletFailed = walletFilter !== "all" && (snapshot?.failed || []).includes(walletFilter);
   const formatValue = (v) => formatUsdPrice(v);
 
   return (
@@ -219,7 +228,7 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
             )}
 
             {snapshotError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{snapshotError}</div>}
-            {snapshot?.failed?.length > 0 && snapshot?.combined && (
+            {walletFilter === "all" && snapshot?.failed?.length > 0 && snapshot?.combined && (
               <div style={{ fontSize: 11, color: errorColor, marginBottom: 12 }}>
                 Couldn't compute PnL for {snapshot.failed.map((a) => resolveWalletName(a)).join(", ")} right now — the figures below only
                 reflect your other tracked wallet{snapshot.failed.length === active.length - 1 ? "" : "s"}. Try Refresh.
@@ -228,6 +237,10 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
 
             {!snapshot && !snapshotError ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>Computing your live PnL — this can take a moment…</div>
+            ) : filteredWalletFailed ? (
+              <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
+                Couldn't compute PnL for {resolveWalletName(walletFilter)} right now — try Refresh.
+              </div>
             ) : !combined && snapshot?.failed?.length > 0 ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
                 Couldn't compute PnL for any of your tracked wallets right now — try Refresh.
@@ -260,7 +273,7 @@ export default function CoreTierPnl({ wallet, membershipVersion = 0, getAuthPara
                   </div>
                 </div>
 
-                {active.length > 1 && snapshot.perWallet && (
+                {walletFilter === "all" && active.length > 1 && snapshot.perWallet && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
                     {snapshot.perWallet.map((w) => (
                       <div key={w.walletAddress} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>

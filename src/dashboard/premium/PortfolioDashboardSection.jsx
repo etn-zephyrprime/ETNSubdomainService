@@ -1,13 +1,15 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
+import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
+import { useDisplayNames } from "../hooks/useDisplayNames.js";
 import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import MembershipPurchase from "./components/MembershipPurchase.jsx";
 import CoreTierPortfolio from "./components/CoreTierPortfolio.jsx";
 import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
 import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
-import { green, greenGlow, muted } from "../theme.js";
+import { green, greenGlow, muted, mutedLight, border, panel2 } from "../theme.js";
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
 // separate from PremiumDashboardSection.jsx (PnL Statements) — see that file's own header comment
@@ -27,6 +29,26 @@ export default function PortfolioDashboardSection({ onSelectToken }) {
   // why this needs a bounded retry, not just one immediate re-check).
   const [membershipVersion, setMembershipVersion] = useState(0);
 
+  // Access + tracked-wallet-list state now lives HERE, once, instead of each of the four Core Tier
+  // panels below calling useCoreTierAccess independently (four separate /premium/tracked-wallets
+  // fetches for the exact same data) — a prerequisite for the page-wide wallet filter right below,
+  // which needs the wallet list before any individual panel has loaded its own data.
+  const coreTierAccess = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
+  const { active, hasAccess } = coreTierAccess;
+  const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
+
+  // "all" | a wallet address — the one page-wide filter driving Portfolio, PnL, and Balance
+  // History together (previously each had its own separate filter; consolidated per feedback that
+  // three different controls doing the same job, in three different places, was more confusing
+  // than one shared one). Falls back to "all" if it's pointed at a wallet that's since been
+  // untracked, so no panel ever renders stale/gone data.
+  const [walletFilterRaw, setWalletFilter] = useState("all");
+  const walletFilter = walletFilterRaw === "all" || active.some((w) => w.address === walletFilterRaw) ? walletFilterRaw : "all";
+
+  useEffect(() => {
+    setWalletFilter("all");
+  }, [wallet.isConnected, wallet.account]);
+
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
@@ -43,11 +65,56 @@ export default function PortfolioDashboardSection({ onSelectToken }) {
         <PremiumWalletChip wallet={wallet} />
       </div>
 
+      {hasAccess && active.length > 1 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
+            Showing
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button
+              onClick={() => setWalletFilter("all")}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 8,
+                border: `1px solid ${walletFilter === "all" ? green : border}`,
+                background: walletFilter === "all" ? "rgba(24,187,26,0.12)" : panel2,
+                color: walletFilter === "all" ? green : mutedLight,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              All Wallets
+            </button>
+            {active.map((w) => (
+              <button
+                key={w.address}
+                onClick={() => setWalletFilter(w.address)}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${walletFilter === w.address ? green : border}`,
+                  background: walletFilter === w.address ? "rgba(24,187,26,0.12)" : panel2,
+                  color: walletFilter === w.address ? green : mutedLight,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "monospace",
+                  cursor: "pointer",
+                }}
+              >
+                {w.isOwnWallet ? "You — " : ""}
+                {resolveName(w.address)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <CoreTierPortfolio wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
-        <CoreTierBalanceHistory wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} />
-        <CoreTierPnl wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
-        <CoreTierAlerts wallet={wallet} membershipVersion={membershipVersion} getAuthParams={getAuthParams} onSelectToken={onSelectToken} />
+        <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
     </div>

@@ -40,3 +40,29 @@ export async function getAllDefiActivityBefore(trackedWallet, beforeTs) {
   );
   return res?.rows || [];
 }
+
+/** Every distinct (contract_address, farm_id) this wallet has ever deposited into (farm_deposit —
+ * which also now covers a FarmIncrease top-up, see pnlIngestion.js) — the candidate list for
+ * defiPositionValuation.js's live "is this still open, and if so what's it worth right now" check.
+ * Deliberately NOT a source of truth for whether a position is still open (a farm_withdraw row
+ * doesn't necessarily mean fully closed — could be partial) — that's always a live on-chain read;
+ * this only tells the caller WHERE to look, cheaply, instead of brute-force scanning every farm ID
+ * on every known farm contract for every wallet. */
+export async function getDistinctFarmPositions(trackedWallet) {
+  const res = await query(
+    `SELECT DISTINCT contract_address, farm_id FROM defi_activity
+     WHERE tracked_wallet = $1 AND event_type = 'farm_deposit' AND farm_id IS NOT NULL`,
+    [trackedWallet.toLowerCase()]
+  );
+  return (res?.rows || []).map((r) => ({ contractAddress: r.contract_address, farmId: r.farm_id }));
+}
+
+/** Every distinct staking-template contract this wallet has ever staked at (core_staked) — same
+ * "candidate list, not a source of truth" role as getDistinctFarmPositions above. */
+export async function getDistinctStakingContracts(trackedWallet) {
+  const res = await query(
+    `SELECT DISTINCT contract_address FROM defi_activity WHERE tracked_wallet = $1 AND event_type = 'core_staked'`,
+    [trackedWallet.toLowerCase()]
+  );
+  return (res?.rows || []).map((r) => r.contract_address);
+}
