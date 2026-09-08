@@ -5,6 +5,7 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
+import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
@@ -30,6 +31,9 @@ const HOLDING_CATEGORIES = [
   { id: "nfts", label: "NFT's" },
 ];
 const HOLDINGS_PAGE_SIZE = 10;
+// Same literal every Core tier endpoint signs — see e.g. CoreTierPnl.jsx's own copy of this
+// constant; a signature cached client-side (useWalletAuthSignature.js) covers all of them.
+const AUTH_PURPOSE = "Premium Dashboard";
 
 function fmtDate(iso) {
   const d = new Date(iso);
@@ -101,6 +105,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     refresh, checkAccessOnce, addWallet, removeWallet,
   } = coreTierAccess;
   const { getCombinedPortfolio } = useCombinedPortfolio();
+  const { getDefiPositions } = useDefiPositions();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
 
@@ -128,6 +133,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
 
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
+  // Live value of any currently-open yield-farm/staking position — { perWallet, combined } | null
+  // while loading. A separate load from `portfolio` above (a real on-chain lookup per known
+  // position, not just a Blockscout balance read — see useDefiPositions.js), so a member with no
+  // DeFi activity at all sees Combined Holdings load at its usual speed while this only adds a
+  // real wait for members who actually have something staked/farmed.
+  const [defiPositions, setDefiPositions] = useState(null);
+  const [defiPositionsError, setDefiPositionsError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
   // Addresses CoreTierPortfolio has confirmed have no ElectroSwap pool at all (getTokenChart came
   // back hasData:false) — distinct from simply "not in tokenPrices yet", which just means the
@@ -183,6 +195,30 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
       });
     return () => { cancelled = true; };
   }, [hasAccess, active, getCombinedPortfolio]);
+
+  // Open DeFi positions load alongside the combined portfolio, independently — a slow/failed
+  // lookup here never blocks Combined Holdings/Total Portfolio Balance from showing what they
+  // already know from Blockscout.
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setDefiPositions(null);
+      return;
+    }
+    let cancelled = false;
+    setDefiPositions(null);
+    setDefiPositionsError(null);
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getDefiPositions(wallet.account, signature, timestamp);
+        if (!cancelled) setDefiPositions(res);
+      } catch (err) {
+        console.error("Failed to load DeFi positions:", err);
+        if (!cancelled) setDefiPositionsError("Couldn't load staked/farmed positions — try again shortly.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getAuthParams, getDefiPositions, wallet.account]);
 
   // USD price per merged token — one small independent request each, same pattern (and the same
   // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
@@ -360,8 +396,20 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // Scoped to the filtered wallet when one's selected — same wallets perWalletTotals already
   // computed above, just narrowed to the one row that matters for the header figures below.
   const filteredWalletTotals = walletFilter === "all" ? perWalletTotals : perWalletTotals.filter((w) => w.address === walletFilter);
-  const totalPortfolioUsd = filteredWalletTotals.length > 0 ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) : null;
-  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced);
+
+  // Live value of open farm/staking positions, scoped to the same walletFilter as everything else
+  // — folded into the total below so a member who's staked funds doesn't see a total that quietly
+  // excludes them (see useDefiPositions.js / defiPositionValuation.js).
+  const defiEntry =
+    walletFilter === "all" ? defiPositions?.combined : defiPositions?.perWallet?.find((w) => w.walletAddress === walletFilter);
+  const defiUsd = defiEntry?.totalUsd != null ? Number(defiEntry.totalUsd) : null;
+  const defiHasUnpriced = Boolean(defiEntry?.hasUnpriced);
+
+  const totalPortfolioUsd =
+    filteredWalletTotals.length > 0 || defiUsd != null
+      ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0)
+      : null;
+  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced;
 
   const renderPending = () => {
     if (!pending) return null;
@@ -661,6 +709,34 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         : "This wallet only"}
                     </div>
                   </div>
+
+                  {defiPositionsError ? (
+                    <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{defiPositionsError}</div>
+                  ) : defiEntry?.positions?.length > 0 ? (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        Staked / Farming Positions
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {defiEntry.positions.map((p, i) => (
+                          <div
+                            key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`}
+                            style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{p.label}</span>
+                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                     Combined Holdings

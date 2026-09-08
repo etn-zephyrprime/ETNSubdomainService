@@ -29,6 +29,7 @@ import {
   MAX_TRACKED_WALLETS,
   TRACK_COOLDOWN_DAYS,
 } from "../db/trackedWallets.js";
+import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
 // so a signature cached client-side (see useWalletAuthSignature.js) works across all of them
@@ -114,6 +115,46 @@ router.delete("/premium/tracked-wallets", async (req, res) => {
   } catch (err) {
     res.status(409).json({ error: err.message });
   }
+});
+
+// Live value of every currently-open yield-farm/staking position, per covered wallet AND combined
+// — the counterpart to Combined Holdings/Total Portfolio Balance's Blockscout-only token-balance
+// view, which has no way to see funds that have moved into a farm/staking contract (see
+// defiPositionValuation.js's own header comment). A separate endpoint rather than folded into GET
+// /premium/tracked-wallets above: this does real on-chain reads (not just a DB lookup) and a member
+// with no DeFi activity at all shouldn't pay for it on every tracked-wallet-list fetch.
+router.get("/premium/defi-positions", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  const perWallet = [];
+  for (const w of active) {
+    try {
+      const result = await getOpenDefiPositionsUsd(w.address);
+      perWallet.push({ walletAddress: w.address, ...result });
+    } catch (err) {
+      console.error(`DeFi position lookup failed for wallet ${w.address}:`, err);
+      perWallet.push({ walletAddress: w.address, positions: [], totalUsd: null, hasUnpriced: true, failed: true });
+    }
+  }
+
+  let totalUsd = null;
+  let hasUnpriced = false;
+  const allPositions = [];
+  for (const w of perWallet) {
+    if (w.totalUsd != null) totalUsd = (totalUsd ?? 0) + Number(w.totalUsd);
+    if (w.hasUnpriced) hasUnpriced = true;
+    for (const p of w.positions) allPositions.push({ ...p, walletAddress: w.walletAddress });
+  }
+
+  res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced } });
 });
 
 export default router;
