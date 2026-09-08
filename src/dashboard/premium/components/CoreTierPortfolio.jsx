@@ -9,7 +9,7 @@ import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
-import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName, shortHash } from "../../utils/format.js";
+import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel2, orange, error as errorColor } from "../../theme.js";
 
@@ -104,11 +104,6 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
-  const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
-  // `active` always includes the member's own connected wallet as a permanent first entry (see
-  // trackedWallets.js's getCoveredWallets) — it doesn't spend one of `maxWallets`' explicit slots,
-  // so every cap check ("can I add another wallet?") needs the EXPLICIT count, not active.length.
-  const explicitCount = active.filter((w) => !w.isOwnWallet).length;
 
   const [managing, setManaging] = useState(false);
   const [addInput, setAddInput] = useState("");
@@ -116,10 +111,21 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
 
   // The one action currently awaiting confirmation — null | { type: "add"|"remove", address }.
   // Nothing is sent to the backend until the member confirms, and the confirm panel itself states
-  // the exact consequence (see renderPending below).
+  // the exact consequence (see renderPending below). Declared BEFORE the useDisplayNames call below
+  // (which reads pending?.address) — referencing it earlier would hit the temporal dead zone.
   const [pending, setPending] = useState(null);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState(null);
+
+  const { resolve: resolveName } = useDisplayNames([
+    ...active.map((w) => w.address),
+    ...cooling.map((w) => w.address),
+    ...(pending?.address ? [pending.address] : []), // a brand-new "add" candidate isn't in active/cooling yet
+  ]);
+  // `active` always includes the member's own connected wallet as a permanent first entry (see
+  // trackedWallets.js's getCoveredWallets) — it doesn't spend one of `maxWallets`' explicit slots,
+  // so every cap check ("can I add another wallet?") needs the EXPLICIT count, not active.length.
+  const explicitCount = active.filter((w) => !w.isOwnWallet).length;
 
   const [portfolio, setPortfolio] = useState(null); // null = loading/nothing to show yet
   const [portfolioError, setPortfolioError] = useState(null);
@@ -133,6 +139,8 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
+  // "all" | a wallet address — narrows Combined Holdings to just what one tracked wallet holds.
+  const [holdingsWalletFilter, setHoldingsWalletFilter] = useState("all");
 
   // Drops any in-progress editor state on an account change — one built for the previous account
   // has no business surviving a disconnect/switch. The access/tracked-wallet state itself resets
@@ -143,6 +151,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
     setPendingError(null);
     setAddInput("");
     setAddInputError(null);
+    setHoldingsWalletFilter("all");
   }, [wallet.isConnected, wallet.account]);
 
   // Combined portfolio loads whenever the active tracked-wallet list changes.
@@ -293,7 +302,14 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const visibleNfts = portfolio
     ? portfolio.tokens.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
     : [];
-  const visibleHoldings = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
+  // Falls back to "all" if the selected wallet was untracked since it was picked.
+  const effectiveHoldingsWalletFilter =
+    holdingsWalletFilter === "all" || active.some((w) => w.address === holdingsWalletFilter) ? holdingsWalletFilter : "all";
+  const holdingsBeforeWalletFilter = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
+  const visibleHoldings =
+    effectiveHoldingsWalletFilter === "all"
+      ? holdingsBeforeWalletFilter
+      : holdingsBeforeWalletFilter.filter((t) => t.heldBy?.includes(effectiveHoldingsWalletFilter));
 
   const combinedEtnAmount = portfolio ? parseFloat(ethers.formatEther(portfolio.totalCoinBalance)) : null;
   const combinedUsdValue =
@@ -339,12 +355,12 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
           <div style={{ fontSize: 12, color: "#fff", lineHeight: 1.6 }}>
             {isAdd ? (
               pending.blockedUntil ? (
-                <>You untracked <b>{shortHash(pending.address, 8)}</b> too recently — it can't be re-tracked until <b>{fmtDate(pending.blockedUntil)}</b>.</>
+                <>You untracked <b>{resolveName(pending.address)}</b> too recently — it can't be re-tracked until <b>{fmtDate(pending.blockedUntil)}</b>.</>
               ) : (
-                <>Track <b>{shortHash(pending.address, 8)}</b>? Once added, it's locked in — you won't be able to untrack it for <b>{cooldownDays} days</b>.</>
+                <>Track <b>{resolveName(pending.address)}</b>? Once added, it's locked in — you won't be able to untrack it for <b>{cooldownDays} days</b>.</>
               )
             ) : (
-              <>Untrack <b>{shortHash(pending.address, 8)}</b>? You won't be able to re-track this exact wallet for <b>{cooldownDays} days</b> afterward.</>
+              <>Untrack <b>{resolveName(pending.address)}</b>? You won't be able to re-track this exact wallet for <b>{cooldownDays} days</b> afterward.</>
             )}
           </div>
         </div>
@@ -404,7 +420,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                     }}
                   >
                     {w.isOwnWallet ? "You — " : ""}
-                    {shortHash(w.address)}
+                    {resolveName(w.address)}
                   </div>
                 ))}
               </div>
@@ -445,7 +461,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                           }}
                         >
                           <div>
-                            <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>You — {shortHash(w.address, 8)}</div>
+                            <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>You — {resolveName(w.address)}</div>
                             <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>Always included</div>
                           </div>
                         </div>
@@ -467,7 +483,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                         }}
                       >
                         <div>
-                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>{shortHash(w.address, 8)}</div>
+                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>{resolveName(w.address)}</div>
                           <div style={{ fontSize: 10, color: locked ? orange : mutedLight, marginTop: 2 }}>
                             {locked ? `Locked until ${fmtDate(w.removableAt)}` : "Eligible to untrack"}
                           </div>
@@ -503,7 +519,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {cooling.map((w) => (
                       <div key={w.address} style={{ fontSize: 10, color: muted, fontFamily: "monospace" }}>
-                        {shortHash(w.address, 8)} — re-trackable {fmtDate(w.retrackableAt)}
+                        {resolveName(w.address)} — re-trackable {fmtDate(w.retrackableAt)}
                       </div>
                     ))}
                   </div>
@@ -546,14 +562,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                 style={{
                   display: "block",
                   width: "100%",
+                  marginTop: 10,
                   textAlign: "center",
-                  fontSize: 12,
+                  fontSize: 13,
+                  fontWeight: 700,
                   color: mutedLight,
-                  background: "none",
-                  border: "none",
+                  background: panel2,
+                  border: `1px solid ${border}`,
+                  borderRadius: 10,
                   cursor: "pointer",
-                  padding: "8px 0 0",
-                  textDecoration: "underline",
+                  padding: "10px 0",
                 }}
               >
                 Done
@@ -644,9 +662,54 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                       </button>
                     ))}
                   </div>
+                  {active.length > 1 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                      <button
+                        onClick={() => { setHoldingsWalletFilter("all"); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
+                        style={{
+                          padding: "5px 10px",
+                          borderRadius: 8,
+                          border: `1px solid ${effectiveHoldingsWalletFilter === "all" ? green : border}`,
+                          background: effectiveHoldingsWalletFilter === "all" ? "rgba(24,187,26,0.12)" : panel2,
+                          color: effectiveHoldingsWalletFilter === "all" ? green : mutedLight,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        All Wallets
+                      </button>
+                      {active.map((w) => (
+                        <button
+                          key={w.address}
+                          onClick={() => { setHoldingsWalletFilter(w.address); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: 8,
+                            border: `1px solid ${effectiveHoldingsWalletFilter === w.address ? green : border}`,
+                            background: effectiveHoldingsWalletFilter === w.address ? "rgba(24,187,26,0.12)" : panel2,
+                            color: effectiveHoldingsWalletFilter === w.address ? green : mutedLight,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            fontFamily: "monospace",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {w.isOwnWallet ? "You — " : ""}
+                          {resolveName(w.address)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
                     <div style={{ fontSize: 12, color: muted }}>
-                      {holdingsCategory === "nfts" ? "No NFTs held across your tracked wallets." : "No token balances across your tracked wallets."}
+                      {effectiveHoldingsWalletFilter === "all"
+                        ? holdingsCategory === "nfts"
+                          ? "No NFTs held across your tracked wallets."
+                          : "No token balances across your tracked wallets."
+                        : holdingsCategory === "nfts"
+                          ? "No NFTs held in this wallet."
+                          : "No token balances in this wallet."}
                     </div>
                   ) : (
                     <>

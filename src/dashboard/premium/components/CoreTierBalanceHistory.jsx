@@ -57,6 +57,11 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   const [error, setError] = useState(null);
   const [pricePoints, setPricePoints] = useState(null); // null until loaded
   const [valueMode, setValueMode] = useState("etn");
+  // "combined" | a wallet address — which single chart is shown. Combined is the default so the
+  // page opens clean (one chart, not every tracked wallet's own stacked below it); picking a
+  // wallet swaps to just that one. Falls back to "combined" below if the selected address is no
+  // longer tracked (untracked mid-session) rather than rendering a chart for a wallet that's gone.
+  const [selectedWallet, setSelectedWallet] = useState("combined");
   // address -> real ETN balance at WINDOW_DAYS ago, or 0 until resolved/if unresolvable — see
   // historicalBalance.js's own header comment for why "before the wallet's first Blockscout
   // history entry" must NOT default to 0 the way it did before this existed. Fetched separately
@@ -162,6 +167,21 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   const combinedSeries = showUsd ? convertSeriesToUsd(combinedSeriesEtn, priceLookup) : combinedSeriesEtn;
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
+  // Falls back to "combined" if the selected wallet was untracked since it was picked — never
+  // renders a chart for an address that's no longer in `active`.
+  const effectiveSelectedWallet =
+    selectedWallet === "combined" || active.some((w) => w.address === selectedWallet) ? selectedWallet : "combined";
+
+  /** One wallet's own daily series (ETN or USD, matching valueMode) — same shape as the combined
+   * series above, just scoped to a single address's own history + backfilled seed. */
+  function buildWalletSeries(address) {
+    const items = historiesByAddress[address] || [];
+    const sparse = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
+    const seedEtn = historicalSeeds[address] || 0;
+    const seriesEtn = buildDailySeries(sparse, WINDOW_DAYS, seedEtn);
+    return { series: showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn, hasHistory: sparse.length > 0 || seedEtn > 0 };
+  }
+
   return (
     <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -216,40 +236,79 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
         ) : !loaded ? (
           <div style={{ fontSize: 12, color: mutedLight }}>Loading balance history…</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-                {active.length > 1 ? "Combined Balance History" : "Balance History"}
+          <div>
+            {active.length > 1 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                <button
+                  onClick={() => setSelectedWallet("combined")}
+                  style={{
+                    padding: "5px 12px",
+                    borderRadius: 8,
+                    border: `1px solid ${effectiveSelectedWallet === "combined" ? green : border}`,
+                    background: effectiveSelectedWallet === "combined" ? "rgba(24,187,26,0.12)" : panel2,
+                    color: effectiveSelectedWallet === "combined" ? green : mutedLight,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Combined
+                </button>
+                {active.map((w) => (
+                  <button
+                    key={w.address}
+                    onClick={() => setSelectedWallet(w.address)}
+                    style={{
+                      padding: "5px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${effectiveSelectedWallet === w.address ? green : border}`,
+                      background: effectiveSelectedWallet === w.address ? "rgba(24,187,26,0.12)" : panel2,
+                      color: effectiveSelectedWallet === w.address ? green : mutedLight,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      fontFamily: "monospace",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {w.isOwnWallet ? "You — " : ""}
+                    {resolveName(w.address)}
+                  </button>
+                ))}
               </div>
-              <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
-              {!hasCombinedHistory ? (
-                <div style={{ fontSize: 12, color: muted }}>No balance history yet.</div>
-              ) : (
-                <SparklineChart data={combinedSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
-              )}
-            </div>
+            )}
 
-            {active.length > 1 &&
-              active.map((w) => {
-                const items = historiesByAddress[w.address] || [];
-                const sparse = items.map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) }));
-                const seedEtn = historicalSeeds[w.address] || 0;
-                const seriesEtn = buildDailySeries(sparse, WINDOW_DAYS, seedEtn);
-                const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
+            {effectiveSelectedWallet === "combined" ? (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
+                  {active.length > 1 ? "Combined Balance History" : "Balance History"}
+                </div>
+                <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
+                {!hasCombinedHistory ? (
+                  <div style={{ fontSize: 12, color: muted }}>No balance history yet.</div>
+                ) : (
+                  <SparklineChart data={combinedSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+                )}
+              </div>
+            ) : (
+              (() => {
+                const w = active.find((a) => a.address === effectiveSelectedWallet);
+                const { series, hasHistory } = buildWalletSeries(effectiveSelectedWallet);
                 return (
-                  <div key={w.address}>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                      {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                      {resolveName(w.address)}
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
+                      {w?.isOwnWallet ? "You — " : ""}
+                      {resolveName(effectiveSelectedWallet)}
                     </div>
-                    {sparse.length === 0 && seedEtn === 0 ? (
-                      <div style={{ fontSize: 12, color: muted, marginBottom: 4 }}>No balance history yet.</div>
+                    <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
+                    {!hasHistory ? (
+                      <div style={{ fontSize: 12, color: muted }}>No balance history yet.</div>
                     ) : (
-                      <SparklineChart data={series} height={100} formatValue={formatValue} formatLabel={formatChartDate} />
+                      <SparklineChart data={series} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
                     )}
                   </div>
                 );
-              })}
+              })()
+            )}
           </div>
         )}
       </CoreTierGate>
