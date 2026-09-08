@@ -14,7 +14,7 @@
 // NFT type filtering) so a member sees the same total here as on the dashboard, not two subtly
 // different numbers for "the same" figure.
 import { ethers } from "ethers";
-import { getActiveTrackedWallets } from "../db/trackedWallets.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
@@ -35,15 +35,18 @@ function isSpamTokenName(name) {
 const MAX_PRICED_TOKENS_PER_WALLET = 50;
 
 /**
- * Combined USD value of every wallet `ownerWallet` currently actively tracks — ETN + every priced
- * fungible token holding, up to MAX_PRICED_TOKENS_PER_WALLET per wallet. `hasUnpriced` mirrors
- * CoreTierPortfolio.jsx's own convention: true when at least one non-zero holding couldn't be
- * priced (ETN/USD cache not ready, a token has no ElectroSwap pool, or the per-wallet cap was hit),
- * meaning the real total is AT LEAST this much, not exactly this much. Returns
- * `{ totalUsd: 0, hasUnpriced: false }` for an owner with no tracked wallets — a real, valid zero.
+ * Combined USD value of every wallet `ownerWallet`'s Core tier features cover — their own
+ * connected wallet plus up to 3 explicitly tracked ones (see trackedWallets.js's
+ * getCoveredWallets) — ETN + every priced fungible token holding, up to
+ * MAX_PRICED_TOKENS_PER_WALLET per wallet. `hasUnpriced` mirrors CoreTierPortfolio.jsx's own
+ * convention: true when at least one non-zero holding couldn't be priced (ETN/USD cache not
+ * ready, a token has no ElectroSwap pool, or the per-wallet cap was hit), meaning the real total
+ * is AT LEAST this much, not exactly this much. The `{ totalUsd: 0, hasUnpriced: false }` empty
+ * case is now unreachable in practice (getCoveredWallets always returns at least the owner's own
+ * wallet) — kept as a defensive fallback, not a real "no wallets" state anymore.
  */
 export async function getPortfolioUsdValue(provider, ownerWallet) {
-  const tracked = await getActiveTrackedWallets(ownerWallet);
+  const tracked = await getCoveredWallets(ownerWallet);
   if (tracked.length === 0) return { totalUsd: 0, hasUnpriced: false };
 
   const priceCache = await getEtnPriceCache();

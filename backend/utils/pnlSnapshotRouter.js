@@ -10,7 +10,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { getActiveTrackedWallets } from "../db/trackedWallets.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
@@ -90,7 +90,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     }
   }
 
-  const active = await getActiveTrackedWallets(wallet);
+  const active = await getCoveredWallets(wallet);
   if (active.length === 0) {
     return res.json({ perWallet: [], combined: null, failed: [], needsSelection: [] });
   }
@@ -101,8 +101,9 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     const failed = [];
     const needsSelection = [];
     // Sequential, not Promise.all — same reasoning as pnlSnapshotScheduler.js's own poll loop: a
-    // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 3
-    // tracked wallets, so there's no responsiveness win worth the burst RPC/pricing load.
+    // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 4
+    // covered wallets (their own connected wallet + up to 3 explicitly tracked — see
+    // getCoveredWallets), so there's no responsiveness win worth the burst RPC/pricing load.
     //
     // Each wallet's computation is isolated in its own try/catch — confirmed live this used to be
     // ONE try wrapping the whole loop, so a single wallet's transient failure (an RPC hiccup, a
@@ -157,7 +158,7 @@ router.get("/premium/pnl-history", async (req, res) => {
     return res.status(403).json({ error: "Core tier membership required" });
   }
 
-  const active = await getActiveTrackedWallets(wallet);
+  const active = await getCoveredWallets(wallet);
   if (active.length === 0) {
     return res.json({ perWallet: [], combined: [] });
   }

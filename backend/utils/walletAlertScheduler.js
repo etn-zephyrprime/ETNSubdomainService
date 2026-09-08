@@ -30,7 +30,7 @@
 // notisLinkRouter.js's own header comment for why these must stay separate.
 import { ethers } from "ethers";
 import { getPool } from "../db/pool.js";
-import { getActiveTrackedWallets } from "../db/trackedWallets.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getActiveWalletAlertsByWallet, setWalletAlertBalanceState, setWalletAlertTxCursor, deactivateWalletAlerts } from "../db/walletAlerts.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
@@ -59,14 +59,18 @@ async function displayName(address) {
 
 // Per-owner caches, scoped to ONE poll tick (module-level state would leak access changes across
 // ticks) — several alerts on the same wallet, or several wallets belonging to the same owner, are
-// common (a member can track up to 3 wallets and configure more than one alert per wallet), so
-// this avoids re-querying the same owner's tracked-wallet list or Core tier status once per alert.
+// common (a member has up to 4 covered wallets — their own connected wallet plus up to 3 tracked —
+// and can configure more than one alert per wallet), so this avoids re-querying the same owner's
+// wallet list or Core tier status once per alert.
 function makeTickCaches() {
   return { trackedByOwner: new Map(), accessByOwner: new Map() };
 }
 async function isStillTracked(caches, ownerWallet, walletAddress) {
   if (!caches.trackedByOwner.has(ownerWallet)) {
-    caches.trackedByOwner.set(ownerWallet, await getActiveTrackedWallets(ownerWallet));
+    // getCoveredWallets, not getActiveTrackedWallets — an alert on the owner's own connected
+    // wallet (auto-covered, never spends one of the explicit slots) must not get deactivated as
+    // "orphaned" just because it was never separately tracked.
+    caches.trackedByOwner.set(ownerWallet, await getCoveredWallets(ownerWallet));
   }
   return caches.trackedByOwner.get(ownerWallet).some((w) => w.address === walletAddress);
 }
