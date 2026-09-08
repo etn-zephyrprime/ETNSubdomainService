@@ -13,7 +13,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
-import { getActiveTrackedWallets } from "../db/trackedWallets.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getWalletAlerts, addWalletAlert, removeWalletAlert, MAX_WALLET_ALERTS_PER_OWNER } from "../db/walletAlerts.js";
 import { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert, MAX_TOKEN_PRICE_ALERTS_PER_OWNER } from "../db/tokenPriceAlerts.js";
 import { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert, MAX_PORTFOLIO_ALERTS_PER_OWNER } from "../db/portfolioAlerts.js";
@@ -93,9 +93,9 @@ router.post("/premium/wallet-alerts", async (req, res) => {
   if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
   if (!(await requireCoreAccess(res, wallet))) return;
 
-  const active = await getActiveTrackedWallets(wallet);
+  const active = await getCoveredWallets(wallet);
   if (!active.some((w) => w.address === walletAddress.toLowerCase())) {
-    return res.status(400).json({ error: "You can only set alerts on wallets you're actively tracking" });
+    return res.status(400).json({ error: "You can only set alerts on your own wallet or one you're actively tracking" });
   }
 
   try {

@@ -75,16 +75,19 @@ function CooldownNotice({ children }) {
   );
 }
 
-// Core tier's flagship feature: track up to MAX_TRACKED_WALLETS wallets (your own, cold storage,
-// a friend's — anything; no ownership proof is required of the *tracked* wallets, only of the
-// member's own connected one) and see their combined ETN + token balances as one merged
-// portfolio. Always mounted regardless of wallet/membership state — same "decide what to show
-// internally, don't gate at the call site" pattern as PnlStatementRequest.jsx.
+// Core tier's flagship feature: your own connected wallet is always covered automatically, plus
+// up to MAX_TRACKED_WALLETS more you can explicitly track (cold storage, a friend's — anything; no
+// ownership proof is required of the *tracked* wallets, only of the member's own connected one) —
+// see all of them combined as one merged ETN + token portfolio. Always mounted regardless of
+// wallet/membership state — same "decide what to show internally, don't gate at the call site"
+// pattern as PnlStatementRequest.jsx.
 //
 // Tracking and untracking each carry a real 30-day cooldown (see trackedWallets.js) specifically
 // to stop "untrack A, track B, untrack B, retrack A" from being a free way to see more than
-// MAX_TRACKED_WALLETS wallets' data over time. Both actions require an explicit confirm step
-// (handlePendingConfirm below) with the consequence spelled out in the confirmation itself, not
+// MAX_TRACKED_WALLETS explicitly-tracked wallets' data over time — the member's own connected
+// wallet is exempt from all of this (see getCoveredWallets), never locked, never counted against
+// the cap. Both actions require an explicit confirm step (handlePendingConfirm below) with the
+// consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
 export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAuthParams, onSelectToken }) {
@@ -102,6 +105,10 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
   const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
+  // `active` always includes the member's own connected wallet as a permanent first entry (see
+  // trackedWallets.js's getCoveredWallets) — it doesn't spend one of `maxWallets`' explicit slots,
+  // so every cap check ("can I add another wallet?") needs the EXPLICIT count, not active.length.
+  const explicitCount = active.filter((w) => !w.isOwnWallet).length;
 
   const [managing, setManaging] = useState(false);
   const [addInput, setAddInput] = useState("");
@@ -209,12 +216,16 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
       setAddInputError("Enter a valid wallet address");
       return;
     }
+    if (trimmed.toLowerCase() === wallet.account?.toLowerCase()) {
+      setAddInputError("Your connected wallet is already included automatically");
+      return;
+    }
     if (active.some((w) => w.address.toLowerCase() === trimmed.toLowerCase())) {
       setAddInputError("Already tracking that wallet");
       return;
     }
-    if (active.length >= maxWallets) {
-      setAddInputError(`You can track up to ${maxWallets} wallets — untrack one first`);
+    if (explicitCount >= maxWallets) {
+      setAddInputError(`You can track up to ${maxWallets} additional wallets — untrack one first`);
       return;
     }
     const stillCooling = cooling.find((w) => w.address.toLowerCase() === trimmed.toLowerCase());
@@ -373,48 +384,44 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
         awaitingActivation={awaitingActivation}
         manualCheckLoading={manualCheckLoading}
         checkAccessOnce={checkAccessOnce}
-        featureDescription={`track up to ${maxWallets} wallets and see their combined ETN + token balances in one view`}
+        featureDescription={`your connected wallet is always included, plus up to ${maxWallets} more you track — see their combined ETN + token balances in one view`}
       >
         <div>
           {!managing ? (
             <>
-              {active.length === 0 ? (
-                <div style={{ fontSize: 12, color: mutedLight, marginBottom: 14 }}>
-                  No wallets tracked yet — add up to {maxWallets} to see your combined portfolio.
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                  {active.map((w) => (
-                    <div
-                      key={w.address}
-                      style={{
-                        padding: "6px 10px",
-                        borderRadius: 8,
-                        border: `1px solid ${border}`,
-                        background: panel2,
-                        color: mutedLight,
-                        fontSize: 11,
-                        fontFamily: "monospace",
-                      }}
-                    >
-                      {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                      {shortHash(w.address)}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+                {active.map((w) => (
+                  <div
+                    key={w.address}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${border}`,
+                      background: panel2,
+                      color: mutedLight,
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {w.isOwnWallet ? "You — " : ""}
+                    {shortHash(w.address)}
+                  </div>
+                ))}
+              </div>
               <DashboardButton onClick={() => setManaging(true)} style={{ width: "100%", justifyContent: "center" }}>
-                {active.length === 0 ? "Add Wallets" : "Manage Tracked Wallets"}
+                {explicitCount === 0 ? "Track More Wallets" : "Manage Tracked Wallets"}
               </DashboardButton>
             </>
           ) : (
             <div>
               <CooldownNotice>
-                Tracking a wallet locks it in for {cooldownDays} days before you can untrack it.
-                Untracking a wallet then locks that same address out from being re-tracked for
-                another {cooldownDays} days. Any address works — your own, cold storage, or
-                anyone else's you want to watch; you only ever prove ownership of your own
-                connected wallet, never of the ones you track.
+                Your connected wallet is always included, automatically — it doesn't count toward
+                your {maxWallets} additional slots and can't be untracked. Tracking one of those
+                extra wallets locks it in for {cooldownDays} days before you can untrack it.
+                Untracking one then locks that same address out from being re-tracked for another
+                {" "}{cooldownDays} days. Any address works — cold storage, a friend's, anyone
+                else's you want to watch; you only ever prove ownership of your own connected
+                wallet, never of the ones you track.
               </CooldownNotice>
 
               {renderPending()}
@@ -422,6 +429,28 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
               {active.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
                   {active.map((w) => {
+                    if (w.isOwnWallet) {
+                      return (
+                        <div
+                          key={w.address}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            border: `1px solid ${border}`,
+                            background: panel2,
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>You — {shortHash(w.address, 8)}</div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>Always included</div>
+                          </div>
+                        </div>
+                      );
+                    }
                     const locked = new Date(w.removableAt).getTime() > Date.now();
                     return (
                       <div
@@ -438,10 +467,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                         }}
                       >
                         <div>
-                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>
-                            {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                            {shortHash(w.address, 8)}
-                          </div>
+                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>{shortHash(w.address, 8)}</div>
                           <div style={{ fontSize: 10, color: locked ? orange : mutedLight, marginTop: 2 }}>
                             {locked ? `Locked until ${fmtDate(w.removableAt)}` : "Eligible to untrack"}
                           </div>
@@ -484,7 +510,7 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                 </div>
               )}
 
-              {active.length < maxWallets && (
+              {explicitCount < maxWallets && (
                 <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
                   <input
                     type="text"
@@ -513,26 +539,6 @@ export default function CoreTierPortfolio({ wallet, membershipVersion = 0, getAu
                 </div>
               )}
               {addInputError && <div style={{ fontSize: 11, color: errorColor, marginBottom: 8 }}>{addInputError}</div>}
-
-              {active.length < maxWallets &&
-                !active.some((w) => w.address.toLowerCase() === wallet.account?.toLowerCase()) && (
-                <button
-                  type="button"
-                  onClick={() => requestAdd(wallet.account)}
-                  style={{
-                    display: "block",
-                    background: "none",
-                    border: "none",
-                    color: green,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    padding: "2px 0 10px",
-                  }}
-                >
-                  + Track my connected wallet
-                </button>
-              )}
 
               <button
                 type="button"

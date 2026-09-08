@@ -3,6 +3,14 @@ import { query } from "./pool.js";
 // See migrations/007_tracked_wallets.sql's own header comment for why this is one row per
 // add/remove cycle rather than one row per member — that history is what makes both cooldowns
 // below checkable at all.
+//
+// MAX_TRACKED_WALLETS caps only EXPLICITLY tracked wallets — a member's own connected wallet is
+// covered by every Core tier feature automatically, on top of this cap, never spending one of
+// these slots — see getCoveredWallets below. getActiveTrackedWallets itself stays scoped to just
+// the explicit tracked_wallets rows (unmixed with the synthetic owner entry) since
+// addTrackedWallet/removeTrackedWallet need that for their own cap/dedup checks; every read-side
+// consumer that wants "every wallet this member's data should cover" should call
+// getCoveredWallets instead.
 export const MAX_TRACKED_WALLETS = 3;
 export const TRACK_COOLDOWN_DAYS = 30;
 const TRACK_COOLDOWN_MS = TRACK_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
@@ -24,6 +32,22 @@ export async function getActiveTrackedWallets(ownerWallet) {
     addedAt: r.added_at,
     removableAt: addMs(r.added_at, TRACK_COOLDOWN_MS),
   }));
+}
+
+/** Every wallet a Core tier member's features (portfolio, PnL, alerts, balance history) should
+ * cover: the member's own connected wallet — ALWAYS first, never subject to the cooldowns below,
+ * can't be "untracked" — plus up to MAX_TRACKED_WALLETS explicitly tracked ones. Defensively
+ * de-dupes a stale explicit row for the owner's own address (from before this auto-include
+ * behavior existed, or a row addTrackedWallet's own guard would now refuse to create) rather than
+ * showing it twice. `isOwnWallet: true` on the synthetic entry lets a caller (e.g. the dashboard's
+ * "Manage Tracked Wallets" list) render it without an untrack action; `addedAt`/`removableAt` are
+ * null on it since it was never "added" and has no cooldown boundary the way a real
+ * tracked_wallets row does. */
+export async function getCoveredWallets(ownerWallet) {
+  const owner = ownerWallet.toLowerCase();
+  const explicit = await getActiveTrackedWallets(owner);
+  const ownWallet = { address: owner, addedAt: null, removableAt: null, isOwnWallet: true };
+  return [ownWallet, ...explicit.filter((w) => w.address !== owner)];
 }
 
 /** Wallets untracked recently enough that their re-track cooldown hasn't cleared yet — surfaced
@@ -50,6 +74,10 @@ export async function getCoolingDownWallets(ownerWallet) {
 export async function addTrackedWallet(ownerWallet, walletAddress) {
   const owner = ownerWallet.toLowerCase();
   const address = walletAddress.toLowerCase();
+
+  if (address === owner) {
+    throw new Error("Your own connected wallet is already included automatically — no need to track it separately");
+  }
 
   const active = await getActiveTrackedWallets(owner);
   if (active.some((w) => w.address === address)) {

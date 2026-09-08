@@ -13,7 +13,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getPool } from "../db/pool.js";
 import { getEnabledDigestSubscriptions, recordDigestSent } from "../db/portfolioDigestSubscriptions.js";
 import { getPortfolioUsdValue } from "./portfolioValuation.js";
-import { getActiveTrackedWallets } from "../db/trackedWallets.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 
@@ -43,8 +43,8 @@ async function checkOneSubscription(provider, sub, today) {
   if (toDateString(sub.lastSentDate) === today) return; // already sent today
   if (!(await hasCoreAccess(sub.ownerWallet))) return; // premium-only, same as every other Core tier alert
 
-  const tracked = await getActiveTrackedWallets(sub.ownerWallet);
-  if (tracked.length === 0) return; // nothing to report — retried every tick until they track a wallet, cheap either way
+  const tracked = await getCoveredWallets(sub.ownerWallet);
+  if (tracked.length === 0) return; // defensive only — getCoveredWallets always includes the owner's own wallet now, so this is effectively unreachable
 
   const chatId = await getNotisLinkedChatId(sub.ownerWallet);
   if (chatId == null) return; // not linked — retried every tick until they link, so nothing is lost by not recording a send

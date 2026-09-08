@@ -1,7 +1,9 @@
 // backend/utils/premiumDashboardRouter.js
 //
 // HTTP surface for Core tier — the first premium dashboard feature beyond PnL Statements: up to
-// MAX_TRACKED_WALLETS wallets a member can track for the combined portfolio view (see
+// MAX_TRACKED_WALLETS explicitly-tracked wallets a member can add, PLUS their own connected wallet
+// (always included automatically, doesn't spend one of those slots — see trackedWallets.js's
+// getCoveredWallets) for the combined portfolio view (see
 // src/dashboard/premium/components/CoreTierPortfolio.jsx). Every endpoint here requires the same
 // signed proof of wallet ownership GET /pnl/statements uses (walletAuth.js) — keyed on nothing but
 // a bare wallet address otherwise, same reasoning as that route's own comment — AND an active
@@ -20,7 +22,7 @@ import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import {
-  getActiveTrackedWallets,
+  getCoveredWallets,
   getCoolingDownWallets,
   addTrackedWallet,
   removeTrackedWallet,
@@ -57,7 +59,7 @@ router.get("/premium/tracked-wallets", async (req, res) => {
   }
 
   const [active, cooling] = await Promise.all([
-    getActiveTrackedWallets(wallet),
+    getCoveredWallets(wallet),
     getCoolingDownWallets(wallet),
   ]);
   res.json({ active, cooling, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
@@ -78,7 +80,11 @@ router.post("/premium/tracked-wallets", async (req, res) => {
   }
 
   try {
-    const active = await addTrackedWallet(wallet, walletToTrack);
+    // addTrackedWallet itself returns getActiveTrackedWallets's explicit-only list (that's what
+    // its own cap check needs) — re-fetched here via getCoveredWallets so this endpoint's response
+    // always includes the owner's own wallet too, same shape as the GET above.
+    await addTrackedWallet(wallet, walletToTrack);
+    const active = await getCoveredWallets(wallet);
     res.json({ active, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
   } catch (err) {
     res.status(409).json({ error: err.message });
@@ -100,7 +106,10 @@ router.delete("/premium/tracked-wallets", async (req, res) => {
   }
 
   try {
-    const active = await removeTrackedWallet(wallet, walletToUntrack);
+    // Same reasoning as the POST handler above — re-fetch via getCoveredWallets for a consistent
+    // response shape across all three endpoints.
+    await removeTrackedWallet(wallet, walletToUntrack);
+    const active = await getCoveredWallets(wallet);
     res.json({ active, maxWallets: MAX_TRACKED_WALLETS, cooldownDays: TRACK_COOLDOWN_DAYS });
   } catch (err) {
     res.status(409).json({ error: err.message });
