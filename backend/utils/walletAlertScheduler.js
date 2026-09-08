@@ -39,7 +39,7 @@ import { fetchBlockscoutJson as fetchJson } from "./blockscoutClient.js";
 
 const CHECK_INTERVAL_MS = process.env.WALLET_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.WALLET_ALERT_CHECK_INTERVAL_MS, 10)
-  : 10 * 60 * 1000; // mid-point of the brief's 5-15 min range
+  : 3 * 60 * 1000; // tightened from the original 10 min (mid-point of the brief's 5-15 min range) — confirmed live that felt too slow for tx activity in particular; same cadence as tokenPriceAlertScheduler.js's own default
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 // Safety ceiling on how many newly-seen transactions get their own notification in one poll — a
 // wallet with a genuine burst of activity (or an alert whose cursor somehow fell far behind)

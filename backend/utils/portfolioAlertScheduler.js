@@ -20,7 +20,7 @@ import { hasCoreAccess } from "./premiumAccess.js";
 
 const CHECK_INTERVAL_MS = process.env.PORTFOLIO_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.PORTFOLIO_ALERT_CHECK_INTERVAL_MS, 10)
-  : 15 * 60 * 1000; // a full portfolio valuation (every tracked wallet's every token) is heavier than one wallet's balance — a bit less frequent than walletAlertScheduler.js's default
+  : 5 * 60 * 1000; // tightened from the original 15 min — confirmed live that felt too slow. A full portfolio valuation (every tracked wallet's every token) is still heavier than one wallet's balance, so this stays a bit less frequent than walletAlertScheduler.js's own (now 3 min) default
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 
 function fmtUsd(v) {
