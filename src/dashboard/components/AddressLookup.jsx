@@ -112,13 +112,7 @@ function tokenUsdValue(rawValue, decimals, priceUsd) {
 // reusing usePayment.js's existing resolveName() rather than re-implementing name resolution a
 // second time. Nothing here is persisted; re-searching starts fresh, same as the brief's "not
 // persisted" free-tier spec.
-// `locked`: hides the search input and the active-validators quick-pick shortcuts, leaving only
-// `initialAddress`'s own read-only wallet info on screen — built for CoreTierPortfolio.jsx's demo
-// preview (see DEMO_WALLET_ADDRESS there), which needs to show exactly one fixed wallet, never a
-// jumping-off point to look up anyone else's. Every OTHER caller (DashboardApp.jsx's own free-tier
-// "Tokens" tab) is completely unaffected — `locked` defaults to false and changes nothing else
-// about how this component fetches or renders data.
-export default function AddressLookup({ initialAddress = null, onSelectToken, locked = false }) {
+export default function AddressLookup({ initialAddress = null, onSelectToken }) {
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { getTokenChart } = useTokenChart();
   const { getValidatorRewards } = useValidatorRewards();
@@ -429,7 +423,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken, lo
 
   return (
     <div>
-      {!locked && validators && validators.length > 0 && (
+      {validators && validators.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
             Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d)
@@ -463,21 +457,19 @@ export default function AddressLookup({ initialAddress = null, onSelectToken, lo
         </div>
       )}
 
-      {!locked && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-          <input
-            type="text"
-            placeholder="0x... or a .etn name"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleLookup(); }}
-            style={{ ...inputStyle, flex: 1 }}
-          />
-          <NeonButton variant="green" onClick={handleLookup} loading={resolving} style={{ padding: "12px 20px" }}>
-            Look Up
-          </NeonButton>
-        </div>
-      )}
+      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+        <input
+          type="text"
+          placeholder="0x... or a .etn name"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleLookup(); }}
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <NeonButton variant="green" onClick={handleLookup} loading={resolving} style={{ padding: "12px 20px" }}>
+          Look Up
+        </NeonButton>
+      </div>
 
       {resolveError && (
         <div style={{ fontSize: 12, color: errorColor, marginBottom: 16 }}>{resolveError}</div>
