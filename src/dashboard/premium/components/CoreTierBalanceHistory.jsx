@@ -4,7 +4,6 @@ import { LineChart } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
-import { useCoreTierAccess } from "../../hooks/useCoreTierAccess.js";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
@@ -41,14 +40,15 @@ const WINDOW_DAYS = 365;
 // retroactively — the latter would just be a rescaled copy of the ETN chart, not an actual "what
 // was this worth" answer.
 //
-// Shares useCoreTierAccess with CoreTierPortfolio.jsx (same membershipVersion prop, passed down
-// from PortfolioDashboardSection.jsx) rather than each maintaining its own copy of "is this member
-// allowed, and which wallets do they track" — see that hook's own header comment.
-export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, getAuthParams }) {
+// Access + tracked-wallet-list state and the page-wide wallet filter both live in
+// PortfolioDashboardSection.jsx now — passed down here as `coreTierAccess`/`walletFilter` instead
+// of this component calling useCoreTierAccess itself (see that file's own comment on why: one
+// shared fetch for all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
+export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTierAccess, walletFilter }) {
   const {
     hasAccess, accessError, awaitingActivation, manualCheckLoading,
     active, checkAccessOnce,
-  } = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
+  } = coreTierAccess;
   const { getAddressCoinBalanceHistory } = useBlockscout();
   const { getEtnPriceHistory } = useEtnPriceHistory();
   const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
@@ -57,11 +57,6 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   const [error, setError] = useState(null);
   const [pricePoints, setPricePoints] = useState(null); // null until loaded
   const [valueMode, setValueMode] = useState("etn");
-  // "combined" | a wallet address — which single chart is shown. Combined is the default so the
-  // page opens clean (one chart, not every tracked wallet's own stacked below it); picking a
-  // wallet swaps to just that one. Falls back to "combined" below if the selected address is no
-  // longer tracked (untracked mid-session) rather than rendering a chart for a wallet that's gone.
-  const [selectedWallet, setSelectedWallet] = useState("combined");
   // address -> real ETN balance at WINDOW_DAYS ago, or 0 until resolved/if unresolvable — see
   // historicalBalance.js's own header comment for why "before the wallet's first Blockscout
   // history entry" must NOT default to 0 the way it did before this existed. Fetched separately
@@ -167,10 +162,12 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
   const combinedSeries = showUsd ? convertSeriesToUsd(combinedSeriesEtn, priceLookup) : combinedSeriesEtn;
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
-  // Falls back to "combined" if the selected wallet was untracked since it was picked — never
-  // renders a chart for an address that's no longer in `active`.
+  // Translates the page-wide walletFilter ("all" | address) into this chart's own vocabulary
+  // ("combined" | address) — falls back to "combined" if it's pointed at a wallet no longer in
+  // `active` (PortfolioDashboardSection.jsx already guards this the same way, but a untracked-mid-
+  // render edge case is cheap to guard here too rather than trust the prop blindly).
   const effectiveSelectedWallet =
-    selectedWallet === "combined" || active.some((w) => w.address === selectedWallet) ? selectedWallet : "combined";
+    walletFilter === "all" || !active.some((w) => w.address === walletFilter) ? "combined" : walletFilter;
 
   /** One wallet's own daily series (ETN or USD, matching valueMode) — same shape as the combined
    * series above, just scoped to a single address's own history + backfilled seed. */
@@ -237,46 +234,6 @@ export default function CoreTierBalanceHistory({ wallet, membershipVersion = 0, 
           <div style={{ fontSize: 12, color: mutedLight }}>Loading balance history…</div>
         ) : (
           <div>
-            {active.length > 1 && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-                <button
-                  onClick={() => setSelectedWallet("combined")}
-                  style={{
-                    padding: "5px 12px",
-                    borderRadius: 8,
-                    border: `1px solid ${effectiveSelectedWallet === "combined" ? green : border}`,
-                    background: effectiveSelectedWallet === "combined" ? "rgba(24,187,26,0.12)" : panel2,
-                    color: effectiveSelectedWallet === "combined" ? green : mutedLight,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  Combined
-                </button>
-                {active.map((w) => (
-                  <button
-                    key={w.address}
-                    onClick={() => setSelectedWallet(w.address)}
-                    style={{
-                      padding: "5px 12px",
-                      borderRadius: 8,
-                      border: `1px solid ${effectiveSelectedWallet === w.address ? green : border}`,
-                      background: effectiveSelectedWallet === w.address ? "rgba(24,187,26,0.12)" : panel2,
-                      color: effectiveSelectedWallet === w.address ? green : mutedLight,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      fontFamily: "monospace",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {w.isOwnWallet ? "You — " : ""}
-                    {resolveName(w.address)}
-                  </button>
-                ))}
-              </div>
-            )}
-
             {effectiveSelectedWallet === "combined" ? (
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
