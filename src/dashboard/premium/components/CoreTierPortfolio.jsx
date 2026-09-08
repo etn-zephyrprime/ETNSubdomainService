@@ -509,7 +509,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
           <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14, lineHeight: 1.6 }}>
             A live preview of what Core Tier actually offers — Balance History and PnL — for{" "}
             <span style={{ color: "#fff", fontWeight: 700 }}>planetzephyros.etn</span>, not your own
-            wallet. Connect and subscribe above to track your own instead.
+            wallet. Connect and subscribe below to track your own instead.
           </div>
           <CoreTierDemo onSelectToken={onSelectToken} />
         </div>
