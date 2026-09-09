@@ -148,12 +148,10 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const [defiPositions, setDefiPositions] = useState(null);
   const [defiPositionsError, setDefiPositionsError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
-  // Addresses CoreTierPortfolio has confirmed have no ElectroSwap pool at all (getTokenChart came
-  // back hasData:false) — distinct from simply "not in tokenPrices yet", which just means the
-  // price fetch hasn't resolved (or errored transiently) and may still arrive. Only a CONFIRMED
-  // negative ever hides a holding — never "we haven't heard back yet" — so a real token can't
-  // vanish from the list just because its price is slow to load.
-  const [noLiquidityTokens, setNoLiquidityTokens] = useState(new Set());
+  // A token with no resolved USD value (price never found — no ElectroSwap pool, still pending, or
+  // beyond MAX_PRICED_HOLDINGS) is hidden by default and only shown once the member clicks through
+  // — same "hide zero-value holdings behind a click" convention as CoreTierPnl.jsx's own Current
+  // Holdings list (see that file's own hiddenCount/showHiddenTokens).
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
@@ -199,7 +197,6 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     // values for every held token regardless, overwriting these as they arrive — this only makes
     // the FIRST paint show real numbers instead of "still pricing...".
     setTokenPrices(readCachedTokenPrices());
-    setNoLiquidityTokens(new Set());
     setShowHiddenTokens(false);
     setHoldingsShown(HOLDINGS_PAGE_SIZE);
     getCombinedPortfolio(active.map((w) => w.address))
@@ -252,15 +249,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
       getTokenChart(t.token.address, "7")
         .then((res) => {
           if (cancelled) return;
-          // hasData:false covers TWO different things (see tokenChartRouter.js's own
-          // loadTokenChart): no pool found at all (no `pool` on the response — genuinely
-          // no-liquidity/dead), vs. a real pool that just has no trades in this specific 7-day
-          // window (`reason: "no_recent_activity"`, `pool` present — a real market, just thin
-          // recently, NOT dead). Only the former is safe to hide.
-          if (res?.hasData === false && !res.pool) {
-            setNoLiquidityTokens((prev) => (prev.has(addr) ? prev : new Set(prev).add(addr)));
-            return;
-          }
+          // No candles at all — whether from no pool ever existing, or a real pool with no trades
+          // in this specific 7-day window (see tokenChartRouter.js's own loadTokenChart) — just
+          // leaves tokenPrices unset for it, same as a fetch that's still pending. Either way it has
+          // no resolved USD value, so the render-time filter below hides it by default regardless of
+          // which case this was; no need to distinguish them here anymore.
           if (!res?.candles?.length) return;
           const price = res.candles[res.candles.length - 1].close;
           setTokenPrices((prev) => ({ ...prev, [addr]: price }));
@@ -363,12 +356,15 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
           return b.usdValue - a.usdValue;
         })
     : [];
-  const hiddenNoLiquidityCount = allVisibleTokens.filter((t) => noLiquidityTokens.has(t.token?.address?.toLowerCase())).length;
-  const visibleTokens = showHiddenTokens
-    ? allVisibleTokens
-    : allVisibleTokens.filter((t) => !noLiquidityTokens.has(t.token?.address?.toLowerCase()));
+  const hiddenNoLiquidityCount = allVisibleTokens.filter((t) => t.usdValue == null).length;
+  const visibleTokens = showHiddenTokens ? allVisibleTokens : allVisibleTokens.filter((t) => t.usdValue != null);
+  // "Unknown" (t.token?.name falsy — see the render below's own `|| "Unknown"` fallback) means
+  // Blockscout has no metadata for this NFT contract at all, same category of junk as an
+  // isSpamTokenName match just above — not worth a member's time, and unlike a fungible token with
+  // no $ value there's no "click to reveal" path for these (no economically real fallback quantity
+  // to show while hidden), so they're filtered out entirely rather than counted/revealable.
   const visibleNfts = portfolio
-    ? holdingsSource.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type))
+    ? holdingsSource.filter((t) => !isSpamTokenName(t.token?.name) && NFT_TOKEN_TYPES.has(t.token?.type) && t.token?.name)
     : [];
   const visibleHoldings = holdingsCategory === "nfts" ? visibleNfts : visibleTokens;
 

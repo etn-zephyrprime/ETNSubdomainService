@@ -19,7 +19,7 @@ import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { upsertPnlSnapshot, getExistingSnapshotDates } from "../db/pnlSnapshots.js";
-import { ingestWalletHistory, backfillDeferredPrices } from "./pnlIngestion.js";
+import { ingestWalletHistory, backfillDeferredPrices, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
 import {
   transferToEvent,
@@ -28,7 +28,14 @@ import {
   buildDefiFarmEvents,
   computeGasFeesUsd,
   valueInventoryAtTimestamp,
+  groupNftHoldingsByCollection,
+  groupNftRealizedByCollection,
 } from "./pnlEventBuilder.js";
+
+// V3 concentrated-liquidity positions use the exact same "address:tokenId" lot-key shape as an NFT
+// (see pnlIngestion.js's own V3 header comment) — excluded from groupNftHoldingsByCollection below
+// so a position isn't combined away like a real collectible would be.
+const NFT_GROUPING_EXCLUSIONS = new Set([POSITION_MANAGER_ADDRESS]);
 
 /** Fetches and assembles one wallet's full, chronologically-sorted event list — the shared first
  * half of both computeLivePnlSnapshot (below) and backfillPnlHistory: both need "every event this
@@ -137,15 +144,24 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     asOf: now,
     // [{ tokenAddress, quantity, costBasisUsd, marketValueUsd }] — marketValueUsd null for a token
     // whose price didn't resolve (same "omit rather than fake" convention valueInventoryAtTimestamp
-    // itself already documents).
-    holdings: valuation.perToken,
+    // itself already documents). NFT lots combined to one row per collection here (see
+    // groupNftHoldingsByCollection's own comment) — done once, this early, so every downstream
+    // consumer (combineLivePnlSnapshots' own per-tokenAddress merge, the dashboard's token filter)
+    // just sees a collection address like any other regular holdings row, no special-casing needed.
+    holdings: groupNftHoldingsByCollection(valuation.perToken, NFT_GROUPING_EXCLUSIONS),
     currentValueUsd: valuation.totalMarketValueUsd.toString(),
     unrealizedPnlUsd: valuation.totalUnrealizedUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
     // [{ tokenAddress, realizedPnlUsd }] — gross of gas, see the comment above realizedByTokenMap.
     // A token with holdings but no realized events (never sold) simply doesn't appear here, not a
     // fabricated 0 — same "omit rather than fake" convention as holdings' own marketValueUsd null.
-    realizedByToken: [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
+    // Grouped the same way as `holdings` above (same exclusions) — the dashboard's token filter is
+    // built from `holdings`, so this must key off the exact same collection addresses or a
+    // collection's realized P&L would silently look like zero once selected.
+    realizedByToken: groupNftRealizedByCollection(
+      [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
+      NFT_GROUPING_EXCLUSIONS
+    ),
     gasUsd: gas.totalGasUsd.toString(),
     // True only when THIS computation used priority scoping — the figures above are a lower
     // bound (same spirit as the rest of this app's "≈" convention) until the background backfill

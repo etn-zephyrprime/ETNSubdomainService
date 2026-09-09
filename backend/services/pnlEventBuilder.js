@@ -197,13 +197,21 @@ function getDefiRpcProvider() {
   return defiRpcProvider;
 }
 
+// Every getter below returns address(es) straight out of a live ethers.Contract call — ethers
+// ABI-decodes addresses in their CHECKSUMMED (mixed-case) form, never pre-lowercased. Lowercased
+// here, at the source, before caching or returning: transferToEvent's own tokenAddress is always
+// lowercased (see its own comment — this exact class of bug already bit that path once, confirmed
+// live as the same real token splitting into two separate FIFO/holdings rows over checksum-vs-
+// lowercase casing), and every one of these tokens ALSO shows up via regular transfers/swaps
+// elsewhere in a member's history — a farm/staking event whose own tokenAddress came back
+// checksummed would silently reopen that exact bug for every farm/staking token.
 const farmTokensCache = new Map(); // `${contract}:${farmId}` -> { token0, token1, name }
 async function getFarmTokens(contractAddress, farmId) {
   const key = `${contractAddress.toLowerCase()}:${farmId}`;
   if (farmTokensCache.has(key)) return farmTokensCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
   const farm = await contract.getFarmById(farmId);
-  const result = { token0: farm.token0, token1: farm.token1, name: farm.name || null };
+  const result = { token0: farm.token0.toLowerCase(), token1: farm.token1.toLowerCase(), name: farm.name || null };
   farmTokensCache.set(key, result);
   return result;
 }
@@ -213,7 +221,7 @@ async function getFarmRewardToken(contractAddress) {
   const key = contractAddress.toLowerCase();
   if (rewardTokenCache.has(key)) return rewardTokenCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
-  const token = await contract.rewardToken();
+  const token = (await contract.rewardToken()).toLowerCase();
   rewardTokenCache.set(key, token);
   return token;
 }
@@ -224,7 +232,7 @@ async function getThirdPartyRewardToken(contractAddress, farmId) {
   if (thirdPartyRewardCache.has(key)) return thirdPartyRewardCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
   const config = await contract.getThirdPartyRewardConfigByFarmId(farmId);
-  const token = config.token && config.token !== ethers.ZeroAddress ? config.token : null;
+  const token = config.token && config.token !== ethers.ZeroAddress ? config.token.toLowerCase() : null;
   thirdPartyRewardCache.set(key, token);
   return token;
 }
@@ -234,7 +242,7 @@ async function getStakingToken(contractAddress) {
   const key = contractAddress.toLowerCase();
   if (stakingTokenCache.has(key)) return stakingTokenCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
-  const token = await contract.core();
+  const token = (await contract.core()).toLowerCase();
   stakingTokenCache.set(key, token);
   return token;
 }
@@ -487,4 +495,84 @@ export async function valueInventoryAtTimestamp(lots, timestamp) {
     perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: marketValue?.toString() ?? null });
   }
   return { totalMarketValueUsd, totalUnrealizedUsd, perToken };
+}
+
+/** Combines every NFT tokenId's own row in a `perToken`-shaped array (see
+ * valueInventoryAtTimestamp) into ONE row per collection — a wallet's live holdings list is a
+ * per-asset money view, not an item-by-item inventory, so surfacing this app's own per-lot
+ * `nftAssetKey` detail ("collectionAddress:tokenId") there is internal bookkeeping leaking into a
+ * summary that has nowhere sane to show it (no NFT price feed exists to give any one tokenId its
+ * own $ figure anyway — see marketValueUsd's own comment above). Detects an NFT row purely by key
+ * shape (`isNftAssetKey`-style — contains ":"), same convention as pnlStatementGenerator.js's own
+ * isNftAssetKey/formatAssetLabel for the PDF Statement, just not sharing that function directly
+ * since this returns a different shape (more rows to merge, not one formatted label).
+ *
+ * `excludeCollectionAddresses` (lowercased) lets a caller opt specific "address:id"-shaped keys out
+ * of this grouping entirely — needed because this app also tracks V3 concentrated-liquidity
+ * positions under the EXACT same key shape (see pnlIngestion.js's own V3 header comment), and a
+ * position isn't a collectible a member wants combined away; passing the V3 position manager's own
+ * address here leaves those rows passed through untouched, one per position, same as any regular
+ * fungible-token row.
+ *
+ * The combined row's quantity is the sum of every tokenId's own quantity (not a count of distinct
+ * tokenIds — an ERC-1155 lot can hold more than one copy of the same tokenId), its costBasisUsd is
+ * the sum across every tokenId, and its marketValueUsd follows the same "omit rather than
+ * fabricate" rule as everywhere else in this file: null unless every single tokenId's own price
+ * resolved (in practice this always stays null today, since no NFT price feed exists — this
+ * doesn't hardcode that assumption, so it degrades correctly if one ever does). */
+export function groupNftHoldingsByCollection(perToken, excludeCollectionAddresses = new Set()) {
+  const grouped = new Map(); // collection address (lowercase) -> { tokenAddress, quantity, costBasisUsd, marketValueUsd }
+  const rows = [];
+  for (const row of perToken) {
+    const key = row.tokenAddress;
+    const colonIndex = typeof key === "string" ? key.indexOf(":") : -1;
+    if (colonIndex === -1 || excludeCollectionAddresses.has(key.slice(0, colonIndex))) {
+      rows.push(row);
+      continue;
+    }
+    const collectionAddress = key.slice(0, colonIndex);
+    const quantity = new Decimal(row.quantity);
+    const costBasisUsd = new Decimal(row.costBasisUsd);
+    const marketValueUsd = row.marketValueUsd != null ? new Decimal(row.marketValueUsd) : null;
+    const existing = grouped.get(collectionAddress);
+    if (!existing) {
+      grouped.set(collectionAddress, { tokenAddress: collectionAddress, quantity, costBasisUsd, marketValueUsd });
+    } else {
+      existing.quantity = existing.quantity.plus(quantity);
+      existing.costBasisUsd = existing.costBasisUsd.plus(costBasisUsd);
+      existing.marketValueUsd = existing.marketValueUsd != null && marketValueUsd != null ? existing.marketValueUsd.plus(marketValueUsd) : null;
+    }
+  }
+  for (const g of grouped.values()) {
+    rows.push({ tokenAddress: g.tokenAddress, quantity: g.quantity.toString(), costBasisUsd: g.costBasisUsd.toString(), marketValueUsd: g.marketValueUsd?.toString() ?? null });
+  }
+  return rows;
+}
+
+/** Same collection-grouping as groupNftHoldingsByCollection, for the `[{ tokenAddress,
+ * realizedPnlUsd }]` shape realizedByToken uses instead — a separate function rather than one
+ * trying to handle both row shapes, since summing "realizedPnlUsd" and summing "costBasisUsd" +
+ * combining "marketValueUsd" are different enough operations that sharing one function would need
+ * more branching than just having two. Both must group NFT tokenIds the same way and stay in sync —
+ * a dashboard token filter built from one and applied to the other (see pnlSnapshotService.js's own
+ * computeLivePnlSnapshot) needs matching keys on both sides, or a selected collection's realized P&L
+ * silently reads as zero instead of what it actually is. */
+export function groupNftRealizedByCollection(realizedByToken, excludeCollectionAddresses = new Set()) {
+  const grouped = new Map(); // collection address (lowercase) -> Decimal
+  const rows = [];
+  for (const row of realizedByToken) {
+    const key = row.tokenAddress;
+    const colonIndex = typeof key === "string" ? key.indexOf(":") : -1;
+    if (colonIndex === -1 || excludeCollectionAddresses.has(key.slice(0, colonIndex))) {
+      rows.push(row);
+      continue;
+    }
+    const collectionAddress = key.slice(0, colonIndex);
+    const running = grouped.get(collectionAddress) || new Decimal(0);
+    grouped.set(collectionAddress, running.plus(new Decimal(row.realizedPnlUsd)));
+  }
+  for (const [tokenAddress, realizedPnlUsd] of grouped) {
+    rows.push({ tokenAddress, realizedPnlUsd: realizedPnlUsd.toString() });
+  }
+  return rows;
 }

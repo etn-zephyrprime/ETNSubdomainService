@@ -128,7 +128,10 @@ const BURN_TOPIC = LP_IFACE.getEvent("Burn").topicHash;
 // rather than fabricated when a leg is unpriced. OUT OF SCOPE for now (not yet handled, same "note
 // what's deferred" discipline as the brief's own IL/APY deferral): selling/transferring an entire
 // position NFT itself on a marketplace rather than through the position manager's own functions.
-const POSITION_MANAGER_ADDRESS = "0x3a7f64c57433555b23dac4409a0ac7e84275398d";
+// Exported so callers that need to tell a V3 position's composite key apart from a real NFT's
+// (same "address:tokenId" shape, see pnlEventBuilder.js's groupNftHoldingsByCollection) don't have
+// to duplicate this address.
+export const POSITION_MANAGER_ADDRESS = "0x3a7f64c57433555b23dac4409a0ac7e84275398d";
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 const V3_IFACE = new ethers.Interface([
   "event IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
