@@ -1,26 +1,42 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { LineChart, TrendingUp } from "lucide-react";
+import { LineChart, TrendingUp, Image as ImageIcon, Sparkles } from "lucide-react";
+import DashboardPanel from "./DashboardPanel.jsx";
+import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
+import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
+import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
+import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
+import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
-import { buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
+import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
-import { formatChartDate, formatUsdPrice } from "../../utils/format.js";
-import { green, muted, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
+import { formatChartDate, formatUsdPrice, formatTokenAmount, isSpamTokenName } from "../../utils/format.js";
+import { green, mutedLight, orange, muted, border, panel2, error as errorColor } from "../../theme.js";
 
-// planetzephyros.etn — resolved live via Blockscout's ENS reverse-index (api/v2/search) before
-// hardcoding here; this is DEMO_WALLET_ADDRESSES[0] in coreTierDemoRouter.js, which now combines
-// two more real wallets alongside it for the PnL preview below (DemoPnl) — this constant is used
-// ONLY for Balance History, which stays single-wallet (that section's own data sources are all
-// public/client-side calls, with no natural "combine several wallets' balance history" endpoint to
-// reach for the way DemoPnl has coreTierDemoRouter.js's own combineLivePnlSnapshots). Must stay in
-// sync with coreTierDemoRouter.js's own copy of this same address — no shared build step between
-// frontend/backend in this repo (same reasoning as several other hand-synced constants elsewhere).
-const DEMO_WALLET_ADDRESS = "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099";
+// Three real, unrelated wallets with genuine on-chain activity — MUST stay in sync with
+// coreTierDemoRouter.js's own copy of this same list (no shared build step between frontend/
+// backend in this repo, same reasoning as several other hand-synced constants elsewhere). Only
+// ever used here for the COUNT (3) and as the candidate list for Balance History's own direct
+// Blockscout calls (see DemoBalanceHistory's own comment on why that one section stays
+// client-side) — every OTHER section gets its data from coreTierDemoRouter.js's response, which
+// never sends these addresses back, only a walletIndex. Labeled "Wallet A/B/C" everywhere in this
+// file, never the real address — see WALLET_LABELS below.
+const DEMO_WALLET_ADDRESSES = [
+  "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099",
+  "0xd6cf49cbcf84b2cd2472a376b5f791689a0769d0",
+  "0x9343e399d44e701fc26130bdbf8817d78f086867",
+];
+const WALLET_LABELS = ["Wallet A", "Wallet B", "Wallet C"];
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
+const MAX_PRICED_HOLDINGS = 50; // matches CoreTierPortfolio.jsx's own cap
+const CATEGORY_OPTIONS = [
+  { key: "liquidity", label: "Liquidity Positions" },
+  { key: "farm_staking", label: "Staking / Yield Farms" },
+];
 
 function fmtEtn(v) {
   return `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
@@ -32,36 +48,50 @@ function fmtSigned(v) {
   return `${v >= 0 ? "+" : ""}${formatUsdPrice(v)}`;
 }
 const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const selectStyle = { padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: "#fff", fontSize: 12, fontWeight: 600, outline: "none" };
 
-/** A single wallet's own ETN Balance History chart, for DEMO_WALLET_ADDRESS only — same data
- * sources and math CoreTierBalanceHistory.jsx uses for one wallet (Blockscout's coin-balance-
- * history-by-day + historicalBalance.js's older-than-90-days backfill + this app's own
- * /api/etn-price-history for the USD toggle), all already public/unauthenticated, so this needs no
- * backend involvement of its own beyond what those hooks already call directly. */
+/** ETN Balance History, combined across all three demo wallets — same Blockscout coin-balance-
+ * history-by-day + historicalBalance.js backfill + /api/etn-price-history CoreTierBalanceHistory.jsx
+ * itself uses for a real member's multiple tracked wallets, just fixed to the 3 demo addresses.
+ * Deliberately still client-side/direct-to-Blockscout (unlike every other section here, now server-
+ * computed) — this is the one exception carried over from this demo's very first version: every
+ * one of THIS section's own data sources was already public/unauthenticated, so there's no real
+ * PnL-style computation to protect behind a cache, and no different anonymity story: the real
+ * addresses appear in the browser's network requests either way (same as they always have for
+ * wallet A specifically), never in anything rendered on screen. */
 function DemoBalanceHistory() {
   const { getAddressCoinBalanceHistory } = useBlockscout();
   const { getEtnPriceHistory } = useEtnPriceHistory();
 
-  const [items, setItems] = useState(null); // null = loading
+  const [historiesByAddress, setHistoriesByAddress] = useState({});
   const [error, setError] = useState(null);
-  const [seedEtn, setSeedEtn] = useState(0);
+  const [historicalSeeds, setHistoricalSeeds] = useState({});
   const [pricePoints, setPricePoints] = useState(null);
   const [valueMode, setValueMode] = useState("etn");
 
   useEffect(() => {
     let cancelled = false;
-    getAddressCoinBalanceHistory(DEMO_WALLET_ADDRESS)
-      .then((res) => { if (!cancelled) setItems(Array.isArray(res?.items) ? res.items : []); })
-      .catch((err) => {
-        console.error("Demo: failed to load balance history:", err.message);
-        if (!cancelled) setError("Couldn't load demo balance history.");
-      });
+    setHistoriesByAddress(Object.fromEntries(DEMO_WALLET_ADDRESSES.map((a) => [a, null])));
+    Promise.all(
+      DEMO_WALLET_ADDRESSES.map((addr) =>
+        getAddressCoinBalanceHistory(addr)
+          .then((res) => [addr, Array.isArray(res?.items) ? res.items : []])
+          .catch((err) => {
+            console.error("Demo: failed to load balance history:", err.message);
+            return [addr, []];
+          })
+      )
+    ).then((entries) => {
+      if (!cancelled) setHistoriesByAddress(Object.fromEntries(entries));
+    });
     return () => { cancelled = true; };
   }, [getAddressCoinBalanceHistory]);
 
   useEffect(() => {
     let cancelled = false;
-    getHistoricalBalance(DEMO_WALLET_ADDRESS, WINDOW_DAYS).then((v) => { if (!cancelled) setSeedEtn(v ?? 0); });
+    Promise.all(DEMO_WALLET_ADDRESSES.map((addr) => getHistoricalBalance(addr, WINDOW_DAYS).then((v) => [addr, v ?? 0]))).then(
+      (entries) => { if (!cancelled) setHistoricalSeeds(Object.fromEntries(entries)); }
+    );
     return () => { cancelled = true; };
   }, []);
 
@@ -76,24 +106,33 @@ function DemoBalanceHistory() {
   const priceLookup = useMemo(() => (pricePoints && pricePoints.length > 0 ? buildEtnPriceLookup(pricePoints) : null), [pricePoints]);
   const usdReady = priceLookup != null;
   const showUsd = valueMode === "usd" && usdReady;
+  const loaded = DEMO_WALLET_ADDRESSES.every((a) => historiesByAddress[a] != null);
 
-  const sparse = useMemo(
-    () => (items || []).map((d) => ({ label: d.date, value: parseFloat(ethers.formatEther(d.value)) })),
-    [items]
-  );
-  const seriesEtn = useMemo(() => buildDailySeries(sparse, WINDOW_DAYS, seedEtn), [sparse, seedEtn]);
+  // Same "raw sparse items + wei seeds in, sparse combined ETN series out" pipeline
+  // CoreTierBalanceHistory.jsx's own combinedSparse uses for a real member's multiple tracked
+  // wallets — mergeBalanceHistories does the cross-wallet forward-fill+sum itself; it does NOT
+  // take pre-densified per-wallet series (that's buildDailySeries' own, separate, single-series job,
+  // applied AFTER merging, not before).
+  function toWeiSeed(etnValue) {
+    try {
+      return ethers.parseEther((etnValue || 0).toFixed(18));
+    } catch {
+      return 0n;
+    }
+  }
+  const combinedSparse = loaded
+    ? mergeBalanceHistories(DEMO_WALLET_ADDRESSES.map((a) => historiesByAddress[a]), DEMO_WALLET_ADDRESSES.map((a) => toWeiSeed(historicalSeeds[a])))
+    : [];
+  const combinedSeedEtn = DEMO_WALLET_ADDRESSES.reduce((sum, a) => sum + (historicalSeeds[a] || 0), 0);
+  const hasHistory = combinedSparse.length > 0 || combinedSeedEtn > 0;
+  const seriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS, combinedSeedEtn);
   const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
-  const hasHistory = sparse.length > 0 || seedEtn > 0;
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <LineChart size={16} color={green} />
-          <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>Balance History</div>
-        </div>
-        {items && (
+    <>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 10 }}>
+        {loaded && (
           <div style={{ display: "flex", gap: 6 }}>
             {[{ id: "etn", label: "ETN" }, { id: "usd", label: "USD" }].map((m) => (
               <button
@@ -101,14 +140,11 @@ function DemoBalanceHistory() {
                 onClick={() => setValueMode(m.id)}
                 disabled={m.id === "usd" && !usdReady}
                 style={{
-                  padding: "5px 12px",
-                  borderRadius: 8,
+                  padding: "5px 12px", borderRadius: 8,
                   border: `1px solid ${m.id === valueMode ? green : border}`,
                   background: m.id === valueMode ? "rgba(24,187,26,0.12)" : panel2,
                   color: m.id === "usd" && !usdReady ? muted : m.id === valueMode ? green : mutedLight,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: m.id === "usd" && !usdReady ? "not-allowed" : "pointer",
+                  fontSize: 11, fontWeight: 700, cursor: m.id === "usd" && !usdReady ? "not-allowed" : "pointer",
                 }}
               >
                 {m.label}
@@ -117,173 +153,483 @@ function DemoBalanceHistory() {
           </div>
         )}
       </div>
-      <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
+      <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months, combined across 3 wallets</div>
       {error ? (
         <div style={{ fontSize: 12, color: errorColor }}>{error}</div>
-      ) : !items ? (
+      ) : !loaded ? (
         <div style={{ fontSize: 12, color: mutedLight }}>Loading…</div>
       ) : !hasHistory ? (
         <div style={{ fontSize: 12, color: muted }}>No balance history yet.</div>
       ) : (
         <SparklineChart data={series} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
       )}
+    </>
+  );
+}
+
+/** Total Portfolio Balance, Portfolio Composition chart, Combined ETN Balance, Liquidity
+ * Positions, Staked/Farming Positions, and Combined Holdings — the always-open section, matching
+ * CoreTierPortfolio.jsx's own always-open panel exactly (same figures, same chart, same
+ * section order), just built from `data` (coreTierDemoRouter.js's one response) instead of four
+ * separate signed requests. */
+function DemoPortfolio({ data, onSelectToken }) {
+  const etnUsdPrice = useEtnPrice();
+  const { getTokenChart } = useTokenChart();
+  const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
+  const [tokenPrices, setTokenPrices] = useState({});
+  const [holdingsShown, setHoldingsShown] = useState(10);
+
+  const fungibleTokens = (data.combinedHoldings.tokens || []).filter((t) => t.tokenAddress && !isSpamTokenName(t.name));
+
+  useEffect(() => {
+    let cancelled = false;
+    fungibleTokens.slice(0, MAX_PRICED_HOLDINGS).forEach((t) => {
+      const addr = t.tokenAddress.toLowerCase();
+      getTokenChart(addr, "7")
+        .then((res) => {
+          if (cancelled || !res?.candles?.length) return;
+          setTokenPrices((prev) => ({ ...prev, [addr]: res.candles[res.candles.length - 1].close }));
+        })
+        .catch(() => {});
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.combinedHoldings.tokens]);
+
+  const combinedEtnAmount = parseFloat(ethers.formatEther(BigInt(data.combinedHoldings.totalCoinBalance || 0)));
+  const combinedEtnUsd = etnUsdPrice != null ? combinedEtnAmount * etnUsdPrice : null;
+
+  const visibleTokens = fungibleTokens
+    .map((t) => {
+      const priceUsd = tokenPrices[t.tokenAddress.toLowerCase()];
+      const amount = parseFloat(ethers.formatUnits(BigInt(t.rawBalance), t.decimals ?? 18));
+      const usdValue = priceUsd != null && Number.isFinite(amount) ? amount * priceUsd : null;
+      return { ...t, amount, usdValue };
+    })
+    .sort((a, b) => {
+      if (a.usdValue == null && b.usdValue == null) return 0;
+      if (a.usdValue == null) return 1;
+      if (b.usdValue == null) return -1;
+      return b.usdValue - a.usdValue;
+    });
+  const tokensUsdTotal = visibleTokens.reduce((sum, t) => sum + (t.usdValue ?? 0), 0);
+
+  const defiUsd = data.defiPositions.totalUsd != null ? Number(data.defiPositions.totalUsd) : null;
+  const lpUsd = data.liquidityPositions.totalUsd != null ? Number(data.liquidityPositions.totalUsd) : null;
+  const totalPortfolioUsd = (combinedEtnUsd ?? 0) + tokensUsdTotal + (defiUsd ?? 0) + (lpUsd ?? 0);
+  const totalHasUnpriced =
+    (etnUsdPrice == null && combinedEtnAmount > 0) ||
+    visibleTokens.some((t) => t.usdValue == null && t.amount > 0) ||
+    Boolean(data.defiPositions.hasUnpriced) ||
+    Boolean(data.liquidityPositions.hasUnpriced);
+
+  const compositionSlices = [
+    { key: "native", label: "Native ETN", value: combinedEtnUsd ?? 0 },
+    { key: "tokens", label: "Tokens", value: tokensUsdTotal },
+    { key: "liquidity", label: "Liquidity Positions", value: lpUsd ?? 0 },
+    { key: "staking", label: "Staking / Yield Farms", value: defiUsd ?? 0 },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+        <Sparkles size={18} color={green} />
+        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
+          Core Tier — Portfolio (Demo)
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+        <div style={sectionHeaderStyle}>
+          Total Portfolio Balance (USD)
+          <InfoTooltip text="Everything this dashboard can price: native ETN, tokens, liquidity positions, and anything staked or farming — added together, across all 3 demo wallets." />
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>
+          {totalHasUnpriced ? "≈ " : ""}{formatUsdPrice(totalPortfolioUsd)}
+        </div>
+        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>ETN + all priced holdings, across 3 tracked wallets</div>
+      </div>
+
+      <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+        <div style={sectionHeaderStyle}>
+          Portfolio Composition
+          <InfoTooltip text="How Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it." />
+        </div>
+        <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalHasUnpriced} />
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={sectionHeaderStyle}>
+          Combined ETN Balance
+          <InfoTooltip text="Native ETN sitting directly in the wallets — the chain's own coin, not a token contract." />
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{fmtEtn(combinedEtnAmount)}</div>
+          {combinedEtnUsd != null && <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedEtnUsd)}</div>}
+        </div>
+        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Across 3 tracked wallets</div>
+      </div>
+
+      {data.defiPositions.positions.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={sectionHeaderStyle}>
+            Staked / Farming Positions
+            <InfoTooltip text="Funds currently locked in a yield farm or staking contract — valued live from the contract's own state." />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {data.defiPositions.positions.map((p, i) => (
+              <div key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{p.label}</span>
+                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(data.liquidityPositions.v2Positions.length > 0 || data.liquidityPositions.v3Positions.length > 0) && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={sectionHeaderStyle}>
+            Liquidity Positions
+            <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions held directly — valued live from each pool's own current reserves/price." />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {data.liquidityPositions.v2Positions.map((p) => (
+              <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP</span>
+                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                </div>
+              </div>
+            ))}
+            {data.liquidityPositions.v3Positions.map((p) => (
+              <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                    {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
+                    {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
+                  </span>
+                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div style={sectionHeaderStyle}>
+          Combined Holdings
+          <InfoTooltip text="Regular token balances sitting directly in the wallets — the same thing a block explorer would show." />
+        </div>
+        {visibleTokens.length === 0 ? (
+          <div style={{ fontSize: 12, color: muted }}>No token balances across these wallets.</div>
+        ) : (
+          <>
+            {visibleTokens.slice(0, holdingsShown).map((t, i) => (
+              <div key={`${t.tokenAddress}-${i}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
+                <span style={{ fontSize: 12, color: "#fff" }}>
+                  {onSelectToken ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelectToken(t.tokenAddress)}
+                      style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                      onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
+                    >
+                      {resolveTokenName(t.tokenAddress)}
+                    </button>
+                  ) : (
+                    resolveTokenName(t.tokenAddress)
+                  )}
+                  {t.heldByCount > 1 && <span style={{ display: "block", fontSize: 10, color: muted }}>Held in {t.heldByCount} of 3 wallets</span>}
+                </span>
+                <span style={{ textAlign: "right" }}>
+                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(BigInt(t.rawBalance), t.decimals ?? 18)}</span>
+                  {t.usdValue != null && <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(t.usdValue)}</span>}
+                </span>
+              </div>
+            ))}
+            {visibleTokens.length > holdingsShown && (
+              <button
+                type="button"
+                onClick={() => setHoldingsShown((n) => n + 10)}
+                style={{ display: "block", width: "100%", marginTop: 10, padding: "8px 0", borderRadius: 8, border: `1px solid ${border}`, background: panel2, color: green, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Show more ({visibleTokens.length - holdingsShown} more)
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-/** Live PnL preview combining THREE real demo wallets (see coreTierDemoRouter.js's own
- * DEMO_WALLET_ADDRESSES) — Current Value/Unrealized/Realized, a per-wallet breakdown, Current
- * Holdings, and the Value Over Time chart, same shape CoreTierPnl.jsx renders for a real member's
- * own multiple tracked wallets combined, sourced from coreTierDemoRouter.js's cached public
- * endpoint instead of a signed, per-member request. No Refresh button (that endpoint is cached for
- * up to an hour server-side — a client-side refresh within that window wouldn't do anything
- * different) and no cold-start token picker (each demo wallet's own ingestion, if ever needed,
- * already ran once to seed the cache; a visitor never triggers it themselves).
+/** Current Value/Unrealized/Realized, per-wallet breakdown, Current Holdings, Value Over Time
+ * chart, and the Liquidity Positions / Staking & Yield Farms category chart+dropdown — same shape
+ * CoreTierPnl.jsx renders for a real member, built from `data` instead of a signed request. */
+function DemoPnl({ data, onSelectToken }) {
+  const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.snapshot.holdings || []).map((h) => h.tokenAddress));
+  const [chartMode, setChartMode] = useState("pnl");
+  const [categoryChartMode, setCategoryChartMode] = useState("pnl");
+  const [selectedCategory, setSelectedCategory] = useState(CATEGORY_OPTIONS[0].key);
+
+  const snapshot = data.snapshot;
+  const holdings = (snapshot.holdings || []).filter((h) => !isSpamToken(h.tokenAddress) && h.marketValueUsd != null);
+  const history = data.history || [];
+  const categoryHistory = data.categoryHistory?.[selectedCategory] || [];
+
+  return (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+        <div style={{ fontSize: 10, color: muted, marginBottom: 2 }}>3 wallets combined</div>
+        {data.perWallet.map((w) => (
+          <div key={w.walletIndex} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+            <span style={{ color: mutedLight }}>{WALLET_LABELS[w.walletIndex]}</span>
+            <span style={{ display: "flex", gap: 10 }}>
+              <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
+              <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
+                {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <div>
+          <div style={sectionHeaderStyle}>Current Value</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(snapshot.currentValueUsd))}</div>
+        </div>
+        <div>
+          <div style={sectionHeaderStyle}>Unrealized P&amp;L</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(snapshot.unrealizedPnlUsd)) }}>{fmtSigned(Number(snapshot.unrealizedPnlUsd))}</div>
+        </div>
+        <div>
+          <div style={sectionHeaderStyle}>Realized P&amp;L</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(snapshot.realizedPnlUsd)) }}>{fmtSigned(Number(snapshot.realizedPnlUsd))}</div>
+        </div>
+      </div>
+
+      {holdings.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={sectionHeaderStyle}>Current Holdings</div>
+          {holdings
+            .slice()
+            .sort((a, b) => Number(b.marketValueUsd) - Number(a.marketValueUsd))
+            .slice(0, 8)
+            .map((h) => {
+              const unrealized = Number(h.marketValueUsd) - Number(h.costBasisUsd);
+              return (
+                <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${border}` }}>
+                  <span style={{ fontSize: 12, color: "#fff" }}>
+                    {onSelectToken ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelectToken(h.tokenAddress)}
+                        style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
+                      >
+                        {resolveTokenName(h.tokenAddress)}
+                      </button>
+                    ) : (
+                      resolveTokenName(h.tokenAddress)
+                    )}
+                  </span>
+                  <span style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(h.marketValueUsd))}</span>
+                    <span style={{ display: "block", fontSize: 10, color: pnlColor(unrealized) }}>{fmtSigned(unrealized)}</span>
+                  </span>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setChartMode(opt.key)}
+                style={{
+                  padding: "4px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  border: `1px solid ${chartMode === opt.key ? green : border}`,
+                  background: chartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+                  color: chartMode === opt.key ? green : mutedLight,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 12, color: mutedLight }}>No history yet.</div>
+        ) : (
+          <SparklineChart
+            data={history.map((p) => ({ label: p.date, value: chartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd) }))}
+            height={120}
+            formatValue={chartMode === "pnl" ? fmtSigned : formatUsdPrice}
+            formatLabel={formatChartDate}
+            colorBySign={chartMode === "pnl"}
+          />
+        )}
+      </div>
+
+      <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setCategoryChartMode(opt.key)}
+                style={{
+                  padding: "4px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  border: `1px solid ${categoryChartMode === opt.key ? green : border}`,
+                  background: categoryChartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+                  color: categoryChartMode === opt.key ? green : mutedLight,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} style={{ ...selectStyle, marginBottom: 12, width: "100%" }}>
+          {CATEGORY_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+        </select>
+        {categoryHistory.length === 0 ? (
+          <div style={{ fontSize: 12, color: mutedLight }}>
+            No {CATEGORY_OPTIONS.find((o) => o.key === selectedCategory)?.label.toLowerCase()} history for these wallets.
+          </div>
+        ) : (
+          <SparklineChart
+            data={categoryHistory.map((p) => ({ label: p.date, value: categoryChartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd) }))}
+            height={120}
+            formatValue={categoryChartMode === "pnl" ? fmtSigned : formatUsdPrice}
+            formatLabel={formatChartDate}
+            colorBySign={categoryChartMode === "pnl"}
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+/** NFT cost basis/proceeds/realized P&L — same top-level figures CoreTierNftPnl.jsx shows for a
+ * real member (that component's own `figures` is a RENAME of these exact fields —
+ * combined.totalCostBasisUsd -> costBasisUsd, combined.heldTokenCount -> heldCount — mirrored here
+ * so this reads the same raw combineLiveNftPnlSnapshots shape data.nftPnl actually is). */
+function DemoNftPnl({ data }) {
+  const combined = data.nftPnl;
+  if (!combined || Number(combined.totalCostBasisUsd || 0) === 0) {
+    return <div style={{ fontSize: 12, color: muted }}>No NFT activity across these wallets.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 16 }}>
+      <div>
+        <div style={sectionHeaderStyle}>Cost Basis</div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(combined.totalCostBasisUsd))}</div>
+      </div>
+      <div>
+        <div style={sectionHeaderStyle}>Proceeds</div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(combined.proceedsUsd))}</div>
+      </div>
+      <div>
+        <div style={sectionHeaderStyle}>Realized P&amp;L</div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: pnlColor(Number(combined.realizedPnlUsd)) }}>{fmtSigned(Number(combined.realizedPnlUsd))}</div>
+      </div>
+      <div>
+        <div style={sectionHeaderStyle}>Held / Sold</div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
+          {combined.heldTokenCount} <span style={{ color: mutedLight, fontSize: 14 }}>/</span> {combined.soldTokenCount}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Core Tier's actual value proposition, previewed for three real wallets — available to anyone,
+ * including a visitor with no wallet connected at all. See CoreTierPortfolio.jsx's own "View Demo"
+ * toggle, which renders this in place of CoreTierGate's connect/subscribe messaging.
  *
- * The per-wallet breakdown is labeled "Wallet 1/2/3" — never a real address or ENS name, same
- * anonymity requirement the original single-wallet demo was already built to (see
- * coreTierDemoRouter.js's own comment); coreTierDemoRouter.js never sends a real address down for
- * this, only a walletIndex.
- */
-function DemoPnl({ onSelectToken }) {
+ * Mirrors the real Portfolio page's own structure as closely as a fixed, read-only preview
+ * reasonably can: Portfolio (composition chart, ETN balance, DeFi/Liquidity positions, Combined
+ * Holdings) stays always open, same as the real page; Balance History/PnL/NFT PnL collapse behind
+ * a + the same way CollapsibleCoreTierPanel already does for a real member. Deliberately does NOT
+ * include Alerts, adding/removing tracked wallets, or Membership Purchase — those are WRITE actions
+ * tied to a real, authenticated identity (a Telegram link, a subscription, a tracked-wallet list),
+ * not data a demo can meaningfully or safely fake; a plain Subscribe note stands in for them. */
+export default function CoreTierDemo({ onSelectToken }) {
   const { getDemoPnl } = useCoreTierDemo();
-  const [data, setData] = useState(null); // { snapshot, perWallet, history } | null while loading
+  const [data, setData] = useState(null);
   const [error, setError] = useState(null);
-  const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data?.snapshot?.holdings || []).map((h) => h.tokenAddress));
 
   useEffect(() => {
     let cancelled = false;
     getDemoPnl()
       .then((res) => { if (!cancelled) setData(res); })
       .catch((err) => {
-        console.error("Demo: failed to load PnL:", err.message);
-        if (!cancelled) setError("Couldn't load demo PnL right now.");
+        console.error("Demo: failed to load:", err.message);
+        if (!cancelled) setError("Couldn't load the demo right now.");
       });
     return () => { cancelled = true; };
   }, [getDemoPnl]);
 
-  const snapshot = data?.snapshot;
-  const perWallet = data?.perWallet || [];
-  const history = data?.history || [];
-  const holdings = (snapshot?.holdings || []).filter((h) => !isSpamToken(h.tokenAddress) && h.marketValueUsd != null);
-
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <TrendingUp size={16} color={green} />
-        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>PnL</div>
-      </div>
-
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {error ? (
-        <div style={{ fontSize: 12, color: errorColor }}>{error}</div>
-      ) : !snapshot ? (
-        <div style={{ fontSize: 12, color: mutedLight }}>Loading…</div>
+        <DashboardPanel><div style={{ fontSize: 12, color: errorColor }}>{error}</div></DashboardPanel>
+      ) : !data ? (
+        <DashboardPanel><div style={{ fontSize: 12, color: mutedLight }}>Loading demo…</div></DashboardPanel>
       ) : (
         <>
-          {perWallet.length > 1 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${border}` }}>
-              <div style={{ fontSize: 10, color: muted, marginBottom: 2 }}>{perWallet.length} wallets combined</div>
-              {perWallet.map((w) => (
-                <div key={w.walletIndex} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                  <span style={{ color: mutedLight }}>Wallet {w.walletIndex + 1}</span>
-                  <span style={{ display: "flex", gap: 10 }}>
-                    <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
-                    <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
-                      {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
-                    </span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          <DashboardPanel>
+            <DemoPortfolio data={data} onSelectToken={onSelectToken} />
+          </DashboardPanel>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, marginBottom: 16 }}>
-            <div>
-              <div style={sectionHeaderStyle}>Current Value</div>
-              <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(snapshot.currentValueUsd))}</div>
-            </div>
-            <div>
-              <div style={sectionHeaderStyle}>Unrealized P&amp;L</div>
-              <div style={{ fontSize: 18, fontWeight: 900, color: pnlColor(Number(snapshot.unrealizedPnlUsd)) }}>
-                {fmtSigned(Number(snapshot.unrealizedPnlUsd))}
-              </div>
-            </div>
-            <div>
-              <div style={sectionHeaderStyle}>Realized P&amp;L</div>
-              <div style={{ fontSize: 18, fontWeight: 900, color: pnlColor(Number(snapshot.realizedPnlUsd)) }}>
-                {fmtSigned(Number(snapshot.realizedPnlUsd))}
-              </div>
-            </div>
-          </div>
+          <CollapsibleCoreTierPanel icon={LineChart} title="Core Tier — Balance History (Demo)">
+            <DemoBalanceHistory />
+          </CollapsibleCoreTierPanel>
 
-          {holdings.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={sectionHeaderStyle}>Current Holdings</div>
-              {holdings
-                .slice()
-                .sort((a, b) => Number(b.marketValueUsd) - Number(a.marketValueUsd))
-                .slice(0, 8)
-                .map((h) => {
-                  const unrealized = Number(h.marketValueUsd) - Number(h.costBasisUsd);
-                  return (
-                    <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${border}` }}>
-                      <span style={{ fontSize: 12, color: "#fff" }}>
-                        {onSelectToken ? (
-                          <button
-                            type="button"
-                            onClick={() => onSelectToken(h.tokenAddress)}
-                            style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
-                            onMouseEnter={(e) => { e.currentTarget.style.textDecorationColor = green; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.textDecorationColor = "transparent"; }}
-                            title="View on the Tokens page"
-                          >
-                            {resolveTokenName(h.tokenAddress)}
-                          </button>
-                        ) : (
-                          resolveTokenName(h.tokenAddress)
-                        )}
-                      </span>
-                      <span style={{ textAlign: "right" }}>
-                        <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(h.marketValueUsd))}</span>
-                        <span style={{ display: "block", fontSize: 10, color: pnlColor(unrealized) }}>{fmtSigned(unrealized)}</span>
-                      </span>
-                    </div>
-                  );
-                })}
-            </div>
-          )}
+          <CollapsibleCoreTierPanel icon={TrendingUp} title="Core Tier — PnL (Demo)">
+            <DemoPnl data={data} onSelectToken={onSelectToken} />
+          </CollapsibleCoreTierPanel>
 
-          <div>
-            <div style={sectionHeaderStyle}>Value Over Time</div>
-            {history.length === 0 ? (
-              <div style={{ fontSize: 12, color: mutedLight }}>No history yet.</div>
-            ) : (
-              <SparklineChart
-                data={history.map((p) => ({ label: p.date, value: p.totalValueUsd }))}
-                height={120}
-                formatValue={(v) => formatUsdPrice(v)}
-                formatLabel={formatChartDate}
-              />
-            )}
-          </div>
+          <CollapsibleCoreTierPanel icon={ImageIcon} title="Core Tier — NFT PnL (Demo)">
+            <DemoNftPnl data={data} />
+          </CollapsibleCoreTierPanel>
+
+          <DashboardPanel>
+            <div style={{ fontSize: 12, color: mutedLight, textAlign: "center", lineHeight: 1.6 }}>
+              Alerts, adding your own wallets, and this data updating for real all come with a Core Tier membership.
+            </div>
+          </DashboardPanel>
         </>
       )}
-    </div>
-  );
-}
-
-/** Core Tier's actual value proposition, previewed for three fixed real wallets — Balance History
- * (wallet 1 only, see DEMO_WALLET_ADDRESS's own comment) and PnL (all three combined, matching the
- * real multi-wallet tracking feature) — available to anyone, including a visitor with no wallet
- * connected at all. See CoreTierPortfolio.jsx's own "View Demo" toggle, which renders this in place
- * of CoreTierGate's connect/subscribe messaging. */
-export default function CoreTierDemo({ onSelectToken }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <DemoBalanceHistory />
-      <div style={{ borderTop: `1px solid ${border}`, paddingTop: 20 }}>
-        <DemoPnl onSelectToken={onSelectToken} />
-      </div>
     </div>
   );
 }
