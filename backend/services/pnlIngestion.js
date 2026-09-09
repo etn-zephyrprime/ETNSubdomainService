@@ -63,6 +63,19 @@ const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
 ]);
 
+// V2 add/remove-liquidity — ElectroSwap's V2 pairs are unmodified standard UniswapV2Pair contracts
+// (confirmed live against a real deployed pair's verified/bytecode-matched ABI on Blockscout, not
+// assumed): Mint(sender, amount0, amount1) on add, Burn(sender, amount0, amount1, to) on remove.
+// The pair contract IS the LP token itself (its own Transfer/Approval/balanceOf) — see
+// detectAndRecordLiquidityEvent's own comment for how that's used to find the wallet's own legs
+// without needing to know token0/token1 ordering or make any extra on-chain calls.
+const LP_IFACE = new ethers.Interface([
+  "event Mint(address indexed sender, uint256 amount0, uint256 amount1)",
+  "event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to)",
+]);
+const MINT_TOPIC = LP_IFACE.getEvent("Mint").topicHash;
+const BURN_TOPIC = LP_IFACE.getEvent("Burn").topicHash;
+
 // DeFi (yield farm / staking) activity — detected by EVENT TOPIC across the whole chain, not a
 // hardcoded contract address list. Confirmed live: the "YieldFarm" LP-farm template and the
 // "CoreAscension"-style staking template are each reused verbatim across multiple deployed
@@ -395,20 +408,154 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
   return true;
 }
 
+/** Detects whether `tx` is a V2 add/remove-liquidity call — same per-tx log-fetch approach as
+ * detectAndRecordSwap (only called when that already ruled the tx out as a swap; a real add/
+ * remove-liquidity tx never also has a Swap log). See LP_IFACE's own comment for why the pair
+ * contract itself IS the LP token: its own Transfer leg to/from the wallet — minted from the zero
+ * address on add, sent to the pool then burned to the zero address on remove — is the wallet's own
+ * LP-token leg; every OTHER token transfer between the wallet and that same pool address in the
+ * same tx is one of the two underlying legs (token0/token1, in whatever order Blockscout lists
+ * them — this never needs to know which is which). Reads amounts straight from tokenTransfers, not
+ * the Mint/Burn event's own data — the event is only used as a confirming signal that this really
+ * is an add/remove-liquidity tx, not a coincidental double-transfer-to-a-contract pattern.
+ *
+ * The LP token has no market price feed of its own (nothing prices an ElectroSwap pair token
+ * directly) — its cost basis (add) / proceeds (remove) is the combined FMV of what was actually
+ * given up / received back, computed here directly from the underlying legs' own real prices,
+ * never looked up via priceOrNull for the LP token address itself (which would just return null
+ * and silently zero the cost basis through transferToEvent's own `?? 0` fallback). Omitted (null),
+ * not fabricated, if either underlying leg's own price is unknown — same "omit rather than fake"
+ * convention as everywhere else in this app's pricing code.
+ *
+ * On a match, pushes 3 synthetic transfer rows straight into `rows` (2 underlying legs + 1 LP
+ * leg — reusing the exact ingested_transfers shape, so pnlEventBuilder.js's existing
+ * transferToEvent needs no changes at all for this to flow through FIFO correctly as a genuine
+ * disposal+acquisition) and records the tx hash into `liquidityTxHashes` so the caller's own
+ * plain-transfer skip (and ingestWalletHistory's excludeTxHashes) never also emit these same
+ * amounts as ordinary transfers. Returns true so the caller skips its own plain-transfer emission
+ * for this tx, same contract as detectAndRecordSwap. */
+async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenTransfers, liquidityTxHashes, rows, priorityAssets) {
+  let logsPage;
+  try {
+    logsPage = await fetchPage(`/transactions/${tx.hash}/logs`, null);
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not fetch logs for tx ${tx.hash}, skipping liquidity-event detection for it:`, err.message);
+    return false;
+  }
+
+  const mintLog = (logsPage.items || []).find((l) => (l.topics || [])[0] === MINT_TOPIC);
+  const burnLog = !mintLog && (logsPage.items || []).find((l) => (l.topics || [])[0] === BURN_TOPIC);
+  const eventLog = mintLog || burnLog;
+  if (!eventLog) return false;
+  const isMint = Boolean(mintLog);
+
+  const poolLc = String(eventLog.address?.hash || eventLog.address).toLowerCase();
+  const lpLeg = tokenTransfers.find((t) => {
+    const tokenLc = String(t.token?.address).toLowerCase();
+    if (tokenLc !== poolLc) return false;
+    const fromLc = String(t.from?.hash).toLowerCase();
+    const toLc = String(t.to?.hash).toLowerCase();
+    return fromLc === walletLc || toLc === walletLc;
+  });
+  const underlyingLegs = tokenTransfers.filter((t) => {
+    const tokenLc = String(t.token?.address).toLowerCase();
+    if (tokenLc === poolLc) return false;
+    const fromLc = String(t.from?.hash).toLowerCase();
+    const toLc = String(t.to?.hash).toLowerCase();
+    return (fromLc === walletLc && toLc === poolLc) || (fromLc === poolLc && toLc === walletLc);
+  });
+  // Requires BOTH underlying legs to be directly identifiable as wallet<->pool token transfers,
+  // not just "at least one" — a router-mediated add/remove using native ETN (auto-wrapped to WETN
+  // by the router, then transferred router->pool rather than wallet->pool — same "one side isn't a
+  // direct wallet<->pool token transfer" shape detectAndRecordSwap's own native-ETN fallback
+  // handles for swaps) would otherwise silently decompose with only ONE underlying leg accounted
+  // for, understating the LP token's true combined cost basis. Rather than guess at that shape
+  // without a real confirmed transaction to verify it against, this simply declines to decompose an
+  // ambiguous case at all — it falls through to the existing plain-transfer handling instead, which
+  // isn't perfect either (an undecomposed LP-token receipt gets no cost basis, since nothing prices
+  // it) but is no WORSE than this app's behavior before this function existed, for exactly the case
+  // this function can't yet confidently handle.
+  if (!lpLeg || underlyingLegs.length !== 2) return false;
+
+  const timestamp = new Date(tx.timestamp);
+  const lpQuantity = weiToDecimal(BigInt(lpLeg.total.value), Number(lpLeg.token.decimals));
+  if (lpQuantity <= 0) return false;
+
+  let underlyingUsdTotal = 0;
+  let anyUnpriced = false;
+  const underlyingRows = [];
+  for (const leg of underlyingLegs) {
+    const legAddress = leg.token.address;
+    const legAmount = weiToDecimal(BigInt(leg.total.value), Number(leg.token.decimals));
+    const priceUsd = await priceOrNull(legAddress, timestamp, priorityAssets);
+    const usdValue = priceUsd != null ? legAmount * priceUsd : null;
+    if (usdValue == null) anyUnpriced = true;
+    else underlyingUsdTotal += usdValue;
+    underlyingRows.push({
+      trackedWallet,
+      txHash: tx.hash,
+      logIndex: -(2000 + Number(leg.log_index || 0)), // distinct range from every other sentinel used elsewhere in this file
+      direction: isMint ? "out" : "in",
+      counterpartyAddress: poolLc,
+      isSelfTransfer: false,
+      isCex: false,
+      assetType: "erc20",
+      tokenAddress: legAddress,
+      tokenId: null,
+      amountRaw: BigInt(leg.total.value),
+      amountDecimal: legAmount,
+      priceUsdAtTime: priceUsd,
+      usdValue,
+      gasFeeWei: null,
+      blockNumber: Number(tx.block_number),
+      timestamp,
+    });
+  }
+
+  const lpPriceUsd = anyUnpriced ? null : underlyingUsdTotal / lpQuantity;
+  const lpUsdValue = anyUnpriced ? null : underlyingUsdTotal;
+
+  liquidityTxHashes.add(tx.hash.toLowerCase());
+  rows.push(...underlyingRows, {
+    trackedWallet,
+    txHash: tx.hash,
+    logIndex: -(2000 + Number(lpLeg.log_index || 0)),
+    direction: isMint ? "in" : "out",
+    counterpartyAddress: poolLc,
+    isSelfTransfer: false,
+    isCex: false,
+    assetType: "erc20",
+    tokenAddress: poolLc,
+    tokenId: null,
+    amountRaw: BigInt(lpLeg.total.value),
+    amountDecimal: lpQuantity,
+    priceUsdAtTime: lpPriceUsd,
+    usdValue: lpUsdValue,
+    gasFeeWei: null,
+    blockNumber: Number(tx.block_number),
+    timestamp,
+  });
+  return true;
+}
+
 /** Walks /addresses/{wallet}/transactions exactly once, doing BOTH swap detection and gas/plain-
  * native-transfer extraction in the same per-tx pass. These used to be two entirely separate full
  * walks of this same endpoint (one in a since-removed ingestSwaps, one here) — pure waste, since
  * whether a given tx is a swap never depends on any *other* tx, so both can be decided together
  * with no ordering hazard. For a high-activity wallet this endpoint is usually the largest of the
  * three by page count, so halving its walks (on top of removing the duplicate) is where most of
- * this refactor's win comes from. Returns { swapTxHashes, highestBlock } — swapTxHashes feeds
- * ingestInternalTransactions/ingestTokenTransfers below, which still run after this completes,
- * since they filter on the now-complete set. */
+ * this refactor's win comes from. Returns { swapTxHashes, highestBlock } — swapTxHashes (despite
+ * the name, kept for the property's external contract — see ingestWalletHistory) also includes
+ * every V2 add/remove-liquidity tx hash detectAndRecordLiquidityEvent found, unioned in before
+ * returning; both need the exact same downstream treatment (excluded from the plain-transfer walks,
+ * fed to ingestInternalTransactions/ingestTokenTransfers below, which still run after this
+ * completes since they filter on the now-complete set). */
 async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   const swapTxHashes = new Set();
   const swapRows = [];
+  const liquidityTxHashes = new Set();
   let highestBlock = stopAtBlock ?? -1;
 
   await walkAllPages(`/addresses/${trackedWallet}/transactions`, stopAtBlock, async (items) => {
@@ -423,9 +570,16 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       // array per tx (confirmed live), which is exactly the filter needed here without a second
       // per-tx fetch for every plain ETN send.
       const tokenTransfers = tx.token_transfers || [];
-      const isSwap =
-        tokenTransfers.length > 0 && tx.to?.is_contract
-          ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets)
+      const isContractCallWithTransfers = tokenTransfers.length > 0 && tx.to?.is_contract;
+      const isSwap = isContractCallWithTransfers
+        ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets)
+        : false;
+      // A real add/remove-liquidity tx never also has a Swap log, so this is only worth checking
+      // once swap detection has already ruled it out — same reasoning/precondition as the swap
+      // check itself.
+      const isLiquidityEvent =
+        !isSwap && isContractCallWithTransfers
+          ? await detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenTransfers, liquidityTxHashes, rows, priorityAssets)
           : false;
 
       // Gas is only ever charged to whoever actually sent the transaction.
@@ -455,7 +609,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       // Plain top-level native ETN transfer (tx.value), separate from the gas-fee row above.
       const value = BigInt(tx.value || "0");
       if (value > 0n && (fromLc === walletLc || toLc === walletLc) && fromLc !== toLc) {
-        if (isSwap) continue; // the swap leg is recorded via swap_trades instead, not as a plain transfer
+        if (isSwap || isLiquidityEvent) continue; // recorded via swap_trades or as decomposed liquidity legs instead, not as a plain transfer
         const direction = fromLc === walletLc ? "out" : "in";
         const counterparty = direction === "out" ? toLc : fromLc;
         const isSelf = selfOwnedSet.has(counterparty);
@@ -490,6 +644,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
 
   if (rows.length > 0) await insertTransfers(rows);
   if (swapRows.length > 0) await insertSwapTrades(swapRows);
+  for (const h of liquidityTxHashes) swapTxHashes.add(h); // see this function's own doc comment on why these share one exclusion set
   return { swapTxHashes, highestBlock };
 }
 
@@ -946,7 +1101,7 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
     });
   }
 
-  console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap(s) detected`);
+  console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap/liquidity event(s) detected`);
 }
 
 /**
