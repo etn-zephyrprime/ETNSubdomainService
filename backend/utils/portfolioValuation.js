@@ -94,9 +94,9 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       const addressLc = tb.token.address.toLowerCase();
       const amount = parseFloat(ethers.formatUnits(tb.value, Number(tb.token?.decimals || 18)));
 
-      const electroSwapUsd = electroSwapPrices.get(addressLc);
-      if (electroSwapUsd != null) {
-        totalUsd += amount * electroSwapUsd;
+      const electroSwapPrice = electroSwapPrices.get(addressLc)?.usd;
+      if (electroSwapPrice != null) {
+        totalUsd += amount * electroSwapPrice;
         continue;
       }
 

@@ -2,7 +2,7 @@
 //
 // ElectroSwap's official public API (electroneum mainnet DEX) — metered by credits, no free tier.
 // See the "electroswap-api" memory / https://electroswap.io/docs/api/ for the full reference; this
-// file only wraps what this app actually needs so far: batched USD token pricing.
+// file only wraps what this app actually needs so far: token pricing (batched USD/ETN).
 //
 // Confirmed LIVE against the real API with a funded key — worth noting because their own docs and
 // their own OpenAPI spec disagreed with each other on the batch endpoint's shape (the prose docs
@@ -66,31 +66,40 @@ async function callElectroSwapApi(path) {
   return json?.data ?? null;
 }
 
-/** USD price for ONE token — 50 credits per call. Prefer getBatchTokenPrices for more than a
- * couple of tokens (see this file's own header comment on why). Returns null — never throws — if
- * ELECTROSWAP_API_KEY isn't configured, ElectroSwap doesn't price this token, or the call fails;
- * callers should fall back to this app's existing on-chain/GeckoTerminal pricing in every case. */
+function parsePriceEntry(entry) {
+  if (!entry) return null;
+  const usd = Number(entry.usd);
+  const etn = Number(entry.etn);
+  if (!Number.isFinite(usd) && !Number.isFinite(etn)) return null;
+  return { usd: Number.isFinite(usd) ? usd : null, etn: Number.isFinite(etn) ? etn : null };
+}
+
+/** `{ usd, etn }` price for ONE token — 50 credits per call. Prefer getBatchTokenPrices for more
+ * than a couple of tokens (see this file's own header comment on why). Returns null — never
+ * throws — if ELECTROSWAP_API_KEY isn't configured, ElectroSwap doesn't price this token, or the
+ * call fails; callers should fall back to this app's existing on-chain/GeckoTerminal pricing in
+ * every case. Either field can independently be null if ElectroSwap's own response only carried
+ * one of the two (not observed live, but the response schema doesn't guarantee both are always
+ * present). */
 export async function getTokenPrice(tokenAddress) {
   try {
     const data = await callElectroSwapApi(`/prices/${CHAIN_ID}/${tokenAddress}`);
-    if (!data || data.usd == null) return null;
-    const usd = Number(data.usd);
-    return Number.isFinite(usd) ? usd : null;
+    return parsePriceEntry(data);
   } catch (err) {
     console.warn(`⚠️  ElectroSwap price lookup failed for ${tokenAddress}:`, err.message);
     return null;
   }
 }
 
-/** USD price for up to MAX_BATCH_ADDRESSES tokens in ONE call — 100 + 10/token credits (e.g. 20
- * tokens: 300 credits batched vs. 1,000 calling getTokenPrice in a loop). Chunks automatically if
- * given more than MAX_BATCH_ADDRESSES. Returns a Map keyed by LOWERCASED address -> usd price
- * (Number) — an address ElectroSwap doesn't have a price for is simply absent from the map, never
- * a fabricated 0 (same "omit rather than fake" convention this app's own pricing code already
- * follows everywhere else). Returns an empty Map — never throws — if ELECTROSWAP_API_KEY isn't
- * configured or every chunk's call fails; callers should treat a missing address as "fall back to
- * existing on-chain/GeckoTerminal pricing for just this one", not as a reason to abandon pricing
- * the whole wallet/request. */
+/** `{ usd, etn }` price for up to MAX_BATCH_ADDRESSES tokens in ONE call — 100 + 10/token credits
+ * (e.g. 20 tokens: 300 credits batched vs. 1,000 calling getTokenPrice in a loop). Chunks
+ * automatically if given more than MAX_BATCH_ADDRESSES. Returns a Map keyed by LOWERCASED address
+ * -> { usd, etn } — an address ElectroSwap doesn't have a price for is simply absent from the map,
+ * never a fabricated 0 (same "omit rather than fake" convention this app's own pricing code
+ * already follows everywhere else). Returns an empty Map — never throws — if
+ * ELECTROSWAP_API_KEY isn't configured or every chunk's call fails; callers should treat a missing
+ * address as "fall back to existing on-chain/GeckoTerminal pricing for just this one", not as a
+ * reason to abandon pricing the whole wallet/request. */
 export async function getBatchTokenPrices(tokenAddresses) {
   const prices = new Map();
   if (!isElectroSwapConfigured() || tokenAddresses.length === 0) return prices;
@@ -102,8 +111,8 @@ export async function getBatchTokenPrices(tokenAddresses) {
       const data = await callElectroSwapApi(`/prices/${CHAIN_ID}?addresses=${chunk.join(",")}`);
       if (!data) continue;
       for (const [address, entry] of Object.entries(data)) {
-        const usd = Number(entry?.usd);
-        if (Number.isFinite(usd)) prices.set(address.toLowerCase(), usd);
+        const parsed = parsePriceEntry(entry);
+        if (parsed) prices.set(address.toLowerCase(), parsed);
       }
     } catch (err) {
       console.warn(`⚠️  ElectroSwap batch price lookup failed for ${chunk.length} token(s):`, err.message);
