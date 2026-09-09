@@ -1,8 +1,12 @@
 // backend/utils/dexPriceQuote.js
 //
-// Live, on-chain spot price of any ERC-20 token in ETN, read directly from its ElectroSwap pool's
-// state — built for tokenPriceAlertScheduler.js, which needs to poll potentially many
-// user-configured tokens on a short interval.
+// Live spot price of any ERC-20 token in ETN — built for tokenPriceAlertScheduler.js, which needs
+// to poll potentially many user-configured tokens on a short interval (also used by
+// defiPositionValuation.js, premiumAlertsRouter.js's new-alert baseline, and anything else that
+// needs a live per-token spot price). getTokenEtnPrice below tries ElectroSwap's own official API
+// first (electroSwapApi.js — no RPC/GeckoTerminal involved at all when it has a price), falling
+// back to the on-chain read this file originally was, read directly from the token's ElectroSwap
+// pool's state, for anything ElectroSwap doesn't price or when ELECTROSWAP_API_KEY isn't set.
 //
 // ElectroSwap has (at least) two pool types live on this chain — confirmed live: a token's pools
 // via GeckoTerminal can come back labeled "electroswap v3" (concentrated liquidity, Uniswap-V3-
@@ -38,6 +42,7 @@
 // by hand. This is not wei-exact and isn't meant to be — nothing here settles a trade.
 import { ethers } from "ethers";
 import { fetchGeckoTerminal } from "./tokenChartRouter.js";
+import { getTokenPrice as getElectroSwapTokenPrice } from "./electroSwapApi.js";
 
 const ROUTER_ADDRESS =
   process.env.ELECTROSWAP_ROUTER_ADDRESS || "0x072D4706f9A383D5608BD14B09b41683cb95fFd7"; // same router burnSourceLabels.js already recognizes ("Token Swaps")
@@ -188,8 +193,19 @@ async function priceFromV3Slot0(provider, info) {
  * pricing code). Throws only on an actual RPC/GeckoTerminal failure — callers
  * (tokenPriceAlertScheduler.js) treat that as "skip this poll for this token", not "no price
  * exists".
+ *
+ * Tries ElectroSwap's own official API first (electroSwapApi.js) — one HTTP call, no RPC/
+ * GeckoTerminal pool-discovery involved at all, and it's ElectroSwap's own aggregation of whatever
+ * pools THEY consider canonical rather than this file's own liquidity-ranked pick. Never throws on
+ * its own (ELECTROSWAP_API_KEY unset, the token not priced there, or a request failure all just
+ * return null) — falls straight through to the existing on-chain/GeckoTerminal path below
+ * unchanged, so every caller keeps exactly its pre-existing coverage and throw/null semantics on
+ * any deployment that hasn't set the key, or for any token ElectroSwap doesn't price.
  */
 export async function getTokenEtnPrice(provider, tokenAddress) {
+  const electroSwapPrice = await getElectroSwapTokenPrice(tokenAddress);
+  if (electroSwapPrice?.etn != null) return electroSwapPrice.etn;
+
   const info = await resolvePairInfo(provider, tokenAddress);
   if (!info) return null;
 
