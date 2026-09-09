@@ -1,4 +1,9 @@
-import { query } from "./pool.js";
+import { query, chunkArray } from "./pool.js";
+
+// Max rows per INSERT statement — see pool.js's own chunkArray comment (a real production crash
+// in the sibling ingestedTransfers.js table, not a preemptive guess). 500 * COLUMNS.length (12) =
+// 6,000 bound parameters, comfortably under the ~32,768 threshold that actually broke there.
+const BATCH_SIZE = 500;
 
 const COLUMNS = [
   "tracked_wallet",
@@ -38,25 +43,27 @@ function rowToValues(r) {
 export async function insertSwapTrades(rows) {
   if (!rows.length) return;
 
-  const values = [];
-  const placeholders = rows.map((r) => {
-    const rowValues = rowToValues(r);
-    if (rowValues.length !== COLUMNS.length) {
-      throw new Error(`insertSwapTrades: row produced ${rowValues.length} values, expected ${COLUMNS.length}`);
-    }
-    const tuple = rowValues.map((v) => {
-      values.push(v);
-      return `$${values.length}`;
+  for (const batch of chunkArray(rows, BATCH_SIZE)) {
+    const values = [];
+    const placeholders = batch.map((r) => {
+      const rowValues = rowToValues(r);
+      if (rowValues.length !== COLUMNS.length) {
+        throw new Error(`insertSwapTrades: row produced ${rowValues.length} values, expected ${COLUMNS.length}`);
+      }
+      const tuple = rowValues.map((v) => {
+        values.push(v);
+        return `$${values.length}`;
+      });
+      return `(${tuple.join(",")})`;
     });
-    return `(${tuple.join(",")})`;
-  });
 
-  await query(
-    `INSERT INTO swap_trades (${COLUMNS.map((c) => (c === "timestamp" ? '"timestamp"' : c)).join(",")})
-     VALUES ${placeholders.join(",")}
-     ON CONFLICT (tracked_wallet, tx_hash, log_index) DO NOTHING`,
-    values
-  );
+    await query(
+      `INSERT INTO swap_trades (${COLUMNS.map((c) => (c === "timestamp" ? '"timestamp"' : c)).join(",")})
+       VALUES ${placeholders.join(",")}
+       ON CONFLICT (tracked_wallet, tx_hash, log_index) DO NOTHING`,
+      values
+    );
+  }
 }
 
 export async function getSwapTradesInRange(trackedWallet, fromTs, toTs) {
