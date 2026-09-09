@@ -106,10 +106,10 @@ export default function DashboardApp() {
             color: "#fff",
             textShadow: `0 0 16px ${greenGlow}`,
           }}>
-            Electroneum Dashboard
+            Argus
           </div>
           <div style={{ fontSize: 13, color: mutedLight, marginTop: 8 }}>
-            Live network stats, activity, tokens, and wallet lookup.
+            Live Electroneum network stats and wallet lookup, plus multi-wallet portfolio tracking, PnL, and DeFi position monitoring for Core Tier members.
           </div>
         </div>
 
