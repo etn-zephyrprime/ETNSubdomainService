@@ -16,6 +16,7 @@
 import express from "express";
 import { ethers } from "ethers";
 import { getPricePointsSince } from "../db/pricePoints.js";
+import { getCandles as getElectroSwapCandles } from "./electroSwapApi.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -90,11 +91,46 @@ function enqueueGeckoTerminalCall(fn) {
 // which would mislabel the chart. Fetching generously and then filtering by real elapsed time
 // (see `windowMs` below) is what keeps the "7D"/"30D"/"90D" pills honest regardless of how
 // active a given pool is.
+// electroSwapBucket: the equivalent bucket size on ElectroSwap's own candles endpoint (see
+// tryElectroSwapCandles below) — '4h' for the 7-day view, '1d' for 30/90, matching the same
+// granularity GeckoTerminal's timeframe/aggregate pair already produces for each range.
 const RANGE_PARAMS = {
-  "7": { timeframe: "hour", aggregate: 4, limit: 1000, windowMs: 7 * 24 * 60 * 60 * 1000 },
-  "30": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 30 * 24 * 60 * 60 * 1000 },
-  "90": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 90 * 24 * 60 * 60 * 1000 },
+  "7": { timeframe: "hour", aggregate: 4, limit: 1000, windowMs: 7 * 24 * 60 * 60 * 1000, electroSwapBucket: "4h" },
+  "30": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 30 * 24 * 60 * 60 * 1000, electroSwapBucket: "1d" },
+  "90": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 90 * 24 * 60 * 60 * 1000, electroSwapBucket: "1d" },
 };
+// Generous like GeckoTerminal's own `limit` above (fetch more than the window strictly needs, then
+// filter by real elapsed time) — comfortably covers 90 daily candles or 7 days of 4-hour candles
+// (42) with room to spare, well under ElectroSwap's own 500-item batch cap.
+const ELECTROSWAP_CANDLE_LIMIT = 200;
+
+/** Tries ElectroSwap's own candles endpoint for this token/range — a direct token-address lookup,
+ * no per-pool selection needed (unlike the GeckoTerminal path below, which has to pick a specific
+ * pool first). Returns null (not an error) if unconfigured, ElectroSwap has no data for this
+ * token, or the call fails — the caller falls back to the existing GeckoTerminal OHLCV fetch in
+ * every such case, so this never changes the "does a chart exist for this token" contract
+ * (hasData/pool are computed from GeckoTerminal's own pool discovery either way — see
+ * loadTokenChart below). */
+async function tryElectroSwapCandles(address, range, windowMs) {
+  const { electroSwapBucket } = RANGE_PARAMS[range] || RANGE_PARAMS["30"];
+  const raw = await getElectroSwapCandles(address, electroSwapBucket, ELECTROSWAP_CANDLE_LIMIT);
+  if (!raw || raw.length === 0) return null;
+
+  const cutoffMs = Date.now() - windowMs;
+  const candles = raw
+    .map((c) => ({
+      label: new Date(c.time * 1000).toISOString(),
+      timeMs: c.time * 1000,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volumeUsd: c.volume,
+    }))
+    .filter((c) => c.timeMs >= cutoffMs)
+    .sort((a, b) => a.timeMs - b.timeMs); // never trust the source's own ordering
+  return candles.length > 0 ? candles : null;
+}
 
 // Exported so other backend callers hitting GeckoTerminal (currently: pnlPricing.js, resolving
 // historical trade prices for PnL statements) share this exact queue/cooldown instead of running
@@ -186,27 +222,36 @@ async function loadTokenChart(address, range) {
   const tokenSide = isBase ? "base" : "quote";
 
   const { timeframe, aggregate, limit, windowMs } = RANGE_PARAMS[range] || RANGE_PARAMS["30"];
-  const ohlcvRes = await fetchGeckoTerminal(
-    `/networks/${NETWORK}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}&currency=usd&token=${tokenSide}`
-  );
-  const list = ohlcvRes.data?.attributes?.ohlcv_list || [];
-  const cutoffMs = Date.now() - windowMs;
-  // GeckoTerminal returns newest-first; this app's charts all expect oldest-first. The windowMs
-  // filter is what actually makes "7D" mean the last 7 days — see the RANGE_PARAMS comment above.
-  const candles = [...list]
-    .reverse()
-    .map(([sec, open, high, low, close, volumeUsd]) => ({
-      label: new Date(sec * 1000).toISOString(),
-      timeMs: sec * 1000,
-      open,
-      high,
-      low,
-      close,
-      volumeUsd,
-    }))
-    .filter((c) => c.timeMs >= cutoffMs);
-
   const pool = { name: best.attributes.name, reserveUsd: Number(best.attributes.reserve_in_usd || 0) };
+
+  // ElectroSwap's own candles first — a direct token-address lookup (no pool-address plumbing
+  // needed), official first-party data, and it doesn't compete with GeckoTerminal's shared rate
+  // limit at all. `pool`/hasData above are unaffected either way — they're still GeckoTerminal-
+  // pool-discovery-based (see this function's own top half), so a token whose real pool ElectroSwap
+  // just doesn't have candle data for yet still correctly reports "has a real pool" rather than
+  // looking confirmed-dead.
+  let candles = await tryElectroSwapCandles(address, range, windowMs);
+  if (!candles) {
+    const ohlcvRes = await fetchGeckoTerminal(
+      `/networks/${NETWORK}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}&currency=usd&token=${tokenSide}`
+    );
+    const list = ohlcvRes.data?.attributes?.ohlcv_list || [];
+    const cutoffMs = Date.now() - windowMs;
+    // GeckoTerminal returns newest-first; this app's charts all expect oldest-first. The windowMs
+    // filter is what actually makes "7D" mean the last 7 days — see the RANGE_PARAMS comment above.
+    candles = [...list]
+      .reverse()
+      .map(([sec, open, high, low, close, volumeUsd]) => ({
+        label: new Date(sec * 1000).toISOString(),
+        timeMs: sec * 1000,
+        open,
+        high,
+        low,
+        close,
+        volumeUsd,
+      }))
+      .filter((c) => c.timeMs >= cutoffMs);
+  }
 
   if (candles.length < 2) {
     // A real pool exists, it just hasn't traded within this specific window — distinct from
