@@ -28,6 +28,79 @@ function fmtSigned(v) {
   return `${v >= 0 ? "+" : ""}${formatUsdPrice(v)}`;
 }
 
+// Sub-toggle shown only in "PnL" chart mode (not "Value") — "Combined" (realized + unrealized
+// together, the default) is exactly what this chart always plotted before this existed, so a
+// member who never touches these buttons sees no change at all. Shared by both the whole-
+// portfolio chart and the per-category chart below it.
+export const PNL_SUB_MODES = [
+  { key: "combined", label: "Combined" },
+  { key: "realized", label: "Realized" },
+  { key: "unrealized", label: "Unrealized" },
+];
+export function pnlOverTimeValue(p, pnlSubMode) {
+  if (pnlSubMode === "realized") return Number(p.realizedPnlUsd);
+  if (pnlSubMode === "unrealized") return Number(p.unrealizedPnlUsd);
+  return Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd);
+}
+
+/** The PnL/Value toggle buttons — one of two (otherwise identical) right-side header controls
+ * shared by the whole-portfolio chart and the per-category chart below it. */
+export function PnlValueToggle({ chartMode, setChartMode }) {
+  return (
+    <div style={{ display: "flex", gap: 4 }}>
+      {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
+        <button
+          key={opt.key}
+          type="button"
+          onClick={() => setChartMode(opt.key)}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 8,
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: "pointer",
+            border: `1px solid ${chartMode === opt.key ? green : border}`,
+            background: chartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+            color: chartMode === opt.key ? green : mutedLight,
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Combined/Realized/Unrealized sub-toggle, rendered as its own full-width row BELOW the header
+ * (not inside PnlValueToggle's own flex row — a fragment there would just become a third sibling
+ * of the header's flex-wrap layout instead of reliably sitting on its own line). Callers only
+ * render this while chartMode === "pnl" — it has no meaning in "Value" mode. */
+export function PnlSubModeToggle({ pnlSubMode, setPnlSubMode }) {
+  return (
+    <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+      {PNL_SUB_MODES.map((opt) => (
+        <button
+          key={opt.key}
+          type="button"
+          onClick={() => setPnlSubMode(opt.key)}
+          style={{
+            padding: "3px 9px",
+            borderRadius: 6,
+            fontSize: 10,
+            fontWeight: 700,
+            cursor: "pointer",
+            border: `1px solid ${pnlSubMode === opt.key ? green : border}`,
+            background: pnlSubMode === opt.key ? "rgba(24,187,26,0.1)" : "transparent",
+            color: pnlSubMode === opt.key ? green : muted,
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Narrows a snapshot-shaped object (combined, or one entry of snapshot.perWallet — both have the
 // same holdings/realizedByToken/currentValueUsd/unrealizedPnlUsd/realizedPnlUsd shape) down to one
 // token's own figures. currentValueUsd/unrealizedPnlUsd come back null for a token that's held but
@@ -94,6 +167,9 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   const [categoryHistory, setCategoryHistory] = useState(null);
   const [categoryHistoryError, setCategoryHistoryError] = useState(null);
   const [categoryChartMode, setCategoryChartMode] = useState("pnl");
+  // "combined" (realized + unrealized together — what this chart always showed before this
+  // existed) | "realized" | "unrealized" — see PNL_SUB_MODES' own comment.
+  const [categoryPnlSubMode, setCategoryPnlSubMode] = useState("combined");
 
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((snapshot?.combined?.holdings || []).map((h) => h.tokenAddress));
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
@@ -229,6 +305,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // pnlSnapshotRouter.js's own comment on getHistory's response shape), so this is purely which
   // field(s) get plotted, not a different data source.
   const [chartMode, setChartMode] = useState("pnl");
+  // "combined" (realized + unrealized together — what this chart always showed before this
+  // existed, so a member who never touches these buttons sees no change) | "realized" |
+  // "unrealized" — see PNL_SUB_MODES' own comment.
+  const [pnlSubMode, setPnlSubMode] = useState("combined");
 
   return (
     <CollapsibleCoreTierPanel
@@ -484,31 +564,9 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                   {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
                   <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began. PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value." />
                 </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {[
-                    { key: "pnl", label: "PnL" },
-                    { key: "value", label: "Value" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setChartMode(opt.key)}
-                      style={{
-                        padding: "4px 10px",
-                        borderRadius: 8,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        border: `1px solid ${chartMode === opt.key ? green : border}`,
-                        background: chartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
-                        color: chartMode === opt.key ? green : mutedLight,
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+                <PnlValueToggle chartMode={chartMode} setChartMode={setChartMode} />
               </div>
+              {chartMode === "pnl" && <PnlSubModeToggle pnlSubMode={pnlSubMode} setPnlSubMode={setPnlSubMode} />}
               {tokenFilter !== "all" && !historyError && (
                 <div style={{ fontSize: 11, color: muted, marginBottom: 8, fontStyle: "italic" }}>
                   Per-token history isn't available yet — this chart shows your whole tracked wallet{walletFilter === "all" && active.length > 1 ? "s" : ""}, not just the selected token.
@@ -524,10 +582,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 <SparklineChart
                   data={combinedHistory.map((p) => ({
                     label: p.date,
-                    value: chartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd),
+                    value: chartMode === "pnl" ? pnlOverTimeValue(p, pnlSubMode) : Number(p.totalValueUsd),
                   }))}
                   height={120}
-                  formatValue={chartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
+                  formatValue={chartMode === "pnl" ? fmtSigned : formatValue}
                   formatLabel={formatChartDate}
                   colorBySign={chartMode === "pnl"}
                 />
@@ -540,31 +598,9 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                   {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
                   <InfoTooltip text="Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that." />
                 </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {[
-                    { key: "pnl", label: "PnL" },
-                    { key: "value", label: "Value" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      onClick={() => setCategoryChartMode(opt.key)}
-                      style={{
-                        padding: "4px 10px",
-                        borderRadius: 8,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        border: `1px solid ${categoryChartMode === opt.key ? green : border}`,
-                        background: categoryChartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
-                        color: categoryChartMode === opt.key ? green : mutedLight,
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+                <PnlValueToggle chartMode={categoryChartMode} setChartMode={setCategoryChartMode} />
               </div>
+              {categoryChartMode === "pnl" && <PnlSubModeToggle pnlSubMode={categoryPnlSubMode} setPnlSubMode={setCategoryPnlSubMode} />}
 
               <select
                 value={selectedCategory}
@@ -588,10 +624,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 <SparklineChart
                   data={combinedCategoryHistory.map((p) => ({
                     label: p.date,
-                    value: categoryChartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd),
+                    value: categoryChartMode === "pnl" ? pnlOverTimeValue(p, categoryPnlSubMode) : Number(p.totalValueUsd),
                   }))}
                   height={120}
-                  formatValue={categoryChartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
+                  formatValue={categoryChartMode === "pnl" ? fmtSigned : formatValue}
                   formatLabel={formatChartDate}
                   colorBySign={categoryChartMode === "pnl"}
                 />

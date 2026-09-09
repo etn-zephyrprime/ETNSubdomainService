@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { LineChart, TrendingUp, Image as ImageIcon, Sparkles } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
+import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
@@ -389,7 +390,9 @@ function DemoPortfolio({ data, onSelectToken }) {
 function DemoPnl({ data, onSelectToken }) {
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.snapshot.holdings || []).map((h) => h.tokenAddress));
   const [chartMode, setChartMode] = useState("pnl");
+  const [pnlSubMode, setPnlSubMode] = useState("combined");
   const [categoryChartMode, setCategoryChartMode] = useState("pnl");
+  const [categoryPnlSubMode, setCategoryPnlSubMode] = useState("combined");
   const [selectedCategory, setSelectedCategory] = useState(CATEGORY_OPTIONS[0].key);
 
   const snapshot = data.snapshot;
@@ -468,28 +471,14 @@ function DemoPnl({ data, onSelectToken }) {
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
           <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
-              <button
-                key={opt.key}
-                onClick={() => setChartMode(opt.key)}
-                style={{
-                  padding: "4px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                  border: `1px solid ${chartMode === opt.key ? green : border}`,
-                  background: chartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
-                  color: chartMode === opt.key ? green : mutedLight,
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          <PnlValueToggle chartMode={chartMode} setChartMode={setChartMode} />
         </div>
+        {chartMode === "pnl" && <PnlSubModeToggle pnlSubMode={pnlSubMode} setPnlSubMode={setPnlSubMode} />}
         {history.length === 0 ? (
           <div style={{ fontSize: 12, color: mutedLight }}>No history yet.</div>
         ) : (
           <SparklineChart
-            data={history.map((p) => ({ label: p.date, value: chartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd) }))}
+            data={history.map((p) => ({ label: p.date, value: chartMode === "pnl" ? pnlOverTimeValue(p, pnlSubMode) : Number(p.totalValueUsd) }))}
             height={120}
             formatValue={chartMode === "pnl" ? fmtSigned : formatUsdPrice}
             formatLabel={formatChartDate}
@@ -501,23 +490,9 @@ function DemoPnl({ data, onSelectToken }) {
       <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
           <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
-              <button
-                key={opt.key}
-                onClick={() => setCategoryChartMode(opt.key)}
-                style={{
-                  padding: "4px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                  border: `1px solid ${categoryChartMode === opt.key ? green : border}`,
-                  background: categoryChartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
-                  color: categoryChartMode === opt.key ? green : mutedLight,
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          <PnlValueToggle chartMode={categoryChartMode} setChartMode={setCategoryChartMode} />
         </div>
+        {categoryChartMode === "pnl" && <PnlSubModeToggle pnlSubMode={categoryPnlSubMode} setPnlSubMode={setCategoryPnlSubMode} />}
         <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} style={{ ...selectStyle, marginBottom: 12, width: "100%" }}>
           {CATEGORY_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
         </select>
@@ -527,7 +502,7 @@ function DemoPnl({ data, onSelectToken }) {
           </div>
         ) : (
           <SparklineChart
-            data={categoryHistory.map((p) => ({ label: p.date, value: categoryChartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd) }))}
+            data={categoryHistory.map((p) => ({ label: p.date, value: categoryChartMode === "pnl" ? pnlOverTimeValue(p, categoryPnlSubMode) : Number(p.totalValueUsd) }))}
             height={120}
             formatValue={categoryChartMode === "pnl" ? fmtSigned : formatUsdPrice}
             formatLabel={formatChartDate}
