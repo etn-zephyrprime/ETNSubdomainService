@@ -10,7 +10,7 @@ const TABS = [
   // gates on a paid membership (see PortfolioDashboardSection.jsx), so it's styled to read as
   // premium at a glance, in both its active and inactive states, not just when selected like every
   // other tab's own accent color.
-  { id: "portfolio", label: "Premium", premium: true },
+  { id: "portfolio", label: "Premium - Core Tier", premium: true },
   { id: "premium", label: "PnL Statement" },
 ];
 
