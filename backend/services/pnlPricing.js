@@ -39,6 +39,7 @@
 // price lookup to a fixed value so the pricing plumbing itself (caching, FIFO cost-basis math) can
 // still be exercised end-to-end on testnet without real market data.
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
+import { resolveTokenPools } from "../utils/wetnPoolResolver.js";
 import { getCandles, isElectroSwapConfigured } from "../utils/electroSwapApi.js";
 import { getPricePoint, upsertPricePoint } from "../db/pricePoints.js";
 import { getBackfillState, markBackfilled } from "../db/priceHistoryBackfillState.js";
@@ -71,42 +72,17 @@ function bucketToDay(timestamp) {
   return d;
 }
 
-const poolCache = new Map(); // tokenAddress -> { poolAddress, tokenIsBase } (best WETN-paired pool), or null if none found
-const POOL_CACHE_TTL_MS = 15 * 60 * 1000;
-const poolCacheExpiry = new Map();
-
+// Pool discovery/ranking itself (the GeckoTerminal API call) now lives in wetnPoolResolver.js,
+// shared with dexPriceQuote.js's live spot pricing — see that file's own header comment for why
+// this moved out of an in-memory-only cache (a redeploy used to make both files re-pay the same
+// GeckoTerminal crawl independently). `bestPool` here matches this function's own original
+// semantics exactly: prefer a WETN-paired pool, fall back to the highest-liquidity pool of ANY
+// type — correct for this file's use, since the OHLCV endpoint fetchNearestCandleUsd/
+// backfillPoolDailyHistory call converts to USD server-side regardless of which pool it is,
+// unlike dexPriceQuote.js's own on-chain math, which specifically needs a WETN leg.
 async function resolvePoolAddress(tokenAddress) {
-  const key = tokenAddress.toLowerCase();
-  const expiry = poolCacheExpiry.get(key);
-  if (expiry && expiry > Date.now()) return poolCache.get(key);
-
-  let pools = [];
-  try {
-    const res = await fetchGeckoTerminal(`/networks/${NETWORK}/tokens/${key}/pools`);
-    pools = res.data || [];
-  } catch (err) {
-    if (err.status !== 404) throw err;
-  }
-
-  const tokenId = `${NETWORK}_${key}`;
-  const wetnId = `${NETWORK}_${WETN_ADDRESS}`;
-  const wetnPools = pools.filter((p) => {
-    const baseId = p.relationships?.base_token?.data?.id;
-    const quoteId = p.relationships?.quote_token?.data?.id;
-    const otherId = baseId === tokenId ? quoteId : baseId;
-    return otherId === wetnId;
-  });
-  const candidates = wetnPools.length > 0 ? wetnPools : pools;
-  const best = candidates.length
-    ? candidates.reduce((a, b) => (Number(b.attributes.reserve_in_usd || 0) > Number(a.attributes.reserve_in_usd || 0) ? b : a))
-    : null;
-
-  const result = best
-    ? { poolAddress: best.attributes.address, tokenIsBase: best.relationships?.base_token?.data?.id === tokenId }
-    : null;
-  poolCache.set(key, result);
-  poolCacheExpiry.set(key, Date.now() + POOL_CACHE_TTL_MS);
-  return result;
+  const { bestPool } = await resolveTokenPools(tokenAddress);
+  return bestPool;
 }
 
 // Finds the daily candle closest to `timestamp` via GeckoTerminal's OHLCV endpoint, anchored with
