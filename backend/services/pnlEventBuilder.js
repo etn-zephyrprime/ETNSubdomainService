@@ -265,25 +265,42 @@ async function formatTokenAmount(tokenAddress, rawAmount) {
   return ethers.formatUnits(rawAmount, decimals);
 }
 
+// Same BOLT token address pnlIngestion.js's enrichFarmRowsWithBolt uses to correlate a farm
+// deposit/withdrawal's optional BOLT leg — confirmed live from YieldFarm.sol's own verified
+// constructor args on Blockscout, not assumed. See that function's own comment for why the amount
+// never appears in the farm's own events and has to be enriched in via a same-tx Transfer log at
+// ingestion time instead (raw_args.amountBoltAdded/amountBoltReturned below).
+const BOLT_TOKEN_ADDRESS = "0x043faa1b5c5fc9a7dc35171f290c29ecde0ccff1";
+
 /** Turns raw defi_activity rows into FIFO events, per the confirmed tax treatment:
- *   - Farm/stake DEPOSIT = a disposal (FIFO "out") of the deposited token(s) at their own FMV —
- *     the same "proceeds = FMV of what's given up" treatment swapToEvent already uses for a swap's
- *     sold leg, since a farm/staking position isn't itself a priceable, fungible asset to record as
- *     the "proceeds" received in exchange.
- *   - Farm/stake WITHDRAWAL of principal = a reacquisition (FIFO "in") of the returned token(s), at
- *     their own FMV cost basis.
+ *   - Farm/stake DEPOSIT (including an optional BOLT co-deposit for the rewards multiplier — see
+ *     BOLT_TOKEN_ADDRESS above) = a LOT TRANSFER ('lock'), not a disposal — the wallet still
+ *     economically owns these tokens, just "location" changes (locked in the farm/stake contract
+ *     instead of held directly), same as a self-transfer between the member's own wallets never
+ *     being a taxable event. Cost basis carries through unchanged; see fifoLotEngine.js's own
+ *     comment on lock()/unlock() for the full reasoning. This DELIBERATELY REVERSES this file's
+ *     earlier treatment (a disposal at FMV) — that treatment is what shipped originally, was
+ *     confirmed to be the wrong call, and is being corrected here; anyone whose PnL Statement
+ *     already included farm/staking activity under the old treatment needs it regenerated.
+ *   - Farm/stake WITHDRAWAL of principal (and any returned BOLT) = the reverse ('unlock') — lots
+ *     restored to open with their ORIGINAL cost basis, not revalued at withdrawal-day price. The
+ *     live price fetched here is used ONLY as unlock()'s fallbackUnitCostUsd, for the rare
+ *     shortfall case (ingestion started mid-position, so this ledger never saw the original lock).
  *   - Every reward/fee amount (a farm's own reward token, its third-party reward token, LP fees on
- *     withdrawal, staking rewards) = a FIFO "in" acquisition at ZERO cost basis — confirmed design:
- *     rewards are typically non-ETN tokens (DYNO/CORE) and shouldn't register as income at receipt,
- *     only affect Net P&L later if/when actually disposed of (sold, swapped, sent to a CEX).
+ *     withdrawal, staking rewards) = a FIFO "in" acquisition at ZERO cost basis — UNCHANGED,
+ *     confirmed design: rewards are typically non-ETN tokens (DYNO/CORE) and shouldn't register as
+ *     income at receipt, only affect Net P&L later if/when actually disposed of (sold, swapped,
+ *     sent to a CEX).
  * A row whose contract/farm view-function calls all fail (e.g. a genuinely unknown future contract
  * template reusing one of the five topic signatures by coincidence) is skipped with a warning
  * rather than failing the whole statement — same "never let one enrichment failure take down
  * generation" posture as getBlockByTimestamp/buildPriceCoverageDisclaimer elsewhere in this file.
  * Returns { events, perLabel } — perLabel is the labeled per-farm/per-stake breakdown Map for the
- * new PDF section (see buildDefiActivitySummary below), keyed by a human label (the farm's own
- * on-chain name, or the staking template's fixed label) rather than a raw contract address, so nothing
- * in this file ever hardcodes one of the specific addresses the user originally supplied. */
+ * PDF section (see buildDefiActivitySummary below), keyed by a human label (the farm's own on-chain
+ * name, or the staking template's fixed label) rather than a raw contract address, so nothing in
+ * this file ever hardcodes one of the specific addresses the user originally supplied.
+ * depositedUsd/withdrawnUsd in that breakdown are still the FMV of what moved at the time — purely
+ * informational context for the PDF now that neither one is a realized-PnL event on its own. */
 export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
   const events = [];
   const perLabel = new Map(); // label -> { depositedUsd, withdrawnUsd, rewardsUsd (Decimal), unpriced count }
@@ -308,23 +325,31 @@ export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
       if (row.event_type === "farm_deposit") {
         const { token0, token1, name } = await getFarmTokens(row.contract_address, row.farm_id);
         const agg = bumpLabel(name || `Yield Farm #${row.farm_id}`);
-        for (const [tokenAddress, rawAmount] of [[token0, raw.amount0Added], [token1, raw.amount1Added]]) {
+        const legs = [[token0, raw.amount0Added], [token1, raw.amount1Added]];
+        if (raw.amountBoltAdded && BigInt(raw.amountBoltAdded) > 0n) legs.push([BOLT_TOKEN_ADDRESS, raw.amountBoltAdded]);
+        for (const [tokenAddress, rawAmount] of legs) {
           if (!tokenAddress || tokenAddress === ethers.ZeroAddress || !rawAmount || BigInt(rawAmount) === 0n) continue;
           const quantity = await formatTokenAmount(tokenAddress, rawAmount);
+          // FMV here is informational only now (the PDF's own "deposited" figure) — lock() itself
+          // needs no price at all, cost basis carries through from whatever lot(s) it consumes.
           const priceUsd = await priceAt(tokenAddress, timestamp);
-          const proceedsUsd = priceUsd != null ? new Decimal(quantity).times(priceUsd).toString() : 0;
-          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(proceedsUsd); else agg.unpriced++;
-          events.push({ kind: "out", tokenAddress, txHash, timestamp, quantity, proceedsUsd });
+          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+          events.push({ kind: "lock", tokenAddress, txHash, timestamp, quantity });
         }
       } else if (row.event_type === "farm_withdraw") {
         const { token0, token1, name } = await getFarmTokens(row.contract_address, row.farm_id);
         const agg = bumpLabel(name || `Yield Farm #${row.farm_id}`);
-        for (const [tokenAddress, rawAmount] of [[token0, raw.amount0Withdrawn], [token1, raw.amount1Withdrawn]]) {
+        const legs = [[token0, raw.amount0Withdrawn], [token1, raw.amount1Withdrawn]];
+        if (raw.amountBoltReturned && BigInt(raw.amountBoltReturned) > 0n) legs.push([BOLT_TOKEN_ADDRESS, raw.amountBoltReturned]);
+        for (const [tokenAddress, rawAmount] of legs) {
           if (!tokenAddress || tokenAddress === ethers.ZeroAddress || !rawAmount || BigInt(rawAmount) === 0n) continue;
           const quantity = await formatTokenAmount(tokenAddress, rawAmount);
           const priceUsd = await priceAt(tokenAddress, timestamp);
           if (priceUsd != null) agg.withdrawnUsd = agg.withdrawnUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
-          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: priceUsd ?? 0 });
+          // fallbackUnitCostUsd only ever applies to an unlock SHORTFALL (see fifoLotEngine.js's
+          // own comment) — the common case restores each lot's real original cost basis untouched,
+          // this live price is never used for it.
+          events.push({ kind: "unlock", tokenAddress, txHash, timestamp, quantity, fallbackUnitCostUsd: priceUsd ?? 0 });
         }
         // Farm's own reward token, LP fees (fees0/fees1 — the same tokens as token0/token1, but
         // acquired at zero cost basis, so tracked as separate "in" events rather than folded into
@@ -356,18 +381,37 @@ export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
         if (raw.amount && BigInt(raw.amount) > 0n) {
           const quantity = await formatTokenAmount(tokenAddress, raw.amount);
           const priceUsd = await priceAt(tokenAddress, timestamp);
-          const proceedsUsd = priceUsd != null ? new Decimal(quantity).times(priceUsd).toString() : 0;
-          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(proceedsUsd); else agg.unpriced++;
-          events.push({ kind: "out", tokenAddress, txHash, timestamp, quantity, proceedsUsd });
+          if (priceUsd != null) agg.depositedUsd = agg.depositedUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
+          events.push({ kind: "lock", tokenAddress, txHash, timestamp, quantity });
         }
       } else if (row.event_type === "core_withdrawn") {
         const tokenAddress = await getStakingToken(row.contract_address);
         const agg = bumpLabel("Core Ascension Staking");
-        if (raw.returnedAmount && BigInt(raw.returnedAmount) > 0n) {
-          const quantity = await formatTokenAmount(tokenAddress, raw.returnedAmount);
-          const priceUsd = await priceAt(tokenAddress, timestamp);
-          if (priceUsd != null) agg.withdrawnUsd = agg.withdrawnUsd.plus(new Decimal(quantity).times(priceUsd)); else agg.unpriced++;
-          events.push({ kind: "in", tokenAddress, txHash, timestamp, quantity, unitCostUsd: priceUsd ?? 0 });
+        // CoreWithdrawn distinguishes requestedAmount from returnedAmount — an early-withdrawal
+        // penalty (penaltyToPool/penaltyBurned) can slash part of the position, and that forfeited
+        // slice is GONE, not still-locked: unlocking only returnedAmount (what the older, disposal-
+        // based treatment effectively did — see this function's own header comment) would leave it
+        // orphaned in the locked queue forever instead of recording the real, permanent loss it is.
+        // So the FULL requestedAmount is unlocked first (restoring every bit of its original cost
+        // basis to open lots), then the forfeited slice, if any, is disposed of at $0 proceeds —
+        // same "genuinely gone, not fake-realized-later" honesty as any other zero-proceeds loss.
+        const requested = BigInt(raw.requestedAmount || raw.returnedAmount || 0);
+        const returned = BigInt(raw.returnedAmount || 0);
+        const forfeited = requested > returned ? requested - returned : 0n;
+        const priceUsd = requested > 0n ? await priceAt(tokenAddress, timestamp) : null;
+        // withdrawnUsd (the PDF's own "how much came back to you" figure) reflects only what was
+        // actually RETURNED — the forfeited slice never came back, so it must not inflate this.
+        if (returned > 0n) {
+          if (priceUsd != null) agg.withdrawnUsd = agg.withdrawnUsd.plus(new Decimal(await formatTokenAmount(tokenAddress, returned)).times(priceUsd));
+          else agg.unpriced++;
+        }
+        if (requested > 0n) {
+          const quantity = await formatTokenAmount(tokenAddress, requested);
+          events.push({ kind: "unlock", tokenAddress, txHash, timestamp, quantity, fallbackUnitCostUsd: priceUsd ?? 0 });
+        }
+        if (forfeited > 0n) {
+          const quantity = await formatTokenAmount(tokenAddress, forfeited);
+          events.push({ kind: "out", tokenAddress, txHash, timestamp, quantity, proceedsUsd: 0 });
         }
       } else if (row.event_type === "reward_paid") {
         const tokenAddress = await getStakingToken(row.contract_address);
