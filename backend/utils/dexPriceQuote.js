@@ -201,10 +201,20 @@ async function priceFromV3Slot0(provider, info) {
  * return null) — falls straight through to the existing on-chain/GeckoTerminal path below
  * unchanged, so every caller keeps exactly its pre-existing coverage and throw/null semantics on
  * any deployment that hasn't set the key, or for any token ElectroSwap doesn't price.
+ *
+ * `skipElectroSwap` — for a caller that's already resolved this exact token through ElectroSwap's
+ * BATCH endpoint (getBatchTokenPrices) and got nothing back for it: retrying the SINGLE endpoint
+ * here would almost certainly fail again too (same underlying pricing data on ElectroSwap's side),
+ * just at a real credit cost (50/call) for a near-guaranteed miss. Set true to skip straight to the
+ * on-chain/GeckoTerminal path in that case — see portfolioValuation.js and
+ * tokenPriceAlertScheduler.js, both of which batch first across every token they need in one tick/
+ * request and only call this per-token for whatever the batch didn't cover.
  */
-export async function getTokenEtnPrice(provider, tokenAddress) {
-  const electroSwapPrice = await getElectroSwapTokenPrice(tokenAddress);
-  if (electroSwapPrice?.etn != null) return electroSwapPrice.etn;
+export async function getTokenEtnPrice(provider, tokenAddress, { skipElectroSwap = false } = {}) {
+  if (!skipElectroSwap) {
+    const electroSwapPrice = await getElectroSwapTokenPrice(tokenAddress);
+    if (electroSwapPrice?.etn != null) return electroSwapPrice.etn;
+  }
 
   const info = await resolvePairInfo(provider, tokenAddress);
   if (!info) return null;
