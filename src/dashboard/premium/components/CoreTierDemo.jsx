@@ -12,9 +12,13 @@ import { formatChartDate, formatUsdPrice } from "../../utils/format.js";
 import { green, muted, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
 // planetzephyros.etn — resolved live via Blockscout's ENS reverse-index (api/v2/search) before
-// hardcoding here. Must stay in sync with coreTierDemoRouter.js's own copy of this same address —
-// no shared build step between frontend/backend in this repo (same reasoning as several other
-// hand-synced constants elsewhere).
+// hardcoding here; this is DEMO_WALLET_ADDRESSES[0] in coreTierDemoRouter.js, which now combines
+// two more real wallets alongside it for the PnL preview below (DemoPnl) — this constant is used
+// ONLY for Balance History, which stays single-wallet (that section's own data sources are all
+// public/client-side calls, with no natural "combine several wallets' balance history" endpoint to
+// reach for the way DemoPnl has coreTierDemoRouter.js's own combineLivePnlSnapshots). Must stay in
+// sync with coreTierDemoRouter.js's own copy of this same address — no shared build step between
+// frontend/backend in this repo (same reasoning as several other hand-synced constants elsewhere).
 const DEMO_WALLET_ADDRESS = "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099";
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
 
@@ -127,17 +131,23 @@ function DemoBalanceHistory() {
   );
 }
 
-/** Live PnL preview for DEMO_WALLET_ADDRESS only — Current Value/Unrealized/Realized, Current
+/** Live PnL preview combining THREE real demo wallets (see coreTierDemoRouter.js's own
+ * DEMO_WALLET_ADDRESSES) — Current Value/Unrealized/Realized, a per-wallet breakdown, Current
  * Holdings, and the Value Over Time chart, same shape CoreTierPnl.jsx renders for a real member's
- * own wallet, sourced from coreTierDemoRouter.js's cached public endpoint instead of a signed,
- * per-member request. No Refresh button (that endpoint is cached for up to an hour server-side —
- * a client-side refresh within that window wouldn't do anything different) and no cold-start token
- * picker (the demo wallet's own ingestion, if ever needed, already ran once to seed the cache; a
- * visitor never triggers it themselves).
+ * own multiple tracked wallets combined, sourced from coreTierDemoRouter.js's cached public
+ * endpoint instead of a signed, per-member request. No Refresh button (that endpoint is cached for
+ * up to an hour server-side — a client-side refresh within that window wouldn't do anything
+ * different) and no cold-start token picker (each demo wallet's own ingestion, if ever needed,
+ * already ran once to seed the cache; a visitor never triggers it themselves).
+ *
+ * The per-wallet breakdown is labeled "Wallet 1/2/3" — never a real address or ENS name, same
+ * anonymity requirement the original single-wallet demo was already built to (see
+ * coreTierDemoRouter.js's own comment); coreTierDemoRouter.js never sends a real address down for
+ * this, only a walletIndex.
  */
 function DemoPnl({ onSelectToken }) {
   const { getDemoPnl } = useCoreTierDemo();
-  const [data, setData] = useState(null); // { snapshot, history } | null while loading
+  const [data, setData] = useState(null); // { snapshot, perWallet, history } | null while loading
   const [error, setError] = useState(null);
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data?.snapshot?.holdings || []).map((h) => h.tokenAddress));
 
@@ -153,6 +163,7 @@ function DemoPnl({ onSelectToken }) {
   }, [getDemoPnl]);
 
   const snapshot = data?.snapshot;
+  const perWallet = data?.perWallet || [];
   const history = data?.history || [];
   const holdings = (snapshot?.holdings || []).filter((h) => !isSpamToken(h.tokenAddress) && h.marketValueUsd != null);
 
@@ -169,6 +180,23 @@ function DemoPnl({ onSelectToken }) {
         <div style={{ fontSize: 12, color: mutedLight }}>Loading…</div>
       ) : (
         <>
+          {perWallet.length > 1 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${border}` }}>
+              <div style={{ fontSize: 10, color: muted, marginBottom: 2 }}>{perWallet.length} wallets combined</div>
+              {perWallet.map((w) => (
+                <div key={w.walletIndex} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                  <span style={{ color: mutedLight }}>Wallet {w.walletIndex + 1}</span>
+                  <span style={{ display: "flex", gap: 10 }}>
+                    <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
+                    <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
+                      {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, marginBottom: 16 }}>
             <div>
               <div style={sectionHeaderStyle}>Current Value</div>
@@ -244,10 +272,11 @@ function DemoPnl({ onSelectToken }) {
   );
 }
 
-/** Core Tier's actual value proposition, previewed for one fixed wallet (planetzephyros.etn) —
- * Balance History and PnL — available to anyone, including a visitor with no wallet connected at
- * all. See CoreTierPortfolio.jsx's own "View Demo" toggle, which renders this in place of
- * CoreTierGate's connect/subscribe messaging. */
+/** Core Tier's actual value proposition, previewed for three fixed real wallets — Balance History
+ * (wallet 1 only, see DEMO_WALLET_ADDRESS's own comment) and PnL (all three combined, matching the
+ * real multi-wallet tracking feature) — available to anyone, including a visitor with no wallet
+ * connected at all. See CoreTierPortfolio.jsx's own "View Demo" toggle, which renders this in place
+ * of CoreTierGate's connect/subscribe messaging. */
 export default function CoreTierDemo({ onSelectToken }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
