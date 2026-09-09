@@ -57,12 +57,18 @@ let nextLotId = 1;
 class FifoLedger {
   constructor() {
     this.lotsByToken = new Map(); // tokenAddress -> array of open lots, oldest-first
+    this.lockedLotsByToken = new Map(); // tokenAddress -> array of locked lots, oldest-first (see lock/unlock below)
     this.realizedEvents = [];
   }
 
   _lotsFor(tokenAddress) {
     if (!this.lotsByToken.has(tokenAddress)) this.lotsByToken.set(tokenAddress, []);
     return this.lotsByToken.get(tokenAddress);
+  }
+
+  _lockedLotsFor(tokenAddress) {
+    if (!this.lockedLotsByToken.has(tokenAddress)) this.lockedLotsByToken.set(tokenAddress, []);
+    return this.lockedLotsByToken.get(tokenAddress);
   }
 
   acquire({ tokenAddress, txHash, timestamp, quantity, unitCostUsd }) {
@@ -140,6 +146,107 @@ class FifoLedger {
     }
   }
 
+  /** Moves `quantity` of `tokenAddress` from open (in-wallet) lots into a separate locked queue —
+   * for a DeFi farm/stake deposit, where the wallet still economically owns the tokens, just
+   * "location" changes (locked in a contract instead of held directly), so this is deliberately
+   * NOT a disposal: no realized PnL event, and each consumed lot's original unitCostUsd/
+   * openedTimestamp/openedTxHash is carried into the locked queue UNCHANGED, not revalued at
+   * today's price the way a normal acquisition would be. unlock() below restores it later, same
+   * cost basis, when the position is withdrawn.
+   *
+   * A shortfall (locking more than the wallet's own open lots cover — most likely an incomplete/
+   * un-ingested acquisition history, same class of gap dispose()'s own shortfall handles) is
+   * logged loudly and the shortfall portion is simply not added to the locked queue at all — there
+   * is no cost basis to carry through for tokens this ledger never saw acquired, so inventing a
+   * locked lot for it would just create a phantom position unlock() could never legitimately
+   * restore. */
+  lock({ tokenAddress, quantity }) {
+    const lots = this._lotsFor(tokenAddress);
+    // Captured BEFORE consumeFifo/the filter below, so a lot fully consumed by this lock (and
+    // therefore dropped from `lots`) is still findable by id when building the locked lots below —
+    // consumeFifo's own `consumptions` entries carry only lotId/quantityConsumed/costBasisUsd, not
+    // the source lot's openedTxHash/openedTimestamp/unitCostUsd (see its own doc).
+    const preFilterLots = new Map(lots.map((l) => [l.id, l]));
+
+    const { consumptions, remainingShort } = consumeFifo(lots, new Decimal(quantity));
+    for (const c of consumptions) {
+      const lot = lots.find((l) => l.id === c.lotId);
+      if (lot) lot.quantityRemaining = c.newRemaining;
+    }
+    this.lotsByToken.set(tokenAddress, lots.filter((l) => l.quantityRemaining.gt(0)));
+
+    if (remainingShort.gt(0)) {
+      console.warn(
+        `⚠️  FIFO lock shortfall: locking ${new Decimal(quantity).toString()} of ${tokenAddress} but only ` +
+          `${new Decimal(quantity).minus(remainingShort).toString()} was covered by open lots — the shortfall is not carried into the locked position.`
+      );
+    }
+
+    const lockedLots = this._lockedLotsFor(tokenAddress);
+    for (const c of consumptions) {
+      const sourceLot = preFilterLots.get(c.lotId);
+      lockedLots.push({
+        id: nextLotId++,
+        tokenAddress,
+        openedTxHash: sourceLot.openedTxHash,
+        openedTimestamp: sourceLot.openedTimestamp,
+        quantityRemaining: c.quantityConsumed,
+        unitCostUsd: new Decimal(sourceLot.unitCostUsd),
+      });
+    }
+  }
+
+  /** Moves `quantity` of `tokenAddress` back from the locked queue into open (in-wallet) lots —
+   * the reverse of lock() above, restoring each lot's ORIGINAL cost basis/acquisition date exactly
+   * as it was before locking, never revalued at today's price. No realized PnL event, same as
+   * lock() — a DeFi farm/stake withdrawal is a reacquisition of what was already owned, not a
+   * fresh purchase.
+   *
+   * A shortfall (unlocking more than is actually in the locked queue — e.g. ingestion started
+   * mid-farm-position, so this ledger never saw the original lock) falls back to a FRESH lot at
+   * `fallbackUnitCostUsd` (today's live price, same "best available" fallback dispose()'s own
+   * shortfall uses zero-cost-basis for) for just the shortfall portion — there's no recorded cost
+   * basis to restore for tokens this ledger never saw get locked, so a live price is the closest
+   * honest answer available, not a silent zero. */
+  unlock({ tokenAddress, txHash, timestamp, quantity, fallbackUnitCostUsd }) {
+    const lockedLots = this._lockedLotsFor(tokenAddress);
+    const preFilterLockedLots = new Map(lockedLots.map((l) => [l.id, l]));
+    const { consumptions, remainingShort } = consumeFifo(lockedLots, new Decimal(quantity));
+    for (const c of consumptions) {
+      const lot = lockedLots.find((l) => l.id === c.lotId);
+      if (lot) lot.quantityRemaining = c.newRemaining;
+    }
+    this.lockedLotsByToken.set(tokenAddress, lockedLots.filter((l) => l.quantityRemaining.gt(0)));
+
+    const openLots = this._lotsFor(tokenAddress);
+    for (const c of consumptions) {
+      const sourceLot = preFilterLockedLots.get(c.lotId);
+      openLots.push({
+        id: nextLotId++,
+        tokenAddress,
+        openedTxHash: sourceLot.openedTxHash,
+        openedTimestamp: sourceLot.openedTimestamp,
+        quantityRemaining: c.quantityConsumed,
+        unitCostUsd: new Decimal(sourceLot.unitCostUsd),
+      });
+    }
+
+    if (remainingShort.gt(0)) {
+      console.warn(
+        `⚠️  FIFO unlock shortfall: unlocking ${new Decimal(quantity).toString()} of ${tokenAddress} but only ` +
+          `${new Decimal(quantity).minus(remainingShort).toString()} was covered by the locked queue (tx ${txHash}) — the shortfall reacquires at today's price instead of a carried-through cost basis.`
+      );
+      openLots.push({
+        id: nextLotId++,
+        tokenAddress,
+        openedTxHash: txHash,
+        openedTimestamp: timestamp,
+        quantityRemaining: remainingShort,
+        unitCostUsd: new Decimal(fallbackUnitCostUsd),
+      });
+    }
+  }
+
   /** Deep-enough snapshot for reporting: open lots (per token) as they stand at the moment this is
    * called, plus every realized event recorded so far. Safe to keep processing after calling this
    * — returned Decimal values are immutable, and the lot objects returned are copies. */
@@ -166,6 +273,15 @@ class FifoLedger {
  *     — behaves identically to 'in' (acquires at the given market-price cost basis); kept as a
  *       distinct label purely so the frozen statement's backing ledger can show *why* a lot was
  *       opened (self-transfer vs. a genuine external inflow), not because the math differs.
+ *   { kind: 'lock', tokenAddress, quantity }
+ *     — a DeFi farm/stake deposit: the wallet still economically owns these tokens, just
+ *       "location" changes (locked in a contract instead of held directly) — moves lots from open
+ *       to a separate locked queue, cost basis/acquisition date carried through unchanged, no
+ *       realized PnL (see FifoLedger.lock's own comment). NOT a disposal, unlike a plain 'out'.
+ *   { kind: 'unlock', tokenAddress, txHash, timestamp, quantity, fallbackUnitCostUsd }
+ *     — the reverse: a DeFi farm/stake withdrawal, restoring locked lots back to open with their
+ *       ORIGINAL cost basis, never revalued at today's price (fallbackUnitCostUsd is used only for
+ *       the rare shortfall case — see FifoLedger.unlock's own comment).
  *   { kind: 'swap', txHash, timestamp, soldTokenAddress, soldQuantity, soldProceedsUsd,
  *     boughtTokenAddress, boughtQuantity, boughtUnitCostUsd }
  * Returns { opening: {lots, realizedEvents}, closing: {lots, realizedEvents} } — `closing` is the
@@ -198,6 +314,12 @@ export function replayFifo(events, periodStart, periodEnd) {
         break;
       case "self_in":
         ledger.acquire(event);
+        break;
+      case "lock":
+        ledger.lock(event);
+        break;
+      case "unlock":
+        ledger.unlock(event);
         break;
       case "swap":
         ledger.dispose({
@@ -267,6 +389,12 @@ export function replayFifoCheckpoints(events, checkpoints) {
         break;
       case "self_in":
         ledger.acquire(event);
+        break;
+      case "lock":
+        ledger.lock(event);
+        break;
+      case "unlock":
+        ledger.unlock(event);
         break;
       case "swap":
         ledger.dispose({
