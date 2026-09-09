@@ -2,7 +2,9 @@ import React, { useMemo, useState } from "react";
 import { border, muted, mutedLight, panel, VALIDATOR_PALETTE } from "../theme.js";
 import { formatInt, shortHash } from "../utils/format.js";
 
-const CELL_SIZE = 11;
+// Floor only, not a fixed size — see the grid's own gridTemplateColumns comment below for why
+// this no longer determines the rendered size on a wide container.
+const CELL_MIN_SIZE = 11;
 const CELL_GAP = 3;
 const TOP_VALIDATORS = 9; // + "Other" as a 10th bucket — bounds the legend regardless of how many validators actually produced blocks in the window
 const OTHER_COLOR = muted;
@@ -81,7 +83,17 @@ export default function CalendarHeatmap({ days }) {
   return (
     <div>
       <div style={{ position: "relative", overflowX: "auto", paddingBottom: 4 }}>
-        <div style={{ display: "grid", gridTemplateRows: `repeat(7, ${CELL_SIZE}px)`, gridAutoFlow: "column", gap: CELL_GAP, width: "max-content" }}>
+        {/* Was a fixed 11px cell regardless of container width — on a wide desktop panel that left
+            most of the box empty (confirmed: this chart's own row of siblings is much wider than
+            120 days' worth of 11px columns), while on a narrower mobile viewport that same fixed
+            size happened to be a closer fit. Each week-column is now `minmax(CELL_MIN_SIZE, 1fr)`
+            instead of a fixed px, so columns grow to fill however wide the container actually is
+            (desktop) while never shrinking below the size that already worked fine on mobile — if
+            the container is narrower than `weeks * CELL_MIN_SIZE`, the columns hold their floor
+            and the surrounding overflowX:auto scrolls instead, same fallback as before.
+            aspect-ratio keeps every cell square at whatever width it lands on, rather than a fixed
+            height fighting a now-variable width. */}
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${weeks}, minmax(${CELL_MIN_SIZE}px, 1fr))`, gridTemplateRows: `repeat(7, 1fr)`, gridAutoFlow: "column", gap: CELL_GAP, width: "100%" }}>
           {cells.map((c, i) => {
             const tx = c?.entry?.txCount || 0;
             return (
@@ -90,8 +102,7 @@ export default function CalendarHeatmap({ days }) {
                 onMouseEnter={() => c && setHoverDate(c.date)}
                 onMouseLeave={() => setHoverDate((d) => (d === c?.date ? null : d))}
                 style={{
-                  width: CELL_SIZE,
-                  height: CELL_SIZE,
+                  aspectRatio: "1",
                   borderRadius: 2,
                   background: c ? intensityColor(tx, maxTx) : "transparent",
                   cursor: c?.entry ? "pointer" : "default",

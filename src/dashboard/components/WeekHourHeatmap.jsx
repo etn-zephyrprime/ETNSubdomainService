@@ -2,8 +2,13 @@ import React, { useMemo, useState } from "react";
 import { border, muted, mutedLight, panel } from "../theme.js";
 import { formatInt, formatEtnBalance } from "../utils/format.js";
 
-const CELL_SIZE = 20;
+// Floor only, not a fixed size — see the cells row's own flex-basis comment below for why this no
+// longer determines the rendered size on a wide container (same reasoning/fix as
+// CalendarHeatmap.jsx's own CELL_MIN_SIZE).
+const CELL_MIN_SIZE = 20;
 const CELL_GAP = 3;
+const LABEL_WIDTH = 56;
+const LABEL_GAP = 8;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 function intensityColor(value, max) {
@@ -53,20 +58,30 @@ export default function WeekHourHeatmap({ hours }) {
 
   return (
     <div>
+      {/* Was a fixed 20px cell regardless of container width — same "sparse on a wide desktop
+          panel, fine on a narrower mobile one" issue as CalendarHeatmap.jsx's own fixed-size grid,
+          and the same fix: each hour-cell now uses `flex: 1 1 0` with a `minWidth` floor instead
+          of a fixed width, so every row's 24 cells stretch to fill however wide the container
+          actually is. Every row (day + the hour-label row) shares the exact same label width/gap
+          and cell count, so their columns stay aligned across rows purely from each row
+          independently flexing its own cells across the same available width — no grid needed.
+          `overflowX: auto` on the outer wrapper is the same fallback as before for a container
+          narrower than 24 * CELL_MIN_SIZE. */}
       <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-        <div style={{ display: "inline-flex", flexDirection: "column", gap: CELL_GAP }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: CELL_GAP, width: "100%" }}>
           {rows.map((row) => (
-            <div key={row.date} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 56, flexShrink: 0, fontSize: 10, color: mutedLight, textAlign: "right" }}>{DAY_LABEL(row.date)}</div>
-              <div style={{ display: "flex", gap: CELL_GAP }}>
+            <div key={row.date} style={{ display: "flex", alignItems: "center", gap: LABEL_GAP }}>
+              <div style={{ width: LABEL_WIDTH, flexShrink: 0, fontSize: 10, color: mutedLight, textAlign: "right" }}>{DAY_LABEL(row.date)}</div>
+              <div style={{ display: "flex", gap: CELL_GAP, flex: 1 }}>
                 {row.cells.map((c) => (
                   <div
                     key={c.key}
                     onMouseEnter={() => setHoverKey(c.key)}
                     onMouseLeave={() => setHoverKey((k) => (k === c.key ? null : k))}
                     style={{
-                      width: CELL_SIZE,
-                      height: CELL_SIZE,
+                      flex: "1 1 0",
+                      minWidth: CELL_MIN_SIZE,
+                      aspectRatio: "1",
                       borderRadius: 3,
                       background: intensityColor(c.entry?.txCount || 0, maxTx),
                       cursor: c.entry ? "pointer" : "default",
@@ -78,12 +93,15 @@ export default function WeekHourHeatmap({ hours }) {
             </div>
           ))}
 
-          <div style={{ display: "flex", gap: CELL_GAP, marginLeft: 64 }}>
-            {HOURS.map((h) => (
-              <div key={h} style={{ width: CELL_SIZE, fontSize: 9, color: muted, textAlign: "center" }}>
-                {h % 6 === 0 ? h : ""}
-              </div>
-            ))}
+          <div style={{ display: "flex", alignItems: "center", gap: LABEL_GAP }}>
+            <div style={{ width: LABEL_WIDTH, flexShrink: 0 }} />
+            <div style={{ display: "flex", gap: CELL_GAP, flex: 1 }}>
+              {HOURS.map((h) => (
+                <div key={h} style={{ flex: "1 1 0", minWidth: CELL_MIN_SIZE, fontSize: 9, color: muted, textAlign: "center" }}>
+                  {h % 6 === 0 ? h : ""}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
