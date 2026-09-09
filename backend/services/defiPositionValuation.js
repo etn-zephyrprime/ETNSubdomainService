@@ -72,24 +72,30 @@ function getProvider() {
   return sharedProvider;
 }
 
-// Farm metadata (poolAddr/token0/token1/tickLower/tickUpper/name) never changes post-deploy —
-// cached indefinitely per (contract, farmId), same "resolve once" pattern as pnlEventBuilder.js's
-// own getFarmTokens (which this deliberately doesn't share, since that cache only stores
-// token0/token1/name — this needs the tick bounds too, for the full-range guard).
-const farmMetaCache = new Map(); // `${contract}:${farmId}` -> meta | null
+// Farm metadata (poolAddr/token0/token1/tickLower/tickUpper/name) never changes post-deploy — cached
+// indefinitely per (contract, farmId) ONCE SUCCESSFULLY READ, same "resolve once" pattern as
+// pnlEventBuilder.js's own getFarmTokens (which this deliberately doesn't share, since that cache
+// only stores token0/token1/name — this needs the tick bounds too, for the full-range guard). A
+// FAILED read (a transient RPC hiccup, a timeout) is never cached — same reasoning pnlPricing.js's
+// own failedBackfillThisRun/failedPriceLookupThisRun already document: caching a null result
+// indefinitely would silently and permanently hide that farm's positions for every wallet from then
+// on, with no way to recover short of a redeploy. Confirmed live this was exactly what had happened
+// to a real farm — a transient failure once, then every wallet's real, open position on it
+// invisible forever after.
+const farmMetaCache = new Map(); // `${contract}:${farmId}` -> meta (only ever set on success)
 async function getFarmMeta(contractAddress, farmId) {
   const key = `${contractAddress.toLowerCase()}:${farmId}`;
   if (farmMetaCache.has(key)) return farmMetaCache.get(key);
-  let meta = null;
   try {
     const farm = new ethers.Contract(contractAddress, YIELD_FARM_ABI, getProvider());
     const f = await farm.getFarmById(farmId);
-    meta = { poolAddr: f.poolAddr, token0: f.token0, token1: f.token1, tickLower: f.tickLower, tickUpper: f.tickUpper, name: f.name || null };
+    const meta = { poolAddr: f.poolAddr, token0: f.token0, token1: f.token1, tickLower: f.tickLower, tickUpper: f.tickUpper, name: f.name || null };
+    farmMetaCache.set(key, meta);
+    return meta;
   } catch (err) {
-    console.warn(`⚠️  DeFi position valuation: couldn't read farm metadata for ${contractAddress}#${farmId}:`, err.message);
+    console.warn(`⚠️  DeFi position valuation: couldn't read farm metadata for ${contractAddress}#${farmId}, will retry next call:`, err.message);
+    return null;
   }
-  farmMetaCache.set(key, meta);
-  return meta;
 }
 
 function isFullRangeFarm(meta) {
