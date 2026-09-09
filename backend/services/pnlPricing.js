@@ -10,16 +10,24 @@
 //    every "indexer product" tier below) since it's just KuCoin's own trading history, not a
 //    third-party data product with a free/paid tier. This is the primary source for ETN. Checked
 //    several other major exchanges too (Binance doesn't list ETN at all) before landing on KuCoin.
-//  - Tokens (any ERC-20 on this chain, e.g. CORE): GeckoTerminal's on-chain OHLCV, via
-//    tokenChartRouter.js's shared, rate-limited queue (fetchGeckoTerminal) — confirmed live this
-//    is capped at roughly the last 184 days REGARDLESS of a pool's actual age (tested 3 pools with
-//    very different creation dates, all returned exactly 184 candles) — a GeckoTerminal/CoinGecko
-//    account-tier restriction, not a per-request quirk, and not fixable without a paid API tier.
-//    There is no exchange-listing fallback for arbitrary tokens the way there is for ETN — none of
-//    these tokens trade anywhere but this chain's own DEX pools.
-//  - ETN also falls back to this same GeckoTerminal path, then to CoinGecko's historical-by-date
-//    endpoint (confirmed live: hard-capped at the past 365 days on the free tier), only if KuCoin
-//    itself ever fails entirely.
+//  - Tokens (any ERC-20 on this chain, e.g. CORE): ElectroSwap's own official API candles endpoint
+//    (electroSwapApi.js's getCandles) FIRST — confirmed live it reaches back to a pool's own
+//    creation for anything under 500 days old (a null `cursor` on a cursor-less, at-the-cap request
+//    means nothing further back exists to page to, not an untriggered pagination mechanism — see
+//    getCandles' own comment). Since this chain's EVM only went live ~March 2024, that ceiling
+//    currently covers EVERY pool's entire real history in one 600-credit call. Falls back to
+//    GeckoTerminal's on-chain OHLCV, via tokenChartRouter.js's shared, rate-limited queue
+//    (fetchGeckoTerminal) — confirmed live this is capped at roughly the last 184 days REGARDLESS
+//    of a pool's actual age (tested 3 pools with very different creation dates, all returned
+//    exactly 184 candles) — a GeckoTerminal/CoinGecko account-tier restriction, not a per-request
+//    quirk, and not fixable without a paid API tier — only when ElectroSwap isn't configured or
+//    has no price for a given token. There is no exchange-listing fallback for arbitrary tokens the
+//    way there is for ETN — none of these tokens trade anywhere but this chain's own DEX pools.
+//  - ETN also falls back to ElectroSwap (via its WETN pool) and then this same GeckoTerminal path,
+//    then to CoinGecko's historical-by-date endpoint (confirmed live: hard-capped at the past 365
+//    days on the free tier), only if KuCoin itself ever fails entirely — KuCoin's unrestricted
+//    2019-forward history is always tried first and stays primary for ETN; none of these fallbacks
+//    can reach nearly as far back.
 //
 // TESTNET CAVEAT: GeckoTerminal is a mainnet indexer product — it will never index the testnet
 // MockRouter/MockCoreToken pair used for the buy-and-burn lifecycle tests (see the PnL statement
@@ -27,6 +35,7 @@
 // price lookup to a fixed value so the pricing plumbing itself (caching, FIFO cost-basis math) can
 // still be exercised end-to-end on testnet without real market data.
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
+import { getCandles, isElectroSwapConfigured } from "../utils/electroSwapApi.js";
 import { getPricePoint, upsertPricePoint } from "../db/pricePoints.js";
 import { getBackfillState, markBackfilled } from "../db/priceHistoryBackfillState.js";
 
@@ -213,6 +222,36 @@ async function backfillAssetPriceHistory(cacheAsset, tokenAddress) {
   return { earliestDate, poolCount: sorted.length };
 }
 
+/** Bulk-backfills an asset's ElectroSwap-indexed daily price history in ONE call — up to the
+ * candles endpoint's own 500-day-per-call ceiling (see electroSwapApi.js's getCandles for how that
+ * ceiling was confirmed live: a cursor-less, at-the-cap request came back with cursor: null, and
+ * per ElectroSwap's own OpenAPI spec cursor is "the cursor from a previous response" for paging
+ * further back — a null cursor on the very FIRST page means nothing further back exists to page
+ * to, not an untriggered pagination mechanism). Since this chain's EVM only went live ~March 2024,
+ * that 500-day ceiling currently reaches every pool's entire real history — comfortably beating
+ * GeckoTerminal's ~184-day OHLCV ceiling (see this file's own header comment) for the same range,
+ * in a single 600-credit call instead of several paginated ones. Tried BEFORE
+ * backfillAssetPriceHistory (GeckoTerminal), never instead of it — a pool that does eventually turn
+ * 500+ days old, or ElectroSwap simply not being configured or not pricing this asset yet, falls
+ * straight through to that existing path unchanged. Deliberately returns null rather than
+ * `{ earliestDate: null, poolCount: 0 }` on "nothing to backfill" so ensureBackfilled's existing
+ * `!result || !result.earliestDate` fallback check treats "ElectroSwap has nothing for this asset"
+ * exactly the same as "ElectroSwap isn't configured" — one fallback condition, not two. */
+async function backfillTokenFromElectroSwap(cacheAsset, tokenAddress) {
+  if (!isElectroSwapConfigured()) return null;
+  const candles = await getCandles(tokenAddress, "1d", 500);
+  if (!candles || candles.length === 0) return null;
+
+  let earliestDate = null;
+  for (const c of candles) {
+    const day = new Date(c.time * 1000);
+    day.setUTCHours(0, 0, 0, 0);
+    await upsertPricePoint(cacheAsset, day, c.close, "electroswap-backfill");
+    if (!earliestDate || day < earliestDate) earliestDate = day;
+  }
+  return { earliestDate, poolCount: 1 };
+}
+
 const KUCOIN_CANDLES_URL = "https://api.kucoin.com/api/v1/market/candles";
 const KUCOIN_SYMBOL = "ETN-USDT"; // confirmed live listed, real daily data back to 2019-07-10
 const KUCOIN_PAGE_SIZE = 1500; // KuCoin's own per-request cap for this endpoint, confirmed live
@@ -301,19 +340,36 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
 
   try {
     let result = cacheAsset === "ETN" ? await backfillEtnFromKucoin() : null;
+    // KuCoin's own history is the only source that reaches back to 2019 — everything below it is a
+    // fallback for when KuCoin comes back empty (ETN) or was never tried at all (every token), so
+    // track whether KuCoin's result is actually what ends up recorded, separately from `result`
+    // itself getting overwritten by a later fallback.
+    const usedKucoin = Boolean(result && result.earliestDate);
+
     if (!result || !result.earliestDate) {
-      // Either a token (always uses the on-chain-pool path), or ETN's KuCoin call itself came back
-      // empty — shouldn't happen given it's confirmed live, but don't leave ETN with zero coverage
-      // if it ever does; fall back to the same on-chain-pool approach every other asset uses.
+      // ElectroSwap's own candle history (see backfillTokenFromElectroSwap above) reaches back to
+      // a pool's creation for anything under ElectroSwap's ~500-day ceiling — currently every pool
+      // on this chain, launched ~March 2024 — comfortably beating GeckoTerminal's ~184-day ceiling
+      // below in one cheap call. Tried for every token, and as ETN's second-line fallback (via its
+      // WETN pool) if KuCoin's full history somehow came back empty.
+      result = await backfillTokenFromElectroSwap(cacheAsset, tokenAddress);
+    }
+    if (!result || !result.earliestDate) {
+      // Either a token ElectroSwap didn't price (not configured, out of credits, or genuinely no
+      // pool there), or both ETN sources above came back empty — fall back to the on-chain-pool
+      // approach every asset used before ElectroSwap's API existed.
       result = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
     }
 
     // See KUCOIN_ETN_SANITY_FLOOR's comment: a mid-pagination KuCoin hiccup can produce a
     // non-throwing but truncated result that looks identical to a genuine "reached real history"
     // stop. Confirmed live once already (recorded earliest_available_date of 2025-02-24, when the
-    // pair's real listing is 2019-07-10). Don't let a suspiciously-recent ETN result get recorded
-    // as permanently done — leave no state row so the next call retries the full bulk fetch.
-    if (cacheAsset === "ETN" && result.earliestDate && result.earliestDate > KUCOIN_ETN_SANITY_FLOOR) {
+    // pair's real listing is 2019-07-10). Only applies when KuCoin's OWN result is what's being
+    // recorded — a later fallback (ElectroSwap/GeckoTerminal) genuinely can't reach past
+    // ~2024/~184-days-ago and shouldn't be judged against a floor that assumes KuCoin's much
+    // deeper history. Don't let a suspiciously-recent ETN-via-KuCoin result get recorded as
+    // permanently done — leave no state row so the next call retries the full bulk fetch.
+    if (usedKucoin && result.earliestDate > KUCOIN_ETN_SANITY_FLOOR) {
       console.warn(
         `⚠️  ETN KuCoin backfill only reached ${result.earliestDate.toISOString().slice(0, 10)} (expected back to ~2019-07-10) — treating as incomplete, not recording as backfilled. Will retry next call.`
       );
