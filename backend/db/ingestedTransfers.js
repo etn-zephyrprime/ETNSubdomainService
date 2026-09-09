@@ -1,4 +1,10 @@
-import { query } from "./pool.js";
+import { query, chunkArray } from "./pool.js";
+
+// Max rows per INSERT statement — see pool.js's own chunkArray comment for why this exists at
+// all (a real production crash, not a preemptive guess) and why 500 is comfortably safe here:
+// 500 * COLUMNS.length (17) = 8,500 bound parameters, well under the ~32,768 threshold that
+// actually broke.
+const BATCH_SIZE = 500;
 
 // Raw per-wallet transfer history — dedup key (tracked_wallet, tx_hash, log_index) mirrors
 // nftSalesCache.js's composite-key pattern. log_index is -1 for a plain top-level/internal native
@@ -55,25 +61,29 @@ function rowToValues(r) {
 export async function insertTransfers(rows) {
   if (!rows.length) return;
 
-  const values = [];
-  const placeholders = rows.map((r) => {
-    const rowValues = rowToValues(r);
-    if (rowValues.length !== COLUMNS.length) {
-      throw new Error(`insertTransfers: row produced ${rowValues.length} values, expected ${COLUMNS.length}`);
-    }
-    const tuple = rowValues.map((v) => {
-      values.push(v);
-      return `$${values.length}`;
+  // Chunked — see pool.js's own chunkArray comment for why a single INSERT built from the WHOLE
+  // row list can silently corrupt at large batch sizes (confirmed live, not theoretical).
+  for (const batch of chunkArray(rows, BATCH_SIZE)) {
+    const values = [];
+    const placeholders = batch.map((r) => {
+      const rowValues = rowToValues(r);
+      if (rowValues.length !== COLUMNS.length) {
+        throw new Error(`insertTransfers: row produced ${rowValues.length} values, expected ${COLUMNS.length}`);
+      }
+      const tuple = rowValues.map((v) => {
+        values.push(v);
+        return `$${values.length}`;
+      });
+      return `(${tuple.join(",")})`;
     });
-    return `(${tuple.join(",")})`;
-  });
 
-  await query(
-    `INSERT INTO ingested_transfers (${COLUMNS.map((c) => (c === "timestamp" ? '"timestamp"' : c)).join(",")})
-     VALUES ${placeholders.join(",")}
-     ON CONFLICT (tracked_wallet, tx_hash, log_index) DO NOTHING`,
-    values
-  );
+    await query(
+      `INSERT INTO ingested_transfers (${COLUMNS.map((c) => (c === "timestamp" ? '"timestamp"' : c)).join(",")})
+       VALUES ${placeholders.join(",")}
+       ON CONFLICT (tracked_wallet, tx_hash, log_index) DO NOTHING`,
+      values
+    );
+  }
 }
 
 export async function getTransfersInRange(trackedWallet, fromTs, toTs) {

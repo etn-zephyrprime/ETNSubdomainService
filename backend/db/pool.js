@@ -42,3 +42,24 @@ export async function query(text, params) {
   if (!pool) return null;
   return pool.query(text, params);
 }
+
+/** Splits `array` into chunks of at most `size` items each — for any bulk multi-row INSERT built
+ * as one big `VALUES ($1,...),($n,...),...` statement (see ingestedTransfers.js/swapTrades.js/
+ * defiActivity.js's own insert functions), never build that statement from the FULL row list
+ * directly; chunk it with this first and issue one INSERT per chunk.
+ *
+ * CONFIRMED LIVE this matters, not just a theoretical cap: a wallet with real, extensive history
+ * produced ~2095 rows in one insertTransfers call (17 columns each, ~35615 total bound
+ * parameters) and Postgres rejected it with "bind message has 35614 parameter formats but 0
+ * parameters" — a real node-postgres bug at large parameter counts (confirmed against
+ * node-postgres's own issue tracker: bind messages silently corrupt somewhere past ~32768 bound
+ * parameters, well under Postgres' own documented 65535 wire-protocol limit — 32768 is exactly
+ * the signed 16-bit boundary, consistent with an internal signed/unsigned mismatch in how the
+ * library sizes its parameter-format buffer). Each of the three call sites picks its own
+ * comfortably-safe per-chunk row count (see their own BATCH_SIZE) — nowhere close to 32768 even
+ * at their widest column count, so there's real margin, not a tight fit against the same wall. */
+export function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) chunks.push(array.slice(i, i + size));
+  return chunks;
+}
