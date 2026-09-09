@@ -3,12 +3,13 @@
 // Shared "what is this member's combined tracked-wallet portfolio worth in USD right now"
 // computation — used by both portfolioAlertScheduler.js (threshold alerts) and
 // portfolioDigestScheduler.js (daily summary), so the two features can never quietly disagree on
-// what "portfolio value" means. Same pricing sources as tokenPriceAlertScheduler.js: ETN's own
-// value via the live etnPriceCache.js price, and every held token's value via dexPriceQuote.js's
-// on-chain ElectroSwap read (ETN leg) times that same ETN/USD price — zero GeckoTerminal
-// involvement in the recurring poll itself (a token's FIRST-ever price lookup anywhere in this
-// backend still resolves its pool via GeckoTerminal once, per dexPriceQuote.js's own header
-// comment — after that it's cached forever and this is pure on-chain reads).
+// what "portfolio value" means. Token pricing is now ElectroSwap's own official API FIRST — one
+// batched call per wallet (see electroSwapApi.js's own header comment on why batching over this
+// app's previous per-token on-chain reads) — falling back per-token to dexPriceQuote.js's on-chain
+// ElectroSwap read (ETN leg, times the live etnPriceCache.js ETN/USD price) for anything
+// ElectroSwap's API doesn't price (ELECTROSWAP_API_KEY not configured, the account is out of
+// credits, or the specific token just isn't indexed there yet) — never a hard dependency on the new
+// API, always the same coverage this app already had before it existed.
 //
 // Spam-token and NFT exclusion mirrors CoreTierPortfolio.jsx's own frontend total (isSpamTokenName,
 // NFT type filtering) so a member sees the same total here as on the dashboard, not two subtly
@@ -16,6 +17,7 @@
 import { ethers } from "ethers";
 import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
+import { getBatchTokenPrices } from "./electroSwapApi.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
@@ -79,8 +81,27 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       (tb) => !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name) && BigInt(tb.value || 0) > 0n
     );
     if (fungible.length > MAX_PRICED_TOKENS_PER_WALLET) hasUnpriced = true;
+    const priced = fungible.slice(0, MAX_PRICED_TOKENS_PER_WALLET);
 
-    for (const tb of fungible.slice(0, MAX_PRICED_TOKENS_PER_WALLET)) {
+    // One batched ElectroSwap call for every fungible holding in this wallet (up to
+    // MAX_PRICED_TOKENS_PER_WALLET, which is also ElectroSwap's own per-call max — the whole
+    // wallet fits in a single request). Returns an empty Map (never throws) if ELECTROSWAP_API_KEY
+    // isn't configured, so the fallback loop below is exactly this app's pre-existing behavior on
+    // any deployment that hasn't set the key yet.
+    const electroSwapPrices = await getBatchTokenPrices(priced.map((tb) => tb.token.address));
+
+    for (const tb of priced) {
+      const addressLc = tb.token.address.toLowerCase();
+      const amount = parseFloat(ethers.formatUnits(tb.value, Number(tb.token?.decimals || 18)));
+
+      const electroSwapUsd = electroSwapPrices.get(addressLc);
+      if (electroSwapUsd != null) {
+        totalUsd += amount * electroSwapUsd;
+        continue;
+      }
+
+      // Fall back to the on-chain read for anything ElectroSwap didn't price — same behavior this
+      // app had before ElectroSwap's API existed.
       if (etnUsd == null) {
         hasUnpriced = true;
         continue;
@@ -91,7 +112,6 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
           hasUnpriced = true;
           continue;
         }
-        const amount = parseFloat(ethers.formatUnits(tb.value, Number(tb.token?.decimals || 18)));
         totalUsd += amount * tokenEtnPrice * etnUsd;
       } catch (err) {
         console.warn(`⚠️  Portfolio valuation: price lookup failed for ${tb.token?.address}:`, err.message);
