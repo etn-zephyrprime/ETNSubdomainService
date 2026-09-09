@@ -6,6 +6,7 @@ import telegramLinkRouter, { registerTelegramWebhook } from "./utils/telegramLin
 import notisLinkRouter, { registerNotisWebhook } from "./utils/notisLinkRouter.js";
 import tokenChartRouter from "./utils/tokenChartRouter.js";
 import r2CacheProxyRouter from "./utils/r2CacheProxyRouter.js";
+import fxRateRouter from "./utils/fxRateRouter.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
@@ -74,6 +75,7 @@ app.use("/api", telegramLinkRouter);
 app.use("/api", notisLinkRouter);
 app.use("/api", tokenChartRouter);
 app.use("/api", r2CacheProxyRouter);
+app.use("/api", fxRateRouter);
 app.use("/api", pnlStatementRouter);
 app.use("/api", premiumDashboardRouter);
 app.use("/api", premiumAlertsRouter);
