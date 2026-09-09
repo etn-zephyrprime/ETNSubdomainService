@@ -1,5 +1,7 @@
 import React, { useState, Suspense, lazy } from "react";
 import DashboardHeader from "./components/DashboardHeader.jsx";
+import CurrencySelector from "./components/CurrencySelector.jsx";
+import { useCurrency } from "./hooks/useCurrency.js";
 import { greenGlow, mutedLight, background } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
@@ -26,6 +28,12 @@ const PortfolioDashboardSection = lazy(() => import("./premium/PortfolioDashboar
 // chunk, so main.jsx's hostname-based dynamic import still keeps the Reown/WalletConnect bundle
 // (and its network calls) out of the base dashboard build for visitors who never open Premium.
 export default function DashboardApp() {
+  // Subscribes this top-level component to currency changes purely so switching currency forces a
+  // full re-render sweep of everything below — every formatUsdPrice() call downstream reads the
+  // current currency/rate directly at render time (see useCurrency.js's own header comment), so
+  // there's nothing else to wire up: no currency prop to thread through, this call is the only
+  // reason a change anywhere (CurrencySelector, below) reaches every tab.
+  useCurrency();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   // /pnl opens straight to the Premium (PnL Statement) tab — the feature's canonical link,
   // dashboard.planetzephyros.xyz/pnl. /premium is kept working too, purely for backward
@@ -82,6 +90,10 @@ export default function DashboardApp() {
       padding: "40px 16px",
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }}>
+      <div style={{ width: "100%", maxWidth: 900, display: "flex", justifyContent: "flex-end" }}>
+        <CurrencySelector />
+      </div>
+
       <DashboardHeader isMobile={isMobile} />
 
       <div style={{ width: "100%", maxWidth: 900 }}>

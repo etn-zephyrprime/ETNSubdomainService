@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { getCurrentCurrencySnapshot } from "../hooks/useCurrency.js";
 
 /** "154189614" -> "154.19M" — Blockscout returns big counters as decimal strings. */
 export function formatCompact(value) {
@@ -30,13 +31,22 @@ export function formatTokenAmount(rawValue, decimals) {
   }
 }
 
-/** ETN trades at a fraction of a cent, so a flat 2-decimal $ format would round it to "$0.00" —
- * shows enough decimals to actually be meaningful below a cent, plain 2-decimal above it. */
+/** ETN trades at a fraction of a cent, so a flat 2-decimal format would round it to "$0.00" —
+ * shows enough decimals to actually be meaningful below a cent, plain 2-decimal above it.
+ *
+ * `value` is always USD in, regardless of the viewer's chosen display currency (every caller
+ * across this app computes/stores figures in USD — this is the one place that converts for
+ * display) — reads the dashboard's current currency/live rate (see useCurrency.js's own header
+ * comment on why this is a plain function reading shared state rather than a hook) and formats
+ * with that currency's own symbol. Falls back to a 1:1 USD-labeled-as-chosen-currency figure until
+ * the live rate has loaded, same "degrade, don't break" convention as the rest of this app. */
 export function formatUsdPrice(value) {
   if (!Number.isFinite(value)) return "—";
-  if (value === 0) return "$0";
-  if (Math.abs(value) < 0.01) return `$${value.toFixed(6)}`;
-  return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const { symbol, rate } = getCurrentCurrencySnapshot();
+  const converted = value * rate;
+  if (converted === 0) return `${symbol}0`;
+  if (Math.abs(converted) < 0.01) return `${symbol}${converted.toFixed(6)}`;
+  return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /** Native ETN balance (always 18 decimals) — same rounding as this app's own formatEth. */
