@@ -111,6 +111,19 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   const realizedPnlUsdGross = closing.realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   const realizedPnlUsd = realizedPnlUsdGross.minus(gas.totalGasUsd);
 
+  // Per-token realized P&L, for the dashboard's token filter (CoreTierPnl.jsx) — GROSS of gas,
+  // unlike the aggregate realizedPnlUsd above: gas is paid in ETN regardless of which token a
+  // transaction touched, so there's no honest way to attribute a slice of it to one specific
+  // token's own figure. Deliberately a separate field rather than folding gas in per-token anyway
+  // (which would either double-count it across every token or require an arbitrary allocation
+  // rule) — the frontend labels a single-token view accordingly rather than implying it nets to
+  // the same total as the all-tokens aggregate.
+  const realizedByTokenMap = new Map(); // tokenAddress -> Decimal
+  for (const e of closing.realizedEvents) {
+    const running = realizedByTokenMap.get(e.tokenAddress) || new Decimal(0);
+    realizedByTokenMap.set(e.tokenAddress, running.plus(e.realizedPnlUsd));
+  }
+
   if (priorityAssets) {
     // Fire-and-forget — the caller already has a usable (partial) result; this fills in the rest
     // without making them wait for it. Errors are logged inside backfillDeferredPrices itself, per
@@ -129,6 +142,10 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     currentValueUsd: valuation.totalMarketValueUsd.toString(),
     unrealizedPnlUsd: valuation.totalUnrealizedUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
+    // [{ tokenAddress, realizedPnlUsd }] — gross of gas, see the comment above realizedByTokenMap.
+    // A token with holdings but no realized events (never sold) simply doesn't appear here, not a
+    // fabricated 0 — same "omit rather than fake" convention as holdings' own marketValueUsd null.
+    realizedByToken: [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
     gasUsd: gas.totalGasUsd.toString(),
     // True only when THIS computation used priority scoping — the figures above are a lower
     // bound (same spirit as the rest of this app's "≈" convention) until the background backfill
@@ -144,6 +161,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
  * useCombinedPortfolio.js/CoreTierPortfolio.jsx already use for the live balance/holdings view. */
 export function combineLivePnlSnapshots(snapshots) {
   const holdingsByToken = new Map(); // tokenAddress -> { tokenAddress, quantity: Decimal, costBasisUsd: Decimal, marketValueUsd: Decimal|null }
+  const realizedByTokenMap = new Map(); // tokenAddress -> Decimal
   let currentValueUsd = new Decimal(0);
   let unrealizedPnlUsd = new Decimal(0);
   let realizedPnlUsd = new Decimal(0);
@@ -156,6 +174,14 @@ export function combineLivePnlSnapshots(snapshots) {
     realizedPnlUsd = realizedPnlUsd.plus(snap.realizedPnlUsd);
     gasUsd = gasUsd.plus(snap.gasUsd);
     if (snap.pricingIncomplete) pricingIncomplete = true;
+
+    // Defaults to [] for a snapshot computed before this field existed (a stale cached response
+    // shape, in principle — this is never persisted, so in practice only matters for the instant
+    // this deploys) rather than throwing on a wallet whose own snapshot predates it.
+    for (const r of snap.realizedByToken || []) {
+      const running = realizedByTokenMap.get(r.tokenAddress) || new Decimal(0);
+      realizedByTokenMap.set(r.tokenAddress, running.plus(r.realizedPnlUsd));
+    }
 
     for (const h of snap.holdings) {
       const existing = holdingsByToken.get(h.tokenAddress);
@@ -183,6 +209,7 @@ export function combineLivePnlSnapshots(snapshots) {
       costBasisUsd: h.costBasisUsd.toString(),
       marketValueUsd: h.marketValueUsd?.toString() ?? null,
     })),
+    realizedByToken: [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
     currentValueUsd: currentValueUsd.toString(),
     unrealizedPnlUsd: unrealizedPnlUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),

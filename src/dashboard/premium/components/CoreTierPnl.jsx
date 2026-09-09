@@ -20,6 +20,37 @@ function fmtSigned(v) {
   return `${v >= 0 ? "+" : ""}${formatUsdPrice(v)}`;
 }
 
+// Narrows a snapshot-shaped object (combined, or one entry of snapshot.perWallet — both have the
+// same holdings/realizedByToken/currentValueUsd/unrealizedPnlUsd/realizedPnlUsd shape) down to one
+// token's own figures. currentValueUsd/unrealizedPnlUsd come back null for a token that's held but
+// unpriced (marketValueUsd null — same "omit rather than fake" convention the holdings list itself
+// already uses), NOT for a token with zero exposure — a caller filtering the token list to wallets
+// that actually hold it should never hit that case. realizedPnlUsd defaults to "0" (a real, known
+// zero) for a held token that's simply never been sold, distinct from "unpriced" — realized P&L
+// doesn't depend on a live price the way current/unrealized do.
+function pickTokenFigures(snap, tokenFilter) {
+  if (!snap) return null;
+  if (tokenFilter === "all") {
+    return { currentValueUsd: snap.currentValueUsd, unrealizedPnlUsd: snap.unrealizedPnlUsd, realizedPnlUsd: snap.realizedPnlUsd };
+  }
+  const holding = snap.holdings?.find((h) => h.tokenAddress === tokenFilter);
+  const currentValueUsd = holding?.marketValueUsd ?? null;
+  const unrealizedPnlUsd = holding?.marketValueUsd != null ? String(Number(holding.marketValueUsd) - Number(holding.costBasisUsd)) : null;
+  const realizedPnlUsd = snap.realizedByToken?.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlUsd ?? "0";
+  return { currentValueUsd, unrealizedPnlUsd, realizedPnlUsd };
+}
+
+const selectStyle = {
+  padding: "8px 12px",
+  borderRadius: 10,
+  border: `1px solid ${border}`,
+  background: panel2,
+  color: "#fff",
+  fontSize: 12,
+  fontWeight: 600,
+  outline: "none",
+};
+
 // Core tier's ongoing dashboard PnL — a live, lightweight "how am I doing right now" view, built
 // on the EXACT SAME FIFO ledger the PnL Statement product uses (pnlSnapshotService.js reuses
 // pnlEventBuilder.js/fifoLotEngine.js verbatim, not a second implementation) so this can never
@@ -134,6 +165,23 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // below) — distinct from `!combined`, which is also true before the very first load completes.
   const filteredWalletFailed = walletFilter !== "all" && (snapshot?.failed || []).includes(walletFilter);
   const formatValue = (v) => formatUsdPrice(v);
+
+  // Token filter — local to this panel only, unlike walletFilter (shared across all four Core Tier
+  // panels in PortfolioDashboardSection.jsx): a token list only makes sense once you're already
+  // looking at PnL specifically, and a per-token breakdown for Portfolio/Balance History/Alerts is
+  // a different feature each of those would need to opt into on its own. Self-healing the same way
+  // PortfolioDashboardSection.jsx validates walletFilter: if the previously-selected token vanishes
+  // from the current (possibly wallet-filtered) holdings — switching wallet filter, a refresh, a
+  // fully-disposed position — this quietly falls back to "all" instead of showing a blank filtered
+  // view for a token that's no longer in scope.
+  const [tokenFilterRaw, setTokenFilter] = useState("all");
+  const tokenFilter =
+    tokenFilterRaw === "all" || (combined?.holdings || []).some((h) => h.tokenAddress === tokenFilterRaw) ? tokenFilterRaw : "all";
+  const tokenOptions = (combined?.holdings || [])
+    .filter((h) => !isSpamToken(h.tokenAddress))
+    .slice()
+    .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0));
+  const figures = pickTokenFigures(combined, tokenFilter);
 
   return (
     <DashboardPanel>
@@ -253,42 +301,66 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                     in further on their own. Refresh in a few minutes for the complete picture.
                   </div>
                 )}
+
+                {tokenOptions.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted }}>Token</span>
+                    <select value={tokenFilter} onChange={(e) => setTokenFilter(e.target.value)} style={selectStyle}>
+                      <option value="all">All tokens</option>
+                      {tokenOptions.map((h) => (
+                        <option key={h.tokenAddress} value={h.tokenAddress}>{resolveTokenName(h.tokenAddress)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
                   <div>
                     <div style={sectionHeaderStyle}>Current Value</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(combined.currentValueUsd))}</div>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>
+                      {figures.currentValueUsd != null ? formatUsdPrice(Number(figures.currentValueUsd)) : "price unavailable"}
+                    </div>
                   </div>
                   <div>
                     <div style={sectionHeaderStyle}>Unrealized P&amp;L</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(combined.unrealizedPnlUsd)) }}>
-                      {fmtSigned(Number(combined.unrealizedPnlUsd))}
+                    <div style={{ fontSize: 22, fontWeight: 900, color: figures.unrealizedPnlUsd != null ? pnlColor(Number(figures.unrealizedPnlUsd)) : mutedLight }}>
+                      {figures.unrealizedPnlUsd != null ? fmtSigned(Number(figures.unrealizedPnlUsd)) : "—"}
                     </div>
                   </div>
                   <div>
                     <div style={sectionHeaderStyle}>Realized P&amp;L (running total)</div>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(combined.realizedPnlUsd)) }}>
-                      {fmtSigned(Number(combined.realizedPnlUsd))}
+                    <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
+                      {fmtSigned(Number(figures.realizedPnlUsd))}
                     </div>
-                    <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>Since tracking began, net of gas</div>
+                    <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
+                      {tokenFilter === "all" ? "Since tracking began, net of gas" : "Since tracking began — gas isn't attributed per token"}
+                    </div>
                   </div>
                 </div>
 
                 {walletFilter === "all" && active.length > 1 && snapshot.perWallet && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
-                    {snapshot.perWallet.map((w) => (
-                      <div key={w.walletAddress} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                        <span style={{ color: mutedLight }}>
-                          {w.walletAddress.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                          {resolveWalletName(w.walletAddress)}
-                        </span>
-                        <span style={{ display: "flex", gap: 10 }}>
-                          <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
-                          <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
-                            {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
-                          </span>
-                        </span>
-                      </div>
-                    ))}
+                    {snapshot.perWallet
+                      .filter((w) => tokenFilter === "all" || w.holdings?.some((h) => h.tokenAddress === tokenFilter))
+                      .map((w) => {
+                        const wf = pickTokenFigures(w, tokenFilter);
+                        return (
+                          <div key={w.walletAddress} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                            <span style={{ color: mutedLight }}>
+                              {w.walletAddress.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                              {resolveWalletName(w.walletAddress)}
+                            </span>
+                            <span style={{ display: "flex", gap: 10 }}>
+                              <span style={{ color: "#fff", fontWeight: 700 }}>
+                                {wf.currentValueUsd != null ? formatUsdPrice(Number(wf.currentValueUsd)) : "price unavailable"}
+                              </span>
+                              <span style={{ color: wf.unrealizedPnlUsd != null ? pnlColor(Number(wf.unrealizedPnlUsd) + Number(wf.realizedPnlUsd)) : mutedLight }}>
+                                {wf.unrealizedPnlUsd != null ? fmtSigned(Number(wf.unrealizedPnlUsd) + Number(wf.realizedPnlUsd)) : "—"}
+                              </span>
+                            </span>
+                          </div>
+                        );
+                      })}
                   </div>
                 )}
 
@@ -300,14 +372,20 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                     // means dexPriceQuote.js found no ElectroSwap pool at all for this token
                     // (checked server-side against GeckoTerminal's full pool list, not a narrow
                     // recent-activity window) — a confirmed negative, safe to hide by default.
-                    const allHoldings = combined.holdings.filter((h) => !isSpamToken(h.tokenAddress));
+                    const allHoldings = combined.holdings.filter(
+                      (h) => !isSpamToken(h.tokenAddress) && (tokenFilter === "all" || h.tokenAddress === tokenFilter)
+                    );
                     const hiddenCount = allHoldings.filter((h) => h.marketValueUsd == null).length;
                     const shown = (showHiddenTokens ? allHoldings : allHoldings.filter((h) => h.marketValueUsd != null))
                       .slice()
                       .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0));
 
                     if (allHoldings.length === 0) {
-                      return <div style={{ fontSize: 12, color: muted }}>No holdings across your tracked wallets right now.</div>;
+                      return (
+                        <div style={{ fontSize: 12, color: muted }}>
+                          {tokenFilter === "all" ? "No holdings across your tracked wallets right now." : "No holdings of this token right now."}
+                        </div>
+                      );
                     }
                     return (
                       <>
@@ -359,6 +437,11 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
 
             <div>
               <div style={sectionHeaderStyle}>Value Over Time</div>
+              {tokenFilter !== "all" && !historyError && (
+                <div style={{ fontSize: 11, color: muted, marginBottom: 8, fontStyle: "italic" }}>
+                  Per-token history isn't available yet — this chart shows your whole tracked wallet{walletFilter === "all" && active.length > 1 ? "s" : ""}, not just the selected token.
+                </div>
+              )}
               {historyError ? (
                 <div style={{ fontSize: 12, color: errorColor }}>{historyError}</div>
               ) : combinedHistory.length === 0 ? (
