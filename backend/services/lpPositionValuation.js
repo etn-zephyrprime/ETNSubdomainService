@@ -120,7 +120,11 @@ const V2_PAIR_IFACE = new ethers.Interface([
   "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
   "function totalSupply() view returns (uint256)",
 ]);
-async function probeV2Pool(address) {
+// Exported so categoryPnlService.js can reuse this exact same cached probe (and its shared cache —
+// a wallet's history-classification pass and a live valuation pass never need to independently
+// re-confirm the same pool address) when classifying a wallet's FULL historical token list into
+// "Liquidity Positions" vs everything else, not just its currently-held tokens.
+export async function probeV2Pool(address) {
   const key = address.toLowerCase();
   if (v2PoolCache.has(key)) return v2PoolCache.get(key);
   try {
