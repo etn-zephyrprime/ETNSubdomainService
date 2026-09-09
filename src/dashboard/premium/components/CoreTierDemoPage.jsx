@@ -4,8 +4,9 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import CoreTierDemo from "./CoreTierDemo.jsx";
 import { green, mutedLight, border, panel2 } from "../../theme.js";
 
-// Standalone page for the Core Tier demo (Balance History + PnL for the fixed planetzephyros.etn
-// wallet, see CoreTierDemo.jsx's own header comment) — previously expanded IN PLACE of
+// Standalone page for the Core Tier demo (Balance History + PnL for one fixed, real wallet with
+// genuinely representative activity — see CoreTierDemo.jsx's own header comment; its address/ENS
+// name is deliberately never shown here, only its data) — previously expanded IN PLACE of
 // CoreTierPortfolio.jsx's own connect/subscribe gate, squeezed into that one panel alongside
 // everything else Portfolio shows; that read as cramped and missing sections a real member's view
 // has plenty of room for. Its own page gives it the same room every other tab gets. No wallet
@@ -46,8 +47,8 @@ export default function CoreTierDemoPage({ onSelectToken, onExit }) {
 
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 20, lineHeight: 1.6 }}>
         A live preview of what Core Tier actually offers — Balance History and PnL — for{" "}
-        <span style={{ color: "#fff", fontWeight: 700 }}>planetzephyros.etn</span>, not your own
-        wallet. Connect and subscribe under the Premium tab to track your own instead.
+        <span style={{ color: "#fff", fontWeight: 700 }}>a real member's wallet</span> (anonymized
+        here), not your own. Connect and subscribe under the Premium tab to track your own instead.
       </div>
 
       <CoreTierDemo onSelectToken={onSelectToken} />

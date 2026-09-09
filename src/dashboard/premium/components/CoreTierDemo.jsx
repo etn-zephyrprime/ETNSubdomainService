@@ -11,11 +11,12 @@ import { getHistoricalBalance } from "../../utils/historicalBalance.js";
 import { formatChartDate, formatUsdPrice } from "../../utils/format.js";
 import { green, muted, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
-// planetzephyros.etn — resolved live via Blockscout's ENS reverse-index (api/v2/search) before
-// hardcoding here. Must stay in sync with coreTierDemoRouter.js's own copy of this same address —
-// no shared build step between frontend/backend in this repo (same reasoning as several other
-// hand-synced constants elsewhere).
-const DEMO_WALLET_ADDRESS = "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099";
+// A real wallet with rich farm/staking/token activity, chosen for a genuinely representative demo
+// — deliberately never shown as an address/ENS name anywhere below (see DemoBalanceHistory/DemoPnl,
+// neither of which render it), only its PnL/balance DATA is used. Must stay in sync with
+// coreTierDemoRouter.js's own copy of this same address — no shared build step between frontend/
+// backend in this repo (same reasoning as several other hand-synced constants elsewhere).
+const DEMO_WALLET_ADDRESS = "0x4bf2f40a2bf91b15c0a6c45ec2c4e1338d15df10";
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
 
 function fmtEtn(v) {
@@ -244,10 +245,10 @@ function DemoPnl({ onSelectToken }) {
   );
 }
 
-/** Core Tier's actual value proposition, previewed for one fixed wallet (planetzephyros.etn) —
- * Balance History and PnL — available to anyone, including a visitor with no wallet connected at
- * all. See CoreTierPortfolio.jsx's own "View Demo" toggle, which renders this in place of
- * CoreTierGate's connect/subscribe messaging. */
+/** Core Tier's actual value proposition, previewed for one fixed, deliberately anonymized real
+ * wallet (see DEMO_WALLET_ADDRESS above) — Balance History and PnL — available to anyone,
+ * including a visitor with no wallet connected at all. See CoreTierDemoPage.jsx, which renders
+ * this as its own standalone page, reachable via CoreTierPortfolio.jsx's "View Demo" button. */
 export default function CoreTierDemo({ onSelectToken }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>

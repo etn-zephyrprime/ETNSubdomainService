@@ -11,21 +11,23 @@
 // PnL has no such public path — computeLivePnlSnapshot/getPnlSnapshotHistory are real backend
 // functions normally reached only through signature+membership-gated routes. This is a SEPARATE,
 // intentionally narrow public route rather than a "skip auth" flag on the real ones: it ALWAYS
-// operates on the one hardcoded DEMO_WALLET_ADDRESS (planetzephyros.etn) and NEVER accepts a wallet
-// from the client — a public, unauthenticated route that computed live PnL for any address on
-// request would be a real abuse vector (computeLivePnlSnapshot is a full FIFO replay + live pricing
-// pass, the same expensive computation a real member's own signed request pays for). Cached in
-// memory (DEMO_CACHE_TTL_MS) on top of that so repeated visits — from however many different
-// people — only ever pay for that cost once per cache window, not once per request.
+// operates on the one hardcoded DEMO_WALLET_ADDRESS and NEVER accepts a wallet from the client — a
+// public, unauthenticated route that computed live PnL for any address on request would be a real
+// abuse vector (computeLivePnlSnapshot is a full FIFO replay + live pricing pass, the same
+// expensive computation a real member's own signed request pays for). Cached in memory
+// (DEMO_CACHE_TTL_MS) on top of that so repeated visits — from however many different people —
+// only ever pay for that cost once per cache window, not once per request.
 import express from "express";
 import { computeLivePnlSnapshot, backfillPnlHistory } from "../services/pnlSnapshotService.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
 
-// planetzephyros.etn — resolved live via Blockscout's ENS reverse-index (api/v2/search) before
-// hardcoding here; CoreTierDemo.jsx's own copy of this same address must stay in sync (no shared
+// A real wallet with rich farm/staking/token activity, chosen for a genuinely representative demo
+// — deliberately never named or shown as an address/ENS name anywhere in the demo UI (CoreTierDemo.jsx/
+// CoreTierDemoPage.jsx label it generically, e.g. "a real member wallet"), only its PnL/balance
+// DATA is used. CoreTierDemo.jsx's own copy of this same address must stay in sync (no shared
 // build step between frontend/backend in this repo, same reasoning as several other hand-synced
 // constants elsewhere — e.g. pnlStatementGenerator.js's THEME).
-const DEMO_WALLET_ADDRESS = "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099";
+const DEMO_WALLET_ADDRESS = "0x4bf2f40a2bf91b15c0a6c45ec2c4e1338d15df10";
 const DEMO_HISTORY_DAYS = 365; // matches the real feature's own rolling-12-months convention
 const DEMO_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — a demo doesn't need to be second-fresh; this is what keeps a public, unauthenticated route cheap regardless of visitor count
 
