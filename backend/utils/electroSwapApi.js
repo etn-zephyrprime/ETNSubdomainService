@@ -2,7 +2,8 @@
 //
 // ElectroSwap's official public API (electroneum mainnet DEX) — metered by credits, no free tier.
 // See the "electroswap-api" memory / https://electroswap.io/docs/api/ for the full reference; this
-// file only wraps what this app actually needs so far: token pricing (batched USD/ETN).
+// file only wraps what this app actually needs so far: token pricing (batched USD/ETN) and OHLCV
+// candles for chart data.
 //
 // Confirmed LIVE against the real API with a funded key — worth noting because their own docs and
 // their own OpenAPI spec disagreed with each other on the batch endpoint's shape (the prose docs
@@ -87,6 +88,41 @@ export async function getTokenPrice(tokenAddress) {
     return parsePriceEntry(data);
   } catch (err) {
     console.warn(`⚠️  ElectroSwap price lookup failed for ${tokenAddress}:`, err.message);
+    return null;
+  }
+}
+
+/** Day/hour-bucketed OHLCV candles for one token — confirmed live against the real API:
+ *   GET /tokens/{chainId}/{address}/candles?bucket=1d&limit=N
+ *     -> { data: [{ time (unix SECONDS), open, close, high, low, volume, count }, ...], cursor }
+ * Unlike /prices, these numeric fields come back as actual JSON numbers, not strings — confirmed
+ * live, not assumed. `bucket` must be one of '1m'|'15m'|'1h'|'4h'|'1d'. Cost is 100 + 1/item
+ * (max 600 credits, i.e. up to 500 items per call) — cheap relative to the /prices endpoints.
+ * `limit` is capped at 500 server-side (a larger value is REJECTED with 400 INVALID_LIMIT, not
+ * clamped — confirmed live) — confirmed live via the response's own `cursor` field that 500 is
+ * also the true ceiling on how much history exists per pool this way: a cursor-less, at-the-cap
+ * request came back with `cursor: null`, and per the API's own OpenAPI spec `cursor` is "the
+ * cursor from a previous response" for paging further — a null cursor on the very FIRST page means
+ * there is nothing further back to page to, not an unused mechanism. So this call reaches back to
+ * a pool's actual creation for any pool younger than 500 days old, and no further, for one this
+ * old or older. Returns null — never throws — on any failure (key unset, request error, empty
+ * response); callers should fall back to this app's existing GeckoTerminal-backed data. */
+export async function getCandles(tokenAddress, bucket, limit) {
+  try {
+    const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}/${tokenAddress}/candles?bucket=${bucket}&limit=${limit}`);
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return data
+      .filter((c) => Number.isFinite(c?.time) && Number.isFinite(c?.close))
+      .map((c) => ({
+        time: c.time,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number.isFinite(c.volume) ? c.volume : null,
+      }));
+  } catch (err) {
+    console.warn(`⚠️  ElectroSwap candles lookup failed for ${tokenAddress}:`, err.message);
     return null;
   }
 }
