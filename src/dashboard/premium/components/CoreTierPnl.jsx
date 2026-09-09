@@ -183,6 +183,13 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0));
   const figures = pickTokenFigures(combined, tokenFilter);
 
+  // Value Over Time chart mode — "pnl" (realized + unrealized, net) or "value" (raw portfolio
+  // value). Defaults to pnl: profit/loss over time is what most people actually want from this
+  // chart; the underlying pnl_snapshots row already carries both figures per day (see
+  // pnlSnapshotRouter.js's own comment on getHistory's response shape), so this is purely which
+  // field(s) get plotted, not a different data source.
+  const [chartMode, setChartMode] = useState("pnl");
+
   return (
     <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
@@ -436,7 +443,33 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             ) : null}
 
             <div>
-              <div style={sectionHeaderStyle}>Value Over Time</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {[
+                    { key: "pnl", label: "PnL" },
+                    { key: "value", label: "Value" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setChartMode(opt.key)}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 8,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        border: `1px solid ${chartMode === opt.key ? green : border}`,
+                        background: chartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+                        color: chartMode === opt.key ? green : mutedLight,
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {tokenFilter !== "all" && !historyError && (
                 <div style={{ fontSize: 11, color: muted, marginBottom: 8, fontStyle: "italic" }}>
                   Per-token history isn't available yet — this chart shows your whole tracked wallet{walletFilter === "all" && active.length > 1 ? "s" : ""}, not just the selected token.
@@ -450,9 +483,12 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 </div>
               ) : (
                 <SparklineChart
-                  data={combinedHistory.map((p) => ({ label: p.date, value: p.totalValueUsd }))}
+                  data={combinedHistory.map((p) => ({
+                    label: p.date,
+                    value: chartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd),
+                  }))}
                   height={120}
-                  formatValue={formatValue}
+                  formatValue={chartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
                   formatLabel={formatChartDate}
                 />
               )}
