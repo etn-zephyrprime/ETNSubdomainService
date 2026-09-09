@@ -8,6 +8,14 @@ import { isSpamTokenName } from "../utils/format.js";
 const cache = new Map(); // lowercased address -> string (symbol/name) | null (unresolved) | Promise
 const subscribers = new Set();
 
+// Same fixed sentinel string as backend/services/pnlEventBuilder.js's own NATIVE_SENTINEL — a
+// holdings/PnL row for native ETN carries this literal string as its "address" (there isn't a real
+// one), never lowercased there since it's not an address to begin with (see that file's own
+// comment). Without this special case it fell through to shortAddr() below as if it WERE a hex
+// address — confirmed live: "NATIVE".slice(0,6) + "..." + "NATIVE".slice(-4) renders as the
+// nonsensical "NATIVE...TIVE".
+const NATIVE_SENTINEL = "NATIVE";
+
 function notifyAll() {
   subscribers.forEach((fn) => fn());
 }
@@ -29,6 +37,7 @@ export function useTokenNames(addresses) {
   useEffect(() => {
     if (!key) return;
     for (const address of key.split(",")) {
+      if (address === NATIVE_SENTINEL.toLowerCase()) continue; // not a real address -- see resolve()'s own NATIVE special-case, nothing to fetch
       if (cache.has(address)) continue;
       const promise = getToken(address)
         .then((res) => {
@@ -47,6 +56,7 @@ export function useTokenNames(addresses) {
   return {
     resolve(address) {
       if (!address) return "Unknown";
+      if (address === NATIVE_SENTINEL) return "Electroneum (ETN)"; // same label as pnlStatementGenerator.js's own formatAssetLabel
       const cached = cache.get(address.toLowerCase());
       return typeof cached === "string" ? cached : shortAddr(address);
     },
@@ -57,7 +67,7 @@ export function useTokenNames(addresses) {
     // Resolves to false (never spam) for anything not yet a confirmed string, same "never hide on
     // uncertainty" principle as noLiquidityTokens elsewhere.
     isSpam(address) {
-      if (!address) return false;
+      if (!address || address === NATIVE_SENTINEL) return false;
       const cached = cache.get(address.toLowerCase());
       return typeof cached === "string" && isSpamTokenName(cached);
     },
