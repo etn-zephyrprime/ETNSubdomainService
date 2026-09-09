@@ -76,6 +76,137 @@ const LP_IFACE = new ethers.Interface([
 const MINT_TOPIC = LP_IFACE.getEvent("Mint").topicHash;
 const BURN_TOPIC = LP_IFACE.getEvent("Burn").topicHash;
 
+// V3 concentrated-liquidity positions — ElectroSwap's real, verified NonfungiblePositionManager
+// (confirmed live on Blockscout: genuinely verified, not a proxy, named "NonfungiblePositionManager",
+// standard Uniswap V3 design) and its factory (confirmed via the position manager's own verified
+// constructor args). A V3 position is an ERC-721 (tokenId), not a fungible pair-contract token like
+// V2's LP — IncreaseLiquidity/DecreaseLiquidity/Collect carry no wallet address in their own topics
+// (only tokenId, indexed), so unlike the farm/staking scan these can't be found by a wallet-pinned
+// topic scanned chain-wide; detected per-tx instead, same approach as V2 LP detection above.
+//
+// Confirmed live from the position manager's own verified Solidity source (not assumed):
+//  - mint() calls the same internal addLiquidity() as increaseLiquidity() and both end by emitting
+//    the identical IncreaseLiquidity(tokenId, liquidity, amount0, amount1) — this app doesn't need
+//    to tell a brand-new position apart from a top-up of an existing one; either way the effect on
+//    the position's own lot bucket (see POSITION_MANAGER_ADDRESS below) is the same: dispose the
+//    underlying token0/token1 actually pulled from the wallet, acquire that much more `liquidity`.
+//  - decreaseLiquidity() does NOT move any tokens — it only credits position.tokensOwed0/1
+//    internally (`position.tokensOwed0 += ...`, confirmed in the verified source). Its own
+//    amount0/amount1 event args are the real underlying value released by the burn, computed from
+//    the pool's own accounting — reliable, just not yet actually sitting in the wallet.
+//  - collect() is the only step that actually moves tokens, and sends them POOL -> recipient
+//    directly (`pool.collect(recipient, ...)`), never routed through the position manager itself.
+//    Its own Collect(tokenId, recipient, amount0, amount1) amount COMBINES whatever a prior
+//    decreaseLiquidity() released (if not yet collected) with genuinely-accrued LP fee income — the
+//    two are indistinguishable from Collect's own event data alone.
+//
+// Given that: DecreaseLiquidity is recorded as ONLY a position-lot disposal (liquidity out, proceeds
+// = the real FMV of amount0/amount1 at decrease time) — no underlying-token acquisition is recorded
+// yet, since the tokens genuinely aren't in the wallet until a later collect() actually sends them.
+// Collect is where underlying-token acquisition is recorded, split (via same-tx correlation, the
+// bundled "remove liquidity" pattern essentially every V3 router/frontend multicalls together): the
+// portion matching a same-tx DecreaseLiquidity for the same tokenId is priced at THAT decrease's own
+// per-unit value (a value-neutral position-asset -> underlying-token conversion, not a fresh gain/
+// loss purely from the decrease-vs-collect timing gap); anything beyond that is zero-cost-basis fee
+// income, same convention already established for farm/staking reward claims elsewhere in this file.
+// A standalone collect() with no same-tx decrease (a routine "just claim my fees" call) is fee
+// income in full. KNOWN LIMITATION, documented rather than silently guessed around: a decrease and
+// its collect done in two SEPARATE transactions (uncommon — routers multicall these together) won't
+// be correlated, so that collect's principal portion gets misclassified as fee income instead of a
+// value-neutral conversion — degrades gracefully (still records real data, doesn't corrupt the
+// disposal side or double-count) rather than silently dropping or fabricating anything.
+//
+// The position itself is tracked as a fungible per-tokenId lot bucket keyed
+// `${POSITION_MANAGER_ADDRESS}:${tokenId}` (same composite-key shape as this app's NFT PnL
+// tracking, but assetType "erc20" here so it flows through the plain transferToEvent disposal/
+// acquisition path like V2's LP token above, not the NFT same-tx-payment machinery, which assumes a
+// different shape). Its "quantity" is LIQUIDITY units (the position's own internal accounting unit,
+// used as-is — not token-decimals-scaled), not "1 NFT": a partial decrease disposes only part of the
+// lot, which plain FIFO quantity math already handles correctly with zero fifoLotEngine.js changes,
+// same as any other fungible asset. Like V2's LP token, this has no market price feed of its own —
+// cost basis/proceeds are always computed directly from the real underlying legs, omitted (null)
+// rather than fabricated when a leg is unpriced. OUT OF SCOPE for now (not yet handled, same "note
+// what's deferred" discipline as the brief's own IL/APY deferral): selling/transferring an entire
+// position NFT itself on a marketplace rather than through the position manager's own functions.
+const POSITION_MANAGER_ADDRESS = "0x3a7f64c57433555b23dac4409a0ac7e84275398d";
+const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
+const V3_IFACE = new ethers.Interface([
+  "event IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
+  "event DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
+  "event Collect(uint256 indexed tokenId, address recipient, uint256 amount0, uint256 amount1)",
+]);
+const V3_INCREASE_TOPIC = V3_IFACE.getEvent("IncreaseLiquidity").topicHash;
+const V3_DECREASE_TOPIC = V3_IFACE.getEvent("DecreaseLiquidity").topicHash;
+const V3_COLLECT_TOPIC = V3_IFACE.getEvent("Collect").topicHash;
+const V3_POSITIONS_VIEW_IFACE = new ethers.Interface([
+  "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
+]);
+const V3_FACTORY_VIEW_IFACE = new ethers.Interface([
+  "function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)",
+]);
+const ERC20_DECIMALS_VIEW_IFACE = new ethers.Interface(["function decimals() view returns (uint8)"]);
+
+// token0/token1/fee never change post-mint for a given tokenId — cached indefinitely, same
+// reasoning as tokenMetadataCache below.
+const v3PositionTokensCache = new Map(); // tokenId (string) -> { token0, token1, fee } | null
+async function getV3PositionTokens(tokenId) {
+  const key = String(tokenId);
+  if (v3PositionTokensCache.has(key)) return v3PositionTokensCache.get(key);
+  let result = null;
+  try {
+    const contract = new ethers.Contract(POSITION_MANAGER_ADDRESS, V3_POSITIONS_VIEW_IFACE, createRpcProvider());
+    const pos = await contract.positions(tokenId);
+    result = { token0: String(pos.token0).toLowerCase(), token1: String(pos.token1).toLowerCase(), fee: Number(pos.fee) };
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not read positions(${tokenId}) on the V3 position manager:`, err.message);
+  }
+  v3PositionTokensCache.set(key, result);
+  return result;
+}
+
+// A given (token0, token1, fee) triple's pool address never changes — cached indefinitely.
+const v3PoolAddressCache = new Map(); // "token0:token1:fee" -> address (lowercase) | null
+async function getV3PoolAddress(token0, token1, fee) {
+  const key = `${token0}:${token1}:${fee}`;
+  if (v3PoolAddressCache.has(key)) return v3PoolAddressCache.get(key);
+  let result = null;
+  try {
+    const contract = new ethers.Contract(V3_FACTORY_ADDRESS, V3_FACTORY_VIEW_IFACE, createRpcProvider());
+    const pool = await contract.getPool(token0, token1, fee);
+    if (pool && pool !== ethers.ZeroAddress) result = String(pool).toLowerCase();
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not resolve the V3 pool address for ${key}:`, err.message);
+  }
+  v3PoolAddressCache.set(key, result);
+  return result;
+}
+
+// A token's decimals() never changes post-deploy — cached indefinitely. Separate from
+// tokenMetadataCache below (that one's a Blockscout REST call for name/symbol; this is a live RPC
+// read for decimals specifically, needed here because DecreaseLiquidity/Collect amounts have no
+// corresponding Blockscout token-transfer entry to read `.token.decimals` off of the way every
+// other pricing path in this file does — decreaseLiquidity() moves no tokens at all, and this app
+// deliberately doesn't rely on Collect's real transfer log for its amounts either, see this
+// function's own doc comment above on why).
+const tokenDecimalsCache = new Map(); // address (lowercase) -> number
+async function getTokenDecimalsCached(tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  if (tokenDecimalsCache.has(key)) return tokenDecimalsCache.get(key);
+  let result = 18;
+  try {
+    const contract = new ethers.Contract(tokenAddress, ERC20_DECIMALS_VIEW_IFACE, createRpcProvider());
+    result = Number(await contract.decimals());
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not read decimals() for ${tokenAddress}, assuming 18:`, err.message);
+  }
+  tokenDecimalsCache.set(key, result);
+  return result;
+}
+
+function v3PositionAssetKey(tokenIdStr) {
+  return `${POSITION_MANAGER_ADDRESS}:${tokenIdStr}`;
+}
+
 // DeFi (yield farm / staking) activity — detected by EVENT TOPIC across the whole chain, not a
 // hardcoded contract address list. Confirmed live: the "YieldFarm" LP-farm template and the
 // "CoreAscension"-style staking template are each reused verbatim across multiple deployed
@@ -538,6 +669,293 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
   return true;
 }
 
+/** Detects V3 concentrated-liquidity position activity (mint/increase/decrease/collect) on the
+ * canonical NonfungiblePositionManager — same per-tx log-fetch approach as detectAndRecordSwap/
+ * detectAndRecordLiquidityEvent, only checked once both of those have already ruled the tx out (a
+ * V3 position tx never also carries a V2 Mint/Burn or a Swap log). See this file's own V3 header
+ * comment above (near POSITION_MANAGER_ADDRESS) for the confirmed on-chain mechanics this relies on
+ * and the pricing/correlation design this implements.
+ *
+ * A single tx can carry MULTIPLE of these logs at once — a router's multicall commonly bundles
+ * decreaseLiquidity()+collect() together (the standard "remove liquidity" flow), or
+ * increaseLiquidity()+collect() to also grab accrued fees while topping up — so every Increase/
+ * Decrease/Collect log found is processed, not just the first, with same-tx Decrease+Collect pairs
+ * correlated by tokenId (decreases are processed first so every collect can see them). */
+async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, tokenTransfers, v3TxHashes, rows, priorityAssets) {
+  let logsPage;
+  try {
+    logsPage = await fetchPage(`/transactions/${tx.hash}/logs`, null);
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not fetch logs for tx ${tx.hash}, skipping V3 position detection for it:`, err.message);
+    return false;
+  }
+  const items = logsPage.items || [];
+  const onPositionManager = (l) => String(l.address?.hash || l.address).toLowerCase() === POSITION_MANAGER_ADDRESS;
+  const increaseLogs = items.filter((l) => onPositionManager(l) && (l.topics || [])[0] === V3_INCREASE_TOPIC);
+  const decreaseLogs = items.filter((l) => onPositionManager(l) && (l.topics || [])[0] === V3_DECREASE_TOPIC);
+  const collectLogs = items.filter((l) => onPositionManager(l) && (l.topics || [])[0] === V3_COLLECT_TOPIC);
+  if (increaseLogs.length === 0 && decreaseLogs.length === 0 && collectLogs.length === 0) return false;
+
+  const timestamp = new Date(tx.timestamp);
+  let recorded = false;
+
+  function parseArgs(eventName, log) {
+    try {
+      const realTopics = (log.topics || []).filter((t) => t != null); // see detectAndRecordSwap's own comment on Blockscout's padded topics array
+      return V3_IFACE.parseLog({ topics: realTopics, data: log.data }).args;
+    } catch {
+      return null;
+    }
+  }
+
+  // Increase (mint or top-up): dispose the real token0/token1 pulled from the wallet, acquire that
+  // much more `liquidity` of the position lot. Requires an actual wallet->pool transfer leg for
+  // each nonzero side (a position can be single-sided, minted entirely out of range) — same
+  // "confirm against a real transfer, decline rather than guess if it's not there" posture as V2
+  // LP detection above, generalized to let a zero-amount side simply have no leg to require at all.
+  for (const log of increaseLogs) {
+    const args = parseArgs("IncreaseLiquidity", log);
+    if (!args) continue;
+    const tokenId = args.tokenId;
+    const tokenIdStr = tokenId.toString();
+    const liquidity = BigInt(args.liquidity);
+    if (liquidity <= 0n) continue;
+
+    const posTokens = await getV3PositionTokens(tokenId);
+    if (!posTokens) continue;
+    const { token0, token1, fee } = posTokens;
+    const poolLc = await getV3PoolAddress(token0, token1, fee);
+    if (!poolLc) continue;
+
+    const sides = [
+      [token0, BigInt(args.amount0)],
+      [token1, BigInt(args.amount1)],
+    ];
+    const legs = [];
+    let declined = false;
+    for (const [tokenAddr, amountRaw] of sides) {
+      if (amountRaw === 0n) continue;
+      const leg = tokenTransfers.find((t) => {
+        if (String(t.token?.address).toLowerCase() !== tokenAddr) return false;
+        return String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc;
+      });
+      if (!leg) {
+        declined = true;
+        break;
+      }
+      legs.push({ tokenAddr, leg });
+    }
+    if (declined || legs.length === 0) continue;
+
+    let underlyingUsdTotal = 0;
+    let anyUnpriced = false;
+    const underlyingRows = [];
+    for (const { tokenAddr, leg } of legs) {
+      const legAmount = weiToDecimal(BigInt(leg.total.value), Number(leg.token.decimals));
+      const priceUsd = await priceOrNull(tokenAddr, timestamp, priorityAssets);
+      const usdValue = priceUsd != null ? legAmount * priceUsd : null;
+      if (usdValue == null) anyUnpriced = true;
+      else underlyingUsdTotal += usdValue;
+      underlyingRows.push({
+        trackedWallet,
+        txHash: tx.hash,
+        logIndex: -(4000 + Number(leg.log_index || 0)), // distinct sentinel range from every other synthetic-row source in this file
+        direction: "out",
+        counterpartyAddress: poolLc,
+        isSelfTransfer: false,
+        isCex: false,
+        assetType: "erc20",
+        tokenAddress: tokenAddr,
+        tokenId: null,
+        amountRaw: BigInt(leg.total.value),
+        amountDecimal: legAmount,
+        priceUsdAtTime: priceUsd,
+        usdValue,
+        gasFeeWei: null,
+        blockNumber: Number(tx.block_number),
+        timestamp,
+      });
+    }
+
+    const liquidityQty = Number(liquidity);
+    const positionUsdValue = anyUnpriced ? null : underlyingUsdTotal;
+    const positionPriceUsd = anyUnpriced ? null : underlyingUsdTotal / liquidityQty;
+
+    v3TxHashes.add(tx.hash.toLowerCase());
+    rows.push(...underlyingRows, {
+      trackedWallet,
+      txHash: tx.hash,
+      logIndex: -(4000 + Number(log.index ?? 0)),
+      direction: "in",
+      counterpartyAddress: POSITION_MANAGER_ADDRESS,
+      isSelfTransfer: false,
+      isCex: false,
+      assetType: "erc20",
+      tokenAddress: v3PositionAssetKey(tokenIdStr),
+      tokenId: null,
+      amountRaw: liquidity,
+      amountDecimal: liquidityQty,
+      priceUsdAtTime: positionPriceUsd,
+      usdValue: positionUsdValue,
+      gasFeeWei: null,
+      blockNumber: Number(tx.block_number),
+      timestamp,
+    });
+    recorded = true;
+  }
+
+  // Decrease: position-lot disposal ONLY (see this file's own V3 header comment on why the
+  // underlying-token acquisition is deferred to Collect, not recorded here) — proceeds priced from
+  // the event's own amount0/amount1 (the real value released by the pool's burn(), confirmed
+  // reliable even though no transfer has happened yet). Recorded into decreaseByTokenId so a
+  // same-tx Collect below can find it.
+  const decreaseByTokenId = new Map(); // tokenIdStr -> { token0, token1, amount0Raw, amount1Raw, priceUsd0, priceUsd1 }
+  for (const log of decreaseLogs) {
+    const args = parseArgs("DecreaseLiquidity", log);
+    if (!args) continue;
+    const tokenId = args.tokenId;
+    const tokenIdStr = tokenId.toString();
+    const liquidity = BigInt(args.liquidity);
+    if (liquidity <= 0n) continue;
+
+    const posTokens = await getV3PositionTokens(tokenId);
+    if (!posTokens) continue;
+    const { token0, token1 } = posTokens;
+    const amount0Raw = BigInt(args.amount0);
+    const amount1Raw = BigInt(args.amount1);
+
+    let underlyingUsdTotal = 0;
+    let anyUnpriced = false;
+    let priceUsd0 = null;
+    let priceUsd1 = null;
+    for (const [tokenAddr, amountRaw, setPrice] of [
+      [token0, amount0Raw, (p) => (priceUsd0 = p)],
+      [token1, amount1Raw, (p) => (priceUsd1 = p)],
+    ]) {
+      if (amountRaw === 0n) continue;
+      const decimals = await getTokenDecimalsCached(tokenAddr);
+      const legAmount = weiToDecimal(amountRaw, decimals);
+      const priceUsd = await priceOrNull(tokenAddr, timestamp, priorityAssets);
+      setPrice(priceUsd);
+      const usdValue = priceUsd != null ? legAmount * priceUsd : null;
+      if (usdValue == null) anyUnpriced = true;
+      else underlyingUsdTotal += usdValue;
+    }
+
+    const liquidityQty = Number(liquidity);
+    const proceedsUsd = anyUnpriced ? null : underlyingUsdTotal;
+
+    v3TxHashes.add(tx.hash.toLowerCase());
+    rows.push({
+      trackedWallet,
+      txHash: tx.hash,
+      logIndex: -(4000 + Number(log.index ?? 0)),
+      direction: "out",
+      counterpartyAddress: POSITION_MANAGER_ADDRESS,
+      isSelfTransfer: false,
+      isCex: false,
+      assetType: "erc20",
+      tokenAddress: v3PositionAssetKey(tokenIdStr),
+      tokenId: null,
+      amountRaw: liquidity,
+      amountDecimal: liquidityQty,
+      priceUsdAtTime: proceedsUsd != null ? proceedsUsd / liquidityQty : null,
+      usdValue: proceedsUsd,
+      gasFeeWei: null,
+      blockNumber: Number(tx.block_number),
+      timestamp,
+    });
+    recorded = true;
+
+    decreaseByTokenId.set(tokenIdStr, { token0, token1, amount0Raw, amount1Raw, priceUsd0, priceUsd1 });
+  }
+
+  // Collect: the actual underlying-token acquisition. Split against any same-tx decrease for the
+  // same tokenId (see this file's own V3 header comment) — the correlated portion is priced at that
+  // decrease's own per-unit value (a value-neutral position -> tokens conversion, not a fresh gain/
+  // loss purely from the decrease-vs-collect timing gap); anything beyond it is zero-cost-basis fee
+  // income, matching the farm/staking reward convention elsewhere in this file exactly (an explicit
+  // 0, not a null left to fall back through transferToEvent's own `?? 0` — that fallback exists for
+  // "unknown", not "deliberately free", and this is deliberate).
+  for (const log of collectLogs) {
+    const args = parseArgs("Collect", log);
+    if (!args) continue;
+    const tokenId = args.tokenId;
+    const tokenIdStr = tokenId.toString();
+    const amount0Raw = BigInt(args.amount0);
+    const amount1Raw = BigInt(args.amount1);
+    if (amount0Raw === 0n && amount1Raw === 0n) continue;
+
+    const posTokens = await getV3PositionTokens(tokenId);
+    if (!posTokens) continue;
+    const { token0, token1 } = posTokens;
+    const matching = decreaseByTokenId.get(tokenIdStr);
+
+    const collectRows = [];
+    for (const [tokenAddr, collectedRaw, matchedRaw, matchedPriceUsd] of [
+      [token0, amount0Raw, matching?.amount0Raw ?? 0n, matching?.priceUsd0 ?? null],
+      [token1, amount1Raw, matching?.amount1Raw ?? 0n, matching?.priceUsd1 ?? null],
+    ]) {
+      if (collectedRaw === 0n) continue;
+      const decimals = await getTokenDecimalsCached(tokenAddr);
+      const principalRaw = collectedRaw < matchedRaw ? collectedRaw : matchedRaw;
+      const feeRaw = collectedRaw - principalRaw;
+
+      if (principalRaw > 0n) {
+        const principalAmount = weiToDecimal(principalRaw, decimals);
+        collectRows.push({
+          trackedWallet,
+          txHash: tx.hash,
+          logIndex: -(4000 + Number(log.index ?? 0)) - (tokenAddr === token0 ? 1 : 2),
+          direction: "in",
+          counterpartyAddress: POSITION_MANAGER_ADDRESS,
+          isSelfTransfer: false,
+          isCex: false,
+          assetType: "erc20",
+          tokenAddress: tokenAddr,
+          tokenId: null,
+          amountRaw: principalRaw,
+          amountDecimal: principalAmount,
+          priceUsdAtTime: matchedPriceUsd,
+          usdValue: matchedPriceUsd != null ? principalAmount * matchedPriceUsd : null,
+          gasFeeWei: null,
+          blockNumber: Number(tx.block_number),
+          timestamp,
+        });
+      }
+      if (feeRaw > 0n) {
+        const feeAmount = weiToDecimal(feeRaw, decimals);
+        collectRows.push({
+          trackedWallet,
+          txHash: tx.hash,
+          logIndex: -(4000 + Number(log.index ?? 0)) - (tokenAddr === token0 ? 3 : 4),
+          direction: "in",
+          counterpartyAddress: POSITION_MANAGER_ADDRESS,
+          isSelfTransfer: false,
+          isCex: false,
+          assetType: "erc20",
+          tokenAddress: tokenAddr,
+          tokenId: null,
+          amountRaw: feeRaw,
+          amountDecimal: feeAmount,
+          priceUsdAtTime: 0, // deliberate zero cost basis -- LP fee income, same convention as farm/staking rewards
+          usdValue: 0,
+          gasFeeWei: null,
+          blockNumber: Number(tx.block_number),
+          timestamp,
+        });
+      }
+    }
+    if (collectRows.length === 0) continue;
+
+    v3TxHashes.add(tx.hash.toLowerCase());
+    rows.push(...collectRows);
+    recorded = true;
+  }
+
+  return recorded;
+}
+
 /** Walks /addresses/{wallet}/transactions exactly once, doing BOTH swap detection and gas/plain-
  * native-transfer extraction in the same per-tx pass. These used to be two entirely separate full
  * walks of this same endpoint (one in a since-removed ingestSwaps, one here) — pure waste, since
@@ -556,6 +974,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
   const swapTxHashes = new Set();
   const swapRows = [];
   const liquidityTxHashes = new Set();
+  const v3TxHashes = new Set();
   let highestBlock = stopAtBlock ?? -1;
 
   await walkAllPages(`/addresses/${trackedWallet}/transactions`, stopAtBlock, async (items) => {
@@ -580,6 +999,13 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       const isLiquidityEvent =
         !isSwap && isContractCallWithTransfers
           ? await detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenTransfers, liquidityTxHashes, rows, priorityAssets)
+          : false;
+      // Same precondition as the V2 LP check above — a tx already classified as a swap or a V2 LP
+      // event never also carries V3 position-manager logs, so this is only worth checking once both
+      // have ruled it out.
+      const isV3PositionEvent =
+        !isSwap && !isLiquidityEvent && isContractCallWithTransfers
+          ? await detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, tokenTransfers, v3TxHashes, rows, priorityAssets)
           : false;
 
       // Gas is only ever charged to whoever actually sent the transaction.
@@ -609,7 +1035,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       // Plain top-level native ETN transfer (tx.value), separate from the gas-fee row above.
       const value = BigInt(tx.value || "0");
       if (value > 0n && (fromLc === walletLc || toLc === walletLc) && fromLc !== toLc) {
-        if (isSwap || isLiquidityEvent) continue; // recorded via swap_trades or as decomposed liquidity legs instead, not as a plain transfer
+        if (isSwap || isLiquidityEvent || isV3PositionEvent) continue; // recorded via swap_trades or as decomposed liquidity/position legs instead, not as a plain transfer
         const direction = fromLc === walletLc ? "out" : "in";
         const counterparty = direction === "out" ? toLc : fromLc;
         const isSelf = selfOwnedSet.has(counterparty);
@@ -645,6 +1071,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
   if (rows.length > 0) await insertTransfers(rows);
   if (swapRows.length > 0) await insertSwapTrades(swapRows);
   for (const h of liquidityTxHashes) swapTxHashes.add(h); // see this function's own doc comment on why these share one exclusion set
+  for (const h of v3TxHashes) swapTxHashes.add(h); // same reasoning — V3 position tx hashes need the exact same downstream exclusion treatment
   return { swapTxHashes, highestBlock };
 }
 
