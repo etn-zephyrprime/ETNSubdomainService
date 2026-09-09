@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { TrendingUp, RefreshCw, Info } from "lucide-react";
-import DashboardPanel from "./DashboardPanel.jsx";
+import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
@@ -231,15 +231,11 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   const [chartMode, setChartMode] = useState("pnl");
 
   return (
-    <DashboardPanel>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <TrendingUp size={18} color={green} />
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-            Core Tier — PnL
-          </div>
-        </div>
-        {hasAccess && active.length > 0 && (
+    <CollapsibleCoreTierPanel
+      icon={TrendingUp}
+      title="Core Tier — PnL"
+      headerRight={
+        hasAccess && active.length > 0 && (
           <DashboardButton
             onClick={() => loadSnapshot()}
             disabled={snapshotLoading}
@@ -248,9 +244,9 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <RefreshCw size={12} />
             {snapshotLoading ? "Refreshing…" : "Refresh"}
           </DashboardButton>
-        )}
-      </div>
-
+        )
+      }
+    >
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}
@@ -604,6 +600,6 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
           </>
         )}
       </CoreTierGate>
-    </DashboardPanel>
+    </CollapsibleCoreTierPanel>
   );
 }
