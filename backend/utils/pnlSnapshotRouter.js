@@ -14,6 +14,7 @@ import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
+import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -141,6 +142,50 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });
+  }
+});
+
+// Live NFT PnL — cost basis (held + sold), and proceeds/realized P&L for anything sold, at all
+// three tiers (top-level, per-collection, per-token-ID) — see nftPnlService.js's own header
+// comment. No priorityTokens concept here (unlike the fungible endpoint above): NFT PnL needs no
+// live price lookups at all, so there's no cold-start slowdown to scope around.
+router.get("/premium/nft-pnl", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  if (active.length === 0) {
+    return res.json({ perWallet: [], combined: null, failed: [] });
+  }
+
+  try {
+    const addresses = active.map((w) => w.address);
+    const perWallet = [];
+    const failed = [];
+    // Sequential and independently try/caught — same reasoning as the fungible endpoint above: a
+    // full transfer-history walk + FIFO replay per wallet is real work, and one wallet's transient
+    // failure shouldn't blank out the others' already-computed results.
+    for (const address of addresses) {
+      const selfOwnedAddresses = addresses.filter((a) => a !== address);
+      try {
+        const snapshot = await computeLiveNftPnlSnapshot(address, selfOwnedAddresses);
+        perWallet.push({ walletAddress: address, ...snapshot });
+      } catch (err) {
+        console.error(`NFT PnL computation failed for wallet ${address}:`, err);
+        failed.push(address);
+      }
+    }
+    const combined = perWallet.length > 0 ? combineLiveNftPnlSnapshots(perWallet) : null;
+    res.json({ perWallet, combined, failed });
+  } catch (err) {
+    console.error("NFT PnL computation failed:", err);
+    res.status(502).json({ error: "Couldn't compute your NFT PnL right now — try again shortly" });
   }
 });
 
