@@ -30,6 +30,7 @@ import {
   TRACK_COOLDOWN_DAYS,
 } from "../db/trackedWallets.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
+import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
 // so a signature cached client-side (see useWalletAuthSignature.js) works across all of them
@@ -155,6 +156,51 @@ router.get("/premium/defi-positions", async (req, res) => {
   }
 
   res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced } });
+});
+
+// Live value of every LP/V3 position covered wallets DIRECTLY hold (not locked in a farm/staking
+// contract — see defiPositionValuation.js's own comment on that distinction), per wallet AND
+// combined. A POST, not a GET like the other endpoints on this router: valuing a V2 LP token
+// requires knowing which of a wallet's held tokens are worth even probing as candidate pools, and
+// that token list already lives client-side (useCombinedPortfolio.js calls Blockscout directly,
+// no backend round-trip) — sending it here avoids this endpoint independently re-fetching the same
+// balances Combined Holdings already has loaded. `walletTokens` is keyed by lowercased wallet
+// address; a wallet with no entry (or an empty list) just skips V2 LP candidate-checking for it —
+// V3 position discovery below is unaffected either way, since that's a live Blockscout NFT lookup
+// with no dependency on the caller's own token list.
+router.post("/premium/liquidity-positions", async (req, res) => {
+  const { wallet, signature, timestamp, walletTokens } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  const perWallet = [];
+  for (const w of active) {
+    const candidateTokens = walletTokens?.[w.address.toLowerCase()] || [];
+    try {
+      const result = await getLiquidityPositionsUsd(w.address, candidateTokens);
+      perWallet.push({ walletAddress: w.address, ...result, lpTokenAddresses: [...result.lpTokenAddresses] });
+    } catch (err) {
+      console.error(`Liquidity position lookup failed for wallet ${w.address}:`, err);
+      perWallet.push({ walletAddress: w.address, v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: true, lpTokenAddresses: [], failed: true });
+    }
+  }
+
+  let totalUsd = null;
+  let hasUnpriced = false;
+  const allLpTokenAddresses = new Set();
+  for (const w of perWallet) {
+    if (w.totalUsd != null) totalUsd = (totalUsd ?? 0) + Number(w.totalUsd);
+    if (w.hasUnpriced) hasUnpriced = true;
+    for (const addr of w.lpTokenAddresses) allLpTokenAddresses.add(addr);
+  }
+
+  res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses] } });
 });
 
 export default router;

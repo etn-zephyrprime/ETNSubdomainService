@@ -7,12 +7,15 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import CoreTierDemo from "./CoreTierDemo.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
+import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
 import { useTokenChart } from "../../hooks/useTokenChart.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor } from "../../theme.js";
+import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
+import InfoTooltip from "../../components/InfoTooltip.jsx";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // How many fungible tokens get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below
@@ -107,6 +110,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   } = coreTierAccess;
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getDefiPositions } = useDefiPositions();
+  const { getLiquidityPositions } = useLiquidityPositions();
   const { getTokenChart } = useTokenChart();
   const etnUsdPrice = useEtnPrice();
 
@@ -147,6 +151,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // real wait for members who actually have something staked/farmed.
   const [defiPositions, setDefiPositions] = useState(null);
   const [defiPositionsError, setDefiPositionsError] = useState(null);
+  // Live value of directly-held LP/V3 positions — { perWallet, combined } | null while loading.
+  // Same "separate, independent load" reasoning as defiPositions above (real on-chain reads, not
+  // just a Blockscout balance read — see lpPositionValuation.js), but this one also NEEDS
+  // `portfolio` to have already loaded (it supplies the V2-LP candidate token list, see
+  // buildWalletTokensPayload below) — defiPositions has no such dependency.
+  const [lpPositions, setLpPositions] = useState(null);
+  const [lpPositionsError, setLpPositionsError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
   // A token with no resolved USD value (price never found — no ElectroSwap pool, still pending, or
   // beyond MAX_PRICED_HOLDINGS) is hidden by default and only shown once the member clicks through
@@ -231,6 +242,41 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     })();
     return () => { cancelled = true; };
   }, [hasAccess, active, getAuthParams, getDefiPositions, wallet.account]);
+
+  // Live LP/V3 position values load once `portfolio` has resolved — unlike defiPositions above,
+  // this needs each wallet's own token-balance list as the V2 LP-pool candidate set (see
+  // useLiquidityPositions.js's own comment on why that's sent up rather than re-fetched
+  // server-side). Deliberately keyed on `portfolio` itself (not just `hasAccess`/`active`) so a
+  // reconnect/wallet-list change that reloads `portfolio` also refreshes this.
+  useEffect(() => {
+    if (!hasAccess || !portfolio) {
+      setLpPositions(null);
+      return;
+    }
+    let cancelled = false;
+    setLpPositions(null);
+    setLpPositionsError(null);
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        // Same fungible/non-spam filter as allVisibleTokens below — an LP token's own address is a
+        // perfectly valid candidate here (that's exactly what's being probed for), only real NFTs
+        // and junk-named tokens are excluded.
+        const walletTokens = {};
+        for (const w of portfolio.perWallet) {
+          walletTokens[w.address.toLowerCase()] = (w.balances || [])
+            .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name))
+            .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
+        }
+        const res = await getLiquidityPositions(wallet.account, signature, timestamp, walletTokens);
+        if (!cancelled) setLpPositions(res);
+      } catch (err) {
+        console.error("Failed to load liquidity positions:", err);
+        if (!cancelled) setLpPositionsError("Couldn't load liquidity positions — try again shortly.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, portfolio, getAuthParams, getLiquidityPositions, wallet.account]);
 
   // USD price per merged token — one small independent request each, same pattern (and the same
   // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
@@ -345,9 +391,19 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
           value: BigInt(tb.value || 0),
           heldBy: [walletFilter], // shape-compatible with the merged list; always length 1 here, so the "Held in N of M wallets" line never shows for a filtered view
         }));
+  // Confirmed real ElectroSwap V2 LP pool tokens among ANY covered wallet's holdings (see
+  // lpPositionValuation.js) — excluded from the regular Tokens list below and from perWalletTotals'
+  // own tokensUsd sum: an LP token has no price feed of its own (so it always sits unpriced/noisy
+  // there) and now has its OWN dedicated, correctly-valued display (Liquidity Positions below) —
+  // showing it twice, once wrong, would be worse than showing it once, right. Deliberately the
+  // COMBINED set regardless of walletFilter — whether an address is a real LP pool is a fact about
+  // the token, not about which wallet holds it, and perWalletTotals below computes every wallet's
+  // own row unconditionally (walletFilter only narrows the RESULT, see filteredWalletTotals), so
+  // each wallet's own exclusion needs the full set, not just whichever wallet is currently filtered.
+  const lpTokenAddressSet = new Set(lpPositions?.combined?.lpTokenAddresses || []);
   const allVisibleTokens = portfolio
     ? holdingsSource
-        .filter((t) => !isSpamTokenName(t.token?.name) && !NFT_TOKEN_TYPES.has(t.token?.type))
+        .filter((t) => !isSpamTokenName(t.token?.name) && !NFT_TOKEN_TYPES.has(t.token?.type) && !lpTokenAddressSet.has(t.token?.address?.toLowerCase()))
         .map((t) => ({ ...t, usdValue: tokenUsdValue(t.value, t.token?.decimals, tokenPrices[t.token?.address?.toLowerCase()]) }))
         .sort((a, b) => {
           if (a.usdValue == null && b.usdValue == null) return 0;
@@ -394,6 +450,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         let hasUnpriced = etnUsd == null && etnAmount > 0;
         for (const tb of w.balances) {
           if (NFT_TOKEN_TYPES.has(tb.token?.type) || isSpamTokenName(tb.token?.name)) continue;
+          if (lpTokenAddressSet.has(tb.token?.address?.toLowerCase())) continue; // valued separately — see lpTokenAddressSet's own comment
           const usd = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
           if (usd != null) {
             tokensUsd += usd;
@@ -416,11 +473,33 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const defiUsd = defiEntry?.totalUsd != null ? Number(defiEntry.totalUsd) : null;
   const defiHasUnpriced = Boolean(defiEntry?.hasUnpriced);
 
+  // Live value of directly-held LP/V3 positions, same walletFilter scoping and "fold into the
+  // total" reasoning as defiEntry above — a member holding LP/V3 positions shouldn't see a total
+  // that quietly excludes them either (see lpPositionValuation.js).
+  const lpEntry =
+    walletFilter === "all" ? lpPositions?.combined : lpPositions?.perWallet?.find((w) => w.walletAddress === walletFilter);
+  const lpUsd = lpEntry?.totalUsd != null ? Number(lpEntry.totalUsd) : null;
+  const lpHasUnpriced = Boolean(lpEntry?.hasUnpriced);
+
   const totalPortfolioUsd =
-    filteredWalletTotals.length > 0 || defiUsd != null
-      ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0)
+    filteredWalletTotals.length > 0 || defiUsd != null || lpUsd != null
+      ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0) + (lpUsd ?? 0)
       : null;
-  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced;
+  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced || lpHasUnpriced;
+
+  // Composition pie chart's 4 slices — Native ETN, regular fungible Tokens, Liquidity Positions
+  // (V2 LP + V3, held directly), Staking/Yield Farms (locked in a farm/staking contract). Each
+  // slice is the SAME figure already computed above for its own section, just grouped together —
+  // no new computation, so the chart can never disagree with the numbers shown elsewhere on this
+  // panel. A slice is 0 (not omitted) when its own figure is null/unresolved — see
+  // PortfolioCompositionChart.jsx's own comment on why a $0 wedge is the honest choice here, since
+  // the OTHER three slices' real values would otherwise silently look like the whole portfolio.
+  const compositionSlices = [
+    { key: "native", label: "Native ETN", value: combinedUsdValue ?? 0 },
+    { key: "tokens", label: "Tokens", value: allVisibleTokens.reduce((sum, t) => sum + (t.usdValue ?? 0), 0) },
+    { key: "liquidity", label: "Liquidity Positions", value: lpUsd ?? 0 },
+    { key: "staking", label: "Staking / Yield Farms", value: defiUsd ?? 0 },
+  ];
 
   const renderPending = () => {
     if (!pending) return null;
@@ -692,6 +771,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                       Total Portfolio Balance (USD)
+                      <InfoTooltip text="Everything this dashboard can currently price for you: native ETN, regular token holdings, liquidity positions, and anything staked or farming — added together. A '≈' means at least one piece hasn't resolved a price yet, so the real total is at least this much." />
                     </div>
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
                       {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
@@ -727,9 +807,18 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     )}
                   </div>
 
+                  <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+                      Portfolio Composition
+                      <InfoTooltip text="How your Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it. A $0 category means nothing's there yet, or it just hasn't priced — the total above tells you which." />
+                    </div>
+                    <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalPortfolioHasUnpriced} />
+                  </div>
+
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                       {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"}
+                      <InfoTooltip text="Native ETN sitting directly in your wallet(s) — the chain's own coin, not a token contract. Doesn't include ETN wrapped as WETN for trading, which shows up under Tokens instead." />
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                       <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
@@ -752,6 +841,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                         Staked / Farming Positions
+                        <InfoTooltip text="Funds currently locked in a yield farm or the Core Ascension staking contract — no longer a plain wallet balance, so Blockscout alone can't see them. Valued live from the contract's own state, including any real-time price movement (not the value it was worth when you deposited)." />
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {defiEntry.positions.map((p, i) => (
@@ -774,8 +864,53 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     </div>
                   ) : null}
 
+                  {lpPositionsError ? (
+                    <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{lpPositionsError}</div>
+                  ) : lpEntry && (lpEntry.v2Positions?.length > 0 || lpEntry.v3Positions?.length > 0) ? (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        Liquidity Positions
+                        <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions you hold directly — not deposited into a yield farm (those show under Staked / Farming Positions instead). Valued live from each pool's own current reserves/price, converted into the underlying tokens your share currently represents." />
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {(lpEntry.v2Positions || []).map((p) => (
+                          <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
+                              </span>
+                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                            </div>
+                          </div>
+                        ))}
+                        {(lpEntry.v3Positions || []).map((p) => (
+                          <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
+                                {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
+                              </span>
+                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                     Combined Holdings
+                    <InfoTooltip text="Regular token and NFT balances sitting directly in your wallet(s) — the same thing a block explorer would show you. Tokens with no resolved value are hidden by default; liquidity/farming positions have their own dedicated sections above instead of showing up here unpriced." />
                   </div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                     {HOLDING_CATEGORIES.map((c) => (
