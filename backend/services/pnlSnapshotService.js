@@ -42,7 +42,10 @@ const NFT_GROUPING_EXCLUSIONS = new Set([POSITION_MANAGER_ADDRESS]);
  * wallet has ever had," they just replay it differently (one point-in-time closing snapshot vs. a
  * series of daily ones). Kept here rather than duplicated a third time alongside
  * pnlStatementGenerator.js's own (period-scoped) event assembly. */
-async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, asOf) {
+// Exported so categoryPnlService.js can build the exact same event list this file replays for the
+// whole-portfolio history, then filter it down to one category's own token keys — same "never a
+// second, divergence-prone reimplementation" reasoning as pnlEventBuilder.js's own extraction.
+export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, asOf) {
   const [transfers, swaps, defiActivity] = await Promise.all([
     getAllTransfersBefore(trackedWallet, asOf),
     getAllSwapTradesBefore(trackedWallet, asOf),

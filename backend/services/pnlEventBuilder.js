@@ -445,6 +445,59 @@ export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
   return { events, perLabel };
 }
 
+/** Every token address that's ever been part of a wallet's farm/staking activity — the "Staking /
+ * Yield Farms" category filter for categoryPnlService.js's history chart. Derives its own
+ * candidate contracts DIRECTLY from `defiActivity` rows (the same array buildDefiFarmEvents
+ * already takes) rather than re-querying defi_activity, since a caller building category history
+ * already has these rows loaded for event-building anyway.
+ *
+ * Reuses the exact same getFarmTokens/getStakingToken/getFarmRewardToken/getThirdPartyRewardToken
+ * getters (and their module-level caches) buildDefiFarmEvents itself calls — a farm/stake contract
+ * already resolved for one wallet's events is free for every other wallet's category classification
+ * from then on. A contract whose view-function reads fail is skipped with a warning, same "one bad
+ * read shouldn't blank the rest" posture as buildDefiFarmEvents' own catch block — this just means
+ * that one farm/stake's tokens are momentarily missing from the category filter, not that the whole
+ * history computation fails. */
+export async function resolveFarmStakingTokenKeys(defiActivity) {
+  const tokenKeys = new Set();
+  const farmPositions = new Map(); // `${contract}:${farmId}` -> {contractAddress, farmId}
+  const stakingContracts = new Set();
+  for (const row of defiActivity) {
+    if (row.event_type === "farm_deposit" && row.farm_id != null) {
+      farmPositions.set(`${row.contract_address}:${row.farm_id}`, { contractAddress: row.contract_address, farmId: row.farm_id });
+    } else if (row.event_type === "core_staked") {
+      stakingContracts.add(row.contract_address);
+    }
+  }
+
+  await Promise.all(
+    [...farmPositions.values()].map(async ({ contractAddress, farmId }) => {
+      try {
+        const { token0, token1 } = await getFarmTokens(contractAddress, farmId);
+        if (token0) tokenKeys.add(token0);
+        if (token1) tokenKeys.add(token1);
+        tokenKeys.add(BOLT_TOKEN_ADDRESS); // a farm deposit can optionally include BOLT — see this file's own BOLT_TOKEN_ADDRESS comment
+        const rewardToken = await getFarmRewardToken(contractAddress).catch(() => null);
+        if (rewardToken) tokenKeys.add(rewardToken);
+        const tpToken = await getThirdPartyRewardToken(contractAddress, farmId).catch(() => null);
+        if (tpToken) tokenKeys.add(tpToken);
+      } catch (err) {
+        console.warn(`⚠️  Category PnL: could not resolve farm tokens for ${contractAddress}#${farmId}:`, err.message);
+      }
+    })
+  );
+  await Promise.all(
+    [...stakingContracts].map(async (contractAddress) => {
+      try {
+        tokenKeys.add(await getStakingToken(contractAddress));
+      } catch (err) {
+        console.warn(`⚠️  Category PnL: could not resolve staking token for ${contractAddress}:`, err.message);
+      }
+    })
+  );
+  return tokenKeys;
+}
+
 export async function computeGasFeesUsd(transfersInPeriod) {
   const gasRows = transfersInPeriod.filter((t) => t.gas_fee_wei != null);
   let totalGasWei = 0n;

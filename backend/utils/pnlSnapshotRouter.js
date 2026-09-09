@@ -12,9 +12,11 @@ import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
+import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
+import { CATEGORIES } from "../services/categoryPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -216,6 +218,47 @@ router.get("/premium/pnl-history", async (req, res) => {
   const addresses = active.map((w) => w.address);
   const rows = await getPnlSnapshotHistory(wallet, addresses, sinceDate.toISOString().slice(0, 10));
   const combined = combineSnapshotsByDate(rows, addresses);
+
+  const perWallet = addresses.map((address) => ({
+    walletAddress: address,
+    points: rows.filter((r) => r.walletAddress === address),
+  }));
+
+  res.json({ perWallet, combined });
+});
+
+// Category value-over-time chart data — "Liquidity Positions" or "Staking / Yield Farms", same
+// read-only-rollup shape as /premium/pnl-history above, just scoped to one category (see
+// categoryPnlService.js's own comment for exactly what that category does and doesn't cover —
+// notably, it does NOT include the live value of currently-open/locked positions, only PnL
+// history from disposals and reward income; see the Portfolio page's own Liquidity Positions /
+// Staked & Farming Positions sections for live "right now" figures instead).
+router.get("/premium/pnl-category-history", async (req, res) => {
+  const { wallet, signature, timestamp, category, days } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!Object.values(CATEGORIES).includes(category)) {
+    return res.status(400).json({ error: `Query param category must be one of: ${Object.values(CATEGORIES).join(", ")}` });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  if (active.length === 0) {
+    return res.json({ perWallet: [], combined: [] });
+  }
+
+  const sinceDate =
+    days === "all"
+      ? new Date(0)
+      : new Date(Date.now() - (Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : DEFAULT_HISTORY_DAYS) * 24 * 60 * 60 * 1000);
+
+  const addresses = active.map((w) => w.address);
+  const rows = await getPnlCategorySnapshotHistory(wallet, addresses, category, sinceDate.toISOString().slice(0, 10));
+  const combined = combineCategorySnapshotsByDate(rows, addresses);
 
   const perWallet = addresses.map((address) => ({
     walletAddress: address,

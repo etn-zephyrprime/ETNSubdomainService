@@ -9,8 +9,16 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatChartDate } from "../../utils/format.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import InfoTooltip from "../../components/InfoTooltip.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
+// Matches categoryPnlService.js's own CATEGORIES export (kept as a plain literal here rather than
+// importing across the frontend/backend boundary, same as every other hand-synced constant in
+// this app — see e.g. coreTierDemoRouter.js's own comment on why).
+const CATEGORY_OPTIONS = [
+  { key: "liquidity", label: "Liquidity Positions" },
+  { key: "farm_staking", label: "Staking / Yield Farms" },
+];
 const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
 function pnlColor(v) {
@@ -70,7 +78,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // PortfolioDashboardSection.jsx now — see that file's own comment on why (one shared fetch for
   // all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
-  const { getLiveSnapshot, getHistory } = usePnlSnapshot();
+  const { getLiveSnapshot, getHistory, getCategoryHistory } = usePnlSnapshot();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
   const [snapshot, setSnapshot] = useState(null); // { perWallet, combined } | null
@@ -78,6 +86,14 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [history, setHistory] = useState(null); // { combined: [{date,...}] } | null
   const [historyError, setHistoryError] = useState(null);
+  // "Liquidity Positions" / "Staking & Yield Farms" PnL-over-time chart — a separate fetch per
+  // category (unlike the whole-portfolio chart above, which fetches every wallet's history in one
+  // call and only re-derives the wallet-filtered view client-side): each category is its own
+  // backend query, so switching the dropdown below needs a fresh request, not just a re-derive.
+  const [selectedCategory, setSelectedCategory] = useState(CATEGORY_OPTIONS[0].key);
+  const [categoryHistory, setCategoryHistory] = useState(null);
+  const [categoryHistoryError, setCategoryHistoryError] = useState(null);
+  const [categoryChartMode, setCategoryChartMode] = useState("pnl");
 
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((snapshot?.combined?.holdings || []).map((h) => h.tokenAddress));
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
@@ -154,6 +170,26 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
 
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setCategoryHistory(null);
+      return;
+    }
+    let cancelled = false;
+    setCategoryHistory(null);
+    setCategoryHistoryError(null);
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getCategoryHistory(wallet.account, signature, timestamp, selectedCategory);
+        if (!cancelled) setCategoryHistory(res);
+      } catch (err) {
+        if (!cancelled) setCategoryHistoryError(err.message || "Couldn't load category PnL history");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getAuthParams, getCategoryHistory, wallet.account, selectedCategory]);
+
   // A per-wallet snapshot entry has the exact same shape as the combined one (perWallet.push in
   // pnlSnapshotRouter.js spreads the full snapshot alongside walletAddress) — same for a
   // per-wallet history entry vs. the combined series — so picking one or the other here is a
@@ -161,6 +197,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   const combined = walletFilter === "all" ? snapshot?.combined : snapshot?.perWallet?.find((w) => w.walletAddress === walletFilter);
   const combinedHistory =
     walletFilter === "all" ? history?.combined || [] : history?.perWallet?.find((w) => w.walletAddress === walletFilter)?.points || [];
+  const combinedCategoryHistory =
+    walletFilter === "all"
+      ? categoryHistory?.combined || []
+      : categoryHistory?.perWallet?.find((w) => w.walletAddress === walletFilter)?.points || [];
   // True only when the filtered wallet's PnL failed to compute this round (see snapshot.failed
   // below) — distinct from `!combined`, which is also true before the very first load completes.
   const filteredWalletFailed = walletFilter !== "all" && (snapshot?.failed || []).includes(walletFilter);
@@ -444,7 +484,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
 
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-                <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>{chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}</div>
+                <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
+                  {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
+                  <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began. PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value." />
+                </div>
                 <div style={{ display: "flex", gap: 4 }}>
                   {[
                     { key: "pnl", label: "PnL" },
@@ -491,6 +534,70 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                   formatValue={chartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
                   formatLabel={formatChartDate}
                   colorBySign={chartMode === "pnl"}
+                />
+              )}
+            </div>
+
+            <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
+                  {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
+                  <InfoTooltip text="Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that." />
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {[
+                    { key: "pnl", label: "PnL" },
+                    { key: "value", label: "Value" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setCategoryChartMode(opt.key)}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 8,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        border: `1px solid ${categoryChartMode === opt.key ? green : border}`,
+                        background: categoryChartMode === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+                        color: categoryChartMode === opt.key ? green : mutedLight,
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                style={{ ...selectStyle, marginBottom: 12, width: "100%" }}
+              >
+                {CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+
+              {categoryHistoryError ? (
+                <div style={{ fontSize: 12, color: errorColor }}>{categoryHistoryError}</div>
+              ) : !categoryHistory ? (
+                <div style={{ fontSize: 12, color: mutedLight }}>Loading…</div>
+              ) : combinedCategoryHistory.length === 0 ? (
+                <div style={{ fontSize: 12, color: mutedLight }}>
+                  No {CATEGORY_OPTIONS.find((o) => o.key === selectedCategory)?.label.toLowerCase()} history yet — this fills in once the daily snapshot has run at least once, and only if this wallet has ever actually had any.
+                </div>
+              ) : (
+                <SparklineChart
+                  data={combinedCategoryHistory.map((p) => ({
+                    label: p.date,
+                    value: categoryChartMode === "pnl" ? Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd) : Number(p.totalValueUsd),
+                  }))}
+                  height={120}
+                  formatValue={categoryChartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
+                  formatLabel={formatChartDate}
+                  colorBySign={categoryChartMode === "pnl"}
                 />
               )}
             </div>

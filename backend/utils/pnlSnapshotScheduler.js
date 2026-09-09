@@ -16,6 +16,7 @@ import { getAllActiveTrackedWalletPairs, upsertPnlSnapshot } from "../db/pnlSnap
 import { getPool, query } from "../db/pool.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { computeLivePnlSnapshot, backfillPnlHistory } from "../services/pnlSnapshotService.js";
+import { backfillCategoryPnlHistory } from "../services/categoryPnlService.js";
 
 // How far back the value-over-time chart's retroactive backfill (see backfillPnlHistory's own
 // comment) reaches — matches CoreTierBalanceHistory.jsx's / pnlSnapshotRouter.js's own "rolling 12
@@ -91,11 +92,21 @@ async function checkAllWallets() {
         // (returns immediately once a wallet's window is fully filled), so calling this every day
         // right after writing "today" costs almost nothing once it's caught up; it only does real
         // work the first handful of times for a given wallet.
+        const selfOwnedAddresses = wallets.filter((a) => a !== walletAddress);
         try {
-          const selfOwnedAddresses = wallets.filter((a) => a !== walletAddress);
           await backfillPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
         } catch (err) {
           console.warn(`⚠️  PnL history backfill failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
+        }
+
+        // Liquidity Positions / Staking & Yield Farms category history — see
+        // categoryPnlService.js's own comment. Covers today too (unlike the backfill above), so
+        // this never becomes a full no-op even once a wallet is fully caught up; the day-by-day
+        // idempotency is handled inside backfillCategoryPnlHistory itself.
+        try {
+          await backfillCategoryPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
+        } catch (err) {
+          console.warn(`⚠️  Category PnL history backfill failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
         }
       }
     }

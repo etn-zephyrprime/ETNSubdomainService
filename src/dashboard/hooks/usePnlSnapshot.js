@@ -40,5 +40,14 @@ export function usePnlSnapshot() {
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}] }
   }, []);
 
-  return { getLiveSnapshot, getHistory };
+  // Same shape as getHistory above, scoped to one category ("liquidity" or "farm_staking" — see
+  // categoryPnlService.js's own CATEGORIES) — /premium/pnl-category-history.
+  const getCategoryHistory = useCallback(async (wallet, signature, timestamp, category, days) => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, category, ...(days ? { days: String(days) } : {}) });
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-category-history?${params}`);
+    await parseErrorOrThrow(res);
+    return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}] }
+  }, []);
+
+  return { getLiveSnapshot, getHistory, getCategoryHistory };
 }
