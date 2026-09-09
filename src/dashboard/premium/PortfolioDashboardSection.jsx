@@ -111,6 +111,11 @@ export default function PortfolioDashboardSection({ onSelectToken }) {
         </div>
       )}
 
+      {/* Portfolio and Membership always render fully open — everything else (Balance History,
+          PnL, NFT PnL, Alerts) starts collapsed behind a + and opens on click, via each of those
+          components' own CollapsibleCoreTierPanel wrapper (collapse state lives inside each one,
+          nothing to coordinate here) — having every section expanded on load turned this page
+          into a wall of numbers before a member had even picked which one they cared about. */}
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />

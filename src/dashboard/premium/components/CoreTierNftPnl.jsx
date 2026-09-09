@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Image as ImageIcon, RefreshCw, Info } from "lucide-react";
-import DashboardPanel from "./DashboardPanel.jsx";
+import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useNftPnlSnapshot } from "../../hooks/useNftPnlSnapshot.js";
@@ -118,15 +118,11 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           });
 
   return (
-    <DashboardPanel>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ImageIcon size={18} color={green} />
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-            Core Tier — NFT PnL
-          </div>
-        </div>
-        {hasAccess && active.length > 0 && (
+    <CollapsibleCoreTierPanel
+      icon={ImageIcon}
+      title="Core Tier — NFT PnL"
+      headerRight={
+        hasAccess && active.length > 0 && (
           <DashboardButton
             onClick={loadSnapshot}
             disabled={snapshotLoading}
@@ -135,9 +131,9 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
             <RefreshCw size={12} />
             {snapshotLoading ? "Refreshing…" : "Refresh"}
           </DashboardButton>
-        )}
-      </div>
-
+        )
+      }
+    >
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}
@@ -315,6 +311,6 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           </>
         )}
       </CoreTierGate>
-    </DashboardPanel>
+    </CollapsibleCoreTierPanel>
   );
 }

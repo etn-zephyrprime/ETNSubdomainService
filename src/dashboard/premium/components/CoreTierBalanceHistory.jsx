@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { LineChart } from "lucide-react";
-import DashboardPanel from "./DashboardPanel.jsx";
+import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
@@ -180,15 +180,11 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
   }
 
   return (
-    <DashboardPanel>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <LineChart size={18} color={green} />
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-            Core Tier — Balance History
-          </div>
-        </div>
-        {loaded && active.length > 0 && (
+    <CollapsibleCoreTierPanel
+      icon={LineChart}
+      title="Core Tier — Balance History"
+      headerRight={
+        loaded && active.length > 0 && (
           <div style={{ display: "flex", gap: 6 }}>
             {VALUE_MODES.map((m) => (
               <button
@@ -211,9 +207,9 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
               </button>
             ))}
           </div>
-        )}
-      </div>
-
+        )
+      }
+    >
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}
@@ -269,6 +265,6 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
           </div>
         )}
       </CoreTierGate>
-    </DashboardPanel>
+    </CollapsibleCoreTierPanel>
   );
 }

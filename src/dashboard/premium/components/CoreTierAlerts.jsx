@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { Bell, BellOff, Trash2 } from "lucide-react";
-import DashboardPanel from "./DashboardPanel.jsx";
+import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useNotisTelegramLink } from "../../hooks/useNotisTelegramLink.js";
@@ -366,14 +366,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
   };
 
   return (
-    <DashboardPanel>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-        <Bell size={18} color={green} />
-        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          Core Tier — Alerts
-        </div>
-      </div>
-
+    <CollapsibleCoreTierPanel icon={Bell} title="Core Tier — Alerts">
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}
@@ -650,6 +643,6 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
           </div>
         </div>
       </CoreTierGate>
-    </DashboardPanel>
+    </CollapsibleCoreTierPanel>
   );
 }
