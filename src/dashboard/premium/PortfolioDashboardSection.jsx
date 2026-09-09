@@ -18,7 +18,7 @@ import { green, greenGlow, muted, mutedLight, border, panel2 } from "../theme.js
 // loads this module lazily (React.lazy, only once the Portfolio tab is actually clicked), same
 // reasoning as PremiumDashboardSection.jsx: keeps the WalletConnect/AppKit bundle out of the base
 // dashboard for every visitor who never touches either wallet-requiring tab.
-export default function PortfolioDashboardSection({ onSelectToken }) {
+export default function PortfolioDashboardSection({ onSelectToken, onViewDemo }) {
   const wallet = useReownWallet();
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
@@ -112,7 +112,7 @@ export default function PortfolioDashboardSection({ onSelectToken }) {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} onViewDemo={onViewDemo} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />

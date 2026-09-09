@@ -10,6 +10,11 @@ import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
 import TokenDetail from "./components/TokenDetail.jsx";
 import AddressLookup from "./components/AddressLookup.jsx";
 import NameServiceStats from "./components/NameServiceStats.jsx";
+// Not lazy, unlike the wallet-requiring tabs below — CoreTierDemoPage.jsx (and CoreTierDemo.jsx
+// underneath it) has no wallet-connection dependency at all (it's a public, unauthenticated
+// preview), so importing it directly here doesn't pull the WalletConnect/AppKit bundle into the
+// base dashboard the way those tabs' own lazy loading exists specifically to avoid.
+import CoreTierDemoPage from "./premium/components/CoreTierDemoPage.jsx";
 
 // Premium Feature #1 (per-wallet PnL statements) — the one wallet-requiring tab on this otherwise
 // walletless dashboard. Loaded via React.lazy specifically so importing it (and the
@@ -131,9 +136,14 @@ export default function DashboardApp() {
         {tab === "nameservice" && <NameServiceStats />}
         {tab === "portfolio" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} />
+            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={() => setTab("demo")} />
           </Suspense>
         )}
+        {/* Not in DashboardNav's own tab list (deliberately — a demo isn't a permanent nav
+            destination for every visitor) — reachable only via CoreTierPortfolio's "View Demo"
+            button, same "reachable by a specific action, not a nav item" spirit as the
+            /statement/:requestId deep link above. */}
+        {tab === "demo" && <CoreTierDemoPage onSelectToken={handleSelectTokenFromAddress} onExit={() => setTab("portfolio")} />}
         {tab === "premium" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
             <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
