@@ -23,6 +23,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getPool } from "../db/pool.js";
 import { getActiveTokenPriceAlertsByToken, resetTokenPriceAlertBaseline } from "../db/tokenPriceAlerts.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
+import { getBatchTokenPrices } from "./electroSwapApi.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
@@ -39,13 +40,19 @@ function fmtPrice(v) {
   return v < 0.01 ? v.toFixed(8) : v.toFixed(4);
 }
 
-async function checkOneToken(provider, tokenAddress, alerts, etnUsd) {
-  let etnPrice;
-  try {
-    etnPrice = await getTokenEtnPrice(provider, tokenAddress);
-  } catch (err) {
-    console.warn(`⚠️  Token price alert: quote failed for ${tokenAddress}:`, err.message);
-    return;
+async function checkOneToken(provider, tokenAddress, alerts, etnUsd, batchedEtnPrice) {
+  let etnPrice = batchedEtnPrice;
+  if (etnPrice == null) {
+    try {
+      // skipElectroSwap: true — checkAllTokens already tried every distinct token through
+      // ElectroSwap's BATCH endpoint below; a token missing from that result means ElectroSwap
+      // doesn't price it, and retrying the single endpoint here would almost certainly just fail
+      // again at a real credit cost. Falls straight to the on-chain/GeckoTerminal path.
+      etnPrice = await getTokenEtnPrice(provider, tokenAddress, { skipElectroSwap: true });
+    } catch (err) {
+      console.warn(`⚠️  Token price alert: quote failed for ${tokenAddress}:`, err.message);
+      return;
+    }
   }
   if (etnPrice == null) return; // no direct WETN pair — nothing to evaluate against
 
@@ -95,8 +102,17 @@ async function checkAllTokens(provider) {
     const [byToken, priceCache] = await Promise.all([getActiveTokenPriceAlertsByToken(), getEtnPriceCache()]);
     const etnUsd = priceCache?.usd ?? null;
 
+    // One batched ElectroSwap call covering every distinct alerted token this tick, instead of
+    // checkOneToken's own dexPriceQuote.js call re-trying ElectroSwap's SINGLE endpoint per token
+    // (50 credits each) on every poll, forever — see electroSwapApi.js's own header comment on why
+    // batching is always cheaper. Chunks automatically above 50 tokens; empty/unconfigured returns
+    // an empty Map with no call at all, so this is a no-op cost when there's nothing to check or
+    // ELECTROSWAP_API_KEY isn't set.
+    const electroSwapPrices = await getBatchTokenPrices([...byToken.keys()]);
+
     for (const [tokenAddress, alerts] of byToken) {
-      await checkOneToken(provider, tokenAddress, alerts, etnUsd);
+      const batchedEtnPrice = electroSwapPrices.get(tokenAddress.toLowerCase())?.etn ?? null;
+      await checkOneToken(provider, tokenAddress, alerts, etnUsd, batchedEtnPrice);
     }
   } catch (err) {
     console.error("⚠️  Token price alert check failed:", err.message);

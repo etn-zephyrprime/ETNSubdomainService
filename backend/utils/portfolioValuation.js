@@ -107,7 +107,11 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
         continue;
       }
       try {
-        const tokenEtnPrice = await getTokenEtnPrice(provider, tb.token.address);
+        // skipElectroSwap: true — this token was already checked against ElectroSwap's BATCH
+        // endpoint just above and came back absent; retrying the SINGLE endpoint here would almost
+        // certainly fail again too (same underlying pricing data), just at a real credit cost for a
+        // near-guaranteed miss. Falls straight to the on-chain path.
+        const tokenEtnPrice = await getTokenEtnPrice(provider, tb.token.address, { skipElectroSwap: true });
         if (tokenEtnPrice == null) {
           hasUnpriced = true;
           continue;
