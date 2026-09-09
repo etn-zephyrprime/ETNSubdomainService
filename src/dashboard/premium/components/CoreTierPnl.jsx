@@ -490,6 +490,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                   height={120}
                   formatValue={chartMode === "pnl" ? (v) => fmtSigned(v) : formatValue}
                   formatLabel={formatChartDate}
+                  colorBySign={chartMode === "pnl"}
                 />
               )}
             </div>

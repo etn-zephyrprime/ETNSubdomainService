@@ -22,6 +22,7 @@ export const border = "#333";
 export const muted = "#888";
 export const mutedLight = "#9a9a9a";
 export const error = "#ff6b6b";
+export const errorGlow = "rgba(255,107,107,0.35)"; // same alpha as greenGlow — SparklineChart's colorBySign mode
 
 // Page background — dark, desaturated green rather than the main site's navy (#011528), so the
 // bright accent green above actually reads as "on brand" instead of clashing.

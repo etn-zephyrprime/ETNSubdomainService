@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { green, greenGlow, muted, mutedLight, panel, border } from "../theme.js";
+import { green, greenGlow, error, errorGlow, muted, mutedLight, panel, border } from "../theme.js";
 
 const identity = (v) => String(v);
 
@@ -21,7 +21,14 @@ const identity = (v) => String(v);
 // formatValue/formatLabel are per-caller — the same chart component gets reused for wildly
 // different units (ETN, gwei, seconds, plain counts) and granularities (daily vs hourly), so
 // there's no one sensible default beyond "stringify it".
-export default function SparklineChart({ data, height = 140, width = 280, formatValue = identity, formatLabel = identity }) {
+//
+// colorBySign (opt-in, default off — every existing caller keeps its plain all-green line/area
+// unchanged): colors the line/area red wherever the value is negative, green wherever it's >= 0
+// (zero stays green), splitting each segment exactly at its zero-crossing — interpolated in value
+// space between the two data points that straddle it, not just recolored at the nearest point —
+// so the color boundary lands where the line actually crosses zero. Built for a PnL chart, where
+// "am I currently up or down" is the whole point of the color.
+export default function SparklineChart({ data, height = 140, width = 280, formatValue = identity, formatLabel = identity, colorBySign = false }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -47,25 +54,69 @@ export default function SparklineChart({ data, height = 140, width = 280, format
   });
 
   // Break into separate polyline segments at any gap (null point) instead of one path — avoids
-  // drawing a straight line across missing data.
-  const segments = [];
-  let current = [];
-  for (const c of coords) {
-    if (c) {
-      current.push(c);
-    } else if (current.length) {
-      segments.push(current);
-      current = [];
+  // drawing a straight line across missing data. First grouped into gap-free "runs" by data
+  // INDEX (not yet colored) — colorBySign then further splits each run at every zero-crossing;
+  // without it, each run becomes exactly one 'positive'-tagged segment (identical to this
+  // component's original, uncolored behavior).
+  const runs = [];
+  let currentRun = [];
+  for (let i = 0; i < coords.length; i++) {
+    if (coords[i]) {
+      currentRun.push(i);
+    } else if (currentRun.length) {
+      runs.push(currentRun);
+      currentRun = [];
     }
   }
-  if (current.length) segments.push(current);
+  if (currentRun.length) runs.push(currentRun);
 
-  const areaPath = (segment) => {
-    const line = segment.map((c) => c.join(",")).join(" ");
-    const [firstX] = segment[0];
-    const [lastX] = segment[segment.length - 1];
+  const signOf = (i) => (data[i].value >= 0 ? "positive" : "negative"); // 0 counts as positive — stays green
+  const zeroY = valueToY(0);
+
+  const segments = []; // [{ points: [[x,y], ...], sign: 'positive' | 'negative' }]
+  for (const run of runs) {
+    if (!colorBySign) {
+      segments.push({ points: run.map((i) => coords[i]), sign: "positive" });
+      continue;
+    }
+    let piece = [coords[run[0]]];
+    let pieceSign = signOf(run[0]);
+    for (let k = 1; k < run.length; k++) {
+      const i = run[k];
+      const prevI = run[k - 1];
+      const curSign = signOf(i);
+      if (curSign !== pieceSign) {
+        // Linear interpolation of the zero-crossing in VALUE space (not pixel space — same
+        // result, since valueToY is itself linear, but this reads directly off the real values
+        // rather than an already-transformed coordinate).
+        const vPrev = data[prevI].value;
+        const vCur = data[i].value;
+        const t = vPrev / (vPrev - vCur); // vPrev/vCur have opposite signs here, so t is in (0, 1)
+        const [x0] = coords[prevI];
+        const [x1] = coords[i];
+        const crossPoint = [x0 + t * (x1 - x0), zeroY];
+        piece.push(crossPoint);
+        segments.push({ points: piece, sign: pieceSign });
+        piece = [crossPoint, coords[i]];
+        pieceSign = curSign;
+      } else {
+        piece.push(coords[i]);
+      }
+    }
+    segments.push({ points: piece, sign: pieceSign });
+  }
+
+  const areaPath = (points) => {
+    const line = points.map((c) => c.join(",")).join(" ");
+    const [firstX] = points[0];
+    const [lastX] = points[points.length - 1];
     return `M${firstX},${height} L${line} L${lastX},${height} Z`;
   };
+
+  // Only when colorBySign is actually splitting the line (the range genuinely straddles zero) —
+  // an extra reference line right at the split, distinct from the plain min/mid/max ones, so it's
+  // clear at a glance where "positive" ends and "negative" begins.
+  const showZeroLine = colorBySign && min < 0 && max > 0;
 
   const updateHover = (clientX) => {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -106,16 +157,19 @@ export default function SparklineChart({ data, height = 140, width = 280, format
             {[max, mid, min].map((v, i) => (
               <line key={i} x1={0} y1={valueToY(v)} x2={width} y2={valueToY(v)} stroke={border} strokeWidth={0.5} strokeDasharray="2,2" />
             ))}
+            {showZeroLine && (
+              <line x1={0} y1={zeroY} x2={width} y2={zeroY} stroke={mutedLight} strokeWidth={0.75} strokeDasharray="4,2" />
+            )}
 
             {segments.map((segment, i) => (
-              <path key={`area-${i}`} d={areaPath(segment)} fill={greenGlow} stroke="none" />
+              <path key={`area-${i}`} d={areaPath(segment.points)} fill={segment.sign === "negative" ? errorGlow : greenGlow} stroke="none" />
             ))}
             {segments.map((segment, i) => (
               <polyline
                 key={`line-${i}`}
-                points={segment.map((c) => c.join(",")).join(" ")}
+                points={segment.points.map((c) => c.join(",")).join(" ")}
                 fill="none"
-                stroke={green}
+                stroke={segment.sign === "negative" ? error : green}
                 strokeWidth={2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -125,7 +179,14 @@ export default function SparklineChart({ data, height = 140, width = 280, format
             {hoverCoord && (
               <>
                 <line x1={hoverCoord[0]} y1={0} x2={hoverCoord[0]} y2={height} stroke={mutedLight} strokeWidth={1} strokeDasharray="3,3" />
-                <circle cx={hoverCoord[0]} cy={hoverCoord[1]} r={4} fill={green} stroke={panel} strokeWidth={1.5} />
+                <circle
+                  cx={hoverCoord[0]}
+                  cy={hoverCoord[1]}
+                  r={4}
+                  fill={colorBySign && hoverPoint?.value < 0 ? error : green}
+                  stroke={panel}
+                  strokeWidth={1.5}
+                />
               </>
             )}
           </svg>
