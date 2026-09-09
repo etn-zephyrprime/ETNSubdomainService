@@ -10,24 +10,28 @@
 //    every "indexer product" tier below) since it's just KuCoin's own trading history, not a
 //    third-party data product with a free/paid tier. This is the primary source for ETN. Checked
 //    several other major exchanges too (Binance doesn't list ETN at all) before landing on KuCoin.
-//  - Tokens (any ERC-20 on this chain, e.g. CORE): ElectroSwap's own official API candles endpoint
-//    (electroSwapApi.js's getCandles) FIRST — confirmed live it reaches back to a pool's own
-//    creation for anything under 500 days old (a null `cursor` on a cursor-less, at-the-cap request
-//    means nothing further back exists to page to, not an untriggered pagination mechanism — see
-//    getCandles' own comment). Since this chain's EVM only went live ~March 2024, that ceiling
-//    currently covers EVERY pool's entire real history in one 600-credit call. Falls back to
-//    GeckoTerminal's on-chain OHLCV, via tokenChartRouter.js's shared, rate-limited queue
-//    (fetchGeckoTerminal) — confirmed live this is capped at roughly the last 184 days REGARDLESS
-//    of a pool's actual age (tested 3 pools with very different creation dates, all returned
-//    exactly 184 candles) — a GeckoTerminal/CoinGecko account-tier restriction, not a per-request
-//    quirk, and not fixable without a paid API tier — only when ElectroSwap isn't configured or
-//    has no price for a given token. There is no exchange-listing fallback for arbitrary tokens the
-//    way there is for ETN — none of these tokens trade anywhere but this chain's own DEX pools.
-//  - ETN also falls back to ElectroSwap (via its WETN pool) and then this same GeckoTerminal path,
-//    then to CoinGecko's historical-by-date endpoint (confirmed live: hard-capped at the past 365
-//    days on the free tier), only if KuCoin itself ever fails entirely — KuCoin's unrestricted
-//    2019-forward history is always tried first and stays primary for ETN; none of these fallbacks
-//    can reach nearly as far back.
+//  - Tokens (any ERC-20 on this chain, e.g. CORE): BOTH GeckoTerminal's on-chain OHLCV (via
+//    tokenChartRouter.js's shared, rate-limited queue, fetchGeckoTerminal) AND ElectroSwap's own
+//    official API candles endpoint (electroSwapApi.js's getCandles) are queried, merged to the
+//    wider combined range. Originally this tried ElectroSwap first and skipped GeckoTerminal
+//    entirely on success — reverted after confirming live that GeckoTerminal's OHLCV ceiling isn't
+//    a rolling window (an earlier comment here, based on a one-time "184 days" measurement, assumed
+//    it was) but a FIXED historical floor from whenever GeckoTerminal started indexing a given pool
+//    — so it grows in apparent "days back" over real time and can, for a pool GeckoTerminal has
+//    indexed a long while, reach further back than ElectroSwap's own ~500-day/since-pool-creation
+//    ceiling. Real production data proved this for WETN specifically: GeckoTerminal (20 pools) had
+//    already reached 2025-01-26, earlier than ElectroSwap's ~April 2025 ceiling for that same token.
+//    "First success wins" would have silently narrowed coverage for tokens like that. ElectroSwap is
+//    still queried SECOND on every fresh backfill so its price wins ON CONFLICT for any day both
+//    sources cover, keeping it the trusted/current source for the window it does cover — see
+//    mergeBackfillResults and ensureBackfilled's own comment for the exact mechanics. There is no
+//    exchange-listing fallback for arbitrary tokens the way there is for ETN — none of these tokens
+//    trade anywhere but this chain's own DEX pools.
+//  - ETN also falls back to ElectroSwap (via its WETN pool, merged with GeckoTerminal the same way
+//    as any token) then to CoinGecko's historical-by-date endpoint (confirmed live: hard-capped at
+//    the past 365 days on the free tier), only if KuCoin itself ever fails entirely — KuCoin's
+//    unrestricted 2019-forward history is always tried first and stays primary for ETN; none of
+//    these fallbacks can reach nearly as far back.
 //
 // TESTNET CAVEAT: GeckoTerminal is a mainnet indexer product — it will never index the testnet
 // MockRouter/MockCoreToken pair used for the buy-and-burn lifecycle tests (see the PnL statement
@@ -228,15 +232,14 @@ async function backfillAssetPriceHistory(cacheAsset, tokenAddress) {
  * per ElectroSwap's own OpenAPI spec cursor is "the cursor from a previous response" for paging
  * further back — a null cursor on the very FIRST page means nothing further back exists to page
  * to, not an untriggered pagination mechanism). Since this chain's EVM only went live ~March 2024,
- * that 500-day ceiling currently reaches every pool's entire real history — comfortably beating
- * GeckoTerminal's ~184-day OHLCV ceiling (see this file's own header comment) for the same range,
- * in a single 600-credit call instead of several paginated ones. Tried BEFORE
- * backfillAssetPriceHistory (GeckoTerminal), never instead of it — a pool that does eventually turn
- * 500+ days old, or ElectroSwap simply not being configured or not pricing this asset yet, falls
- * straight through to that existing path unchanged. Deliberately returns null rather than
- * `{ earliestDate: null, poolCount: 0 }` on "nothing to backfill" so ensureBackfilled's existing
- * `!result || !result.earliestDate` fallback check treats "ElectroSwap has nothing for this asset"
- * exactly the same as "ElectroSwap isn't configured" — one fallback condition, not two. */
+ * that 500-day ceiling currently reaches most pools' entire real history in a single 600-credit
+ * call. Queried AFTER backfillAssetPriceHistory (GeckoTerminal) in ensureBackfilled, not instead of
+ * it — see that function's own comment and mergeBackfillResults for why "first success wins" was
+ * reverted (GeckoTerminal can, for a pool it's indexed a long while, reach further back than
+ * ElectroSwap's own ceiling — confirmed live for WETN). Deliberately returns null rather than
+ * `{ earliestDate: null, poolCount: 0 }` on "nothing to backfill" so mergeBackfillResults' null
+ * handling treats "ElectroSwap has nothing for this asset" exactly the same as "ElectroSwap isn't
+ * configured" — one code path, not two. */
 async function backfillTokenFromElectroSwap(cacheAsset, tokenAddress) {
   if (!isElectroSwapConfigured()) return null;
   const candles = await getCandles(tokenAddress, "1d", 500);
@@ -326,6 +329,19 @@ async function backfillEtnFromKucoin() {
 // than being permanently told "no price data exists" by a state row born from an exception.
 const failedBackfillThisRun = new Set();
 
+/** Combines two backfill results (see backfillAssetPriceHistory/backfillTokenFromElectroSwap,
+ * either of which may be null or have a null earliestDate) into the widest range either alone
+ * achieved: the earlier of the two earliestDates, and their pool/source counts summed for the
+ * recorded log line. Null-safe in every direction — either or both inputs can be null. */
+function mergeBackfillResults(a, b) {
+  if (!a && !b) return null;
+  if (!a) return b;
+  if (!b) return a;
+  const earliestDate =
+    a.earliestDate && b.earliestDate ? (a.earliestDate < b.earliestDate ? a.earliestDate : b.earliestDate) : a.earliestDate || b.earliestDate;
+  return { earliestDate, poolCount: (a.poolCount || 0) + (b.poolCount || 0) };
+}
+
 /** Runs the appropriate bulk backfill exactly once, ever, per asset — recorded in
  * price_history_backfill_state. Every getHistoricalPriceUsd call routes through this first, so the
  * very first lookup for a brand-new asset triggers the bulk fetch (a handful of calls) and every
@@ -346,19 +362,27 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
     // itself getting overwritten by a later fallback.
     const usedKucoin = Boolean(result && result.earliestDate);
 
-    if (!result || !result.earliestDate) {
-      // ElectroSwap's own candle history (see backfillTokenFromElectroSwap above) reaches back to
-      // a pool's creation for anything under ElectroSwap's ~500-day ceiling — currently every pool
-      // on this chain, launched ~March 2024 — comfortably beating GeckoTerminal's ~184-day ceiling
-      // below in one cheap call. Tried for every token, and as ETN's second-line fallback (via its
-      // WETN pool) if KuCoin's full history somehow came back empty.
-      result = await backfillTokenFromElectroSwap(cacheAsset, tokenAddress);
-    }
-    if (!result || !result.earliestDate) {
-      // Either a token ElectroSwap didn't price (not configured, out of credits, or genuinely no
-      // pool there), or both ETN sources above came back empty — fall back to the on-chain-pool
-      // approach every asset used before ElectroSwap's API existed.
-      result = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
+    if (!usedKucoin) {
+      // ALWAYS try both remaining sources and merge to the broadest combined range — deliberately
+      // NOT "first success wins". Confirmed live this matters: this file's own top comment
+      // describes GeckoTerminal's OHLCV as capped at "roughly the last 184 days regardless of pool
+      // age", based on a one-time measurement — turns out that reflects a fixed historical floor
+      // from whenever GeckoTerminal started indexing a given pool, not a rolling window relative to
+      // "now", so the number of days it measures as grows over real time. Real production data
+      // proved this: WETN's existing GeckoTerminal backfill (20 pools) had already reached
+      // 2025-01-26, EARLIER than ElectroSwap's own ~500-day/since-pool-creation ceiling for that
+      // same token (~April 2025) — so "ElectroSwap succeeded, skip GeckoTerminal entirely" would
+      // have silently narrowed WETN's recorded coverage on its very next re-backfill. Querying both
+      // once (this only ever runs once, ever, per asset — not a hot path) and keeping the earlier
+      // of the two dates avoids ever regressing below what GeckoTerminal alone already achieved,
+      // while still gaining ElectroSwap for tokens/pools it covers that GeckoTerminal doesn't (or
+      // doesn't reach as cleanly). ElectroSwap is queried SECOND so its price wins ON CONFLICT for
+      // any day both sources cover — same "later call wins the overlap" convention
+      // backfillAssetPriceHistory's own pools loop already uses — keeping it the trusted/current
+      // source for its own window while GeckoTerminal fills in anything older it doesn't reach.
+      const geckoResult = await backfillAssetPriceHistory(cacheAsset, tokenAddress);
+      const electroResult = await backfillTokenFromElectroSwap(cacheAsset, tokenAddress);
+      result = mergeBackfillResults(geckoResult, electroResult);
     }
 
     // See KUCOIN_ETN_SANITY_FLOOR's comment: a mid-pagination KuCoin hiccup can produce a
