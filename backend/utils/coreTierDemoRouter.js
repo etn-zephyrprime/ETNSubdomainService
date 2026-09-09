@@ -1,25 +1,47 @@
 // backend/utils/coreTierDemoRouter.js
 //
-// PUBLIC (no wallet signature, no Core tier membership) preview of Core Tier's PnL panel — for
+// PUBLIC (no wallet signature, no Core tier membership) preview of Core Tier — for
 // CoreTierPortfolio.jsx's "View Demo" button, which needs to show a visitor (including one with no
-// wallet connected at all) what PnL actually looks like without them owning, connecting, or paying
-// for anything. Balance History needs no equivalent here: every one of its own data sources
-// (Blockscout's coin-balance-history endpoint, this app's own /api/etn-price-history, a direct
-// eth_getBalance RPC read) is already public and unauthenticated — see CoreTierDemo.jsx, which
-// calls those directly, same as CoreTierBalanceHistory.jsx itself does.
+// wallet connected at all) the FULL paid experience without them owning, connecting, or paying for
+// anything. Per the explicit ask: this should look exactly like it would for a real subscriber, not
+// a thinned-down preview — so it now covers every read-only section a real member's Portfolio page
+// does: PnL (current figures, category history, whole-portfolio history), DeFi/Liquidity positions,
+// NFT PnL, and combined ETN + token holdings.
 //
-// PnL has no such public path — computeLivePnlSnapshot/getPnlSnapshotHistory are real backend
-// functions normally reached only through signature+membership-gated routes. This is a SEPARATE,
-// intentionally narrow public route rather than a "skip auth" flag on the real ones: it ALWAYS
-// operates on the fixed DEMO_WALLET_ADDRESSES below and NEVER accepts a wallet from the client — a
-// public, unauthenticated route that computed live PnL for any address on request would be a real
-// abuse vector (computeLivePnlSnapshot is a full FIFO replay + live pricing pass, the same
-// expensive computation a real member's own signed request pays for). Cached in memory
-// (DEMO_CACHE_TTL_MS) on top of that so repeated visits — from however many different people — only
-// ever pay for that cost once per cache window, not once per request.
+// Deliberately still doesn't cover: adding/removing tracked wallets, Telegram alerts, or membership
+// purchase — none of those are things a real member's DATA looks like, they're WRITE actions tied
+// to a real, authenticated identity (a Telegram link, a subscription, a tracked-wallet list) that a
+// public demo has no business exposing or faking. CoreTierDemo.jsx shows a plain "Subscribe" CTA
+// where those would be instead.
+//
+// This is a SEPARATE, intentionally narrow set of public routes rather than a "skip auth" flag on
+// the real ones: it ALWAYS operates on the fixed DEMO_WALLET_ADDRESSES below and NEVER accepts a
+// wallet from the client — a public, unauthenticated route that computed live PnL/DeFi positions
+// for any address on request would be a real abuse vector (every one of these is a genuinely
+// expensive computation — FIFO replay, live pricing, on-chain position valuation — the same cost a
+// real member's own signed request pays for). Cached in memory (DEMO_CACHE_TTL_MS) on top of that
+// so repeated visits — from however many different people — only ever pay for that cost once per
+// cache window, not once per request.
+//
+// The real wallet addresses NEVER reach the client, in the response OR in any network request the
+// client itself makes — every section here is computed server-side and returned already
+// anonymized (walletIndex only). This matters beyond just what's rendered: a wallet address visible
+// in a browser's network tab would defeat the anonymity requirement just as much as one printed on
+// screen, so nothing about these wallets is fetched client-side (contrast CoreTierDemo.jsx's own
+// Balance History section, which — same as the real CoreTierBalanceHistory.jsx — calls Blockscout
+// directly client-side; that's an intentional, narrower exception carried over from this demo's
+// very first version, not a new gap).
 import express from "express";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots, backfillPnlHistory } from "../services/pnlSnapshotService.js";
+import { backfillCategoryPnlHistory, CATEGORIES } from "../services/categoryPnlService.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
+import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
+import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
+import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
+import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
+import { fetchBlockscoutJson } from "./blockscoutClient.js";
+
+const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 
 // Three real, unrelated wallets with genuine on-chain activity — combined here the exact same way
 // PortfolioDashboardSection.jsx combines a real member's own tracked wallets, so the demo actually
@@ -35,28 +57,101 @@ const DEMO_WALLET_ADDRESSES = [
   "0xd6cf49cbcf84b2cd2472a376b5f791689a0769d0",
   "0x9343e399d44e701fc26130bdbf8817d78f086867",
 ];
-// Shared synthetic "owner" for pnl_snapshots' (owner_wallet, wallet_address, date) composite key —
-// same role wallet.account plays for a real member's OWN tracked-wallet history, just fixed to
-// wallet [0] here since there's no real connected member behind this route. Using wallet [0] itself
-// (rather than some other sentinel) is deliberate: the ORIGINAL single-wallet version of this file
-// already wrote wallet [0]'s rows self-referencing (owner_wallet = wallet_address = wallet [0]) —
-// keeping that exact value means those existing rows stay valid and get picked up unchanged under
-// this multi-wallet scheme, rather than orphaning a year of already-backfilled history.
+// Shared synthetic "owner" for pnl_snapshots'/pnl_category_snapshots' (owner_wallet, wallet_address,
+// ..., date) composite keys — same role wallet.account plays for a real member's OWN tracked-wallet
+// history, just fixed to wallet [0] here since there's no real connected member behind this route.
+// Using wallet [0] itself (rather than some other sentinel) is deliberate: the ORIGINAL
+// single-wallet version of this file already wrote wallet [0]'s pnl_snapshots rows self-referencing
+// (owner_wallet = wallet_address = wallet [0]) — keeping that exact value means those existing rows
+// stay valid and get picked up unchanged under this multi-wallet scheme, rather than orphaning a
+// year of already-backfilled history.
 const DEMO_OWNER = DEMO_WALLET_ADDRESSES[0];
 const DEMO_HISTORY_DAYS = 365; // matches the real feature's own rolling-12-months convention
 const DEMO_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — a demo doesn't need to be second-fresh; this is what keeps a public, unauthenticated route cheap regardless of visitor count
 
 let cache = null; // { promise, expiresAt } — promise resolves to the response payload
 
+/** Every fungible (non-NFT) token balance across all DEMO_WALLET_ADDRESSES, merged by token
+ * address, plus the combined native ETN balance — the server-side equivalent of
+ * useCombinedPortfolio.js's own client-side merge (same reasoning: kept off the client entirely so
+ * a real wallet address never appears in a browser network request — see this file's own header
+ * comment). Returns `{ totalCoinBalance (string, wei), tokens: [{tokenAddress, symbol, name,
+ * decimals, rawBalance, heldByCount}] }`. A single wallet's lookup failing is logged and treated as
+ * "holds nothing" rather than failing the whole combined view. */
+async function getCombinedHoldings() {
+  const perWallet = await Promise.all(
+    DEMO_WALLET_ADDRESSES.map(async (addr) => {
+      try {
+        const [info, balancesRaw] = await Promise.all([
+          fetchBlockscoutJson(`/addresses/${addr}`),
+          fetchBlockscoutJson(`/addresses/${addr}/token-balances`),
+        ]);
+        const balances = Array.isArray(balancesRaw) ? balancesRaw : balancesRaw?.items || [];
+        return { coinBalance: info?.coin_balance || "0", balances };
+      } catch (err) {
+        console.warn(`⚠️  Core Tier demo: couldn't load holdings for a demo wallet:`, err.message);
+        return { coinBalance: "0", balances: [] };
+      }
+    })
+  );
+
+  let totalCoinBalance = 0n;
+  const tokensByAddress = new Map();
+  for (const w of perWallet) {
+    totalCoinBalance += BigInt(w.coinBalance || 0);
+    for (const tb of w.balances) {
+      const tokenAddr = tb.token?.address?.toLowerCase();
+      if (!tokenAddr || NFT_TOKEN_TYPES.has(tb.token?.type)) continue;
+      const value = BigInt(tb.value || 0);
+      const existing = tokensByAddress.get(tokenAddr);
+      if (existing) {
+        existing.rawBalance = (BigInt(existing.rawBalance) + value).toString();
+        existing.heldByCount += 1;
+      } else {
+        tokensByAddress.set(tokenAddr, {
+          tokenAddress: tokenAddr,
+          symbol: tb.token?.symbol || null,
+          name: tb.token?.name || null,
+          decimals: tb.token?.decimals ?? 18,
+          rawBalance: value.toString(),
+          heldByCount: 1,
+        });
+      }
+    }
+  }
+
+  return { totalCoinBalance: totalCoinBalance.toString(), tokens: [...tokensByAddress.values()], perWalletTokens: perWallet.map((w) => w.balances) };
+}
+
 async function computeDemoData() {
   // Each wallet's own snapshot excludes the OTHER two from its realized P&L (a transfer between
   // them is a self-transfer, not a disposal) — same selfOwnedAddresses reasoning
-  // PortfolioDashboardSection.jsx applies for a real member's own multiple tracked wallets.
-  const snapshots = await Promise.all(
-    DEMO_WALLET_ADDRESSES.map((addr) =>
-      computeLivePnlSnapshot(addr, DEMO_WALLET_ADDRESSES.filter((a) => a !== addr))
-    )
-  );
+  // PortfolioDashboardSection.jsx applies for a real member's own multiple tracked wallets. Same
+  // pattern repeated for DeFi/liquidity/NFT below — every section that needs "the wallet's own
+  // history minus its sibling demo wallets" uses the identical selfOwned filter.
+  const selfOwned = (addr) => DEMO_WALLET_ADDRESSES.filter((a) => a !== addr);
+
+  const [snapshots, defiResults, nftSnapshots, combinedHoldings] = await Promise.all([
+    Promise.all(DEMO_WALLET_ADDRESSES.map((addr) => computeLivePnlSnapshot(addr, selfOwned(addr)))),
+    Promise.all(
+      DEMO_WALLET_ADDRESSES.map((addr) =>
+        getOpenDefiPositionsUsd(addr).catch((err) => {
+          console.warn(`⚠️  Core Tier demo: DeFi position lookup failed for a demo wallet:`, err.message);
+          return { positions: [], totalUsd: null, hasUnpriced: true };
+        })
+      )
+    ),
+    Promise.all(
+      DEMO_WALLET_ADDRESSES.map((addr) =>
+        computeLiveNftPnlSnapshot(addr, selfOwned(addr)).catch((err) => {
+          console.warn(`⚠️  Core Tier demo: NFT PnL failed for a demo wallet:`, err.message);
+          return null;
+        })
+      )
+    ),
+    getCombinedHoldings(),
+  ]);
+
   const combined = combineLivePnlSnapshots(snapshots);
   const perWallet = DEMO_WALLET_ADDRESSES.map((addr, i) => ({
     // Index only — CoreTierDemo.jsx labels these "Wallet 1/2/3"; the real address never leaves
@@ -67,16 +162,68 @@ async function computeDemoData() {
     realizedPnlUsd: snapshots[i].realizedPnlUsd,
   }));
 
-  await Promise.all(
-    DEMO_WALLET_ADDRESSES.map((addr) =>
-      backfillPnlHistory(DEMO_OWNER, addr, DEMO_WALLET_ADDRESSES.filter((a) => a !== addr), DEMO_HISTORY_DAYS)
-    )
+  // Liquidity positions need each wallet's own fungible-token candidate list (the V2-LP probe
+  // target set) — already fetched above via getCombinedHoldings, reused here rather than a second
+  // Blockscout round-trip per wallet.
+  const lpResults = await Promise.all(
+    DEMO_WALLET_ADDRESSES.map((addr, i) => {
+      const candidateTokens = (combinedHoldings.perWalletTokens[i] || [])
+        .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
+        .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
+      return getLiquidityPositionsUsd(addr, candidateTokens).catch((err) => {
+        console.warn(`⚠️  Core Tier demo: liquidity position lookup failed for a demo wallet:`, err.message);
+        return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: true, lpTokenAddresses: new Set() };
+      });
+    })
   );
-  const sinceDate = new Date(Date.now() - DEMO_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const rows = await getPnlSnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, sinceDate);
-  const history = combineSnapshotsByDate(rows, DEMO_WALLET_ADDRESSES);
 
-  return { snapshot: combined, perWallet, history };
+  const combineUsdTotals = (results) => {
+    let totalUsd = null;
+    let hasUnpriced = false;
+    for (const r of results) {
+      if (r.hasUnpriced) hasUnpriced = true;
+      if (r.totalUsd != null) totalUsd = (totalUsd ?? 0) + Number(r.totalUsd);
+    }
+    return { totalUsd, hasUnpriced };
+  };
+  const defiPositions = { ...combineUsdTotals(defiResults), positions: defiResults.flatMap((r) => r.positions) };
+  const liquidityPositions = {
+    ...combineUsdTotals(lpResults),
+    v2Positions: lpResults.flatMap((r) => r.v2Positions),
+    v3Positions: lpResults.flatMap((r) => r.v3Positions),
+  };
+  const nftPnl = combineLiveNftPnlSnapshots(nftSnapshots.filter(Boolean));
+
+  // Whole-portfolio + per-category history — one replayFifoCheckpoints pass per wallet either way
+  // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments), run for every demo wallet
+  // before reading any of it back.
+  await Promise.all([
+    ...DEMO_WALLET_ADDRESSES.map((addr) => backfillPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS)),
+    ...DEMO_WALLET_ADDRESSES.map((addr) => backfillCategoryPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS)),
+  ]);
+  const sinceDate = new Date(Date.now() - DEMO_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const historyRows = await getPnlSnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, sinceDate);
+  const history = combineSnapshotsByDate(historyRows, DEMO_WALLET_ADDRESSES);
+
+  const categoryHistory = {};
+  for (const category of Object.values(CATEGORIES)) {
+    const rows = await getPnlCategorySnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, category, sinceDate);
+    categoryHistory[category] = combineCategorySnapshotsByDate(rows, DEMO_WALLET_ADDRESSES);
+  }
+
+  return {
+    snapshot: combined,
+    perWallet,
+    history,
+    categoryHistory,
+    defiPositions,
+    liquidityPositions,
+    nftPnl,
+    combinedHoldings: {
+      totalCoinBalance: combinedHoldings.totalCoinBalance,
+      tokens: combinedHoldings.tokens,
+    },
+  };
 }
 
 /** Cached, in-flight-deduplicated demo data — concurrent requests during a cache miss share ONE
@@ -98,8 +245,7 @@ const router = express.Router();
 
 router.get("/premium/demo/pnl", async (req, res) => {
   try {
-    const { snapshot, perWallet, history } = await getDemoData();
-    res.json({ snapshot, perWallet, history });
+    res.json(await getDemoData());
   } catch (err) {
     console.error("Core Tier demo PnL failed:", err);
     res.status(502).json({ error: "Couldn't load demo data right now — try again shortly" });
