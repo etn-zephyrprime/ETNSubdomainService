@@ -92,6 +92,16 @@ const FARM_WITHDRAW_TOPIC = DEFI_IFACE.getEvent("FarmWithdrawl").topicHash;
 const CORE_STAKED_TOPIC = DEFI_IFACE.getEvent("CoreStaked").topicHash;
 const CORE_WITHDRAWN_TOPIC = DEFI_IFACE.getEvent("CoreWithdrawn").topicHash;
 const REWARD_PAID_TOPIC = DEFI_IFACE.getEvent("RewardPaid").topicHash;
+// BOLT's real token contract — confirmed live from the YieldFarm contract's own verified
+// constructor args on Blockscout (_boltToken), not assumed. A farmer can optionally deposit BOLT
+// alongside their LP deposit (YieldFarm.sol's `deposit(farmId, amount0, amount1, amountBolt)`) for
+// a rewards multiplier, and gets it back via a plain ERC20 transfer() when they later withdraw
+// their entire position — but the AMOUNT never appears in the FarmDeposit/FarmIncrease/
+// FarmWithdrawl event args themselves (confirmed against the real event ABI), only as a same-tx
+// standard Transfer log. See enrichFarmRowsWithBolt below for how that gets correlated in.
+const BOLT_TOKEN_ADDRESS = "0x043faa1b5c5fc9a7dc35171f290c29ecde0ccff1";
+const ERC20_TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+const ERC20_TRANSFER_IFACE = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
 // farmer is FarmDeposit/FarmWithdrawl's SECOND indexed param (topics[2]) — farmId is the first.
 const FARM_EVENT_WALLET_TOPIC_INDEX = 2;
 // user is CoreStaked/CoreWithdrawn/RewardPaid's ONLY indexed param besides the signature itself
@@ -485,8 +495,11 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
 
 /** Walks /addresses/{wallet}/internal-transactions — ETN moved by contract calls, invisible to
  * both the plain transaction list and eth_getLogs. Independent of ingestTokenTransfers below (each
- * only touches its own endpoint/rows), so the caller runs the two concurrently. */
-async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes) {
+ * only touches its own endpoint/rows), so the caller runs the two concurrently.
+ * `excludeTxHashes` — swap AND DeFi farm/staking transaction hashes (see ingestWalletHistory's own
+ * comment on why both, not just swaps) — a tx already recorded via swap_trades/defi_activity must
+ * never ALSO show up here as a plain transfer of the same underlying value. */
+async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -500,7 +513,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
       const value = BigInt(itx.value || "0");
       if (value === 0n || fromLc === toLc) continue;
       if (fromLc !== walletLc && toLc !== walletLc) continue;
-      if (swapTxHashes.has(String(itx.transaction_hash).toLowerCase())) continue;
+      if (excludeTxHashes.has(String(itx.transaction_hash).toLowerCase())) continue;
 
       const timestamp = new Date(itx.timestamp);
       const direction = fromLc === walletLc ? "out" : "in";
@@ -535,8 +548,9 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
 }
 
 /** Walks /addresses/{wallet}/token-transfers — ERC20/721/1155 in/out. Independent of
- * ingestInternalTransactions above, so the caller runs the two concurrently. */
-async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes, priorityAssets) {
+ * ingestInternalTransactions above, so the caller runs the two concurrently.
+ * `excludeTxHashes` — see ingestInternalTransactions' own comment on this same parameter. */
+async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -544,7 +558,7 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
   await walkAllPages(`/addresses/${trackedWallet}/token-transfers`, stopAtBlock, async (items) => {
     for (const tt of items) {
       highestBlock = Math.max(highestBlock, Number(tt.block_number));
-      if (swapTxHashes.has(String(tt.transaction_hash).toLowerCase())) continue;
+      if (excludeTxHashes.has(String(tt.transaction_hash).toLowerCase())) continue;
 
       const fromLc = String(tt.from?.hash || "").toLowerCase();
       const toLc = String(tt.to?.hash || "").toLowerCase();
@@ -721,15 +735,71 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   return results.flat();
 }
 
+/** For every farm_deposit/farm_withdraw row, looks for a same-tx BOLT ERC20 Transfer log matching
+ * the expected direction (farmer -> farm contract for a deposit, farm contract -> farmer for a
+ * withdrawal that closed the position entirely — see YieldFarm.sol's own withdraw(), which only
+ * returns BOLT once farmer.liquidity reaches 0) and merges the amount into that row's rawArgs as
+ * amountBoltAdded/amountBoltReturned. One receipt fetch per DISTINCT transaction hash needing it
+ * (deduped — a tx can only ever contain one farm_deposit/farm_withdraw log for this wallet), not
+ * per row. Most farm deposits/withdrawals never touch BOLT at all (it's an optional multiplier
+ * boost) — a tx with no matching Transfer just gets no enrichment, not an error. */
+async function enrichFarmRowsWithBolt(provider, rows) {
+  const relevant = rows.filter((r) => r.eventType === "farm_deposit" || r.eventType === "farm_withdraw");
+  if (relevant.length === 0) return;
+
+  const receiptCache = new Map(); // txHash (lowercase) -> receipt | null
+  for (const row of relevant) {
+    const txHashLc = row.txHash.toLowerCase();
+    if (!receiptCache.has(txHashLc)) {
+      try {
+        receiptCache.set(txHashLc, await provider.getTransactionReceipt(row.txHash));
+      } catch (err) {
+        console.warn(`⚠️  DeFi activity scan: could not fetch receipt for ${row.txHash} (BOLT correlation skipped):`, err.message);
+        receiptCache.set(txHashLc, null);
+      }
+    }
+    const receipt = receiptCache.get(txHashLc);
+    if (!receipt) continue;
+
+    const farmerLc = row.rawArgs.farmer?.toLowerCase();
+    const contractLc = row.contractAddress.toLowerCase();
+    const boltTransfer = receipt.logs.find((l) => {
+      if (String(l.address).toLowerCase() !== BOLT_TOKEN_ADDRESS) return false;
+      if ((l.topics || [])[0] !== ERC20_TRANSFER_TOPIC) return false;
+      let parsed;
+      try {
+        parsed = ERC20_TRANSFER_IFACE.parseLog(l);
+      } catch {
+        return false;
+      }
+      const from = String(parsed.args.from).toLowerCase();
+      const to = String(parsed.args.to).toLowerCase();
+      return row.eventType === "farm_deposit" ? from === farmerLc && to === contractLc : from === contractLc && to === farmerLc;
+    });
+    if (!boltTransfer) continue;
+
+    const amount = ERC20_TRANSFER_IFACE.parseLog(boltTransfer).args.value.toString();
+    if (row.eventType === "farm_deposit") row.rawArgs.amountBoltAdded = amount;
+    else row.rawArgs.amountBoltReturned = amount;
+  }
+}
+
 /** Scans for yield-farm/staking activity involving `trackedWallet` — see DEFI_IFACE's own comment
  * for why this is topic-based (works for any contract reusing either template) rather than a
- * hardcoded address list. Returns the highest block actually reached, same "resumable cursor"
- * contract as every other ingest* function in this file. */
+ * hardcoded address list. Returns `{ highestBlock, defiTxHashes }` — highestBlock is the same
+ * "resumable cursor" contract as every other ingest* function in this file; defiTxHashes is every
+ * transaction hash a DeFi event was found in, fed back into ingestWalletHistory's exclusion set
+ * (same role as ingestTransactionsGasAndSwaps' own swapTxHashes) so a farm/stake deposit's own
+ * token legs — ordinary ERC20 transferFrom/transfer calls under the hood — never ALSO get ingested
+ * as plain transfers alongside the DeFi-specific event for the exact same amount. Confirmed live
+ * this exclusion was previously missing entirely: every farm deposit/withdrawal and staking
+ * action was being counted twice in the FIFO ledger, once via buildDefiFarmEvents and once via the
+ * generic transfer walk. */
 async function ingestDefiActivity(trackedWallet, stopAtBlock) {
   const provider = createRpcProvider();
   const latestBlock = await provider.getBlockNumber();
   const fromBlock = (stopAtBlock ?? -1) + 1;
-  if (fromBlock > latestBlock) return stopAtBlock ?? -1;
+  if (fromBlock > latestBlock) return { highestBlock: stopAtBlock ?? -1, defiTxHashes: new Set() };
 
   const startedAt = Date.now();
   if (stopAtBlock == null) {
@@ -747,7 +817,7 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
   ]);
 
   const allLogs = [...farmDeposits, ...farmIncreases, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
-  if (allLogs.length === 0) return latestBlock;
+  if (allLogs.length === 0) return { highestBlock: latestBlock, defiTxHashes: new Set() };
 
   const uniqueBlocks = [...new Set(allLogs.map((l) => l.blockNumber))];
   const blockTimestamps = new Map();
@@ -804,8 +874,14 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
     });
   }
 
+  // BOLT correlation only ever matters for the two event types deposit()/withdraw() legs can
+  // actually touch (see enrichFarmRowsWithBolt's own comment) — skipped entirely, no receipt
+  // fetches at all, for a wallet whose DeFi activity is only staking/rewards.
+  await enrichFarmRowsWithBolt(provider, rows);
+
   if (rows.length > 0) await insertDefiActivity(rows);
-  return latestBlock;
+  const defiTxHashes = new Set(rows.map((r) => r.txHash.toLowerCase()));
+  return { highestBlock: latestBlock, defiTxHashes };
 }
 
 /**
@@ -845,13 +921,20 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   // two swap-dependent walks run concurrently with each other too — see each function's own
   // comment for why this whole restructure is deliberate: /transactions used to be walked twice
   // and everything used to run fully sequentially.
-  const [{ swapTxHashes, highestBlock: highestFromTx }, highestFromDefi] = await Promise.all([
+  const [{ swapTxHashes, highestBlock: highestFromTx }, { highestBlock: highestFromDefi, defiTxHashes }] = await Promise.all([
     ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets),
     ingestDefiActivity(trackedWallet, stopAtDefiBlock),
   ]);
+  // A farm/stake deposit or withdrawal moves its own underlying tokens via ordinary ERC20
+  // transferFrom/transfer calls under the hood — without excluding defiTxHashes here too (same
+  // role swapTxHashes already plays for a swap's own legs), those same amounts would ALSO get
+  // ingested as plain transfers alongside buildDefiFarmEvents' own DeFi-specific event for the
+  // exact same tx, double-counting every farm/stake action in the FIFO ledger. Confirmed live this
+  // exclusion was missing entirely before now.
+  const excludeTxHashes = new Set([...swapTxHashes, ...defiTxHashes]);
   const [highestFromInternal, highestFromTokens] = await Promise.all([
-    ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes),
-    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, swapTxHashes, priorityAssets),
+    ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes),
+    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets),
   ]);
   const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
 
@@ -884,7 +967,7 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
 export async function ensureDefiActivityIngested(trackedWallet) {
   const state = await getIngestionState(trackedWallet);
   const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
-  const highestFromDefi = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
+  const { highestBlock: highestFromDefi } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
   if (highestFromDefi >= 0) {
     await upsertIngestionState(trackedWallet, {
       lastIngestedBlock: state?.last_ingested_block ?? null,
