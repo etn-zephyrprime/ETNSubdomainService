@@ -254,17 +254,16 @@ export async function computeDemoData() {
   const nftPnl = combineLiveNftPnlSnapshots(nftSnapshots.filter(Boolean));
 
   // Whole-portfolio + per-category history — one replayFifoCheckpoints pass per wallet either way
-  // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments). This is the single heaviest
-  // part of the whole computation (up to DEMO_HISTORY_DAYS daily checkpoints, each a full FIFO
-  // replay, on top of the wallet's whole event list already held in memory to do it) — it was
-  // previously fanned out 6-way (3 wallets × {whole-portfolio, per-category}) via Promise.all, which
-  // is what actually blew the heap. One wallet at a time; the two backfills FOR that one wallet
-  // still run concurrently with each other, that pairing alone was never the problem.
+  // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments). One wallet at a time (was
+  // previously fanned out 6-way — 3 wallets × {whole-portfolio, per-category} — via Promise.all,
+  // which is what actually blew the heap). The two backfills FOR that one wallet are now also
+  // sequential rather than concurrent, deliberately: backfillPnlHistory's own buildEventsForWallet
+  // result is passed straight into backfillCategoryPnlHistory (its `precomputed` param — see that
+  // function's own comment), so the two no longer each hold their own independent copy of this
+  // wallet's entire event/DeFi-activity history at the same time.
   for (const addr of DEMO_WALLET_ADDRESSES) {
-    await Promise.all([
-      backfillPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS),
-      backfillCategoryPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS),
-    ]);
+    const built = await backfillPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS);
+    await backfillCategoryPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS, built);
   }
   const sinceDate = new Date(Date.now() - DEMO_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const historyRows = await getPnlSnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, sinceDate);

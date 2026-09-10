@@ -61,7 +61,18 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
     ...defiEvents,
   ].sort((a, b) => a.timestamp - b.timestamp);
 
-  return { events, transfers };
+  // defiActivity is returned too (not just folded into events) so a caller that also needs the RAW
+  // rows -- categoryPnlService.js's own resolveCategoryTokenKeys, to tell which tokens are
+  // farm/staking vs. liquidity -- doesn't have to re-fetch them separately. See backfillPnlHistory
+  // and backfillCategoryPnlHistory's own `precomputed` parameter: for the SAME wallet, in the SAME
+  // caller, these two used to each independently call this function (and categoryPnlService.js's
+  // backfill separately re-fetched defiActivity on top of that) -- two, sometimes three, full
+  // copies of one wallet's entire transfer/swap/DeFi history alive in memory at once for what's
+  // ultimately the same data. Confirmed as a real contributor to an out-of-memory crash generating
+  // the Core Tier demo snapshot (coreTierDemoRouter.js runs the backfill pair concurrently per
+  // wallet), and the exact same duplication happens once a day, for every actively tracked wallet,
+  // in pnlSnapshotScheduler.js's own backfill pair.
+  return { events, transfers, defiActivity };
 }
 
 /**
@@ -264,8 +275,25 @@ export function combineLivePnlSnapshots(snapshots) {
  *
  * `ownerWallet` is needed here (unlike computeLivePnlSnapshot) purely because pnl_snapshots rows
  * are keyed by (owner_wallet, wallet_address, date) — see that table's own schema comment.
+ *
+ * `precomputed` (optional { events, transfers, defiActivity }, from a prior buildEventsForWallet
+ * call for this SAME wallet) — every caller of this function immediately also calls
+ * backfillCategoryPnlHistory for the same wallet, which needs the exact same event list. Passing
+ * it in here skips this function's own buildEventsForWallet call entirely; this function then
+ * returns whatever it used (freshly fetched or passed through) so the caller can hand it to
+ * backfillCategoryPnlHistory next instead of that function fetching its own separate copy. Without
+ * this, two (sometimes three, counting a category backfill's own extra defiActivity re-fetch)
+ * independent full copies of one wallet's entire transfer/swap/DeFi history end up alive in memory
+ * for what's ultimately identical data — confirmed as a real contributor to an out-of-memory crash
+ * generating the Core Tier demo snapshot, and the same duplication happens daily, for every
+ * actively tracked wallet, via pnlSnapshotScheduler.js's own backfill pair.
+ *
+ * Returns the { events, transfers, defiActivity } it used, or null if there was nothing to
+ * backfill (so a caller chaining into backfillCategoryPnlHistory knows there's nothing to pass
+ * through, not that it should skip calling it — that function's own missing-days window can still
+ * differ, e.g. it also covers "today").
  */
-export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365) {
+export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
   const todayUtc = new Date();
   todayUtc.setUTCHours(0, 0, 0, 0);
 
@@ -282,12 +310,13 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
   const toDateStr = days[days.length - 1].toISOString().slice(0, 10);
   const existingDates = new Set(await getExistingSnapshotDates(ownerWallet, trackedWallet, fromDateStr, toDateStr));
   const missingDays = days.filter((d) => !existingDates.has(d.toISOString().slice(0, 10)));
-  if (missingDays.length === 0) return; // fully backfilled already — nothing to do, and no need to touch ingestion/events at all
+  if (missingDays.length === 0) return null; // fully backfilled already — nothing to do, and no need to touch ingestion/events at all
 
   // No priorityAssets here — a backfill only ever runs after this wallet already has at least one
   // successful live snapshot (see the trigger in pnlSnapshotScheduler.js), so cold-start priority
   // scoping never applies by this point; full pricing throughout.
-  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date());
+  const built = precomputed || (await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()));
+  const { events, transfers } = built;
 
   // Each checkpoint is the EXCLUSIVE end of its calendar day (start of the next day) — matches
   // replayFifo's own "closing = snapshot as of periodEnd, events at/after periodEnd excluded"
@@ -320,4 +349,6 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
       console.warn(`⚠️  PnL history backfill: failed for ${trackedWallet} on ${dateStr}:`, err.message);
     }
   }
+
+  return built;
 }
