@@ -93,8 +93,12 @@ async function checkAllWallets() {
         // right after writing "today" costs almost nothing once it's caught up; it only does real
         // work the first handful of times for a given wallet.
         const selfOwnedAddresses = wallets.filter((a) => a !== walletAddress);
+        // Passed into backfillCategoryPnlHistory below (its `precomputed` param) when non-null, so
+        // the two don't each independently fetch and hold this wallet's entire event/DeFi-activity
+        // history at once — see backfillPnlHistory's own comment.
+        let built = null;
         try {
-          await backfillPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
+          built = await backfillPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
         } catch (err) {
           console.warn(`⚠️  PnL history backfill failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
         }
@@ -104,7 +108,7 @@ async function checkAllWallets() {
         // this never becomes a full no-op even once a wallet is fully caught up; the day-by-day
         // idempotency is handled inside backfillCategoryPnlHistory itself.
         try {
-          await backfillCategoryPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS);
+          await backfillCategoryPnlHistory(ownerWallet, walletAddress, selfOwnedAddresses, BACKFILL_WINDOW_DAYS, built);
         } catch (err) {
           console.warn(`⚠️  Category PnL history backfill failed for ${ownerWallet}'s wallet ${walletAddress}:`, err.message);
         }

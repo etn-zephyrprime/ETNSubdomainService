@@ -31,7 +31,6 @@ import { valueInventoryAtTimestamp, resolveFarmStakingTokenKeys } from "./pnlEve
 import { buildEventsForWallet } from "./pnlSnapshotService.js";
 import { probeV2Pool } from "./lpPositionValuation.js";
 import { POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
-import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { upsertPnlCategorySnapshot, getExistingCategorySnapshotDates } from "../db/pnlCategorySnapshots.js";
 
 export const CATEGORIES = { LIQUIDITY: "liquidity", FARM_STAKING: "farm_staking" };
@@ -89,8 +88,17 @@ async function valueCategoryAtCheckpoint(lots, realizedPnlUsd, tokenKeys, timest
  * backfilled, this still does a small amount of real work (recomputing just today's row) rather
  * than becoming a complete no-op, same cost shape as the scheduler's own "write today, backfill
  * the rest" split for the whole-portfolio chart, just folded into one function here.
+ *
+ * `precomputed` (optional { events, defiActivity }, typically backfillPnlHistory's own return
+ * value from a call for this SAME wallet, right before this one) — every real caller of this
+ * function runs it immediately after backfillPnlHistory for the same wallet, which builds the
+ * identical event list. Passing it in here skips this function's own buildEventsForWallet call AND
+ * its separate getAllDefiActivityBefore re-fetch (previously fetched twice: once inside that
+ * buildEventsForWallet call, once again here for resolveCategoryTokenKeys) — see
+ * backfillPnlHistory's own comment for why this matters (confirmed contributor to an out-of-memory
+ * crash generating the Core Tier demo snapshot).
  */
-export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365) {
+export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
   const todayUtc = new Date();
   todayUtc.setUTCHours(0, 0, 0, 0);
 
@@ -118,10 +126,7 @@ export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, sel
   });
   if (missingDays.length === 0) return; // every category's window is already fully caught up through today
 
-  const [{ events }, defiActivity] = await Promise.all([
-    buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()),
-    getAllDefiActivityBefore(trackedWallet, new Date()),
-  ]);
+  const { events, defiActivity } = precomputed || (await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()));
   const categoryTokenKeys = await resolveCategoryTokenKeys(events, defiActivity);
 
   // Each checkpoint is the EXCLUSIVE end of its calendar day — same convention as
