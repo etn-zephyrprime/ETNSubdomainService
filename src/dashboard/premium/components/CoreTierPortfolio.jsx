@@ -4,7 +4,6 @@ import { Wallet as WalletIcon, TriangleAlert, Sparkles } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
-import CoreTierDemo from "./CoreTierDemo.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
@@ -97,7 +96,7 @@ function CooldownNotice({ children }) {
 // consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter }) {
+export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter, onViewDemo }) {
   // Access + tracked-wallet-list state now lives in PortfolioDashboardSection.jsx, called ONCE for
   // all four Core Tier panels (was: each of them calling useCoreTierAccess.js independently — four
   // separate /premium/tracked-wallets fetches for the same data) — also the prerequisite for the
@@ -115,12 +114,6 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const etnUsdPrice = useEtnPrice();
 
   const [managing, setManaging] = useState(false);
-  // Shows CoreTierDemo.jsx (Balance History + PnL for one fixed demo wallet) in place of
-  // CoreTierGate's own connect/subscribe messaging — available to literally anyone, including a
-  // visitor with no wallet connected at all, per the actual point of a demo. Toggled off
-  // automatically below once real access is confirmed, so a member who subscribes mid-demo doesn't
-  // get stuck looking at a stranger's wallet instead of their own.
-  const [showDemo, setShowDemo] = useState(false);
   const [addInput, setAddInput] = useState("");
   const [addInputError, setAddInputError] = useState(null);
 
@@ -176,15 +169,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     setPendingError(null);
     setAddInput("");
     setAddInputError(null);
-    setShowDemo(false);
   }, [wallet.isConnected, wallet.account]);
-
-  // Closes the demo automatically once real access is confirmed — a member who subscribes (or
-  // connects an already-active membership's wallet) while the demo is open should land on their
-  // own real portfolio, not stay stuck looking at the demo wallet.
-  useEffect(() => {
-    if (hasAccess) setShowDemo(false);
-  }, [hasAccess]);
 
   // Resets pagination whenever the page-wide wallet filter changes — same reasoning as the
   // category toggle just below doing the same, so "Show more" never leaves a stale page depth from
@@ -550,44 +535,37 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
           </div>
         </div>
         {/* Visible to literally anyone — including a visitor with no wallet connected at all —
-            whenever they don't already have real access; hidden once they do (see the effect
-            above closing it automatically), since a real member has no reason to look at a demo
-            of their own feature. */}
-        {!hasAccess && (
+            whenever they don't already have real access, since a real member has no reason to
+            look at a demo of their own feature. Opens CoreTierDemoPage.jsx as its own page (see
+            that file's own header comment for why it's not shown in place here anymore) —
+            onViewDemo is owned by DashboardApp.jsx, the same level that owns which page is shown
+            at all. */}
+        {!hasAccess && onViewDemo && (
           <button
             type="button"
-            onClick={() => setShowDemo((v) => !v)}
+            onClick={onViewDemo}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
               padding: "7px 14px",
               borderRadius: 20,
-              border: `1px solid ${showDemo ? border : green}`,
-              background: showDemo ? panel2 : green,
-              color: showDemo ? mutedLight : panel,
+              border: `1px solid ${green}`,
+              background: green,
+              color: panel,
               fontSize: 12,
               fontWeight: 800,
               letterSpacing: 0.2,
               cursor: "pointer",
-              boxShadow: showDemo ? "none" : `0 0 16px ${greenGlow}`,
+              boxShadow: `0 0 16px ${greenGlow}`,
             }}
           >
             <Sparkles size={13} />
-            {showDemo ? "Exit Demo" : "View Demo"}
+            View Demo
           </button>
         )}
       </div>
 
-      {showDemo && !hasAccess ? (
-        <div>
-          <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14, lineHeight: 1.6 }}>
-            A live preview of what Core Tier actually offers, combined across three real wallets —
-            not your own. Connect and subscribe below to track your own instead.
-          </div>
-          <CoreTierDemo onSelectToken={onSelectToken} />
-        </div>
-      ) : (
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}
@@ -1024,7 +1002,6 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
           )}
         </div>
       </CoreTierGate>
-      )}
     </DashboardPanel>
   );
 }
