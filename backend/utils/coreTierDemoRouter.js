@@ -78,7 +78,18 @@ const DEMO_WALLET_ADDRESSES = [
 // stay valid and get picked up unchanged under this multi-wallet scheme, rather than orphaning a
 // year of already-backfilled history.
 const DEMO_OWNER = DEMO_WALLET_ADDRESSES[0];
-const DEMO_HISTORY_DAYS = 365; // matches the real feature's own rolling-12-months convention
+// Shortened from 365 (the real feature's own rolling-12-months convention) -- backfilling a full
+// year for 3 wallets means historically pricing every distinct token EACH wallet has ever held, for
+// every missing day. Confirmed live: for a wallet holding a large number of distinct tokens, this
+// hammers GeckoTerminal's shared, deliberately rate-limited queue (tokenChartRouter.js's own
+// enqueueGeckoTerminalCall -- 1.5s minimum gap between ANY two GeckoTerminal calls across this
+// whole backend, plus an 8s cooldown that pauses every OTHER queued call too on a single 429) hard
+// enough that a demo-snapshot generation run took many hours and still hadn't finished one wallet's
+// worth of 365 days. 90 days (~3 months) is still a meaningful PnL history preview for a demo, at a
+// fraction of the backfill cost -- this doesn't change WINDOW_DAYS in CoreTierDemo.jsx (Balance
+// History's OWN, unrelated window), which is cheap (client-side Blockscout calls only, no
+// GeckoTerminal pricing at all) and was never the bottleneck.
+const DEMO_HISTORY_DAYS = 90;
 const DEMO_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — a demo doesn't need to be second-fresh; this is what keeps a public, unauthenticated route cheap regardless of visitor count
 
 let cache = null; // { promise, expiresAt } — promise resolves to the response payload
