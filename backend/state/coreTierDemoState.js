@@ -5,10 +5,13 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3
 // kept as a fallback below), which was slow and expensive enough on its own before a since-fixed bug
 // doubled the cost further (see ingestWalletHistory's inFlightIngestions comment) -- expensive enough
 // that a cold cache regularly timed out the whole request. The demo's data doesn't need to be live
-// (it's an anonymized preview, not a real member's actual account), so it's now computed ONCE by
+// (it's a preview, not a real member's actual account), so it's now computed ONCE by
 // backend/scripts/generateDemoSnapshot.js and served from here instead -- same shape as
-// notisLinkState.js's own R2 JSON blob, just a single, already-anonymized snapshot rather than a
-// live map.
+// notisLinkState.js's own R2 JSON blob, just a single snapshot rather than a live map.
+//
+// Stores the wallets' REAL, unscaled figures -- CoreTierDemo.jsx applies its own display-only scale
+// (DEMO_DISPLAY_SCALE) client-side on top of whatever's read back from here, so what's persisted
+// stays accurate even though what a visitor actually sees is scaled down.
 const STATE_KEY = "core-tier-demo-snapshot.json";
 
 let cachedR2Client = null;
@@ -47,7 +50,7 @@ export async function getDemoSnapshot() {
   }
 }
 
-/** Persists the anonymized demo payload, stamped with when it was generated. */
+/** Persists the demo payload (real, unscaled figures), stamped with when it was generated. */
 export async function setDemoSnapshot(data) {
   const r2 = getR2Client();
   if (!r2) throw new Error("R2 isn't configured (R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY) -- can't persist the demo snapshot.");

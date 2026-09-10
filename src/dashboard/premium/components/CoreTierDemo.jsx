@@ -29,11 +29,68 @@ import { green, mutedLight, orange, muted, border, panel2, error as errorColor }
 const DEMO_WALLET_ADDRESSES = [
   "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099",
   "0xd6cf49cbcf84b2cd2472a376b5f791689a0769d0",
-  "0x9343e399d44e701fc26130bdbf8817d78f086867",
+  "0xc92e01d795313ad4f93c6d35ce764ce3dad6d0ee",
 ];
 const WALLET_LABELS = ["Wallet A", "Wallet B", "Wallet C"];
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
 const MAX_PRICED_HOLDINGS = 50; // matches CoreTierPortfolio.jsx's own cap
+
+// UI-only display scale — every USD/quantity/balance figure the demo shows is multiplied by this
+// before rendering, so a viewer who happens to know one of the 3 real wallets' actual balance can't
+// identify it by matching an exact number. Deliberately display-only: the backend (coreTierDemoRouter.js
+// /generateDemoSnapshot.js) computes and persists the wallets' REAL figures, unscaled — this file is
+// the only place the reduction is ever applied. Two separate application points, both driven by this
+// same constant: scaleForDisplay() below (everything that comes from coreTierDemoRouter.js's
+// response) and DemoBalanceHistory's own chart series (its data never goes through that response at
+// all — see that component's own comment on why it fetches independently).
+const DEMO_DISPLAY_SCALE = 0.8;
+// BigInt-safe equivalent of ×DEMO_DISPLAY_SCALE, for rawBalance/totalCoinBalance below (wei values
+// that can exceed float precision) — derived from the constant above (not a separately hand-kept
+// fraction) so the two can never drift apart if DEMO_DISPLAY_SCALE ever changes.
+const DISPLAY_SCALE_PRECISION = 1_000_000n;
+const DISPLAY_SCALE_NUMERATOR = BigInt(Math.round(DEMO_DISPLAY_SCALE * Number(DISPLAY_SCALE_PRECISION)));
+
+// Field names (anywhere in the fetched demo payload, at any nesting depth) that represent a USD
+// amount, an on-chain token quantity, or a wei-scale raw balance — scaled by DEMO_DISPLAY_SCALE.
+// Deliberately an ALLOWLIST, not a blocklist: an unrecognized future field defaults to "left alone"
+// rather than risking a count/tokenId/fee-tier/percentage getting nonsensically scaled by default.
+const SCALED_FIELDS = new Set([
+  "currentValueUsd", "unrealizedPnlUsd", "realizedPnlUsd", "totalValueUsd", "totalMarketValueUsd",
+  "totalUnrealizedUsd", "costBasisUsd", "marketValueUsd", "quantity", "rawBalance", "totalCoinBalance",
+  "amount", "usdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
+  "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd",
+]);
+
+/** Recursively scales every SCALED_FIELDS value in `node` by DEMO_DISPLAY_SCALE, leaving every
+ * other field (dates, symbols, addresses, counts, tokenId, fee tier, in-range flags, generatedAt,
+ * ...) untouched. rawBalance/totalCoinBalance are wei -- always whole numbers on real chain data --
+ * so BigInt math is used for those specifically to keep the scaled value a whole number too, rather
+ * than truncating a decimal string; every other field is a human-unit Decimal string already,
+ * where a fractional result is normal, so plain float multiplication (display-only, never fed back
+ * into any calculation) is fine. */
+function scaleForDisplay(node) {
+  if (node == null) return node;
+  if (Array.isArray(node)) return node.map(scaleForDisplay);
+  if (typeof node !== "object") return node;
+
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (!SCALED_FIELDS.has(key)) {
+      out[key] = scaleForDisplay(value); // recurse regardless of key, so nested objects/arrays still get scanned
+      continue;
+    }
+    if (typeof value === "number") {
+      out[key] = value * DEMO_DISPLAY_SCALE;
+    } else if (typeof value === "string" && /^-?\d+$/.test(value) && (key === "rawBalance" || key === "totalCoinBalance")) {
+      out[key] = ((BigInt(value) * DISPLAY_SCALE_NUMERATOR) / DISPLAY_SCALE_PRECISION).toString();
+    } else if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
+      out[key] = (Number(value) * DEMO_DISPLAY_SCALE).toString();
+    } else {
+      out[key] = value; // not actually numeric -- leave as-is rather than guess
+    }
+  }
+  return out;
+}
 const CATEGORY_OPTIONS = [
   { key: "liquidity", label: "Liquidity Positions" },
   { key: "farm_staking", label: "Staking / Yield Farms" },
@@ -127,7 +184,13 @@ function DemoBalanceHistory() {
   const combinedSeedEtn = DEMO_WALLET_ADDRESSES.reduce((sum, a) => sum + (historicalSeeds[a] || 0), 0);
   const hasHistory = combinedSparse.length > 0 || combinedSeedEtn > 0;
   const seriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS, combinedSeedEtn);
-  const series = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
+  const rawSeries = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
+  // Scaled here rather than at the raw historiesByAddress/historicalSeeds level -- this section's
+  // own data never goes through coreTierDemoRouter.js's response (see this component's own header
+  // comment), so scaleForDisplay's field-name allowlist doesn't apply; scaling the final series
+  // values covers both the ETN and USD toggle in one place, same DEMO_DISPLAY_SCALE as everywhere
+  // else in this file.
+  const series = rawSeries.map((p) => ({ ...p, value: p.value * DEMO_DISPLAY_SCALE }));
   const formatValue = showUsd ? formatUsdPrice : fmtEtn;
 
   return (
@@ -566,7 +629,10 @@ export default function CoreTierDemo({ onSelectToken }) {
   useEffect(() => {
     let cancelled = false;
     getDemoPnl()
-      .then((res) => { if (!cancelled) setData(res); })
+      // scaleForDisplay applied here, once, right after fetching -- res is the wallets' REAL
+      // figures (see coreTierDemoRouter.js/generateDemoSnapshot.js's own comments); everything
+      // downstream (DemoPortfolio/DemoPnl/DemoNftPnl) renders `data` exactly as before, already scaled.
+      .then((res) => { if (!cancelled) setData(scaleForDisplay(res)); })
       .catch((err) => {
         console.error("Demo: failed to load:", err.message);
         if (!cancelled) setError("Couldn't load the demo right now.");
