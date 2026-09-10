@@ -1470,11 +1470,23 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
   return { highestBlock: latestBlock, defiTxHashes };
 }
 
+// Concurrent callers ingesting the SAME wallet at once (e.g. coreTierDemoRouter.js's PnL and NFT
+// PnL sections, computed together in one Promise.all) used to each run their own full Blockscout
+// walk in parallel — genuinely duplicated work (confirmed live: every ingestion log line for the
+// demo's 3 wallets appeared twice), and racing writes to wallet_ingestion_state's own cursor. Keyed
+// by lowercased wallet address; whichever call arrives first does the real work, every concurrent
+// caller for that same wallet just awaits its result instead of starting a second walk. Cleared as
+// soon as the in-flight call settles (success or failure) so the NEXT call — a later page load, a
+// resumed ingestion — always starts fresh rather than reusing a stale promise.
+const inFlightIngestions = new Map(); // walletLc -> Promise
+
 /**
  * Ingests (or backfills) `trackedWallet`'s on-chain history. `selfOwnedAddresses` are the user's
  * other addresses, used to flag self-transfers (excluded from FIFO disposal — see fifoLotEngine.js).
  * Safe to call repeatedly for the same wallet — always resumes from wallet_ingestion_state's
- * last_ingested_block rather than re-scanning from scratch.
+ * last_ingested_block rather than re-scanning from scratch. Also safe to call CONCURRENTLY for the
+ * same wallet — see inFlightIngestions above; concurrent calls share one real ingestion run rather
+ * than each starting their own.
  *
  * `priorityAssets` (optional Set of lowercased token addresses) — see priceOrNull's own comment.
  * Omit/pass null for full, complete pricing (generateStatement always does this). Rows for a
@@ -1482,6 +1494,18 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
  * them later without touching this walk at all.
  */
 export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
+  const walletLc = trackedWallet.toLowerCase();
+  const existing = inFlightIngestions.get(walletLc);
+  if (existing) return existing;
+
+  const promise = doIngestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets).finally(() => {
+    if (inFlightIngestions.get(walletLc) === promise) inFlightIngestions.delete(walletLc);
+  });
+  inFlightIngestions.set(walletLc, promise);
+  return promise;
+}
+
+async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
   const selfOwnedSet = new Set([trackedWallet.toLowerCase(), ...selfOwnedAddresses.map((a) => a.toLowerCase())]);
   // Loaded once per ingestion run rather than queried per-row (see cexAddressSet's own comment
   // below at its call sites) — the list itself is small and manually-maintained (see

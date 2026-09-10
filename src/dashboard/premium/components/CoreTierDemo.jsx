@@ -601,6 +601,12 @@ export default function CoreTierDemo({ onSelectToken }) {
           <DashboardPanel>
             <div style={{ fontSize: 12, color: mutedLight, textAlign: "center", lineHeight: 1.6 }}>
               Alerts, adding your own wallets, and this data updating for real all come with a Core Tier membership.
+              {data.generatedAt ? (
+                <>
+                  <br />
+                  Demo snapshot from {new Date(data.generatedAt).toLocaleDateString()} — a real member's own data stays current.
+                </>
+              ) : null}
             </div>
           </DashboardPanel>
         </>

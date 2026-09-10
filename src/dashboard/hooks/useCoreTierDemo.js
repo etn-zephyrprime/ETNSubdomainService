@@ -17,7 +17,9 @@ export function useCoreTierDemo() {
     }
     // { snapshot, perWallet: [{walletIndex, currentValueUsd, unrealizedPnlUsd, realizedPnlUsd}],
     //   history, categoryHistory: {liquidity, farm_staking}, defiPositions, liquidityPositions,
-    //   nftPnl, combinedHoldings: {totalCoinBalance, tokens} }
+    //   nftPnl, combinedHoldings: {totalCoinBalance, tokens}, generatedAt }
+    // Served from a static, pre-anonymized snapshot (see coreTierDemoState.js) rather than computed
+    // live per request — generatedAt is when that snapshot was last generated, not "now".
     return res.json();
   }, []);
 
