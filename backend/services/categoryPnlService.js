@@ -64,11 +64,13 @@ async function resolveCategoryTokenKeys(events, defiActivity) {
  * same convention pnlSnapshotService.js's own per-token realizedByToken already uses and documents
  * — gas is paid in ETN regardless of which category a transaction touched, so there's no honest
  * way to carve a slice of it out for just this category. */
-async function valueCategoryAtCheckpoint(lots, realizedEvents, tokenKeys, timestamp) {
+// `realizedPnlUsd` is this category's own running total AS OF this checkpoint, already
+// accumulated by the caller from each checkpoint's newRealizedEvents delta (see
+// backfillCategoryPnlHistory below) — not recomputed here, so this never needs the whole
+// history's realized events at once, just this one checkpoint's open lots.
+async function valueCategoryAtCheckpoint(lots, realizedPnlUsd, tokenKeys, timestamp) {
   const categoryLots = lots.filter((l) => tokenKeys.has(l.tokenAddress));
-  const categoryRealized = realizedEvents.filter((e) => tokenKeys.has(e.tokenAddress));
   const valuation = await valueInventoryAtTimestamp(categoryLots, timestamp);
-  const realizedPnlUsd = categoryRealized.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   return { totalValueUsd: valuation.totalMarketValueUsd, unrealizedPnlUsd: valuation.totalUnrealizedUsd, realizedPnlUsd };
 }
 
@@ -127,17 +129,36 @@ export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, sel
   const checkpoints = missingDays.map((d) => new Date(d.getTime() + 24 * 60 * 60 * 1000).getTime());
   const snapshots = replayFifoCheckpoints(events, checkpoints);
 
+  // Each category's own running realized total, kept in lockstep with the checkpoint sequence by
+  // accumulating every checkpoint's newRealizedEvents delta below — including on a day a category
+  // doesn't end up WRITING (already recorded; see the inner loop's own skip), since skipping the
+  // accumulation too would silently drop whatever realized in between from every later day's
+  // total. Reading the FULL realized-events history back out of replayFifoCheckpoints at every
+  // checkpoint instead (the previous approach) is exactly the O(checkpoints × realized-event-
+  // count) memory cost this whole delta scheme exists to avoid — see that function's own comment.
+  const cumulativeRealizedByCategory = new Map(categories.map((c) => [c, new Decimal(0)]));
+
   for (let i = 0; i < missingDays.length; i++) {
     const day = missingDays[i];
     const dateStr = day.toISOString().slice(0, 10);
     const dayEndExclusive = new Date(checkpoints[i]);
-    const { lots, realizedEvents } = snapshots[i];
+    const { lots, newRealizedEvents } = snapshots[i];
+
+    for (const category of categories) {
+      const tokenKeys = categoryTokenKeys[category];
+      const delta = newRealizedEvents
+        .filter((e) => tokenKeys.has(e.tokenAddress))
+        .reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
+      cumulativeRealizedByCategory.set(category, cumulativeRealizedByCategory.get(category).plus(delta));
+    }
 
     for (const category of categories) {
       if (existingByCategory.get(category).has(dateStr)) continue; // this specific category already has this day — see this function's own header comment on why that's checked per-day, not just once up front
       try {
         const tokenKeys = categoryTokenKeys[category];
-        const { totalValueUsd, realizedPnlUsd, unrealizedPnlUsd } = await valueCategoryAtCheckpoint(lots, realizedEvents, tokenKeys, dayEndExclusive);
+        const { totalValueUsd, realizedPnlUsd, unrealizedPnlUsd } = await valueCategoryAtCheckpoint(
+          lots, cumulativeRealizedByCategory.get(category), tokenKeys, dayEndExclusive
+        );
         await upsertPnlCategorySnapshot(ownerWallet, trackedWallet, category, dateStr, {
           totalValueUsd: totalValueUsd.toString(),
           realizedPnlUsd: realizedPnlUsd.toString(),

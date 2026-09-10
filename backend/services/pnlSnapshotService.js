@@ -299,7 +299,7 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
     const day = missingDays[i];
     const dateStr = day.toISOString().slice(0, 10);
     const dayEndExclusive = new Date(checkpoints[i]);
-    const { lots, realizedEvents } = snapshots[i];
+    const { lots, realizedPnlUsdCumulative } = snapshots[i];
 
     try {
       const transfersUpToDay = transfers.filter((t) => new Date(t.timestamp) < dayEndExclusive);
@@ -307,8 +307,7 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
         valueInventoryAtTimestamp(lots, dayEndExclusive),
         computeGasFeesUsd(transfersUpToDay),
       ]);
-      const realizedPnlUsdGross = realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
-      const realizedPnlUsd = realizedPnlUsdGross.minus(gas.totalGasUsd);
+      const realizedPnlUsd = realizedPnlUsdCumulative.minus(gas.totalGasUsd);
 
       await upsertPnlSnapshot(ownerWallet, trackedWallet, dateStr, {
         totalValueUsd: valuation.totalMarketValueUsd.toString(),

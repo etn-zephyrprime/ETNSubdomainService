@@ -59,6 +59,11 @@ class FifoLedger {
     this.lotsByToken = new Map(); // tokenAddress -> array of open lots, oldest-first
     this.lockedLotsByToken = new Map(); // tokenAddress -> array of locked lots, oldest-first (see lock/unlock below)
     this.realizedEvents = [];
+    // Running total, kept in lockstep with realizedEvents (same additions, same order) — lets
+    // replayFifoCheckpoints below report cumulative realized P&L at each checkpoint without
+    // needing its own copy of the (potentially very long, ever-growing) realizedEvents array; see
+    // that function's own comment for why that copy used to be a real memory problem.
+    this.realizedPnlUsdTotal = new Decimal(0);
   }
 
   _lotsFor(tokenAddress) {
@@ -109,6 +114,8 @@ class FifoLedger {
     const proceedsPerUnit = qty.gt(0) ? new Decimal(proceedsUsd).dividedBy(qty) : new Decimal(0);
     for (const c of consumptions) {
       const proceeds = proceedsPerUnit.times(c.quantityConsumed);
+      const realizedPnlUsd = proceeds.minus(c.costBasisUsd);
+      this.realizedPnlUsdTotal = this.realizedPnlUsdTotal.plus(realizedPnlUsd);
       this.realizedEvents.push({
         tokenAddress,
         disposalTxHash: txHash,
@@ -117,7 +124,7 @@ class FifoLedger {
         quantityConsumed: c.quantityConsumed,
         costBasisUsd: c.costBasisUsd,
         proceedsUsd: proceeds,
-        realizedPnlUsd: proceeds.minus(c.costBasisUsd),
+        realizedPnlUsd,
       });
     }
   }
@@ -247,17 +254,30 @@ class FifoLedger {
     }
   }
 
-  /** Deep-enough snapshot for reporting: open lots (per token) as they stand at the moment this is
-   * called, plus every realized event recorded so far. Safe to keep processing after calling this
-   * — returned Decimal values are immutable, and the lot objects returned are copies. */
-  snapshot() {
+  /** Open lots (per token) as they stand at the moment this is called — the part of snapshot()
+   * (below) both it and the leaner per-checkpoint path in replayFifoCheckpoints need. Safe to keep
+   * processing after calling this — the lot objects returned are copies. */
+  openLotsSnapshot() {
     const lots = [];
     for (const [tokenAddress, tokenLots] of this.lotsByToken) {
       for (const lot of tokenLots) {
         if (lot.quantityRemaining.gt(0)) lots.push({ ...lot });
       }
     }
-    return { lots, realizedEvents: [...this.realizedEvents] };
+    return lots;
+  }
+
+  /** Deep-enough snapshot for reporting: open lots (per token) as they stand at the moment this is
+   * called, plus every realized event recorded so far. Safe to keep processing after calling this
+   * — returned Decimal values are immutable, and the lot objects returned are copies.
+   *
+   * Only ever called ONCE per replayFifo() run (a single opening/closing pair) — cheap. Don't call
+   * this from a per-checkpoint loop (replayFifoCheckpoints below deliberately doesn't): copying
+   * the full, ever-growing realizedEvents array at every one of e.g. 365 daily checkpoints is what
+   * used to make that function's memory footprint grow with checkpoints × realized-event-count
+   * instead of just checkpoints + events — see that function's own comment. */
+  snapshot() {
+    return { lots: this.openLotsSnapshot(), realizedEvents: [...this.realizedEvents] };
   }
 }
 
@@ -358,21 +378,47 @@ export function replayFifo(events, periodStart, periodEnd) {
  * Built for pnlSnapshotService.js's history backfill: computing a wallet's daily PnL rollup for the
  * last 365 days by calling replayFifo() 365 times would re-walk the ENTIRE event list from scratch
  * on every single call — O(events × days). Walking the list once and collecting a snapshot at each
- * day boundary as it's crossed is O(events + days) instead — the only cost that scales with `days`
- * is the (cheap) snapshot copy itself, not re-processing every prior event again.
+ * day boundary as it's crossed is O(events + days) instead.
  *
- * Returns an array of { checkpoint, lots, realizedEvents } in the same order as `checkpoints` — a
- * checkpoint past the last event (including every checkpoint, for a wallet with no activity yet)
- * still gets an entry, just holding the ledger's final (possibly still-empty) state.
+ * Deliberately does NOT use FifoLedger's own snapshot() at each checkpoint (only openLotsSnapshot()
+ * — see that method's own comment): that would mean copying the WHOLE history-so-far
+ * `realizedEvents` array at every checkpoint, making this genuinely O(checkpoints ×
+ * realized-event-count) rather than O(events + days) — confirmed as a real memory blowup for a
+ * wallet with substantial realized history. Two consumers, two different needs, both served
+ * without that copy:
+ *   - a caller that only needs the whole-wallet cumulative total (backfillPnlHistory) reads
+ *     `realizedPnlUsdCumulative` — a running Decimal, O(1) per checkpoint.
+ *   - a caller that needs to filter realized events by token (backfillCategoryPnlHistory, by
+ *     category) reads `newRealizedEvents` — only what's NEW since the PREVIOUS checkpoint, and
+ *     maintains its own running total(s) by accumulating that delta checkpoint over checkpoint.
+ *     Summed across every checkpoint this is O(events) total, not O(checkpoints × events).
+ *
+ * Returns an array of { checkpoint, lots, realizedPnlUsdCumulative, newRealizedEvents } in the same
+ * order as `checkpoints` — a checkpoint past the last event (including every checkpoint, for a
+ * wallet with no activity at all) still gets an entry, just holding the ledger's final (possibly
+ * still-empty) state.
  */
 export function replayFifoCheckpoints(events, checkpoints) {
   const ledger = new FifoLedger();
   const snapshots = [];
   let checkpointIndex = 0;
+  // How many of ledger.realizedEvents the PREVIOUS checkpoint already accounted for — lets each
+  // checkpoint report only its own newRealizedEvents (a slice, not a copy-then-filter of the whole
+  // history-so-far) while realizedPnlUsdCumulative (above) still gives the full running total for a
+  // caller that doesn't need per-event detail. realizedEvents only ever grows (never spliced), so
+  // slicing [lastRealizedCount, currentCount) is always exactly "what's new since last checkpoint".
+  let lastRealizedCount = 0;
 
   for (const event of events) {
     while (checkpointIndex < checkpoints.length && event.timestamp >= checkpoints[checkpointIndex]) {
-      snapshots.push({ checkpoint: checkpoints[checkpointIndex], ...ledger.snapshot() });
+      const currentRealizedCount = ledger.realizedEvents.length;
+      snapshots.push({
+        checkpoint: checkpoints[checkpointIndex],
+        lots: ledger.openLotsSnapshot(),
+        realizedPnlUsdCumulative: ledger.realizedPnlUsdTotal,
+        newRealizedEvents: ledger.realizedEvents.slice(lastRealizedCount, currentRealizedCount),
+      });
+      lastRealizedCount = currentRealizedCount;
       checkpointIndex++;
     }
     if (checkpointIndex >= checkpoints.length) break; // every checkpoint already captured — nothing left can change a recorded snapshot
@@ -420,7 +466,14 @@ export function replayFifoCheckpoints(events, checkpoints) {
   // activity at all) never got captured inside the loop above — the ledger's final state covers all
   // of them.
   while (checkpointIndex < checkpoints.length) {
-    snapshots.push({ checkpoint: checkpoints[checkpointIndex], ...ledger.snapshot() });
+    const currentRealizedCount = ledger.realizedEvents.length;
+    snapshots.push({
+      checkpoint: checkpoints[checkpointIndex],
+      lots: ledger.openLotsSnapshot(),
+      realizedPnlUsdCumulative: ledger.realizedPnlUsdTotal,
+      newRealizedEvents: ledger.realizedEvents.slice(lastRealizedCount, currentRealizedCount),
+    });
+    lastRealizedCount = currentRealizedCount;
     checkpointIndex++;
   }
 
