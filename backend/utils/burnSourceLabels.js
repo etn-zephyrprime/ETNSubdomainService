@@ -34,7 +34,12 @@ const UNIVERSAL_ROUTER_ADDRESS = "0x2c12c8F15637b7A182DEc202816148A5E767DCEC".to
 const SIMPLE_ELECTROSWAP_ROUTER_ADDRESS = "0x072D4706f9A383D5608BD14B09b41683cb95fFd7".toLowerCase();
 
 const KNOWN_BURN_SOURCES = new Map([
-  [PREMIUM_SUBSCRIPTION_ADDRESS, "PnL Statements"],
+  // Same contract, two revenue streams -- executeSplitForPeriod burns both PnL Statement fees
+  // (pnlSplitExecutionScheduler.js, per finalized request) AND Argus Dashboard's Core Tier
+  // membership subscription revenue (subscriptionRevenueSweepScheduler.js, or a manual sweep --
+  // see quoteSplitValuesManual.js). Nothing about a burn alert distinguishes which one actually
+  // funded it, so the label covers both rather than naming only the original, narrower one.
+  [PREMIUM_SUBSCRIPTION_ADDRESS, "Argus Dashboard and PnL Statements"],
   [MARKETPLACE_ADDRESS, "ETN Subdomain Service"],
   [CORE_CLASH_TRADING_CARD_GAME_ADDRESS, "Core Clash"],
   [CORE_CLASH_GAME_ADDRESS, "Core Clash"],
