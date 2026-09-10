@@ -23,7 +23,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getPool } from "../db/pool.js";
 import { getActiveTokenPriceAlertsByToken, resetTokenPriceAlertBaseline } from "../db/tokenPriceAlerts.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
-import { getBatchTokenPrices } from "./electroSwapApi.js";
+import { getCachedBatchTokenPrices } from "./electroSwapPriceCache.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
@@ -102,13 +102,14 @@ async function checkAllTokens(provider) {
     const [byToken, priceCache] = await Promise.all([getActiveTokenPriceAlertsByToken(), getEtnPriceCache()]);
     const etnUsd = priceCache?.usd ?? null;
 
-    // One batched ElectroSwap call covering every distinct alerted token this tick, instead of
-    // checkOneToken's own dexPriceQuote.js call re-trying ElectroSwap's SINGLE endpoint per token
-    // (50 credits each) on every poll, forever — see electroSwapApi.js's own header comment on why
-    // batching is always cheaper. Chunks automatically above 50 tokens; empty/unconfigured returns
-    // an empty Map with no call at all, so this is a no-op cost when there's nothing to check or
-    // ELECTROSWAP_API_KEY isn't set.
-    const electroSwapPrices = await getBatchTokenPrices([...byToken.keys()]);
+    // One batched ElectroSwap call covering every distinct alerted token this tick that isn't
+    // already fresh in electroSwapPriceCache.js's shared cache (e.g. from coreClashSwapWatcher.js
+    // pricing the same token within the last ~90s), instead of checkOneToken's own dexPriceQuote.js
+    // call re-trying ElectroSwap's SINGLE endpoint per token (50 credits each) on every poll,
+    // forever — see electroSwapApi.js's own header comment on why batching is always cheaper.
+    // Chunks automatically above 50 tokens; empty/unconfigured returns an empty Map with no call at
+    // all, so this is a no-op cost when there's nothing to check or ELECTROSWAP_API_KEY isn't set.
+    const electroSwapPrices = await getCachedBatchTokenPrices([...byToken.keys()]);
 
     for (const [tokenAddress, alerts] of byToken) {
       const batchedEtnPrice = electroSwapPrices.get(tokenAddress.toLowerCase())?.etn ?? null;
