@@ -2,14 +2,17 @@
 //
 // Shared "what is this member's combined tracked-wallet portfolio worth in USD right now"
 // computation — used by both portfolioAlertScheduler.js (threshold alerts) and
-// portfolioDigestScheduler.js (daily summary), so the two features can never quietly disagree on
-// what "portfolio value" means. Token pricing is now ElectroSwap's own official API FIRST — one
-// batched call per wallet (see electroSwapApi.js's own header comment on why batching over this
-// app's previous per-token on-chain reads) — falling back per-token to dexPriceQuote.js's on-chain
-// ElectroSwap read (ETN leg, times the live etnPriceCache.js ETN/USD price) for anything
-// ElectroSwap's API doesn't price (ELECTROSWAP_API_KEY not configured, the account is out of
-// credits, or the specific token just isn't indexed there yet) — never a hard dependency on the new
-// API, always the same coverage this app already had before it existed.
+// portfolioDigestScheduler.js (daily summary, each looping over every subscribed member's wallet
+// in one tick), so the two features can never quietly disagree on what "portfolio value" means.
+// Token pricing is now ElectroSwap's own official API FIRST — one batched call per wallet, through
+// electroSwapPriceCache.js's shared cache (so a token more than one member happens to hold, priced
+// already this tick by an earlier wallet's own call, costs nothing the second time — see that
+// file's own header comment on why the actual saving here is real but opportunistic, not free) —
+// falling back per-token to dexPriceQuote.js's on-chain ElectroSwap read (ETN leg, times the live
+// etnPriceCache.js ETN/USD price) for anything ElectroSwap's API doesn't price (ELECTROSWAP_API_KEY
+// not configured, the account is out of credits, or the specific token just isn't indexed there
+// yet) — never a hard dependency on the new API, always the same coverage this app already had
+// before it existed.
 //
 // Spam-token and NFT exclusion mirrors CoreTierPortfolio.jsx's own frontend total (isSpamTokenName,
 // NFT type filtering) so a member sees the same total here as on the dashboard, not two subtly
@@ -17,7 +20,7 @@
 import { ethers } from "ethers";
 import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
-import { getBatchTokenPrices } from "./electroSwapApi.js";
+import { getCachedBatchTokenPrices } from "./electroSwapPriceCache.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
@@ -83,12 +86,14 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
     if (fungible.length > MAX_PRICED_TOKENS_PER_WALLET) hasUnpriced = true;
     const priced = fungible.slice(0, MAX_PRICED_TOKENS_PER_WALLET);
 
-    // One batched ElectroSwap call for every fungible holding in this wallet (up to
-    // MAX_PRICED_TOKENS_PER_WALLET, which is also ElectroSwap's own per-call max — the whole
-    // wallet fits in a single request). Returns an empty Map (never throws) if ELECTROSWAP_API_KEY
-    // isn't configured, so the fallback loop below is exactly this app's pre-existing behavior on
-    // any deployment that hasn't set the key yet.
-    const electroSwapPrices = await getBatchTokenPrices(priced.map((tb) => tb.token.address));
+    // One batched ElectroSwap call (via electroSwapPriceCache.js's shared cache — so a token
+    // several members happen to hold, priced already this tick by another wallet's own call here,
+    // costs nothing the second time) for every fungible holding in this wallet, up to
+    // MAX_PRICED_TOKENS_PER_WALLET (also ElectroSwap's own per-call max — the whole wallet fits in
+    // a single request). Returns an empty Map (never throws) if ELECTROSWAP_API_KEY isn't
+    // configured, so the fallback loop below is exactly this app's pre-existing behavior on any
+    // deployment that hasn't set the key yet.
+    const electroSwapPrices = await getCachedBatchTokenPrices(priced.map((tb) => tb.token.address));
 
     for (const tb of priced) {
       const addressLc = tb.token.address.toLowerCase();
