@@ -10,6 +10,13 @@ import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
 import TokenDetail from "./components/TokenDetail.jsx";
 import AddressLookup from "./components/AddressLookup.jsx";
 import NameServiceStats from "./components/NameServiceStats.jsx";
+// Core Tier's public demo — imported DIRECTLY (not lazily), unlike PortfolioDashboardSection and
+// PremiumDashboardSection below: it has zero wallet-connection dependency (see CoreTierDemoPage.jsx's
+// own header comment for how that's verified), so mounting it doesn't pull the WalletConnect/AppKit
+// bundle in the way lazy-loading those other two exists specifically to avoid. Reachable only via
+// CoreTierPortfolio's "View Demo" button (handleViewDemo below) — deliberately not in
+// DashboardNav's own TABS list, same spirit as the /statement/:requestId deep link.
+import CoreTierDemoPage from "./premium/components/CoreTierDemoPage.jsx";
 
 // Premium Feature #1 (per-wallet PnL statements) — the one wallet-requiring tab on this otherwise
 // walletless dashboard. Loaded via React.lazy specifically so importing it (and the
@@ -80,6 +87,12 @@ export default function DashboardApp() {
     setTab("tokens");
   };
 
+  // "demo" is deliberately not one of DashboardNav's own tabs (see CoreTierDemoPage.jsx's own
+  // header comment) — reachable only via these two handlers, from CoreTierPortfolio's "View Demo"
+  // button and CoreTierDemoPage's own "Exit Demo" button.
+  const handleViewDemo = () => setTab("demo");
+  const handleExitDemo = () => setTab("portfolio");
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -131,8 +144,11 @@ export default function DashboardApp() {
         {tab === "nameservice" && <NameServiceStats />}
         {tab === "portfolio" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} />
+            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
           </Suspense>
+        )}
+        {tab === "demo" && (
+          <CoreTierDemoPage onExitDemo={handleExitDemo} onSelectToken={handleSelectTokenFromAddress} />
         )}
         {tab === "premium" && (
           <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
