@@ -134,8 +134,18 @@ export async function probeV2Pool(address) {
     const meta = { token0: token0.toLowerCase(), token1: token1.toLowerCase() };
     v2PoolCache.set(key, meta);
     return meta;
-  } catch {
-    return null; // not a V2 pair (or a transient failure) — either way, nothing cached
+  } catch (err) {
+    // Deliberately NOT cached on failure (see this function's own header comment) — a later call
+    // gets a clean retry. But previously this swallowed EVERY failure identically, including a
+    // genuine V2 pair silently dropped from a wallet's LP positions by a transient RPC hiccup
+    // (timeout, rate limit) with zero trace anywhere — confirmed live: a real, reserve-backed
+    // ElectroSwap pair the wallet held ~11% of came back completely absent from the demo's LP
+    // section, and there was no way to tell after the fact whether it failed here or was never a
+    // real pair to begin with. Logged now (not thrown — a bad/non-pair address failing here is
+    // still the normal, expected case for most candidate tokens) so a genuine LP position missing
+    // from a wallet's results is at least visible instead of indistinguishable from "not a pair."
+    console.warn(`⚠️  LP position valuation: probeV2Pool failed for ${address} (treated as not-a-pair; a real V2 pair would retry clean next call):`, err.message);
+    return null;
   }
 }
 
