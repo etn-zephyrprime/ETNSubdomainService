@@ -40,54 +40,9 @@ import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
-import Decimal from "decimal.js";
 import { getDemoSnapshot } from "../state/coreTierDemoState.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
-
-// Every field name (anywhere in computeDemoData's output, at any nesting depth) that represents a
-// USD amount, an on-chain token quantity, or a wei-scale raw balance -- scaled by
-// ANONYMIZATION_FACTOR below before the demo ever leaves the server, so a viewer who happens to
-// know one of the 3 real wallets' actual figures can't identify it by matching an exact number.
-// Deliberately an ALLOWLIST, not a blocklist: an unrecognized future field defaults to "left alone"
-// rather than risking a count/tokenId/fee-tier/percentage getting nonsensically scaled by default.
-const SCALED_FIELDS = new Set([
-  "currentValueUsd", "unrealizedPnlUsd", "realizedPnlUsd", "totalValueUsd", "totalMarketValueUsd",
-  "totalUnrealizedUsd", "costBasisUsd", "marketValueUsd", "quantity", "rawBalance", "totalCoinBalance",
-  "amount", "usdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
-  "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd",
-]);
-// rawBalance/totalCoinBalance are wei -- always whole numbers on real chain data, so their scaled
-// value is rounded to the nearest integer rather than left with fractional wei, which would be
-// nonsensical here (unlike the human-unit Decimal fields above, which are fractional already).
-const INTEGER_FIELDS = new Set(["rawBalance", "totalCoinBalance"]);
-const ANONYMIZATION_FACTOR = 0.75; // shown demo balances/values are 75% of the real wallets' actual figures
-
-function scaleScalar(key, value) {
-  if (typeof value === "number") return value * ANONYMIZATION_FACTOR;
-  if (typeof value !== "string" || !/^-?\d+(\.\d+)?$/.test(value)) return value; // not actually numeric -- leave as-is rather than guess
-  const scaled = new Decimal(value).times(ANONYMIZATION_FACTOR);
-  return INTEGER_FIELDS.has(key) ? scaled.toFixed(0) : scaled.toFixed();
-}
-
-/** Recursively scales every SCALED_FIELDS value in `node` by ANONYMIZATION_FACTOR, leaving every
- * other field (dates, symbols, addresses, counts, tokenId, fee tier, in-range flags, ...)
- * untouched. Used once, by generateDemoSnapshot.js, before the result is persisted -- see
- * coreTierDemoState.js. */
-export function anonymizeDemoData(node) {
-  if (node == null) return node;
-  if (Array.isArray(node)) return node.map(anonymizeDemoData);
-  if (typeof node === "object") {
-    const out = {};
-    for (const [key, value] of Object.entries(node)) {
-      out[key] = SCALED_FIELDS.has(key) && (typeof value === "number" || typeof value === "string")
-        ? scaleScalar(key, value)
-        : anonymizeDemoData(value); // recurse regardless of key, so nested objects/arrays still get scanned
-    }
-    return out;
-  }
-  return node;
-}
 
 // Three real, unrelated wallets with genuine on-chain activity — combined here the exact same way
 // PortfolioDashboardSection.jsx combines a real member's own tracked wallets, so the demo actually
@@ -98,10 +53,21 @@ export function anonymizeDemoData(node) {
 // repo, same reasoning as several other hand-synced constants elsewhere — e.g.
 // pnlStatementGenerator.js's THEME). Never exposed to the client as real addresses — see
 // CoreTierDemo.jsx's own anonymized "Wallet 1/2/3" labels.
+//
+// Wallet [2] was swapped from 0x9343e399d44e701fc26130bdbf8817d78f086867 -- one of the most
+// actively-trading wallets available, which made it the dominant cost (event count, hence FIFO
+// replay + memory) of generating the demo snapshot. The new wallet is genuinely less active, so
+// generateDemoSnapshot.js has meaningfully less history to walk per run. Note this means a fresh
+// cold-start ingest for wallet [2] specifically on the next run (its own ingestion state starts
+// from nothing) -- wallets [0]/[1] keep their existing, already-caught-up state.
+//
+// Every USD/quantity/balance figure the client sees is scaled down for display -- see
+// CoreTierDemo.jsx's own DEMO_DISPLAY_SCALE -- but that happens client-side, on top of whatever
+// this file computes/stores; the real (unscaled) figures are what's computed and persisted here.
 const DEMO_WALLET_ADDRESSES = [
   "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099",
   "0xd6cf49cbcf84b2cd2472a376b5f791689a0769d0",
-  "0x9343e399d44e701fc26130bdbf8817d78f086867",
+  "0xc92e01d795313ad4f93c6d35ce764ce3dad6d0ee",
 ];
 // Shared synthetic "owner" for pnl_snapshots'/pnl_category_snapshots' (owner_wallet, wallet_address,
 // ..., date) composite keys — same role wallet.account plays for a real member's OWN tracked-wallet
