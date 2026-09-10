@@ -179,26 +179,34 @@ export async function computeDemoData() {
   // history minus its sibling demo wallets" uses the identical selfOwned filter.
   const selfOwned = (addr) => DEMO_WALLET_ADDRESSES.filter((a) => a !== addr);
 
-  const [snapshots, defiResults, nftSnapshots, combinedHoldings] = await Promise.all([
-    Promise.all(DEMO_WALLET_ADDRESSES.map((addr) => computeLivePnlSnapshot(addr, selfOwned(addr)))),
-    Promise.all(
-      DEMO_WALLET_ADDRESSES.map((addr) =>
-        getOpenDefiPositionsUsd(addr).catch((err) => {
-          console.warn(`⚠️  Core Tier demo: DeFi position lookup failed for a demo wallet:`, err.message);
-          return { positions: [], totalUsd: null, hasUnpriced: true };
-        })
-      )
-    ),
-    Promise.all(
-      DEMO_WALLET_ADDRESSES.map((addr) =>
-        computeLiveNftPnlSnapshot(addr, selfOwned(addr)).catch((err) => {
-          console.warn(`⚠️  Core Tier demo: NFT PnL failed for a demo wallet:`, err.message);
-          return null;
-        })
-      )
-    ),
-    getCombinedHoldings(),
-  ]);
+  // Deliberately one wallet at a time here, NOT Promise.all'd across all 3 demo wallets — each
+  // wallet's full transfer/swap/DeFi history plus its FIFO replay is genuinely large in memory, and
+  // running all 3 wallets' worth of that concurrently was blowing past this process's heap limit
+  // (confirmed: an out-of-memory crash running this exact computation). This has no HTTP request
+  // deadline to race — generateDemoSnapshot.js calls it offline — so trading wall-clock time for a
+  // ~3x cut in peak memory is the right call. The 3 KINDS of work for a single wallet (snapshot,
+  // DeFi positions, NFT PnL) still run concurrently with each other; only the per-wallet loop below
+  // was ever the source of the actual blowup.
+  const snapshots = [];
+  const defiResults = [];
+  const nftSnapshots = [];
+  for (const addr of DEMO_WALLET_ADDRESSES) {
+    const [snapshot, defiResult, nftSnapshot] = await Promise.all([
+      computeLivePnlSnapshot(addr, selfOwned(addr)),
+      getOpenDefiPositionsUsd(addr).catch((err) => {
+        console.warn(`⚠️  Core Tier demo: DeFi position lookup failed for a demo wallet:`, err.message);
+        return { positions: [], totalUsd: null, hasUnpriced: true };
+      }),
+      computeLiveNftPnlSnapshot(addr, selfOwned(addr)).catch((err) => {
+        console.warn(`⚠️  Core Tier demo: NFT PnL failed for a demo wallet:`, err.message);
+        return null;
+      }),
+    ]);
+    snapshots.push(snapshot);
+    defiResults.push(defiResult);
+    nftSnapshots.push(nftSnapshot);
+  }
+  const combinedHoldings = await getCombinedHoldings();
 
   const combined = combineLivePnlSnapshots(snapshots);
   const perWallet = DEMO_WALLET_ADDRESSES.map((addr, i) => ({
@@ -212,18 +220,21 @@ export async function computeDemoData() {
 
   // Liquidity positions need each wallet's own fungible-token candidate list (the V2-LP probe
   // target set) — already fetched above via getCombinedHoldings, reused here rather than a second
-  // Blockscout round-trip per wallet.
-  const lpResults = await Promise.all(
-    DEMO_WALLET_ADDRESSES.map((addr, i) => {
-      const candidateTokens = (combinedHoldings.perWalletTokens[i] || [])
-        .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
-        .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
-      return getLiquidityPositionsUsd(addr, candidateTokens).catch((err) => {
-        console.warn(`⚠️  Core Tier demo: liquidity position lookup failed for a demo wallet:`, err.message);
-        return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: true, lpTokenAddresses: new Set() };
-      });
-    })
-  );
+  // Blockscout round-trip per wallet. Sequential across wallets for the same reason as the loop
+  // above — this does real on-chain reads per candidate token per wallet, no need to pile 3
+  // wallets' worth of that up in memory at once.
+  const lpResults = [];
+  for (let i = 0; i < DEMO_WALLET_ADDRESSES.length; i++) {
+    const addr = DEMO_WALLET_ADDRESSES[i];
+    const candidateTokens = (combinedHoldings.perWalletTokens[i] || [])
+      .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
+      .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
+    const result = await getLiquidityPositionsUsd(addr, candidateTokens).catch((err) => {
+      console.warn(`⚠️  Core Tier demo: liquidity position lookup failed for a demo wallet:`, err.message);
+      return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: true, lpTokenAddresses: new Set() };
+    });
+    lpResults.push(result);
+  }
 
   const combineUsdTotals = (results) => {
     let totalUsd = null;
@@ -243,12 +254,18 @@ export async function computeDemoData() {
   const nftPnl = combineLiveNftPnlSnapshots(nftSnapshots.filter(Boolean));
 
   // Whole-portfolio + per-category history — one replayFifoCheckpoints pass per wallet either way
-  // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments), run for every demo wallet
-  // before reading any of it back.
-  await Promise.all([
-    ...DEMO_WALLET_ADDRESSES.map((addr) => backfillPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS)),
-    ...DEMO_WALLET_ADDRESSES.map((addr) => backfillCategoryPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS)),
-  ]);
+  // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments). This is the single heaviest
+  // part of the whole computation (up to DEMO_HISTORY_DAYS daily checkpoints, each a full FIFO
+  // replay, on top of the wallet's whole event list already held in memory to do it) — it was
+  // previously fanned out 6-way (3 wallets × {whole-portfolio, per-category}) via Promise.all, which
+  // is what actually blew the heap. One wallet at a time; the two backfills FOR that one wallet
+  // still run concurrently with each other, that pairing alone was never the problem.
+  for (const addr of DEMO_WALLET_ADDRESSES) {
+    await Promise.all([
+      backfillPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS),
+      backfillCategoryPnlHistory(DEMO_OWNER, addr, selfOwned(addr), DEMO_HISTORY_DAYS),
+    ]);
+  }
   const sinceDate = new Date(Date.now() - DEMO_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const historyRows = await getPnlSnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, sinceDate);
   const history = combineSnapshotsByDate(historyRows, DEMO_WALLET_ADDRESSES);
