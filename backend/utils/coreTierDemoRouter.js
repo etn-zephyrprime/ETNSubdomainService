@@ -40,8 +40,54 @@ import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
+import Decimal from "decimal.js";
+import { getDemoSnapshot } from "../state/coreTierDemoState.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
+
+// Every field name (anywhere in computeDemoData's output, at any nesting depth) that represents a
+// USD amount, an on-chain token quantity, or a wei-scale raw balance -- scaled by
+// ANONYMIZATION_FACTOR below before the demo ever leaves the server, so a viewer who happens to
+// know one of the 3 real wallets' actual figures can't identify it by matching an exact number.
+// Deliberately an ALLOWLIST, not a blocklist: an unrecognized future field defaults to "left alone"
+// rather than risking a count/tokenId/fee-tier/percentage getting nonsensically scaled by default.
+const SCALED_FIELDS = new Set([
+  "currentValueUsd", "unrealizedPnlUsd", "realizedPnlUsd", "totalValueUsd", "totalMarketValueUsd",
+  "totalUnrealizedUsd", "costBasisUsd", "marketValueUsd", "quantity", "rawBalance", "totalCoinBalance",
+  "amount", "usdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
+  "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd",
+]);
+// rawBalance/totalCoinBalance are wei -- always whole numbers on real chain data, so their scaled
+// value is rounded to the nearest integer rather than left with fractional wei, which would be
+// nonsensical here (unlike the human-unit Decimal fields above, which are fractional already).
+const INTEGER_FIELDS = new Set(["rawBalance", "totalCoinBalance"]);
+const ANONYMIZATION_FACTOR = 0.75; // shown demo balances/values are 75% of the real wallets' actual figures
+
+function scaleScalar(key, value) {
+  if (typeof value === "number") return value * ANONYMIZATION_FACTOR;
+  if (typeof value !== "string" || !/^-?\d+(\.\d+)?$/.test(value)) return value; // not actually numeric -- leave as-is rather than guess
+  const scaled = new Decimal(value).times(ANONYMIZATION_FACTOR);
+  return INTEGER_FIELDS.has(key) ? scaled.toFixed(0) : scaled.toFixed();
+}
+
+/** Recursively scales every SCALED_FIELDS value in `node` by ANONYMIZATION_FACTOR, leaving every
+ * other field (dates, symbols, addresses, counts, tokenId, fee tier, in-range flags, ...)
+ * untouched. Used once, by generateDemoSnapshot.js, before the result is persisted -- see
+ * coreTierDemoState.js. */
+export function anonymizeDemoData(node) {
+  if (node == null) return node;
+  if (Array.isArray(node)) return node.map(anonymizeDemoData);
+  if (typeof node === "object") {
+    const out = {};
+    for (const [key, value] of Object.entries(node)) {
+      out[key] = SCALED_FIELDS.has(key) && (typeof value === "number" || typeof value === "string")
+        ? scaleScalar(key, value)
+        : anonymizeDemoData(value); // recurse regardless of key, so nested objects/arrays still get scanned
+    }
+    return out;
+  }
+  return node;
+}
 
 // Three real, unrelated wallets with genuine on-chain activity — combined here the exact same way
 // PortfolioDashboardSection.jsx combines a real member's own tracked wallets, so the demo actually
@@ -123,7 +169,9 @@ async function getCombinedHoldings() {
   return { totalCoinBalance: totalCoinBalance.toString(), tokens: [...tokensByAddress.values()], perWalletTokens: perWallet.map((w) => w.balances) };
 }
 
-async function computeDemoData() {
+// Exported so generateDemoSnapshot.js can run this same computation once, offline, rather than the
+// router paying for it live -- see coreTierDemoState.js's own header comment.
+export async function computeDemoData() {
   // Each wallet's own snapshot excludes the OTHER two from its realized P&L (a transfer between
   // them is a self-transfer, not a disposal) — same selfOwnedAddresses reasoning
   // PortfolioDashboardSection.jsx applies for a real member's own multiple tracked wallets. Same
@@ -226,9 +274,12 @@ async function computeDemoData() {
   };
 }
 
-/** Cached, in-flight-deduplicated demo data — concurrent requests during a cache miss share ONE
- * computation rather than each triggering their own. A failed computation is never cached (so the
- * next request retries fresh instead of repeating the same error for a full hour). */
+/** LIVE-COMPUTE FALLBACK, only used when generateDemoSnapshot.js hasn't been run yet (R2 not
+ * configured, or a fresh deploy before anyone's generated a snapshot) — see the route handler
+ * below, which always prefers the persisted snapshot when one exists. Cached, in-flight-
+ * deduplicated: concurrent requests during a cache miss share ONE computation rather than each
+ * triggering their own. A failed computation is never cached (so the next request retries fresh
+ * instead of repeating the same error for a full hour). */
 function getDemoData() {
   if (!cache || cache.expiresAt < Date.now()) {
     const promise = computeDemoData();
@@ -245,6 +296,15 @@ const router = express.Router();
 
 router.get("/premium/demo/pnl", async (req, res) => {
   try {
+    // Preferred path: a static, already-anonymized snapshot generated ahead of time by
+    // generateDemoSnapshot.js (see coreTierDemoState.js) — O(1), no live Blockscout/RPC/valuation
+    // work per request. Falls back to a live (unscaled) computation only if no snapshot has ever
+    // been persisted, so the demo still works before that script's first run.
+    const stored = await getDemoSnapshot();
+    if (stored) {
+      res.json({ ...stored.data, generatedAt: stored.generatedAt });
+      return;
+    }
     res.json(await getDemoData());
   } catch (err) {
     console.error("Core Tier demo PnL failed:", err);
