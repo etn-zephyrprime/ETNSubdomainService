@@ -110,18 +110,18 @@ export default function DashboardApp() {
       <DashboardHeader isMobile={isMobile} />
 
       <div style={{ width: "100%", maxWidth: 900 }}>
-        <div style={{ marginBottom: 24, textAlign: "center" }}>
+        <div style={{ marginBottom: 28, textAlign: "center" }}>
           <div style={{
             fontFamily: "Orbitron, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
             fontWeight: 700,
-            fontSize: isMobile ? 24 : 32,
-            letterSpacing: 1,
+            fontSize: isMobile ? 32 : 48,
+            letterSpacing: 1.5,
             color: "#fff",
-            textShadow: `0 0 16px ${greenGlow}`,
+            textShadow: `0 0 24px ${greenGlow}`,
           }}>
             Argus
           </div>
-          <div style={{ fontSize: 13, color: mutedLight, marginTop: 8 }}>
+          <div style={{ fontSize: 13, color: mutedLight, marginTop: 12 }}>
             Live Electroneum network stats and wallet lookup, plus multi-wallet portfolio tracking, PnL, and DeFi position monitoring for Core Tier members.
           </div>
         </div>
