@@ -498,6 +498,11 @@ export async function resolveFarmStakingTokenKeys(defiActivity) {
   return tokenKeys;
 }
 
+// Shared by pnlStatementGenerator.js, pnlSnapshotService.js (Core Tier's live snapshot AND its
+// history backfill — including the Core Tier demo's own backfill), and, via that, the demo's own
+// generateDemoSnapshot.js — NOT Statement-specific despite the log line below's original wording
+// (fixed; used to say "Statement generator", which was only ever accurate for its first caller and
+// caused real confusion once the others started sharing it).
 export async function computeGasFeesUsd(transfersInPeriod) {
   const gasRows = transfersInPeriod.filter((t) => t.gas_fee_wei != null);
   let totalGasWei = 0n;
@@ -508,7 +513,7 @@ export async function computeGasFeesUsd(transfersInPeriod) {
       const priceUsd = await getHistoricalPriceUsd(NATIVE_SENTINEL, new Date(row.timestamp));
       totalGasUsd = totalGasUsd.plus(new Decimal(ethers.formatEther(row.gas_fee_wei)).times(priceUsd));
     } catch (err) {
-      console.warn(`⚠️  Statement generator: could not price gas fee for tx ${row.tx_hash}:`, err.message);
+      console.warn(`⚠️  computeGasFeesUsd: could not price gas fee for tx ${row.tx_hash}:`, err.message);
     }
   }
   return { totalGasEtn: ethers.formatEther(totalGasWei), totalGasUsd };
@@ -522,7 +527,11 @@ export async function computeGasFeesUsd(transfersInPeriod) {
  * totalUnrealizedUsd only ever includes a token if ITS OWN price resolved — a token with an
  * unresolved price contributes to neither side of that delta, rather than only being subtracted as
  * cost basis with no offsetting market value (which would wrongly read as a full loss on that
- * token instead of "unknown"). */
+ * token instead of "unknown").
+ *
+ * Called from pnlStatementGenerator.js, pnlSnapshotService.js (live snapshot, history backfill),
+ * and categoryPnlService.js (category history backfill) — same "shared, not Statement-only" note
+ * as computeGasFeesUsd above; its own log line below no longer says "Statement generator" either. */
 export async function valueInventoryAtTimestamp(lots, timestamp) {
   const byToken = new Map();
   for (const lot of lots) {
@@ -543,7 +552,7 @@ export async function valueInventoryAtTimestamp(lots, timestamp) {
       totalMarketValueUsd = totalMarketValueUsd.plus(marketValue);
       totalUnrealizedUsd = totalUnrealizedUsd.plus(marketValue.minus(costBasis));
     } catch (err) {
-      console.warn(`⚠️  Statement generator: could not price ${tokenAddress} at ${timestamp.toISOString()}:`, err.message);
+      console.warn(`⚠️  valueInventoryAtTimestamp: could not price ${tokenAddress} at ${timestamp.toISOString()}:`, err.message);
     }
     perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: marketValue?.toString() ?? null });
   }
