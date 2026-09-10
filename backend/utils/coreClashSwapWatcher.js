@@ -33,6 +33,7 @@ import {
 import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { getCachedTokenPrice } from "./electroSwapPriceCache.js";
 
 const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
@@ -98,6 +99,27 @@ async function refreshPrices(pair, coreIsToken0, coreDecimals) {
   const wetnUsd = await fetchWetnUsd();
   cachedWetnUsd = wetnUsd;
 
+  // ElectroSwap first — same "try ElectroSwap, fall back to on-chain" pattern every other live-
+  // price call site in this app uses (see dexPriceQuote.js's own header comment) — through
+  // electroSwapPriceCache.js's shared cache, so this doesn't pay for its own dedicated call every
+  // single 5-minute refresh if some OTHER consumer (e.g. tokenPriceAlertScheduler.js, if a member
+  // happens to have an active price alert on CORE) already priced it within the last ~90s. Real
+  // savings only when that overlap happens — most 5-minute ticks still pay their own credit cost
+  // here if nothing else is pricing CORE on a similar cadence; see electroSwapPriceCache.js's own
+  // header comment on why that's an honest, opportunistic saving, not a free feed.
+  const electroSwapPrice = await getCachedTokenPrice(CORE_TOKEN_ADDRESS).catch((err) => {
+    console.warn("⚠️  [SwapWatcher] ElectroSwap price lookup failed for CORE:", err.message);
+    return null;
+  });
+  if (electroSwapPrice?.usd != null) {
+    cachedCorePriceUsd = electroSwapPrice.usd;
+    lastPriceRefreshMs = Date.now();
+    console.log(`💱 Prices refreshed — WETN $${wetnUsd.toFixed(6)}, CORE $${cachedCorePriceUsd.toFixed(6)} (ElectroSwap)`);
+    return;
+  }
+
+  // Fallback: direct on-chain pool-reserve read — unchanged from the original method, used when
+  // ElectroSwap doesn't have CORE priced (or ELECTROSWAP_API_KEY isn't set at all).
   try {
     const [reserve0, reserve1] = await pair.getReserves();
     const coreReserveRaw = coreIsToken0 ? reserve0 : reserve1;
@@ -116,7 +138,7 @@ async function refreshPrices(pair, coreIsToken0, coreDecimals) {
   lastPriceRefreshMs = Date.now();
   console.log(
     `💱 Prices refreshed — WETN $${wetnUsd.toFixed(6)}` +
-      (cachedCorePriceUsd != null ? `, CORE $${cachedCorePriceUsd.toFixed(6)}` : ", CORE price unavailable")
+      (cachedCorePriceUsd != null ? `, CORE $${cachedCorePriceUsd.toFixed(6)} (on-chain reserves)` : ", CORE price unavailable")
   );
 }
 

@@ -46,7 +46,7 @@
 // by hand. This is not wei-exact and isn't meant to be — nothing here settles a trade.
 import { ethers } from "ethers";
 import { resolveTokenPools } from "./wetnPoolResolver.js";
-import { getTokenPrice as getElectroSwapTokenPrice } from "./electroSwapApi.js";
+import { getCachedTokenPrice as getElectroSwapTokenPrice } from "./electroSwapPriceCache.js";
 
 const ROUTER_ADDRESS =
   process.env.ELECTROSWAP_ROUTER_ADDRESS || "0x072D4706f9A383D5608BD14B09b41683cb95fFd7"; // same router burnSourceLabels.js already recognizes ("Token Swaps")
@@ -195,6 +195,10 @@ async function priceFromV3Slot0(provider, info) {
  * on-chain/GeckoTerminal path in that case — see portfolioValuation.js and
  * tokenPriceAlertScheduler.js, both of which batch first across every token they need in one tick/
  * request and only call this per-token for whatever the batch didn't cover.
+ *
+ * The ElectroSwap lookup itself goes through electroSwapPriceCache.js's short-TTL cache, not
+ * electroSwapApi.js directly — a real credit cost only when this exact token hasn't been priced by
+ * ANY consumer of that shared cache in the last ~90s, not on every single call here.
  */
 export async function getTokenEtnPrice(provider, tokenAddress, { skipElectroSwap = false } = {}) {
   if (!skipElectroSwap) {
