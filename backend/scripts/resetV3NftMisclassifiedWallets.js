@@ -30,8 +30,13 @@
 // that address), so this scoping has no false positives.
 //
 // DRY RUN BY DEFAULT -- this touches real ingested transaction history and tax-relevant PnL data.
-//   node backend/scripts/resetV3NftMisclassifiedWallets.js           # list affected wallets
-//   node backend/scripts/resetV3NftMisclassifiedWallets.js --apply   # actually reset + re-ingest them
+//   node backend/scripts/resetV3NftMisclassifiedWallets.js                        # list affected wallets
+//   node backend/scripts/resetV3NftMisclassifiedWallets.js --apply                # actually reset + re-ingest them
+//   node backend/scripts/resetV3NftMisclassifiedWallets.js --exclude=0xabc,0xdef  # skip specific wallet(s), either mode
+//
+// --exclude exists for a wallet that matches the bug's signature but shouldn't be touched right
+// now for reasons outside this script's own knowledge -- e.g. a former demo wallet no longer in
+// active use that the operator doesn't want a fresh RPC-heavy re-ingest kicked off for.
 //
 // Safe to re-run: a wallet with nothing left to reset just re-ingests cleanly (same idempotent
 // resumability every other ingestWalletHistory caller already relies on).
@@ -44,6 +49,16 @@ dotenv.config();
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
+const excludeArg = args.find((a) => a.startsWith("--exclude="));
+const excludedWallets = new Set(
+  excludeArg
+    ? excludeArg
+        .slice("--exclude=".length)
+        .split(",")
+        .map((a) => a.trim().toLowerCase())
+        .filter(Boolean)
+    : []
+);
 
 async function getMisclassifiedWallets() {
   const res = await query(
@@ -73,7 +88,20 @@ async function main() {
     ownerToWallets.get(owner_wallet).push(wallet_address);
   }
 
-  const targetWallets = [...misclassified];
+  const targetWallets = [...misclassified].filter((w) => !excludedWallets.has(w));
+  const skipped = [...misclassified].filter((w) => excludedWallets.has(w));
+
+  if (skipped.length > 0) {
+    console.log(`Skipping ${skipped.length} excluded wallet(s) (--exclude):`);
+    for (const w of skipped) console.log(`  ${w}`);
+    console.log("");
+  }
+
+  if (targetWallets.length === 0) {
+    console.log("Nothing left to repair after exclusions.");
+    await getPool().end();
+    return;
+  }
 
   console.log(`${apply ? "Resetting and re-ingesting" : "Would reset and re-ingest"} ${targetWallets.length} wallet(s) with V3-position-as-NFT rows:\n`);
   for (const w of targetWallets) console.log(`  ${w}`);
