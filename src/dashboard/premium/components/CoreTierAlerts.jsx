@@ -9,6 +9,7 @@ import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
 import { usePortfolioAlerts } from "../../hooks/usePortfolioAlerts.js";
 import { usePortfolioDigest } from "../../hooks/usePortfolioDigest.js";
+import { useSubscriptionReminders } from "../../hooks/useSubscriptionReminders.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
@@ -49,6 +50,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
   const { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert } = useTokenPriceAlerts();
   const { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert } = usePortfolioAlerts();
   const { getDigestStatus, setDigestEnabled } = usePortfolioDigest();
+  const { getReminderStatus, setReminderEnabled } = useSubscriptionReminders();
 
   // ---- Telegram link status ----
   const [linked, setLinked] = useState(null);
@@ -200,22 +202,40 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
     }
   }, [getAuthParams, getDigestStatus, wallet.account]);
 
+  // ---- Core Tier membership expiry reminders (plain on/off toggle) ----
+  const [reminderEnabled, setReminderEnabledState] = useState(null); // null = not yet checked
+  const [reminderBusy, setReminderBusy] = useState(false);
+  const [reminderError, setReminderError] = useState(null);
+
+  const loadReminderStatus = useCallback(async () => {
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await getReminderStatus(wallet.account, signature, timestamp);
+      setReminderEnabledState(Boolean(res.enabled));
+    } catch (err) {
+      setReminderError(err.message || "Couldn't load reminder setting");
+    }
+  }, [getAuthParams, getReminderStatus, wallet.account]);
+
   useEffect(() => {
     if (!hasAccess) {
       setWalletAlerts(null);
       setTokenAlerts(null);
       setPortfolioAlerts(null);
       setDigestEnabledState(null);
+      setReminderEnabledState(null);
       return;
     }
     setWalletAlertsError(null);
     setTokenAlertsError(null);
     setPortfolioAlertsError(null);
     setDigestError(null);
+    setReminderError(null);
     loadWalletAlerts();
     loadTokenAlerts();
     loadPortfolioAlerts();
     loadDigestStatus();
+    loadReminderStatus();
     if (active.length > 0 && !waWallet) setWaWallet(active[0].address);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
@@ -365,6 +385,20 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
     }
   };
 
+  const toggleReminders = async () => {
+    setReminderError(null);
+    setReminderBusy(true);
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await setReminderEnabled(wallet.account, signature, timestamp, !reminderEnabled);
+      setReminderEnabledState(Boolean(res.enabled));
+    } catch (err) {
+      setReminderError(err.message || "Couldn't update that setting");
+    } finally {
+      setReminderBusy(false);
+    }
+  };
+
   return (
     <CollapsibleCoreTierPanel icon={Bell} title="Core Tier — Alerts">
       <CoreTierGate
@@ -444,6 +478,34 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
             }
           >
             {!linked ? "Connect Notis bot first" : digestEnabled === null ? "Checking..." : digestEnabled ? "Turn off" : "Turn on"}
+          </DashboardButton>
+        </div>
+
+        {/* Core Tier membership expiry reminders — another plain toggle, no per-alert list */}
+        <div
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+            padding: "14px 16px", borderRadius: 12, background: panel2, border: `1px solid ${border}`,
+            marginBottom: 20,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Membership expiry reminders</div>
+            <div style={{ fontSize: 11, color: mutedLight, marginTop: 2 }}>
+              DM at 7, 3, and 1 day(s) before your Core Tier membership expires, so it never lapses by surprise.
+            </div>
+            {reminderError && <div style={{ fontSize: 11, color: errorColor, marginTop: 4 }}>{reminderError}</div>}
+          </div>
+          <DashboardButton
+            onClick={toggleReminders}
+            disabled={reminderBusy || !linked || reminderEnabled === null}
+            style={
+              reminderEnabled
+                ? { background: "transparent", border: `1px solid ${border}`, color: mutedLight, boxShadow: "none", padding: "8px 14px", fontSize: 12 }
+                : { padding: "8px 14px", fontSize: 12 }
+            }
+          >
+            {!linked ? "Connect Notis bot first" : reminderEnabled === null ? "Checking..." : reminderEnabled ? "Turn off" : "Turn on"}
           </DashboardButton>
         </div>
 
