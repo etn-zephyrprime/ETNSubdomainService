@@ -243,7 +243,18 @@ function DemoPortfolio({ data, onSelectToken }) {
   const [tokenPrices, setTokenPrices] = useState({});
   const [holdingsShown, setHoldingsShown] = useState(10);
 
-  const fungibleTokens = (data.combinedHoldings.tokens || []).filter((t) => t.tokenAddress && !isSpamTokenName(t.name));
+  // Same exclusion CoreTierPortfolio.jsx's own allVisibleTokens applies for a real member: an LP
+  // pool token has no price feed of its own (getTokenChart below would just waste a call finding
+  // nothing) and already has its own dedicated, correctly-valued display (Liquidity Positions) --
+  // showing it twice, once wrong (as an unpriced Combined Holdings row), would be worse than
+  // showing it once, right. Confirmed live as a real gap: this demo previously had no such
+  // exclusion at all, so an LP position sat as a dead, unpriced Combined Holdings row instead of
+  // being folded into Liquidity Positions -- contributing to a demo wallet's real, meaningful LP
+  // value going completely missing from the Portfolio Composition chart.
+  const lpTokenAddressSet = new Set((data.liquidityPositions?.v2Positions || []).map((p) => p.tokenAddress));
+  const fungibleTokens = (data.combinedHoldings.tokens || []).filter(
+    (t) => t.tokenAddress && !isSpamTokenName(t.name) && !lpTokenAddressSet.has(t.tokenAddress.toLowerCase())
+  );
 
   useEffect(() => {
     let cancelled = false;
