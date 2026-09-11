@@ -1158,6 +1158,24 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
       const tokenAddress = tt.token?.address;
       const tokenType = tt.token?.type; // "ERC-20" | "ERC-721" | "ERC-1155" — confirmed live shape
 
+      // A V3 position IS an ERC-721 on-chain (see this file's own V3 header comment near
+      // POSITION_MANAGER_ADDRESS), so Blockscout reports its mint/transfer/burn here exactly like
+      // any collectible NFT's Transfer log. Normally that's harmless — detectAndRecordV3PositionEvent
+      // already recorded the position as its own erc20-typed composite-key event and folded the tx
+      // hash into swapTxHashes/excludeTxHashes above, so this whole tx never reaches this loop body.
+      // But detection silently DECLINES per-position (not per-tx) on a failed getV3PositionTokens/
+      // pool lookup, an RPC hiccup, or a missing matching leg (see its own declined/`continue`
+      // branches) — and when it does, this tx's hash is never added to v3TxHashes, so its token
+      // transfers land here uninterrupted. Confirmed live: that let the position-manager's own mint
+      // Transfer fall through as a genuine "erc721" row, which buildNftEvents then treated as a
+      // collectible NFT purchase — matching the SAME underlying token0/token1 legs meant for the LP
+      // deposit as its "payment leg" (buildNftEvents has no way to tell those apart from a real
+      // same-tx NFT sale payment). That's what inflated NFT PnL's cost basis with real LP capital
+      // that was never spent on an NFT at all. So this is skipped unconditionally here — a V3
+      // position must NEVER be treated as a collectible NFT, whether or not its own dedicated
+      // detection above happened to recognize the tx.
+      if (String(tokenAddress).toLowerCase() === POSITION_MANAGER_ADDRESS) continue;
+
       if (tokenType === "ERC-721" || tokenType === "ERC-1155") {
         // NFTs have no `total.value`/decimals at all (confirmed live: total is
         // { token_id, token_instance }, decimals is null) — previously this fell through to the
