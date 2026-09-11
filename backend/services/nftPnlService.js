@@ -99,8 +99,12 @@ function buildByToken(lots, realizedEvents) {
 /** Rolls a `byToken` list (see buildByToken, or combineLiveNftPnlSnapshots' own merge) up into
  * per-collection totals and the top-level summary — the same three tiers CoreTierNftPnl.jsx shows,
  * built here once so computeLiveNftPnlSnapshot and combineLiveNftPnlSnapshots never derive them two
- * different ways. */
-function buildRollups(byToken, unmatchedCount) {
+ * different ways.
+ *
+ * Exported so coreTierDemoRouter.js can re-derive the rollup after FILTERING byToken (excluding the
+ * demo's own known test/dev NFT collections — see that file's own comment) — the exact same
+ * aggregation, just fed a subset of rows, rather than a second reimplementation. */
+export function buildRollups(byToken, unmatchedCount) {
   const byCollectionMap = new Map();
   for (const t of byToken) {
     const c = byCollectionMap.get(t.collectionAddress) || {

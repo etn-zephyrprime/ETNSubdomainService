@@ -38,9 +38,10 @@ import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshot
 import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
-import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
+import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots, buildRollups } from "../services/nftPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getDemoSnapshot } from "../state/coreTierDemoState.js";
+import { getTokenMetadata } from "../services/pnlIngestion.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 
@@ -91,6 +92,51 @@ const DEMO_OWNER = DEMO_WALLET_ADDRESSES[0];
 // GeckoTerminal pricing at all) and was never the bottleneck.
 const DEMO_HISTORY_DAYS = 90;
 const DEMO_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — a demo doesn't need to be second-fresh; this is what keeps a public, unauthenticated route cheap regardless of visitor count
+
+// NFT collections that don't belong in the demo's NFT PnL section — confirmed live: the demo
+// wallets' NFT history is heavily "PZENS"/"ETNNS" (this app's OWN subname-registration NFTs) and a
+// handful of literally-test-named collections (VKTEST, ASTest, ERE9TEST, ...), owner-confirmed as
+// their own test/dev activity, not representative of what a real member's NFT trading looks like —
+// together these were the overwhelming majority of a demo wallet's NFT cost basis, making the
+// section's realized P&L read as a near-total, misleading loss. Name-pattern matches the exact
+// same SPAM_NAME_PATTERN convention format.js's own isSpamTokenName already uses for fungible
+// tokens (dead/test/token, case-insensitive substring) — PZENS/ETNNS don't match that pattern
+// (neither literally contains those words), so they're an explicit addition, confirmed by the demo
+// wallets' owner to be their own test collections specifically, NOT a general "hide name-service
+// NFTs from every member" product decision — nftPnlService.js itself (the real, live feature) is
+// untouched; this filtering only ever applies inside this demo-only file.
+const DEMO_EXCLUDED_NFT_COLLECTION_NAMES = new Set(["pzens", "etnns"]);
+function isDemoTestNftCollection(name) {
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  return /dead|test|token/.test(lower) || DEMO_EXCLUDED_NFT_COLLECTION_NAMES.has(lower);
+}
+
+/** Re-derives an NFT PnL rollup with the demo's own known test/dev collections excluded — see
+ * DEMO_EXCLUDED_NFT_COLLECTION_NAMES' own comment. Fetches each distinct collection's name/symbol
+ * (getTokenMetadata is already cache-indefinitely, per-address — see its own comment — so this
+ * costs one real lookup per distinct collection, ever, across every demo generation run) and
+ * re-runs buildRollups (the exact same aggregation nftPnlService.js itself uses) over whatever's
+ * left, rather than hand-rolling a second summation. */
+async function excludeTestNftCollections(nftPnl) {
+  if (!nftPnl?.byToken?.length) return nftPnl;
+
+  const collectionAddresses = [...new Set(nftPnl.byToken.map((t) => t.collectionAddress))];
+  const metadataByAddress = new Map(
+    await Promise.all(collectionAddresses.map(async (addr) => [addr, await getTokenMetadata(addr)]))
+  );
+
+  const excludedAddresses = new Set(
+    collectionAddresses.filter((addr) => {
+      const meta = metadataByAddress.get(addr);
+      return isDemoTestNftCollection(meta?.name) || isDemoTestNftCollection(meta?.symbol);
+    })
+  );
+  if (excludedAddresses.size === 0) return nftPnl;
+
+  const byToken = nftPnl.byToken.filter((t) => !excludedAddresses.has(t.collectionAddress));
+  return buildRollups(byToken, nftPnl.unmatchedCount);
+}
 
 let cache = null; // { promise, expiresAt } — promise resolves to the response payload
 
@@ -228,7 +274,7 @@ export async function computeDemoData() {
     v2Positions: lpResults.flatMap((r) => r.v2Positions),
     v3Positions: lpResults.flatMap((r) => r.v3Positions),
   };
-  const nftPnl = combineLiveNftPnlSnapshots(nftSnapshots.filter(Boolean));
+  const nftPnl = await excludeTestNftCollections(combineLiveNftPnlSnapshots(nftSnapshots.filter(Boolean)));
 
   // Whole-portfolio + per-category history — one replayFifoCheckpoints pass per wallet either way
   // (see backfillPnlHistory/backfillCategoryPnlHistory's own comments). One wallet at a time (was
