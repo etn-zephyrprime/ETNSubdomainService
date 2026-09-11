@@ -16,6 +16,12 @@ export const blueGlow = "rgba(0,198,255,0.25)";
 // another accent color in the mix (DashboardNav.jsx's Premium tab is the first user).
 export const gold = "#e8bf4c";
 export const goldGlow = "rgba(232,191,76,0.35)";
+// Same "reserved, not a general accent color" convention as gold above — DashboardNav.jsx's PnL
+// Statement tab is the first user, styled with gold's exact visual treatment (border/background/
+// glow/font-weight pattern) but in silver, so it reads as its own distinct paid feature rather
+// than looking like a second Core Tier entry point.
+export const silver = "#c0c5cc";
+export const silverGlow = "rgba(192,197,204,0.35)";
 export const panel = "#0f0f0f";
 export const panel2 = "#111";
 export const border = "#333";
