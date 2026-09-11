@@ -266,7 +266,13 @@ function DemoPortfolio({ data, onSelectToken }) {
   const visibleTokens = fungibleTokens
     .map((t) => {
       const priceUsd = tokenPrices[t.tokenAddress.toLowerCase()];
-      const amount = parseFloat(ethers.formatUnits(BigInt(t.rawBalance), t.decimals ?? 18));
+      // Number(...) -- t.decimals comes straight from Blockscout's raw JSON (a STRING, e.g. "18"),
+      // unmodified all the way from coreTierDemoRouter.js's getCombinedHoldings. ethers.formatUnits'
+      // second argument only accepts a NUMBER of decimal places or a recognized unit NAME string
+      // ("ether", "gwei", ...) -- confirmed live: passing the string "18" throws "invalid unit"
+      // (silently understandable as "18" isn't a unit name), which crashed this render with no
+      // error boundary anywhere in the app -- a blank/black screen with zero indication why.
+      const amount = parseFloat(ethers.formatUnits(BigInt(t.rawBalance), Number(t.decimals ?? 18)));
       const usdValue = priceUsd != null && Number.isFinite(amount) ? amount * priceUsd : null;
       return { ...t, amount, usdValue };
     })
