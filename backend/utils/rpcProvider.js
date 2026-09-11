@@ -36,9 +36,27 @@ const PRIMARY_COOLDOWN_MS = process.env.RPC_PRIMARY_COOLDOWN_MS
   ? parseInt(process.env.RPC_PRIMARY_COOLDOWN_MS, 10)
   : 60000;
 
+// Bounds how long ANY single RPC call — primary or secondary — can hang before failing out to the
+// other endpoint (or, if both are down, to the caller's own catch/fallback). Confirmed live as a
+// real gap: ethers' own FetchRequest defaults to a 300-SECOND (5 minute) timeout on the primary
+// path, but _sendViaSecondary below used a bare fetch() with no timeout at all — an unresponsive
+// (not just erroring) secondary endpoint could hang a call, and everything awaiting it, forever.
+// Traced to a real symptom: a demo-generation run sat for hours with near-zero CPU use (confirmed
+// via `ps`), and a genuine, reserve-backed LP position silently never made it into a wallet's
+// results — probeV2Pool's own catch swallowed whatever failed here with no trace (see that
+// function's own comment, now logged). 20s comfortably covers a slow-but-live node; anything
+// longer than that on either endpoint is indistinguishable from "not responding" for this app's
+// purposes, and every caller here already has its own catch/fallback for a failed call.
+const RPC_TIMEOUT_MS = process.env.RPC_TIMEOUT_MS ? parseInt(process.env.RPC_TIMEOUT_MS, 10) : 20000;
+
 class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
   constructor(primaryUrl, secondaryUrl, options) {
-    super(primaryUrl, network, options);
+    // A FetchRequest (not a plain string) so .timeout below actually applies — JsonRpcProvider
+    // wraps a bare string URL in `new FetchRequest(url)` itself with no way to configure it
+    // afterward, so the request object has to be built here instead.
+    const primaryRequest = new ethers.FetchRequest(primaryUrl);
+    primaryRequest.timeout = RPC_TIMEOUT_MS;
+    super(primaryRequest, network, options);
     this._secondaryUrl = secondaryUrl;
     this._primaryDownUntil = 0;
   }
@@ -64,6 +82,7 @@ class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(RPC_TIMEOUT_MS), // see RPC_TIMEOUT_MS's own comment — this call had no timeout at all before
     });
     if (!res.ok) {
       if (attempt < 2) {
