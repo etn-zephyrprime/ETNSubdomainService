@@ -137,6 +137,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [setPrimaryLoading, setSetPrimaryLoading] = useState(false);
   const [setPrimaryError, setSetPrimaryError] = useState(null);
   const [setPrimarySuccess, setSetPrimarySuccess] = useState(false);
+  const [clearPrimaryLoading, setClearPrimaryLoading] = useState(false);
+  const [clearPrimaryError, setClearPrimaryError] = useState(null);
+  const [clearPrimarySuccess, setClearPrimarySuccess] = useState(false);
 
   // Forward record — opposite direction from Primary Name above (that's "what name does my
   // wallet show as", this is "what address does this name point to").
@@ -285,6 +288,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPrimaryNameState(null);
     setSetPrimaryError(null);
     setSetPrimarySuccess(false);
+    setClearPrimaryError(null);
+    setClearPrimarySuccess(false);
     setResolvedAddress(null);
     setSetAddrError(null);
     setSetAddrSuccess(false);
@@ -537,6 +542,30 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setSetPrimaryError(err?.reason || err?.message || "Setting primary name failed");
     } finally {
       setSetPrimaryLoading(false);
+    }
+  };
+
+  // Unsets the wallet's primary name entirely — ReverseRegistrar.setName("") is a genuinely
+  // different, valid call from setting it to a real name (see useReverseRecord.js's own comment:
+  // this is the exact same contract function handleSetPrimaryName above uses, just with an empty
+  // string), and the app previously had no UI for it at all — only "set to a specific name",
+  // never "clear". A member with no way to explicitly unset ends up relying on some OTHER app (or
+  // a raw contract call) to do it outside this one, same gap that made an earlier "why does this
+  // wallet's cached primary name not match the live chain" investigation harder to diagnose.
+  const handleClearPrimaryName = async () => {
+    setClearPrimaryError(null);
+    setClearPrimarySuccess(false);
+    setClearPrimaryLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await setReverseName("", signer);
+      setPrimaryNameState(null);
+      setClearPrimarySuccess(true);
+    } catch (err) {
+      console.error("Clearing primary name failed:", err);
+      setClearPrimaryError(err?.reason || err?.message || "Clearing primary name failed");
+    } finally {
+      setClearPrimaryLoading(false);
     }
   };
 
@@ -995,6 +1024,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 ✓ Set as your primary name
               </div>
             )}
+            {clearPrimaryError && (
+              <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{clearPrimaryError}</div>
+            )}
+            {clearPrimarySuccess && (
+              <div style={{ fontSize: 12, color: green, marginBottom: 10 }}>
+                ✓ Primary name cleared
+              </div>
+            )}
 
             <NeonButton
               variant="green"
@@ -1009,6 +1046,21 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 ? "Already Your Primary Name"
                 : `Set as Primary Name`}
             </NeonButton>
+
+            {/* Only shown when there's actually something to clear — no point offering to unset
+                an already-empty primary name. Separate, destructive-styled action (danger variant,
+                not green) so it doesn't read as another flavor of "set" at a glance. */}
+            {primaryName && (
+              <NeonButton
+                variant="danger"
+                onClick={handleClearPrimaryName}
+                disabled={clearPrimaryLoading || primaryNameLoading}
+                loading={clearPrimaryLoading}
+                style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+              >
+                {clearPrimaryLoading ? "Clearing..." : "Clear Primary Name"}
+              </NeonButton>
+            )}
           </div>
 
           <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
