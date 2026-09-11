@@ -18,6 +18,7 @@ import { getWalletAlerts, addWalletAlert, removeWalletAlert, MAX_WALLET_ALERTS_P
 import { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert, MAX_TOKEN_PRICE_ALERTS_PER_OWNER } from "../db/tokenPriceAlerts.js";
 import { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert, MAX_PORTFOLIO_ALERTS_PER_OWNER } from "../db/portfolioAlerts.js";
 import { getDigestSubscription, setDigestEnabled } from "../db/portfolioDigestSubscriptions.js";
+import { getReminderSubscription, setReminderEnabled } from "../db/subscriptionReminderSubscriptions.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
 import { getPortfolioUsdValue } from "./portfolioValuation.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
@@ -338,6 +339,36 @@ router.post("/premium/portfolio-digest", async (req, res) => {
 
   await setDigestEnabled(wallet, enabled);
   const sub = await getDigestSubscription(wallet);
+  res.json(sub);
+});
+
+// ---- Core Tier membership expiry reminders (opt-in toggle, no per-alert config) ----
+
+router.get("/premium/subscription-reminders", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  const sub = await getReminderSubscription(wallet);
+  res.json(sub);
+});
+
+router.post("/premium/subscription-reminders", async (req, res) => {
+  const { wallet, signature, timestamp, enabled } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "enabled must be a boolean" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  await setReminderEnabled(wallet, enabled);
+  const sub = await getReminderSubscription(wallet);
   res.json(sub);
 });
 

@@ -35,6 +35,7 @@ import { startWalletAlertScheduler } from "./utils/walletAlertScheduler.js";
 import { startTokenPriceAlertScheduler } from "./utils/tokenPriceAlertScheduler.js";
 import { startPortfolioAlertScheduler } from "./utils/portfolioAlertScheduler.js";
 import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.js";
+import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
@@ -141,5 +142,6 @@ app.listen(PORT, () => {
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
   safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);
   safeStart("Portfolio digest scheduler", startPortfolioDigestScheduler);
+  safeStart("Subscription reminder scheduler", startSubscriptionReminderScheduler);
   safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);
 });

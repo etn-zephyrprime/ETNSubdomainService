@@ -10,9 +10,16 @@
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getPremiumSubscriptionWatcherState, setPremiumSubscriptionWatcherState } from "../state/premiumSubscriptionWatcherState.js";
-import { upsertMembership } from "../db/premiumMemberships.js";
+import { upsertMembership, getMembership } from "../db/premiumMemberships.js";
 import { createFromPurchase } from "../db/statementRequests.js";
 import { getPool } from "../db/pool.js";
+import { sendTelegramMessage, telegramConfigured } from "./telegramNotifier.js";
+import { createPrimaryNameResolver } from "./primaryNameResolver.js";
+import { EXPLORER_BASE_URL } from "../services/pnlIngestion.js";
+
+// Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS / marketplaceWatcher.js's own constant —
+// needed to resolve a subscriber to a primary name for the group notification below.
+const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 
 // No default — unlike MARKETPLACE_ADDRESS, this contract isn't deployed yet as of this file's
 // introduction, and a scanner silently doing nothing against a wrong/placeholder address would be
@@ -59,11 +66,64 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
   return events;
 }
 
-async function handleMembershipPurchased(event, tier) {
-  const { subscriber, newExpiry } = event.args;
+function formatEtn(wei) {
+  return parseFloat(ethers.formatEther(wei)).toFixed(2);
+}
+
+// Posted to the same fixed group channel every other public Telegram notification in this backend
+// uses (sendTelegramMessage's TELEGRAM_CHAT_ID) — best-effort: a failed post here must never undo
+// the membership write above (already committed by the time this runs) or stop the rest of this
+// poll's events from processing, see handleMembershipPurchased's own try/catch around this call.
+async function notifyMembershipGroup({ subscriber, tier, paid, duration, expiryTimestamp, txHash, isRenewal, resolveDisplayName }) {
+  if (!telegramConfigured()) return;
+
+  const display = await resolveDisplayName(subscriber);
+  const tierLabel = tier === "annual" ? "Annual" : "Monthly";
+  const durationNum = Number(duration);
+  const durationLabel = `${durationNum} ${tier === "annual" ? "year" : "month"}${durationNum === 1 ? "" : "s"}`;
+  const txUrl = `${EXPLORER_BASE_URL}/tx/${txHash}`;
+
+  await sendTelegramMessage(
+    `${isRenewal ? "🔁 *Core Tier Renewal*" : "💳 *New Core Tier Subscriber*"}\n` +
+    `Member: \`${display}\`\n` +
+    `Tier: \`${tierLabel} (${durationLabel})\`\n` +
+    `Paid: \`${formatEtn(paid)} ETN\`\n` +
+    `Now expires: \`${expiryTimestamp.toISOString().slice(0, 10)}\`\n` +
+    `[View Transaction](${txUrl})`
+  );
+}
+
+async function handleMembershipPurchased(event, tier, resolveDisplayName) {
+  const { subscriber, paid, newExpiry } = event.args;
+  const duration = tier === "annual" ? event.args.numYears : event.args.numMonths;
   const expiryTimestamp = new Date(Number(newExpiry) * 1000);
+
+  // Fetched BEFORE the upsert below — whether this tier's column already had a value is exactly
+  // what distinguishes a brand-new subscriber from a renewal for the group notification. A wallet
+  // that already held this tier before (active or lapsed) counts as a renewal; one that never did
+  // is a new subscriber — see this file's own header comment on the two tiers being tracked
+  // independently.
+  const existing = await getMembership(subscriber);
+  const priorExpiry = tier === "annual" ? existing?.annual_expiry : existing?.monthly_expiry;
+  const isRenewal = priorExpiry != null;
+
   await upsertMembership(subscriber, tier, expiryTimestamp, event.transactionHash);
   console.log(`💳 ${tier === "annual" ? "Annual" : "Monthly"} membership purchased: ${subscriber} — now expires ${expiryTimestamp.toISOString()} (tx ${event.transactionHash})`);
+
+  try {
+    await notifyMembershipGroup({
+      subscriber,
+      tier,
+      paid,
+      duration,
+      expiryTimestamp,
+      txHash: event.transactionHash,
+      isRenewal,
+      resolveDisplayName,
+    });
+  } catch (err) {
+    console.warn(`⚠️  Membership group notification failed for ${subscriber}:`, err.message);
+  }
 }
 
 async function handlePnlPeriodPurchased(event) {
@@ -87,7 +147,7 @@ async function handlePnlPeriodPurchased(event) {
 
 let isPolling = false;
 
-async function poll(contract) {
+async function poll(contract, resolveDisplayName) {
   if (isPolling) return;
   isPolling = true;
   try {
@@ -115,9 +175,9 @@ async function poll(contract) {
     for (const event of events) {
       try {
         if (event.eventName === "MembershipPurchased") {
-          await handleMembershipPurchased(event, "monthly");
+          await handleMembershipPurchased(event, "monthly", resolveDisplayName);
         } else if (event.eventName === "AnnualMembershipPurchased") {
-          await handleMembershipPurchased(event, "annual");
+          await handleMembershipPurchased(event, "annual", resolveDisplayName);
         } else if (event.eventName === "PnlPeriodPurchased") {
           await handlePnlPeriodPurchased(event);
         }
@@ -155,8 +215,11 @@ export function startPremiumSubscriptionWatcher() {
 
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const contract = new ethers.Contract(PREMIUM_SUBSCRIPTION_ADDRESS, PREMIUM_SUBSCRIPTION_ABI, provider);
+  // Resolves a subscriber to a primary name for the group notification — same helper/contract
+  // address every other Telegram-posting watcher in this backend uses (see marketplaceWatcher.js).
+  const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   console.log(`💳 Premium subscription watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
-  poll(contract);
-  setInterval(() => poll(contract), POLL_INTERVAL_MS);
+  poll(contract, resolveDisplayName);
+  setInterval(() => poll(contract, resolveDisplayName), POLL_INTERVAL_MS);
 }
