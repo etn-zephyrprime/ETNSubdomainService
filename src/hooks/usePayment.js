@@ -38,11 +38,18 @@ function feeFor(valueWei) {
 export function calculateFeeDisplay(amountStr, decimals = 18) {
   if (!amountStr || Number(amountStr) <= 0) return null;
   try {
-    const value = ethers.parseUnits(amountStr, decimals);
+    // Number(...) -- a caller passing a token's raw Blockscout-JSON decimals (a STRING, e.g. "18")
+    // straight through would otherwise throw here: ethers' parseUnits/formatUnits only accept a
+    // NUMBER of decimal places or a recognized unit name, never a numeric string (confirmed
+    // elsewhere in this app — see CoreTierDemo.jsx's own comment on the exact same shape of bug,
+    // which crashed a render with no try/catch to catch it; this call site already had one, so it
+    // was silently returning null / not crashing, just quietly failing to show the fee preview).
+    const decimalsNum = decimals == null ? 18 : Number(decimals);
+    const value = ethers.parseUnits(amountStr, decimalsNum);
     const fee = feeFor(value);
     return {
-      fee: ethers.formatUnits(fee, decimals),
-      total: ethers.formatUnits(value + fee, decimals),
+      fee: ethers.formatUnits(fee, decimalsNum),
+      total: ethers.formatUnits(value + fee, decimalsNum),
     };
   } catch {
     return null;

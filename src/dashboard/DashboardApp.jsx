@@ -10,6 +10,7 @@ import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
 import TokenDetail from "./components/TokenDetail.jsx";
 import AddressLookup from "./components/AddressLookup.jsx";
 import NameServiceStats from "./components/NameServiceStats.jsx";
+import DashboardErrorBoundary from "./components/DashboardErrorBoundary.jsx";
 // Core Tier's public demo — imported DIRECTLY (not lazily), unlike PortfolioDashboardSection and
 // PremiumDashboardSection below: it has zero wallet-connection dependency (see CoreTierDemoPage.jsx's
 // own header comment for how that's verified), so mounting it doesn't pull the WalletConnect/AppKit
@@ -128,33 +129,39 @@ export default function DashboardApp() {
 
         <DashboardNav active={tab} onChange={handleTabChange} />
 
-        {tab === "overview" && <Overview onSelectAddress={handleSelectAddress} />}
-        {tab === "tokens" && (
-          selectedToken ? (
-            <TokenDetail
-              address={selectedToken}
-              onBack={() => setSelectedToken(null)}
-              onSelectAddress={handleSelectAddress}
-            />
-          ) : (
-            <TokenLeaderboard onSelectToken={setSelectedToken} />
-          )
-        )}
-        {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
-        {tab === "nameservice" && <NameServiceStats />}
-        {tab === "portfolio" && (
-          <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-            <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
-          </Suspense>
-        )}
-        {tab === "demo" && (
-          <CoreTierDemoPage onExitDemo={handleExitDemo} onSelectToken={handleSelectTokenFromAddress} />
-        )}
-        {tab === "premium" && (
-          <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-            <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
-          </Suspense>
-        )}
+        {/* Scoped to just this tab's content, deliberately not the whole page — header/nav/footer
+            outside this boundary stay usable even if one tab's render throws, so a visitor can
+            navigate away from whatever broke instead of losing the entire dashboard. See
+            DashboardErrorBoundary's own header comment for the real incident this was built for. */}
+        <DashboardErrorBoundary key={tab}>
+          {tab === "overview" && <Overview onSelectAddress={handleSelectAddress} />}
+          {tab === "tokens" && (
+            selectedToken ? (
+              <TokenDetail
+                address={selectedToken}
+                onBack={() => setSelectedToken(null)}
+                onSelectAddress={handleSelectAddress}
+              />
+            ) : (
+              <TokenLeaderboard onSelectToken={setSelectedToken} />
+            )
+          )}
+          {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
+          {tab === "nameservice" && <NameServiceStats />}
+          {tab === "portfolio" && (
+            <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
+              <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
+            </Suspense>
+          )}
+          {tab === "demo" && (
+            <CoreTierDemoPage onExitDemo={handleExitDemo} onSelectToken={handleSelectTokenFromAddress} />
+          )}
+          {tab === "premium" && (
+            <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
+              <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
+            </Suspense>
+          )}
+        </DashboardErrorBoundary>
       </div>
 
       <DashboardFooter isMobile={isMobile} />
