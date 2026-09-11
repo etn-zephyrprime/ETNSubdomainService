@@ -123,7 +123,9 @@ app.listen(PORT, () => {
   safeStart("Core Clash swap watcher", startCoreClashSwapWatcher);
   safeStart("Core Clash NFT mint watcher", startCoreClashNftMintWatcher);
   safeStart("Core Clash NFT sale watcher", startCoreClashNftSaleWatcher);
-  safeStart("Core Clash advert scheduler", startCoreClashAdvertScheduler);
+  // SUSPENDED (on request) — commented out, not removed, so it can be turned back on by
+  // uncommenting this line. File/logic untouched; this only stops it from starting at all.
+  // safeStart("Core Clash advert scheduler", startCoreClashAdvertScheduler);
   safeStart("Core Clash drip bot", startCoreClashDripBot);
 
   // Premium Feature #1 (per-wallet PnL statements) — see backend/services/pnlStatementGenerator.js
