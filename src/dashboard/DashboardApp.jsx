@@ -2,7 +2,8 @@ import React, { useState, Suspense, lazy } from "react";
 import DashboardHeader from "./components/DashboardHeader.jsx";
 import CurrencySelector from "./components/CurrencySelector.jsx";
 import { useCurrency } from "./hooks/useCurrency.js";
-import { greenGlow, mutedLight, background } from "./theme.js";
+import { Eye } from "lucide-react";
+import { green, greenGlow, mutedLight, background } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
 import Overview from "./components/Overview.jsx";
@@ -112,15 +113,51 @@ export default function DashboardApp() {
 
       <div style={{ width: "100%", maxWidth: 900 }}>
         <div style={{ marginBottom: 28, textAlign: "center" }}>
-          <div style={{
-            fontFamily: "Orbitron, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-            fontWeight: 700,
-            fontSize: isMobile ? 32 : 48,
-            letterSpacing: 1.5,
-            color: "#fff",
-            textShadow: `0 0 24px ${greenGlow}`,
-          }}>
-            Argus
+          <div style={{ position: "relative", display: "inline-block", padding: "0 28px" }}>
+            {/* Argus Panoptes — the many-eyed giant of Greek myth the name is actually borrowed
+                from, fitting for an all-seeing monitoring dashboard. Scattered rather than
+                symmetric (varied size/rotation/opacity) for an organic "watching from everywhere"
+                feel instead of a tidy row of icons. Purely decorative (aria-hidden) — the name
+                itself is the real content. */}
+            {[
+              { top: -10, left: -6, size: 11, rotate: -18, opacity: 0.85 },
+              { top: 2, left: -26, size: 9, rotate: 8, opacity: 0.55 },
+              { top: 22, left: -18, size: 10, rotate: -6, opacity: 0.65 },
+              { top: -14, left: "38%", size: 9, rotate: 14, opacity: 0.5 },
+              { top: -8, right: -8, size: 12, rotate: 16, opacity: 0.85 },
+              { top: 4, right: -28, size: 9, rotate: -10, opacity: 0.55 },
+              { top: 24, right: -16, size: 10, rotate: 5, opacity: 0.65 },
+              { top: -14, right: "36%", size: 9, rotate: -12, opacity: 0.5 },
+            ].map((e, i) => (
+              <Eye
+                key={i}
+                aria-hidden="true"
+                size={e.size}
+                style={{
+                  position: "absolute",
+                  top: e.top,
+                  left: e.left,
+                  right: e.right,
+                  color: green,
+                  opacity: e.opacity,
+                  transform: `rotate(${e.rotate}deg)`,
+                  filter: `drop-shadow(0 0 3px ${greenGlow})`,
+                }}
+              />
+            ))}
+            <div style={{
+              fontFamily: "Orbitron, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+              fontWeight: 700,
+              fontSize: isMobile ? 32 : 48,
+              letterSpacing: 1.5,
+              color: "#fff",
+              // Layered rather than one soft blur — a tight, bright inner glow plus a wider, softer
+              // halo reads as more defined/intentional than a single large-radius shadow, which
+              // just looks hazy at this font size.
+              textShadow: `0 0 4px #fff, 0 0 10px ${green}, 0 0 26px ${greenGlow}, 0 0 48px ${greenGlow}`,
+            }}>
+              Argus
+            </div>
           </div>
           <div style={{ fontSize: 13, color: mutedLight, marginTop: 12 }}>
             Live Electroneum network stats and wallet lookup, plus multi-wallet portfolio tracking, PnL, and DeFi position monitoring for Core Tier members.
