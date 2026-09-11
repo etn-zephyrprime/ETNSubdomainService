@@ -117,9 +117,15 @@ const selectStyle = { padding: "8px 12px", borderRadius: 10, border: `1px solid 
  * PnL-style computation to protect behind a cache, and no different anonymity story: the real
  * addresses appear in the browser's network requests either way (same as they always have for
  * wallet A specifically), never in anything rendered on screen. */
-function DemoBalanceHistory() {
+function DemoBalanceHistory({ walletFilter }) {
   const { getAddressCoinBalanceHistory } = useBlockscout();
   const { getEtnPriceHistory } = useEtnPriceHistory();
+
+  // This section fetches directly from Blockscout per address (see this function's own header
+  // comment on why) rather than reading coreTierDemoRouter.js's response, so filtering here means
+  // narrowing WHICH addresses get fetched at all, not selecting from an already-fetched combined
+  // result the way DemoPortfolio/DemoPnl/DemoNftPnl do via their own `source` prop.
+  const addresses = walletFilter === "all" ? DEMO_WALLET_ADDRESSES : [DEMO_WALLET_ADDRESSES[Number(walletFilter)]];
 
   const [historiesByAddress, setHistoriesByAddress] = useState({});
   const [error, setError] = useState(null);
@@ -129,9 +135,9 @@ function DemoBalanceHistory() {
 
   useEffect(() => {
     let cancelled = false;
-    setHistoriesByAddress(Object.fromEntries(DEMO_WALLET_ADDRESSES.map((a) => [a, null])));
+    setHistoriesByAddress(Object.fromEntries(addresses.map((a) => [a, null])));
     Promise.all(
-      DEMO_WALLET_ADDRESSES.map((addr) =>
+      addresses.map((addr) =>
         getAddressCoinBalanceHistory(addr)
           .then((res) => [addr, Array.isArray(res?.items) ? res.items : []])
           .catch((err) => {
@@ -143,15 +149,17 @@ function DemoBalanceHistory() {
       if (!cancelled) setHistoriesByAddress(Object.fromEntries(entries));
     });
     return () => { cancelled = true; };
-  }, [getAddressCoinBalanceHistory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getAddressCoinBalanceHistory, walletFilter]);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all(DEMO_WALLET_ADDRESSES.map((addr) => getHistoricalBalance(addr, WINDOW_DAYS).then((v) => [addr, v ?? 0]))).then(
+    Promise.all(addresses.map((addr) => getHistoricalBalance(addr, WINDOW_DAYS).then((v) => [addr, v ?? 0]))).then(
       (entries) => { if (!cancelled) setHistoricalSeeds(Object.fromEntries(entries)); }
     );
     return () => { cancelled = true; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -164,13 +172,14 @@ function DemoBalanceHistory() {
   const priceLookup = useMemo(() => (pricePoints && pricePoints.length > 0 ? buildEtnPriceLookup(pricePoints) : null), [pricePoints]);
   const usdReady = priceLookup != null;
   const showUsd = valueMode === "usd" && usdReady;
-  const loaded = DEMO_WALLET_ADDRESSES.every((a) => historiesByAddress[a] != null);
+  const loaded = addresses.every((a) => historiesByAddress[a] != null);
 
   // Same "raw sparse items + wei seeds in, sparse combined ETN series out" pipeline
   // CoreTierBalanceHistory.jsx's own combinedSparse uses for a real member's multiple tracked
   // wallets — mergeBalanceHistories does the cross-wallet forward-fill+sum itself; it does NOT
   // take pre-densified per-wallet series (that's buildDailySeries' own, separate, single-series job,
-  // applied AFTER merging, not before).
+  // applied AFTER merging, not before). Reduces to a single-wallet pass-through when `addresses` is
+  // just one address (filtered), same function either way.
   function toWeiSeed(etnValue) {
     try {
       return ethers.parseEther((etnValue || 0).toFixed(18));
@@ -179,9 +188,9 @@ function DemoBalanceHistory() {
     }
   }
   const combinedSparse = loaded
-    ? mergeBalanceHistories(DEMO_WALLET_ADDRESSES.map((a) => historiesByAddress[a]), DEMO_WALLET_ADDRESSES.map((a) => toWeiSeed(historicalSeeds[a])))
+    ? mergeBalanceHistories(addresses.map((a) => historiesByAddress[a]), addresses.map((a) => toWeiSeed(historicalSeeds[a])))
     : [];
-  const combinedSeedEtn = DEMO_WALLET_ADDRESSES.reduce((sum, a) => sum + (historicalSeeds[a] || 0), 0);
+  const combinedSeedEtn = addresses.reduce((sum, a) => sum + (historicalSeeds[a] || 0), 0);
   const hasHistory = combinedSparse.length > 0 || combinedSeedEtn > 0;
   const seriesEtn = buildDailySeries(combinedSparse, WINDOW_DAYS, combinedSeedEtn);
   const rawSeries = showUsd ? convertSeriesToUsd(seriesEtn, priceLookup) : seriesEtn;
@@ -217,7 +226,9 @@ function DemoBalanceHistory() {
           </div>
         )}
       </div>
-      <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months, combined across 3 wallets</div>
+      <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>
+        Last 12 months{walletFilter === "all" ? ", combined across 3 wallets" : `, ${WALLET_LABELS[Number(walletFilter)]}`}
+      </div>
       {error ? (
         <div style={{ fontSize: 12, color: errorColor }}>{error}</div>
       ) : !loaded ? (
@@ -236,7 +247,9 @@ function DemoBalanceHistory() {
  * CoreTierPortfolio.jsx's own always-open panel exactly (same figures, same chart, same
  * section order), just built from `data` (coreTierDemoRouter.js's one response) instead of four
  * separate signed requests. */
-function DemoPortfolio({ data, onSelectToken }) {
+function DemoPortfolio({ data, walletFilter, onSelectToken }) {
+  const walletCountLabel = walletFilter === "all" ? "3 demo wallets" : WALLET_LABELS[Number(walletFilter)];
+  const trackedCountLabel = walletFilter === "all" ? "3 tracked wallets" : WALLET_LABELS[Number(walletFilter)];
   const etnUsdPrice = useEtnPrice();
   const { getTokenChart } = useTokenChart();
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
@@ -323,12 +336,12 @@ function DemoPortfolio({ data, onSelectToken }) {
       <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
         <div style={sectionHeaderStyle}>
           Total Portfolio Balance (USD)
-          <InfoTooltip text="Everything this dashboard can price: native ETN, tokens, liquidity positions, and anything staked or farming — added together, across all 3 demo wallets." />
+          <InfoTooltip text={`Everything this dashboard can price: native ETN, tokens, liquidity positions, and anything staked or farming — added together, across ${walletFilter === "all" ? "all 3 demo wallets" : walletCountLabel}.`} />
         </div>
         <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>
           {totalHasUnpriced ? "≈ " : ""}{formatUsdPrice(totalPortfolioUsd)}
         </div>
-        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>ETN + all priced holdings, across 3 tracked wallets</div>
+        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>ETN + all priced holdings, across {trackedCountLabel}</div>
       </div>
 
       <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
@@ -348,7 +361,7 @@ function DemoPortfolio({ data, onSelectToken }) {
           <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{fmtEtn(combinedEtnAmount)}</div>
           {combinedEtnUsd != null && <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedEtnUsd)}</div>}
         </div>
-        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Across 3 tracked wallets</div>
+        <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Across {trackedCountLabel}</div>
       </div>
 
       {data.defiPositions.positions.length > 0 && (
@@ -467,7 +480,7 @@ function DemoPortfolio({ data, onSelectToken }) {
 /** Current Value/Unrealized/Realized, per-wallet breakdown, Current Holdings, Value Over Time
  * chart, and the Liquidity Positions / Staking & Yield Farms category chart+dropdown — same shape
  * CoreTierPnl.jsx renders for a real member, built from `data` instead of a signed request. */
-function DemoPnl({ data, onSelectToken }) {
+function DemoPnl({ data, walletFilter, onSelectToken }) {
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.snapshot.holdings || []).map((h) => h.tokenAddress));
   const [chartMode, setChartMode] = useState("pnl");
   const [pnlSubMode, setPnlSubMode] = useState("combined");
@@ -482,20 +495,28 @@ function DemoPnl({ data, onSelectToken }) {
 
   return (
     <>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
-        <div style={{ fontSize: 10, color: muted, marginBottom: 2 }}>3 wallets combined</div>
-        {data.perWallet.map((w) => (
-          <div key={w.walletIndex} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-            <span style={{ color: mutedLight }}>{WALLET_LABELS[w.walletIndex]}</span>
-            <span style={{ display: "flex", gap: 10 }}>
-              <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
-              <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
-                {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
+      {/* Only meaningful for the combined ("All Wallets") view -- data.perWallet is a top-level-only
+          field (see coreTierDemoRouter.js's own comment), not part of each perWalletBreakdown
+          entry's own shape, so this reads `data.perWallet` correctly only when walletFilter is
+          "all" (data === the unfiltered top-level object in that case). Filtered to one wallet,
+          its own Current Value/PnL just below already IS that one wallet's figures -- a "3 wallets
+          combined" table repeating it back would be redundant, not just inapplicable. */}
+      {walletFilter === "all" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+          <div style={{ fontSize: 10, color: muted, marginBottom: 2 }}>3 wallets combined</div>
+          {data.perWallet.map((w) => (
+            <div key={w.walletIndex} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span style={{ color: mutedLight }}>{WALLET_LABELS[w.walletIndex]}</span>
+              <span style={{ display: "flex", gap: 10 }}>
+                <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(Number(w.currentValueUsd))}</span>
+                <span style={{ color: pnlColor(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd)) }}>
+                  {fmtSigned(Number(w.unrealizedPnlUsd) + Number(w.realizedPnlUsd))}
+                </span>
               </span>
-            </span>
-          </div>
-        ))}
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 12, marginBottom: 20 }}>
         <div>
@@ -642,13 +663,20 @@ export default function CoreTierDemo({ onSelectToken }) {
   const { getDemoPnl } = useCoreTierDemo();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  // "all" | "0" | "1" | "2" -- a wallet INDEX (string, to match <select>/button value conventions),
+  // not an address the way the real page's own walletFilter is: these wallets are anonymous by
+  // design (see DEMO_WALLET_ADDRESSES' own comment), so there's no real address to filter by or
+  // show, only the fixed WALLET_LABELS slots. Same "page-wide filter driving every section
+  // together" spirit as PortfolioDashboardSection.jsx's own walletFilter, just index-keyed.
+  const [walletFilter, setWalletFilter] = useState("all");
 
   useEffect(() => {
     let cancelled = false;
     getDemoPnl()
       // scaleForDisplay applied here, once, right after fetching -- res is the wallets' REAL
       // figures (see coreTierDemoRouter.js/generateDemoSnapshot.js's own comments); everything
-      // downstream (DemoPortfolio/DemoPnl/DemoNftPnl) renders `data` exactly as before, already scaled.
+      // downstream (DemoPortfolio/DemoPnl/DemoNftPnl) renders `data` exactly as before, already
+      // scaled -- including perWalletBreakdown, recursed into the same as every other field.
       .then((res) => { if (!cancelled) setData(scaleForDisplay(res)); })
       .catch((err) => {
         console.error("Demo: failed to load:", err.message);
@@ -656,6 +684,13 @@ export default function CoreTierDemo({ onSelectToken }) {
       });
     return () => { cancelled = true; };
   }, [getDemoPnl]);
+
+  // The one section (DemoPortfolio/DemoPnl/DemoNftPnl) source object every one of them reads
+  // instead of `data` directly -- data.perWalletBreakdown[i] mirrors data's own top-level shape
+  // field-for-field (snapshot/history/categoryHistory/defiPositions/liquidityPositions/nftPnl/
+  // combinedHoldings — see coreTierDemoRouter.js's own comment on why), so switching source is the
+  // ENTIRE filtering mechanism; no section needs its own per-wallet logic.
+  const source = data ? (walletFilter === "all" ? data : data.perWalletBreakdown[Number(walletFilter)]) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -665,20 +700,55 @@ export default function CoreTierDemo({ onSelectToken }) {
         <DashboardPanel><div style={{ fontSize: 12, color: mutedLight }}>Loading demo…</div></DashboardPanel>
       ) : (
         <>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
+              Showing
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button
+                onClick={() => setWalletFilter("all")}
+                style={{
+                  padding: "6px 12px", borderRadius: 8,
+                  border: `1px solid ${walletFilter === "all" ? green : border}`,
+                  background: walletFilter === "all" ? "rgba(24,187,26,0.12)" : panel2,
+                  color: walletFilter === "all" ? green : mutedLight,
+                  fontSize: 11, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                All Wallets
+              </button>
+              {WALLET_LABELS.map((label, i) => (
+                <button
+                  key={label}
+                  onClick={() => setWalletFilter(String(i))}
+                  style={{
+                    padding: "6px 12px", borderRadius: 8,
+                    border: `1px solid ${walletFilter === String(i) ? green : border}`,
+                    background: walletFilter === String(i) ? "rgba(24,187,26,0.12)" : panel2,
+                    color: walletFilter === String(i) ? green : mutedLight,
+                    fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <DashboardPanel>
-            <DemoPortfolio data={data} onSelectToken={onSelectToken} />
+            <DemoPortfolio data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />
           </DashboardPanel>
 
           <CollapsibleCoreTierPanel icon={LineChart} title="Core Tier — Balance History (Demo)">
-            <DemoBalanceHistory />
+            <DemoBalanceHistory walletFilter={walletFilter} />
           </CollapsibleCoreTierPanel>
 
           <CollapsibleCoreTierPanel icon={TrendingUp} title="Core Tier — PnL (Demo)">
-            <DemoPnl data={data} onSelectToken={onSelectToken} />
+            <DemoPnl data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />
           </CollapsibleCoreTierPanel>
 
           <CollapsibleCoreTierPanel icon={ImageIcon} title="Core Tier — NFT PnL (Demo)">
-            <DemoNftPnl data={data} />
+            <DemoNftPnl data={source} />
           </CollapsibleCoreTierPanel>
 
           <DashboardPanel>

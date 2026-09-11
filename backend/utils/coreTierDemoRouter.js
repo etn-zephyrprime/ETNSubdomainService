@@ -189,7 +189,37 @@ async function getCombinedHoldings() {
     }
   }
 
-  return { totalCoinBalance: totalCoinBalance.toString(), tokens: [...tokensByAddress.values()], perWalletTokens: perWallet.map((w) => w.balances) };
+  return {
+    totalCoinBalance: totalCoinBalance.toString(),
+    tokens: [...tokensByAddress.values()],
+    perWalletTokens: perWallet.map((w) => w.balances),
+    // Each wallet's OWN native ETN balance, unsummed -- needed for the per-wallet breakdown (see
+    // buildPerWalletHoldings below), which the combined totalCoinBalance/tokens above can't serve
+    // on their own once a viewer filters down to just one wallet.
+    perWalletCoinBalances: perWallet.map((w) => w.coinBalance),
+  };
+}
+
+/** Turns one wallet's own raw Blockscout token-balances (combinedHoldings.perWalletTokens[i]) into
+ * the exact same { tokenAddress, symbol, name, decimals, rawBalance, heldByCount } shape
+ * getCombinedHoldings' own combined `tokens` list already uses, so DemoPortfolio's rendering code
+ * (fungibleTokens filter, decimals coercion, etc.) works identically whether it's reading the
+ * combined view or one wallet's own filtered breakdown -- never a second, format-diverging path. */
+function buildPerWalletHoldingsTokens(rawBalances) {
+  const tokens = [];
+  for (const tb of rawBalances) {
+    const tokenAddr = tb.token?.address?.toLowerCase();
+    if (!tokenAddr || NFT_TOKEN_TYPES.has(tb.token?.type)) continue;
+    tokens.push({
+      tokenAddress: tokenAddr,
+      symbol: tb.token?.symbol || null,
+      name: tb.token?.name || null,
+      decimals: tb.token?.decimals ?? 18,
+      rawBalance: (tb.value || "0").toString(),
+      heldByCount: 1, // always 1 for a single wallet's own breakdown -- "held by N wallets" is a combined-view-only concept
+    });
+  }
+  return tokens;
 }
 
 // Exported so generateDemoSnapshot.js can run this same computation once, offline, rather than the
@@ -291,16 +321,59 @@ export async function computeDemoData() {
   const sinceDate = new Date(Date.now() - DEMO_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const historyRows = await getPnlSnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, sinceDate);
   const history = combineSnapshotsByDate(historyRows, DEMO_WALLET_ADDRESSES);
+  // combineSnapshotsByDate is generic over however many wallet addresses it's given -- called here
+  // with a SINGLE address and that wallet's own rows (already fetched above, just filtered, no new
+  // query), it trivially reduces to "combine across one wallet", i.e. that wallet's own daily
+  // series. Same reuse for categoryHistory below.
+  const historyByWallet = DEMO_WALLET_ADDRESSES.map((addr) =>
+    combineSnapshotsByDate(historyRows.filter((r) => r.walletAddress === addr), [addr])
+  );
 
   const categoryHistory = {};
+  const categoryHistoryByWallet = DEMO_WALLET_ADDRESSES.map(() => ({}));
   for (const category of Object.values(CATEGORIES)) {
     const rows = await getPnlCategorySnapshotHistory(DEMO_OWNER, DEMO_WALLET_ADDRESSES, category, sinceDate);
     categoryHistory[category] = combineCategorySnapshotsByDate(rows, DEMO_WALLET_ADDRESSES);
+    DEMO_WALLET_ADDRESSES.forEach((addr, i) => {
+      categoryHistoryByWallet[i][category] = combineCategorySnapshotsByDate(rows.filter((r) => r.walletAddress === addr), [addr]);
+    });
   }
+
+  // Full per-wallet breakdown -- everything a viewer filtered down to just ONE demo wallet needs,
+  // in the exact same shape as this function's own combined fields (snapshot/history/
+  // categoryHistory/defiPositions/liquidityPositions/nftPnl/combinedHoldings), just scoped to one
+  // wallet instead of merged across all 3. Built from data already computed above (snapshots/
+  // defiResults/lpResults/nftSnapshots/historyByWallet/categoryHistoryByWallet/
+  // combinedHoldings.perWalletTokens) -- nothing here triggers a single additional RPC/DB/
+  // GeckoTerminal call; it's a reshape, not a recomputation.
+  const perWalletBreakdown = await Promise.all(
+    DEMO_WALLET_ADDRESSES.map(async (addr, i) => ({
+      walletIndex: i,
+      snapshot: snapshots[i],
+      history: historyByWallet[i],
+      categoryHistory: categoryHistoryByWallet[i],
+      defiPositions: { totalUsd: defiResults[i].totalUsd, hasUnpriced: defiResults[i].hasUnpriced, positions: defiResults[i].positions },
+      liquidityPositions: {
+        totalUsd: lpResults[i].totalUsd,
+        hasUnpriced: lpResults[i].hasUnpriced,
+        v2Positions: lpResults[i].v2Positions,
+        v3Positions: lpResults[i].v3Positions,
+      },
+      // Same per-wallet test-collection exclusion as the combined nftPnl above -- a filtered-to-
+      // one-wallet view showing PZENS/ETNNS/test-collection noise the combined view already hides
+      // would be a regression, not just an inconsistency.
+      nftPnl: nftSnapshots[i] ? await excludeTestNftCollections(nftSnapshots[i]) : null,
+      combinedHoldings: {
+        totalCoinBalance: combinedHoldings.perWalletCoinBalances[i],
+        tokens: buildPerWalletHoldingsTokens(combinedHoldings.perWalletTokens[i] || []),
+      },
+    }))
+  );
 
   return {
     snapshot: combined,
     perWallet,
+    perWalletBreakdown,
     history,
     categoryHistory,
     defiPositions,
