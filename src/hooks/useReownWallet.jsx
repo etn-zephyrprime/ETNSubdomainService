@@ -80,7 +80,19 @@ export const appKitModal = createAppKit({
   // flakiness on Android (e.g. reown-com/appkit#4823 — MetaMask's confirmation dialog not
   // appearing after the deep link fires). `true` is also this option's own library default.
   enableInjected: true,
-  allowUnsupportedChain: false,
+  // Was `false` with no documented reason (same situation enableInjected was in above). Electroneum
+  // (chain 52014, our only configured network) isn't pre-added in most general-purpose wallets —
+  // with this `false`, AppKit forces a switch-network requirement into the connection handshake
+  // itself the moment a wallet connects on any other chain, and a wallet that can't fulfill that
+  // (no built-in Electroneum entry) fails the connection outright rather than just connecting on
+  // its current chain — confirmed live: multiple users on different devices/networks/wallets
+  // (SafePal, Zypto) got a connect-time error instead of ever reaching this site with a connected
+  // wallet. `true` removes that forced mid-handshake requirement, which is safe here because
+  // correctness never depended on it in the first place: ensureCorrectNetwork() below already
+  // checks the connected chain and prompts a switch on its own, right before any signing action
+  // actually needs Electroneum specifically — a connect-time success on the wrong chain is exactly
+  // the state that function exists to catch.
+  allowUnsupportedChain: true,
   featuredWalletIds: FEATURED_WALLET_IDS,
   features: {
     analytics: true,
