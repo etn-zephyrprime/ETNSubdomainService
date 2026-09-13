@@ -1,4 +1,6 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- src public index.html vite.config.js package.json package-lock.json vercel.json",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ],
