@@ -11,6 +11,11 @@
 // this one fix instead of each new call site getting its own chance to reintroduce it.
 import { ethers } from "ethers";
 
+// Only used for the owned-but-not-reverse-set fallback below — Blockscout already does the
+// NameWrapper-ownership indexing this needs, so this asks it directly rather than re-deriving
+// ownership from logs/NFT balances ourselves.
+const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
+
 const REVERSE_REGISTRAR_ABI = [
   "function node(address addr) view returns (bytes32)",
   "function defaultResolver() view returns (address)",
@@ -24,9 +29,10 @@ export function shortAddress(address) {
 
 /**
  * Returns an async `resolveDisplayName(addr) -> string` bound to one ReverseRegistrar. Always
- * resolves to a displayable string — the wallet's primary name if it has one set, otherwise
- * `shortAddress(addr)` — so every caller gets "name, falling back to short address" without
- * having to handle the null/error case itself.
+ * resolves to a displayable string — the wallet's primary name if it has one set; failing that,
+ * a name it merely OWNS but never set as primary (via Blockscout's own ownership indexing, see
+ * ownedNameFromBlockscout below); failing that, `shortAddress(addr)` — so every caller gets a
+ * best-effort display name without having to handle the null/error case itself.
  *
  * `defaultResolver()` is a single global value (not address-dependent) that effectively never
  * changes, so it's fetched once and cached for the life of the process — these Telegram bots
@@ -51,16 +57,38 @@ export function createPrimaryNameResolver(provider, reverseRegistrarAddress) {
     return resolverPromise;
   }
 
+  // Fallback for a wallet that OWNS a name but never set it as primary (reverse record) — confirmed
+  // live: a wallet trading on Core Clash showed as a raw address in every Telegram alert despite
+  // owning a name outright, because the reverse lookup above only ever answers "what's set as
+  // primary", never "what does this address own". Blockscout's own address endpoint already
+  // surfaces ownership via `ens_domain_name`, so this asks it directly rather than re-deriving
+  // NameWrapper ownership from logs/balances ourselves. Best-effort like every other lookup here —
+  // a failed/slow Blockscout call just means no fallback, not a broken message.
+  async function ownedNameFromBlockscout(addr) {
+    try {
+      const res = await fetch(`${EXPLORER_BASE_URL}/api/v2/addresses/${addr}`, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.ens_domain_name || null;
+    } catch {
+      return null;
+    }
+  }
+
   return async function resolveDisplayName(addr) {
+    let primaryName = null;
     try {
       const resolver = await getResolver();
-      if (!resolver) return shortAddress(addr);
-      const node = await reverseRegistrar.node(addr);
-      const name = await resolver.name(node);
-      return name || shortAddress(addr);
+      if (resolver) {
+        const node = await reverseRegistrar.node(addr);
+        primaryName = await resolver.name(node);
+      }
     } catch (err) {
       console.warn(`⚠️  Failed to resolve primary name for ${addr}:`, err.message);
-      return shortAddress(addr);
     }
+    if (primaryName) return primaryName;
+
+    const ownedName = await ownedNameFromBlockscout(addr);
+    return ownedName || shortAddress(addr);
   };
 }

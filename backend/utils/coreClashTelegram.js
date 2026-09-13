@@ -59,7 +59,8 @@ async function callTelegramApi(botToken, method, payload) {
 function buildFooter() {
   return (
     `\n\n━━━━━━━━━━━━━━\n` +
-    `🎮 <a href="https://coreclash.planetzephyros.xyz">Play Core Clash</a>\n` +
+    `🌐 <a href="https://nameservice.planetzephyros.xyz">ENS Subdomain Service</a>\n` +
+    `📊 <a href="https://dashboard.planetzephyros.xyz">Argus: Electroneum Dashboard and PnL</a>\n` +
     `🌍 <a href="https://planetetn.org/zephyros">PlanetETN: Planet Zephyros</a>`
   );
 }
