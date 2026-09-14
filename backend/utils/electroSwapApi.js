@@ -33,6 +33,22 @@ const BASE_URL = process.env.ELECTROSWAP_API_BASE_URL || "https://electroswap.io
 const API_KEY = process.env.ELECTROSWAP_API_KEY;
 const CHAIN_ID = 52014; // the only value ElectroSwap's API accepts — Electroneum mainnet
 const FETCH_TIMEOUT_MS = 15000;
+// A real failure here (bad HTTP status, or a network-level exception from fetch itself — timeout,
+// DNS, connection reset) is worth retrying a couple of times before giving up to the on-chain
+// fallback: that fallback reads a live, unprotected spot price (see dexPriceQuote.js's own header
+// comment), which can swing hard for a thin-liquidity pool — confirmed live as the cause of a
+// portfolio digest reporting a huge, spurious day-over-day swing. A momentary ElectroSwap blip
+// shouldn't be what pushes a caller onto that path when the token really does have a good price
+// available a couple of seconds later. Deliberately does NOT apply to "ElectroSwap has no price
+// for this token" — that's a clean 200 with an absent/null entry, never a throw, so it skips
+// retries entirely and falls straight through, same as before this existed (retrying an address
+// ElectroSwap genuinely doesn't index would never produce a different result).
+const MAX_RETRIES = process.env.ELECTROSWAP_MAX_RETRIES ? parseInt(process.env.ELECTROSWAP_MAX_RETRIES, 10) : 2;
+const RETRY_DELAY_MS = process.env.ELECTROSWAP_RETRY_DELAY_MS ? parseInt(process.env.ELECTROSWAP_RETRY_DELAY_MS, 10) : 300;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 // Confirmed live: /prices/{chainId} accepts up to 50 addresses per call (matches the docs' own
 // stated max) — a caller passing more gets chunked into multiple calls here, not one oversized
 // request that would presumably just get rejected or truncated.
@@ -44,15 +60,7 @@ export function isElectroSwapConfigured() {
 
 let loggedMissingKeyOnce = false;
 
-async function callElectroSwapApi(path) {
-  if (!API_KEY) {
-    if (!loggedMissingKeyOnce) {
-      console.log("ℹ️  ELECTROSWAP_API_KEY not set — ElectroSwap pricing disabled, falling back to existing on-chain/GeckoTerminal pricing everywhere it's used.");
-      loggedMissingKeyOnce = true;
-    }
-    return null;
-  }
-
+async function callElectroSwapApiOnce(path) {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { Authorization: `Bearer ${API_KEY}` },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -65,6 +73,30 @@ async function callElectroSwapApi(path) {
     throw new Error(`ElectroSwap API error: ${message}`);
   }
   return json?.data ?? null;
+}
+
+async function callElectroSwapApi(path) {
+  if (!API_KEY) {
+    if (!loggedMissingKeyOnce) {
+      console.log("ℹ️  ELECTROSWAP_API_KEY not set — ElectroSwap pricing disabled, falling back to existing on-chain/GeckoTerminal pricing everywhere it's used.");
+      loggedMissingKeyOnce = true;
+    }
+    return null;
+  }
+
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await callElectroSwapApiOnce(path);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRIES) {
+        console.warn(`⚠️  ElectroSwap API call failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying:`, err.message);
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+  }
+  throw lastErr;
 }
 
 function parsePriceEntry(entry) {
