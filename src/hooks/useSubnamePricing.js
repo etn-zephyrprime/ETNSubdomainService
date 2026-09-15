@@ -137,8 +137,19 @@ export function useSubnamePricing() {
   // the exact bug fixed in PlanetZephyrosSubdomainNameServiceV3's _activationFee. Left stale here
   // after that contract fix meant every quote kept using the old formula, so the "Activate"
   // button sent a value the contract would then reject as insufficient.
+  //
+  // V4 charges 0 for a goldlisted domain regardless of what the bps/floor math comes out to — but
+  // activateDomain still computes that math first, purely for its expiry-check side effect (it
+  // reverts on an already-expired name even when goldlisted), so this mirrors that: still validates
+  // expiry, just skips straight to 0 once that passes rather than doing the bps/floor computation
+  // and the extra rentPrice()/brokerageBps()/minBrokerageFeePerYear() calls it would otherwise need.
+  // Checking goldlisted status up front matters because that floor computation, for a domain with a
+  // genuinely long remaining expiry (the whole reason goldlisting exists — see planetzephyros.etn's
+  // own 100-year registration), comes out to an absurd ~2,500,000 ETN — showing/requiring that here
+  // even though the real on-chain call would actually charge nothing.
   const getActivationFee = useCallback(async (label, node) => {
     const { marketplace, nameWrapper, controller, baseRegistrar } = getReadContracts();
+
     const data = await nameWrapper.getData(node);
     let expiry = data.expiry;
 
@@ -155,6 +166,8 @@ export function useSubnamePricing() {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const remaining = expiry - BigInt(nowSeconds);
     if (remaining <= 0n) throw new Error("Name has expired");
+
+    if (await marketplace.goldlisted(node)) return 0n;
 
     const price = await controller.rentPrice(label, remaining);
     const basePrice = price.base + price.premium;

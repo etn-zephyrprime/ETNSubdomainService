@@ -1199,15 +1199,22 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 <NeonButton
                   variant="dark"
                   onClick={handleActivate}
-                  disabled={activationLoading || !activationFee || baseRegistrarApproved === false}
+                  // activationFee is 0n for a goldlisted domain (see useSubnamePricing.js's
+                  // getActivationFee) — a plain truthiness check treats 0n as "not loaded yet" and
+                  // permanently disables the button / shows "Loading fee..." forever, exactly the
+                  // bug that made a genuinely free activation look stuck. null is the real
+                  // "still loading" state; 0n is a real, final answer.
+                  disabled={activationLoading || activationFee === null || baseRegistrarApproved === false}
                   loading={activationLoading}
                   style={{ width: "100%", justifyContent: "center" }}
                 >
                   {activationLoading
                     ? "Activating..."
-                    : activationFee
-                    ? `Activate (${formatEth(activationFee)} ETN)`
-                    : "Loading fee..."}
+                    : activationFee === null
+                    ? "Loading fee..."
+                    : activationFee === 0n
+                    ? "Activate (Free — Goldlisted)"
+                    : `Activate (${formatEth(activationFee)} ETN)`}
                 </NeonButton>
               </div>
             )}
