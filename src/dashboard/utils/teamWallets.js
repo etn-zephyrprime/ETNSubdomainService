@@ -1,0 +1,34 @@
+// Anyone holding more than 49 of "The Three Graces Of The Sea" (SEAS, an ERC-721 collection at
+// 0x1760321f42A9BE39b39c779D92373769d829ef48) is a confirmed genuine Electroneum team wallet —
+// see that collection's own holders list:
+// https://blockexplorer.electroneum.com/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders
+// Snapshotted 2026-09-15 (11 wallets from that list, >49 SEAS each) plus one additional wallet
+// confirmed separately. This is a point-in-time list, not a live on-chain check — re-verify
+// against that collection's holders if the team's own wallets are ever reorganized. Kept in sync
+// by hand with the backend's own copy (backend/utils/teamWalletsCache.js's TEAM_WALLET_ADDRESSES)
+// — no shared build step between frontend/backend in this repo, same "small per-file lists are
+// fine to drift independently, just keep them in sync by hand" convention this codebase already
+// follows elsewhere (e.g. TOKEN_DECIMALS_BY_ADDRESS). Used two ways here: this static list powers
+// the inline "ETN Team" tag shown wherever the dashboard renders a wallet address (synchronous, no
+// network dependency); TeamWalletsTab.jsx's own balance/movement data comes from the separate,
+// R2-cached backend feed instead (useTeamWallets.js), not from re-deriving anything off this list.
+export const TEAM_WALLET_ADDRESSES = [
+  "0xBdaFE4294F92039CCc2C97C74d046871F0b65BCB",
+  "0xF0E7d64Ede6c56bEa9160E560f602Dd6E409f2cC",
+  "0x4635D3e2d056A428fe32Db124528D74DC529D349",
+  "0xEB258553BCf9134C02543E284671f6b4c48e2a7C",
+  "0xcFb24d4CBAaA5630CBC7a516A6A094A593D624fd",
+  "0xb40b04636D058Da2d10111e50417344479878907",
+  "0x904403D9a0f591AC1cA12acBF8d80DC79b5c7E94",
+  "0xcae0eBB25FdDe03B339B00FA2bdB05b9FE9FC6E0",
+  "0x0bC0Fac6c972C4a0320dA6Ef20aB3526F375784B",
+  "0x1F2407b300a3C768fF4531A751BD59D538e6d20E",
+  "0x32Fd79d48d104c404fCcA35CfCD56Fff77082332",
+  "0xc873974Ec3161b82FB0C28f587c348b00fCebD30",
+];
+
+const TEAM_WALLET_SET = new Set(TEAM_WALLET_ADDRESSES.map((a) => a.toLowerCase()));
+
+export function isTeamWallet(address) {
+  return !!address && TEAM_WALLET_SET.has(address.toLowerCase());
+}

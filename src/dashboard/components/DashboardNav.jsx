@@ -12,6 +12,7 @@ const TABS = [
   { id: "tokens", label: "Tokens" },
   { id: "address", label: "Address Lookup" },
   { id: "nameservice", label: "Name Service" },
+  { id: "team", label: "Team Wallets" },
   { id: "portfolio", label: "Premium - Core Tier", accent: "gold" },
   { id: "premium", label: "PnL Statement", accent: "silver" },
 ];

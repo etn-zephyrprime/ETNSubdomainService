@@ -5,11 +5,13 @@ import { green, mutedLight, muted, panel2, border, error as errorColor } from ".
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, shortHash } from "../utils/format.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import TokenPriceChart from "./TokenPriceChart.jsx";
 import NftSalesChart from "./NftSalesChart.jsx";
 import NeonButton from "../../components/NeonButton.jsx";
+import TeamWalletTag from "./TeamWalletTag.jsx";
 
 const HOLDERS_PAGE_SIZE = 10;
 const MAX_HOLDERS_SHOWN = 25; // matches the existing fetch's own slice cap below
@@ -174,8 +176,9 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
                     onClick={() => onSelectAddress(h.address.hash)}
                     style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "8px 0", borderBottom: `1px solid ${border}`, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
                   >
-                    <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#fff", fontFamily: "monospace" }}>
                       {h.address.ens_domain_name || shortHash(h.address.hash)}
+                      {isTeamWallet(h.address.hash) && <TeamWalletTag style={{ fontSize: 8 }} />}
                     </span>
                     <span style={{ textAlign: "right" }}>
                       <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>

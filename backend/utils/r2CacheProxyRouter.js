@@ -41,6 +41,7 @@ const ALLOWED_FILES = new Set([
   "daily-block-stats.json",
   "hourly-activity.json",
   "validator-rewards.json",
+  "team-wallets.json",
 ]);
 
 // Short in-memory cache — these are the exact same objects R2 itself already serves with

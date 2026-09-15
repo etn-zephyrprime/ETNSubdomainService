@@ -8,9 +8,11 @@ import { usePayment } from "../../hooks/usePayment.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../utils/tokenPriceCache.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
 import TileChart from "./TileChart.jsx";
+import TeamWalletTag from "./TeamWalletTag.jsx";
 
 const inputStyle = {
   width: "100%",
@@ -481,8 +483,11 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       {resolvedAddress && addressInfo && (
         <div>
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>
-              {addressInfo.ens_domain_name || "Wallet"}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>
+                {addressInfo.ens_domain_name || "Wallet"}
+              </div>
+              {isTeamWallet(resolvedAddress) && <TeamWalletTag />}
             </div>
             <a
               href={`${EXPLORER_BASE_URL}/address/${resolvedAddress}`}
