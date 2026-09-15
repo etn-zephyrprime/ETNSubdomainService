@@ -18,10 +18,10 @@ import { createRpcProvider } from "./rpcProvider.js";
 // of truth for their current owner/expiry. This is the dominant RPC cost here and the main thing
 // to revisit (e.g. re-verify on a slower rotating schedule instead of every entry every cycle) if
 // the number of activated domains grows large enough for it to matter.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15873016;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed here to resolve each owner's
 // primary name server-side instead of per-listing in the browser (see useReverseRecord.js, which
@@ -59,7 +59,7 @@ const VERIFY_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
-  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
 ];
 const NAME_WRAPPER_ABI = [
   "function names(bytes32 node) view returns (bytes)",

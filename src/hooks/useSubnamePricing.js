@@ -21,9 +21,12 @@ export function useSubnamePricing() {
     };
   }, []);
 
-  const getSubnamePricePerYear = useCallback(async (parentNode) => {
+  // paymentToken defaults to ETN (address(0)) — V4's subnamePricePerYear is now keyed per
+  // payment token (mapping(bytes32 => mapping(address => uint256))), but this app is ETN-only
+  // for now (Phase 1: point at V4 without exposing the new multi-currency surface yet).
+  const getSubnamePricePerYear = useCallback(async (parentNode, paymentToken = ethers.ZeroAddress) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.subnamePricePerYear(parentNode);
+    return await marketplace.subnamePricePerYear(parentNode, paymentToken);
   }, [getReadContracts]);
 
   const isDomainActivated = useCallback(async (node) => {
@@ -146,12 +149,13 @@ export function useSubnamePricing() {
     }
   }, []);
 
-  const setSubnamePricePerYear = useCallback(async (node, pricePerYearWei, signer) => {
+  // paymentToken defaults to ETN (address(0)) — see getSubnamePricePerYear above.
+  const setSubnamePricePerYear = useCallback(async (node, pricePerYearWei, signer, paymentToken = ethers.ZeroAddress) => {
     setLoading(true);
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.setSubnamePricePerYear(node, pricePerYearWei, { gasLimit: 180000 });
+      const tx = await marketplace.setSubnamePricePerYear(node, paymentToken, pricePerYearWei, { gasLimit: 180000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Setting price failed");
       return { success: true, txHash: tx.hash };

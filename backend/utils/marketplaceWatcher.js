@@ -9,10 +9,13 @@ import { createRpcProvider } from "./rpcProvider.js";
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
 // as the rest of the backend (see scripts/backfillNftImages.js), overridable via env for a
 // different deployment.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+// PlanetZephyrosSubdomainServiceV4 — same defaults as src/config.js's MARKETPLACE_ADDRESS/
+// MARKETPLACE_DEPLOY_BLOCK. The real MARKETPLACE_ADDRESS env var on Render still needs updating
+// to this V4 address for the live backend to actually pick it up.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15873016;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed to resolve buyer/seller/payer
 // addresses to a primary name (see notifyDomainActivated etc. and primaryNameResolver.js).
@@ -45,9 +48,11 @@ const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 
 // indexed-ness must match src/abis/MarketplaceABI.json exactly, same lesson learned building
 // scripts/backfillNftImages.js — get it wrong and ethers silently fails to decode every log.
+// SubnameRegistered gained an indexed `paymentToken` in V4 (multi-currency subname pricing) —
+// DomainActivated/ExistingNameListed/ListingSold are unchanged from V3.
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
-  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
   "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "function burnPool() view returns (uint256)",
@@ -171,7 +176,14 @@ async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
 }
 
 async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName) {
-  const { parentNode, label, buyer, price, burnAmount } = event.args;
+  const { parentNode, label, buyer, paymentToken, price, burnAmount } = event.args;
+  // No ERC20 payment token is whitelisted on V4 yet (Phase 1: this app only ever pays in ETN),
+  // so every real SubnameRegistered right now has paymentToken == address(0). Once Phase 2 adds
+  // multi-currency support this formatting will need a real per-token symbol/decimals lookup
+  // instead of assuming ETN/18-decimals — flag loudly rather than silently mislabel the amount.
+  if (paymentToken !== ethers.ZeroAddress) {
+    console.warn(`⚠️  SubnameRegistered paid in non-ETN token ${paymentToken} — notification will mislabel the amount as ETN`);
+  }
   const domain = decodeDnsName(await nameWrapper.names(parentNode)) || "(unknown)";
   const subname = `${label}.${domain}`;
   const subNode = computeSubnode(parentNode, label);

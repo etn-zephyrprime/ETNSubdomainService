@@ -5,28 +5,39 @@ export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/ele
 export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 
 // Contract addresses
-// Redeployed 2026-08-08 as PlanetZephyrosSubdomainNameServiceV3 — activateDomain's fee
-// calculation now applies the minBrokerageFeePerYear floor (via the same _brokerageFeeFor helper
-// registerName/renewName already used correctly), instead of a bare percentage calc that silently
-// skipped it. Confirmed live on V2: community.etn's activation charged ~2,907 ETN instead of the
-// ~25,000 ETN/year floor — an ~8.6x undercharge that recurred at any duration, not a one-off.
-// All three prior deployments (0xd9BC87b41c8011c9CaEeda91167cacfFD91Cd22c block 15204649;
+// Redeployed 2026-09-15 as PlanetZephyrosSubdomainServiceV4 — multi-currency subname pricing
+// (ETN + any owner-whitelisted ERC20, address(0) = ETN throughout the ABI), a goldlist for
+// activation-fee-exempt domains, and constructor-seeded initial pricing. V3 has no upgrade path
+// (plain Ownable, immutable constructor wiring), so this is a new deployment, not the previous
+// contract's bytecode changing in place — migrateActivation() lets a domain already activated on
+// V3 carry that status over for free, but existing V3 subname prices do NOT carry over
+// automatically; each owner needs to re-call setSubnamePricePerYear on V4 themselves.
+// V3 (0x392fd031910e5D58650160f41a501ccc29B1eD13, block 15207471) is left live on-chain as
+// PlanetZephyrosSubdomainServiceV4's own legacyMarketplace reference, not pointed at by this app
+// anymore. Earlier V3/V2 deployments
+// (0xd9BC87b41c8011c9CaEeda91167cacfFD91Cd22c block 15204649;
 // 0x775c9BF1516811349915fC50E471875252Bb5Ef3 block 15201936;
-// 0x1191C7c0558F52a7282C00Bc477aA16187C1fE64 block 15188489) are left live on-chain, not pointed
-// at anymore.
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+// 0x1191C7c0558F52a7282C00Bc477aA16187C1fE64 block 15188489) are also left live on-chain.
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 // Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
 // unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
 // have a subname price set) start here instead of from genesis. Must be updated alongside
 // MARKETPLACE_ADDRESS on every redeploy.
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
-// Marketplace contract owner — confirmed 2026-08-09 via eth_call to owner() on
-// MARKETPLACE_ADDRESS. Gates the buyBackAndBurn button in BurnPoolCard: that function is
-// onlyOwner on-chain, so anyone else's wallet would just get a revert. Must be kept in sync if
-// ownership is ever transferred (transferOwnership) or the contract is redeployed.
+  : 15873016;
+// Marketplace contract owner — confirmed live via eth_call to owner() on MARKETPLACE_ADDRESS
+// right after the V4 deploy (same address V3 already used, unchanged). Gates the buyBackAndBurn
+// button in BurnPoolCard: that function is onlyOwner on-chain, so anyone else's wallet would just
+// get a revert. Must be kept in sync if ownership is ever transferred (transferOwnership) or the
+// contract is redeployed.
 export const MARKETPLACE_OWNER_ADDRESS = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099";
+// The deprecated V3 marketplace (PlanetZephyrosSubdomainServiceV3) — no longer pointed at for any
+// write, but its totalCoreBurned/sellerAmount history is real lifetime activity that shouldn't
+// vanish from the site's stats just because V4 is a fresh contract starting its own on-chain
+// counters at 0. Lifetime "Total CORE Burned" (useBurnPool.js) reads this contract's
+// totalCoreBurned() too and adds it to V4's own, so the figure shown is V3 + V4, not V4-only.
+export const LEGACY_MARKETPLACE_ADDRESS = import.meta.env.VITE_LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
 // registerName() (via this app) always wraps — the raw ERC721 ends up owned by NameWrapper

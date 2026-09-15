@@ -9,10 +9,10 @@ import { createRpcProvider } from "./rpcProvider.js";
 // and it only grows — every day adds another ~17k blocks/~17 round trips to that scan, forever,
 // for every visitor). Same chain/contract defaults as marketplaceWatcher.js, overridable via env
 // for a different deployment.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15873016;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Deliberately coarser than WATCHER_POLL_INTERVAL_MS (60s) — subname pricing changes far less
 // often than domain activations/registrations, and after the first run this only ever scans the
@@ -32,7 +32,7 @@ const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
 const CACHE_SCHEMA_VERSION = 2;
 
 const MARKETPLACE_ABI = [
-  "event SubnamePricePerYearSet(bytes32 indexed parentNode, uint256 pricePerYear)",
+  "event SubnamePricePerYearSet(bytes32 indexed parentNode, address indexed paymentToken, uint256 pricePerYear)",
 ];
 // Same minimal signature as marketplaceWatcher.js's own copy.
 const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
@@ -143,7 +143,15 @@ async function scanAndPublish(provider, marketplace, nameWrapper) {
     const latestBlock = await provider.getBlockNumber();
     if (fromBlock > latestBlock) return; // already caught up
 
-    const events = await queryLogsChunked(marketplace, marketplace.filters.SubnamePricePerYearSet(), fromBlock, latestBlock);
+    // paymentToken is now an indexed event arg (V4: prices are per-token) — filtered to ETN
+    // (address(0)) so an owner-set ERC20 price never gets folded into this ETN-price cache
+    // (Phase 1 is ETN-only; the published subname-domains.json is consumed as ETN pricing).
+    const events = await queryLogsChunked(
+      marketplace,
+      marketplace.filters.SubnamePricePerYearSet(null, ethers.ZeroAddress),
+      fromBlock,
+      latestBlock
+    );
     // Ascending (block, logIndex) order so "latest price wins" folds correctly regardless of
     // which chunk's request happened to finish first.
     events.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);

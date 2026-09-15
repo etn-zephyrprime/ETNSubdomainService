@@ -24,7 +24,7 @@ import { getState, setState } from "../state/subdomainAdvertState.js";
 import { createAdvertScheduler } from "./advertScheduler.js";
 import { createRpcProvider } from "./rpcProvider.js";
 
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default/override as marketplaceWatcher.js's SITE_URL — every link in these adverts is
 // relative to this.

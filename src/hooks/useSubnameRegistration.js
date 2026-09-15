@@ -99,9 +99,12 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
 // published result instead of running this scan in every visitor's browser.
 async function scanAvailableParentDomainsOnChain({ marketplace, nameWrapper }) {
   const latestBlock = await marketplace.runner.getBlockNumber();
+  // paymentToken is now an indexed event arg (V4: prices are per-token) — filtered to ETN
+  // (address(0)) here so an owner-set ERC20 price never gets conflated with the ETN price this
+  // app displays/quotes against (Phase 1 is ETN-only).
   const events = await queryLogsChunked(
     marketplace,
-    marketplace.filters.SubnamePricePerYearSet(),
+    marketplace.filters.SubnamePricePerYearSet(null, ethers.ZeroAddress),
     MARKETPLACE_DEPLOY_BLOCK,
     latestBlock
   );
@@ -139,14 +142,17 @@ export function useSubnameRegistration() {
     };
   }, []);
 
-  const getSubnamePricePerYear = useCallback(async (parentNode) => {
+  // paymentToken defaults to ETN (address(0)) — V4's subnamePricePerYear/quoteSubname are now
+  // keyed per payment token, but this app is ETN-only for now (Phase 1: point at V4 without
+  // exposing the new multi-currency surface yet).
+  const getSubnamePricePerYear = useCallback(async (parentNode, paymentToken = ethers.ZeroAddress) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.subnamePricePerYear(parentNode);
+    return await marketplace.subnamePricePerYear(parentNode, paymentToken);
   }, [getReadContracts]);
 
-  const quoteSubname = useCallback(async (parentNode, duration) => {
+  const quoteSubname = useCallback(async (parentNode, duration, paymentToken = ethers.ZeroAddress) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.quoteSubname(parentNode, duration);
+    return await marketplace.quoteSubname(parentNode, paymentToken, duration);
   }, [getReadContracts]);
 
   // A subname's expiry can never exceed its parent's — used to filter which duration presets are
@@ -205,7 +211,8 @@ export function useSubnameRegistration() {
     return scanAvailableParentDomainsOnChain(getReadContracts());
   }, [getReadContracts]);
 
-  const registerSubname = useCallback(async (parentNode, label, duration, priceWei, signer) => {
+  // paymentToken defaults to ETN (address(0)) — see getSubnamePricePerYear/quoteSubname above.
+  const registerSubname = useCallback(async (parentNode, label, duration, priceWei, signer, paymentToken = ethers.ZeroAddress) => {
     setLoading(true);
     setError(null);
     try {
@@ -213,7 +220,7 @@ export function useSubnameRegistration() {
       // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
       // this app (registerName ran out of gas at its auto-estimated limit), so writes use a
       // fixed generous limit instead of trusting the wallet's estimate.
-      const tx = await marketplace.registerSubname(parentNode, label, duration, { value: priceWei, gasLimit: 450000 });
+      const tx = await marketplace.registerSubname(parentNode, label, duration, paymentToken, { value: priceWei, gasLimit: 450000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Registration failed");
 

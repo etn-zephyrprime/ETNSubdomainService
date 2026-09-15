@@ -17,7 +17,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 // the connected user's own names), which needs to reflect a just-submitted transaction
 // immediately — a 5-minute-stale R2 cache would be a real regression there. Listings stay a live
 // on-chain read; only the seller-name resolution (the part that was actually broken) moves here.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
