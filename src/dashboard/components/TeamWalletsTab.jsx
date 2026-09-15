@@ -7,6 +7,7 @@ import { EXPLORER_BASE_URL } from "../config.js";
 import { TEAM_WALLET_ADDRESSES } from "../utils/teamWallets.js";
 import StatCard from "./StatCard.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
+import TeamBalanceChart from "./TeamBalanceChart.jsx";
 
 // Re-polls the published cache periodically — backend/utils/teamWalletsCache.js itself only
 // refreshes every 10 minutes by default, so this just needs to be frequent enough to pick up a
@@ -132,6 +133,8 @@ export default function TeamWalletsTab({ onSelectAddress }) {
           sub={updatedAt ? `Updated ${timeAgo(updatedAt)}` : undefined}
         />
       </div>
+
+      <TeamBalanceChart />
 
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
         Wallets
