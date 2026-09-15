@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACES, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACES, CANDIDATE_PAYMENT_TOKENS, RPC_URL } from "../config.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 
 // How far out to set buyBackAndBurn's deadline from the moment the tx is submitted. Generous
@@ -80,10 +80,67 @@ export function useBurnPool() {
     }
   }, []);
 
+  // Returns the amount of `token` currently sitting in the current contract's erc20BurnPool,
+  // awaiting a buyBackAndBurnToken call — the ERC20 counterpart to getBurnPool above. Same
+  // current-contract-only scope (see getBurnPool's own comment): buyBackAndBurnToken only ever
+  // acts on this contract's own pool, never a legacy one.
+  const getErc20BurnPool = useCallback(async (token) => {
+    const marketplace = getReadContract();
+    return await marketplace.erc20BurnPool(token);
+  }, [getReadContract]);
+
+  // Every currency's current burn pool balance in one call — ETN (getBurnPool's own value) plus
+  // every candidate ERC20 payment token (CANDIDATE_PAYMENT_TOKENS, config.js's static list — see
+  // that list's own comment on why it's fine to read straight from it here rather than live-
+  // filtering against whitelistedPaymentTokens first: a de-whitelisted token can still have a
+  // real, non-zero erc20BurnPool balance left over from when it WAS whitelisted, e.g. a subname
+  // sold in it before the owner pulled it — an admin burning down that balance is exactly the
+  // case this needs to keep surfacing regardless of the token's current whitelist status).
+  // Returns every currency (including a zero balance one) — the caller decides what to show/hide.
+  const getAllBurnPools = useCallback(async () => {
+    const [etnAmount, ...tokenAmounts] = await Promise.all([
+      getBurnPool(),
+      ...CANDIDATE_PAYMENT_TOKENS.map((t) => getErc20BurnPool(t.address)),
+    ]);
+    return [
+      { symbol: "ETN", address: ethers.ZeroAddress, decimals: 18, amount: etnAmount },
+      ...CANDIDATE_PAYMENT_TOKENS.map((t, i) => ({ ...t, amount: tokenAmounts[i] })),
+    ];
+  }, [getBurnPool, getErc20BurnPool]);
+
+  // ERC20 counterpart to buyBackAndBurn above — one token at a time (see
+  // PlanetZephyrosSubdomainServiceV5.sol's own comment: each pool needs its own swap path, so
+  // there's no single call that drains every token's pool at once — "batching" this is a UI-level
+  // concern, see BurnPoolCard.jsx's handleBurnAll, not a contract one). Same fixed-gas-limit
+  // reasoning as buyBackAndBurn; sized for the more expensive swap path (V3-pool-first-hop or
+  // 3-hop V2) rather than the cheap CORE-direct-burn fast path, since the caller doesn't need to
+  // know which one a given token will take.
+  const buyBackAndBurnToken = useCallback(async (token, minCoreOutWei, signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+      const deadline = Math.floor(Date.now() / 1000) + DEADLINE_BUFFER_SECONDS;
+      const tx = await marketplace.buyBackAndBurnToken(token, minCoreOutWei, deadline, { gasLimit: 500000 });
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error("Buy back and burn failed");
+      return { success: true, txHash: tx.hash };
+    } catch (err) {
+      console.error("Buy back and burn (token) failed:", err);
+      setError(err?.reason || err?.message || "Buy back and burn failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return {
     getBurnPool,
+    getErc20BurnPool,
+    getAllBurnPools,
     getTotalCoreBurned,
     buyBackAndBurn,
+    buyBackAndBurnToken,
     loading,
     error,
   };
