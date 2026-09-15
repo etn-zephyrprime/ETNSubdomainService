@@ -41,7 +41,13 @@ export async function getNameServiceStatsCache() {
   }
 }
 
-/** Publishes `{ events, floorPriceWei, activeListingsCount, lastScannedBlock, updatedAt }`. */
+/**
+ * Publishes `{ events, floorPriceWei, activeListingsCount, totalSellerRevenueWei,
+ * lastScannedBlocks, schemaVersion, updatedAt }`. lastScannedBlocks is a map of
+ * { [contractAddress]: block } — one entry per source this cache scans (the current marketplace,
+ * every deprecated one, and BaseRegistrar — see nameServiceStatsCache.js's own `sources`), each
+ * with its own deploy block and so its own independent cursor.
+ */
 export async function setNameServiceStatsCache(data) {
   const r2 = getR2Client();
   if (!r2) return;

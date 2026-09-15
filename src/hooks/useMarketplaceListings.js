@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, RPC_URL, r2ProxyUrl } from "../config.js";
+import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACES, NAME_WRAPPER_ADDRESS, RPC_URL, r2ProxyUrl } from "../config.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import { decodeDnsName } from "../utils/ens.js";
@@ -42,8 +42,9 @@ export function useMarketplaceListings() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // marketplaceAddress defaults to V4 (current) — pass LEGACY_MARKETPLACE_ADDRESS to read/write
-  // against the deprecated V3 contract instead (see getActiveListings below, which reads both).
+  // marketplaceAddress defaults to the current contract — pass one of LEGACY_MARKETPLACES'
+  // addresses to read/write against a deprecated contract instead (see getActiveListings below,
+  // which reads all of them).
   const getReadContracts = useCallback((marketplaceAddress = MARKETPLACE_ADDRESS) => ({
     marketplace: new ethers.Contract(marketplaceAddress, MarketplaceABI, readOnlyProvider),
     nameWrapper: new ethers.Contract(NAME_WRAPPER_ADDRESS, NameWrapperABI, readOnlyProvider),
@@ -56,8 +57,8 @@ export function useMarketplaceListings() {
   // tokenId is the node itself cast to uint256 (same convention NameWrapper uses everywhere else
   // in this app), so each active listing's real name is resolved via NameWrapper.names(node).
   //
-  // listExistingName/buyListing/cancelListing are unchanged getters/mutators between V3 and V4
-  // (same selectors), so nextListingId()/listings() decode correctly against either contract with
+  // listExistingName/buyListing/cancelListing are unchanged getters/mutators across V3/V4/V5
+  // (same selectors), so nextListingId()/listings() decode correctly against any of them with
   // this one ABI — no separate legacy ABI needed. Each returned listing carries its own
   // `marketplaceAddress` so buyListing/cancelListing below know which contract to actually call —
   // listingIds are a separate namespace per contract, so blending them into one flat id space
@@ -107,16 +108,15 @@ export function useMarketplaceListings() {
     }));
   }, [getReadContracts]);
 
-  // Merges active listings from V4 (current) and the deprecated V3 contract — a listing created on
-  // V3 and never sold/cancelled is still genuinely live on-chain and still buyable (buyListing
-  // below routes to whichever contract the listing actually came from), so hiding it here would
-  // make a real, currently-purchasable listing invisible on this app's own Marketplace page.
+  // Merges active listings from the current contract and every deprecated one — a listing created
+  // on an old contract and never sold/cancelled is still genuinely live on-chain and still buyable
+  // (buyListing below routes to whichever contract the listing actually came from), so hiding it
+  // here would make a real, currently-purchasable listing invisible on this app's own Marketplace
+  // page.
   const getActiveListings = useCallback(async () => {
-    const [current, legacy] = await Promise.all([
-      getListingsFromContract(MARKETPLACE_ADDRESS),
-      getListingsFromContract(LEGACY_MARKETPLACE_ADDRESS),
-    ]);
-    const merged = [...current, ...legacy];
+    const allAddresses = [MARKETPLACE_ADDRESS, ...LEGACY_MARKETPLACES.map((m) => m.address)];
+    const perContract = await Promise.all(allAddresses.map((addr) => getListingsFromContract(addr)));
+    const merged = perContract.flat();
 
     const sellerPrimaryNames = await fetchSellerPrimaryNames();
     return merged.map((l) => ({ ...l, sellerName: sellerPrimaryNames[l.seller.toLowerCase()] || null }));
@@ -133,9 +133,10 @@ export function useMarketplaceListings() {
   // Lists an already-wrapped name/subname the caller owns for resale. Requires the caller to have
   // already approved the marketplace on NameWrapper (nameWrapper.isApprovedForAll) — the exact
   // same approval useSubnamePricing.js's isMarketplaceApproved/approveMarketplace already handle
-  // for subname-selling, reused as-is rather than duplicated here. Always V4 — there's no reason
-  // to create a brand-new listing on the deprecated V3 contract, unlike buyListing/cancelListing
-  // below which have to be able to target whichever contract an *existing* listing lives on.
+  // for subname-selling, reused as-is rather than duplicated here. Always the current contract —
+  // there's no reason to create a brand-new listing on a deprecated one, unlike buyListing/
+  // cancelListing below which have to be able to target whichever contract an *existing* listing
+  // lives on.
   const listName = useCallback(async (tokenId, priceWei, signer) => {
     setLoading(true);
     setError(null);
@@ -154,10 +155,10 @@ export function useMarketplaceListings() {
     }
   }, []);
 
-  // marketplaceAddress defaults to V4 — pass the listing's own `marketplaceAddress` (from
-  // getActiveListings) explicitly for a listing that came from the deprecated V3 contract, since
-  // listingIds are a separate namespace per contract and calling the wrong one would cancel/pay
-  // for an entirely different (or nonexistent) listing.
+  // marketplaceAddress defaults to the current contract — pass the listing's own
+  // `marketplaceAddress` (from getActiveListings) explicitly for a listing that came from a
+  // deprecated contract, since listingIds are a separate namespace per contract and calling the
+  // wrong one would cancel/pay for an entirely different (or nonexistent) listing.
   const cancelListing = useCallback(async (listingId, signer, marketplaceAddress = MARKETPLACE_ADDRESS) => {
     setLoading(true);
     setError(null);
@@ -178,8 +179,8 @@ export function useMarketplaceListings() {
 
   // Pays exactly the listing's price — the contract enforces msg.value >= price and refunds any
   // excess itself, but this always sends the exact price so there's nothing to refund.
-  // marketplaceAddress defaults to V4 — see cancelListing's comment above for why a legacy V3
-  // listing needs its own marketplaceAddress passed explicitly.
+  // marketplaceAddress defaults to the current contract — see cancelListing's comment above for
+  // why a legacy listing needs its own marketplaceAddress passed explicitly.
   const buyListing = useCallback(async (listingId, priceWei, signer, marketplaceAddress = MARKETPLACE_ADDRESS) => {
     setLoading(true);
     setError(null);

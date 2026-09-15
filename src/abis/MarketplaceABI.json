@@ -49,7 +49,7 @@
             "type": "uint256"
           }
         ],
-        "internalType": "struct PlanetZephyrosSubdomainServiceV4.InitialSubnamePrice[]",
+        "internalType": "struct PlanetZephyrosSubdomainServiceV5.InitialSubnamePrice[]",
         "name": "_initialPricing",
         "type": "tuple[]"
       },
@@ -226,6 +226,31 @@
       }
     ],
     "name": "DomainActivatedWithToken",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "Erc20BurnPoolWithdrawnForManualSwap",
     "type": "event"
   },
   {
@@ -623,6 +648,25 @@
     "type": "event"
   },
   {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "pool",
+        "type": "address"
+      }
+    ],
+    "name": "V3PoolForTokenUpdated",
+    "type": "event"
+  },
+  {
     "inputs": [],
     "name": "BURN_BPS",
     "outputs": [
@@ -982,6 +1026,24 @@
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "originalToken",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "coreAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "depositAndBurnCore",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "bytes32",
         "name": "",
         "type": "bytes32"
@@ -996,6 +1058,29 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int256",
+        "name": "amount0Delta",
+        "type": "int256"
+      },
+      {
+        "internalType": "int256",
+        "name": "amount1Delta",
+        "type": "int256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "electroSwapV3SwapCallback",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -1640,6 +1725,24 @@
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "pool",
+        "type": "address"
+      }
+    ],
+    "name": "setV3PoolForToken",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "bytes32",
         "name": "",
         "type": "bytes32"
@@ -1708,6 +1811,25 @@
         "type": "address"
       }
     ],
+    "name": "v3PoolForToken",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
     "name": "whitelistedPaymentTokens",
     "outputs": [
       {
@@ -1717,6 +1839,29 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "withdrawErc20BurnPoolForManualSwap",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   }
 ]
