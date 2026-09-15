@@ -5,7 +5,7 @@ import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
-import { EXPLORER_BASE_URL } from "../config.js";
+import { EXPLORER_BASE_URL, MARKETPLACE_ADDRESS } from "../config.js";
 
 // Browse/buy screen for the resale marketplace — every active listing on the deployed
 // Marketplace contract's own `listings` mapping, bought atomically via buyListing (payment +
@@ -15,6 +15,11 @@ import { EXPLORER_BASE_URL } from "../config.js";
 export default function Marketplace({ wallet, onBack = null }) {
   const [listings, setListings] = useState(null); // null = loading
   const [listingsError, setListingsError] = useState(null);
+
+  // marketplaceAddress+listingId, not listingId alone — V4 and legacy V3 each number their own
+  // listings starting from 1, so ids alone can collide between the two contracts (used as this
+  // list's React key too, for the same reason).
+  const listingKey = (listing) => `${listing.marketplaceAddress}-${listing.listingId}`;
 
   const [buyingId, setBuyingId] = useState(null);
   const [buyError, setBuyError] = useState(null);
@@ -26,8 +31,18 @@ export default function Marketplace({ wallet, onBack = null }) {
     setListingsError(null);
     try {
       const active = await getActiveListings();
-      // Newest first — nextListingId only ever increases, so a higher listingId is more recent.
-      active.sort((a, b) => b.listingId - a.listingId);
+      // Newest first — nextListingId only ever increases *within a single contract*, so a higher
+      // listingId is more recent there, but getActiveListings now merges V4 with the deprecated V3
+      // contract, and the two have entirely separate listingId sequences (a V3 #50 isn't newer
+      // than a V4 #3). Sorted by contract first (current V4 ahead of legacy V3 — genuinely newer
+      // activity lives there) and by listingId within each, rather than comparing ids across
+      // contracts directly.
+      active.sort((a, b) => {
+        const aCurrent = a.marketplaceAddress === MARKETPLACE_ADDRESS;
+        const bCurrent = b.marketplaceAddress === MARKETPLACE_ADDRESS;
+        if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
+        return b.listingId - a.listingId;
+      });
       setListings(active);
     } catch (err) {
       console.error("Failed to load marketplace listings:", err);
@@ -45,13 +60,17 @@ export default function Marketplace({ wallet, onBack = null }) {
       return;
     }
     setBuyError(null);
-    setBuyingId(listing.listingId);
+    setBuyingId(listingKey(listing));
     try {
       await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
-      const result = await buyListing(listing.listingId, listing.price, signer);
+      const result = await buyListing(listing.listingId, listing.price, signer, listing.marketplaceAddress);
       setSuccess({ name: listing.name, price: listing.price, txHash: result.txHash });
-      setListings((prev) => prev?.filter((l) => l.listingId !== listing.listingId) ?? null);
+      // Matched on marketplaceAddress too, not just listingId — V4 and legacy V3 each number their
+      // own listings starting from 1, so the ids alone can collide between the two contracts.
+      setListings((prev) =>
+        prev?.filter((l) => !(l.listingId === listing.listingId && l.marketplaceAddress === listing.marketplaceAddress)) ?? null
+      );
     } catch (err) {
       console.error("Purchase failed:", err);
       setBuyError(err?.reason || err?.message || "Purchase failed");
@@ -153,7 +172,7 @@ export default function Marketplace({ wallet, onBack = null }) {
             const isOwnListing = wallet.account && listing.seller.toLowerCase() === wallet.account.toLowerCase();
             return (
               <div
-                key={listing.listingId}
+                key={listingKey(listing)}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -188,6 +207,24 @@ export default function Marketplace({ wallet, onBack = null }) {
                         Not activated
                       </span>
                     )}
+                    {listing.marketplaceAddress !== MARKETPLACE_ADDRESS && (
+                      <span
+                        title="Listed on this service's previous (V3) marketplace contract — still a real, live listing, just not the current one"
+                        style={{
+                          flexShrink: 0,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: 0.4,
+                          textTransform: "uppercase",
+                          color: muted,
+                          border: `1px solid ${border}`,
+                          borderRadius: 4,
+                          padding: "2px 5px",
+                        }}
+                      >
+                        Legacy
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: mutedLight, marginTop: 2 }}>
                     Seller {listing.sellerName || `${listing.seller.slice(0, 6)}...${listing.seller.slice(-4)}`}
@@ -203,15 +240,15 @@ export default function Marketplace({ wallet, onBack = null }) {
                   <NeonButton
                     variant={isOwnListing ? "dark" : "green"}
                     onClick={() => handleBuy(listing)}
-                    disabled={isOwnListing || buyingId === listing.listingId}
-                    loading={buyingId === listing.listingId}
+                    disabled={isOwnListing || buyingId === listingKey(listing)}
+                    loading={buyingId === listingKey(listing)}
                     style={{ padding: "8px 14px", fontSize: 12 }}
                   >
                     {isOwnListing
                       ? "Your Listing"
                       : !wallet.isConnected
                       ? "Connect"
-                      : buyingId === listing.listingId
+                      : buyingId === listingKey(listing)
                       ? "Buying..."
                       : "Buy"}
                   </NeonButton>

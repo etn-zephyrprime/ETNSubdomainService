@@ -106,6 +106,15 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [activationLoading, setActivationLoading] = useState(false);
   const [activationError, setActivationError] = useState(null);
 
+  // True when this domain was already activated on the deprecated V3 marketplace but never
+  // migrated to V4 (see useSubnamePricing.js's isDomainActivated) — `activated` is still true in
+  // this case (it's real, already-paid-for activation), but V4's own on-chain state doesn't know
+  // that yet, so the free migrateActivation sync has to run before anything V4 itself gates
+  // (setting a price, a buyer registering a subname) will actually work.
+  const [needsMigration, setNeedsMigration] = useState(false);
+  const [migrationLoading, setMigrationLoading] = useState(false);
+  const [migrationError, setMigrationError] = useState(null);
+
   // Whether the looked-up name currently has a real NameWrapper token to list — true for every
   // activated name (activation always implies wrapped) and every subname (always wrapped at
   // creation, per registerSubname), but also, deliberately, true for a top-level name that's
@@ -183,6 +192,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   } = useRenewal();
   const {
     isDomainActivated,
+    migrateActivation,
     getActivationFee,
     activateDomain,
     isMarketplaceApproved,
@@ -277,6 +287,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setActivated(null);
     setActivationFee(null);
     setActivationError(null);
+    setNeedsMigration(false);
+    setMigrationError(null);
     setBaseRegistrarApproved(null);
     setBaseRegistrarApproveError(null);
     setApproved(null);
@@ -368,8 +380,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
           .finally(() => setRenewQuoteLoading(false));
       }
 
-      const isActivated = await isDomainActivated(domainNode);
+      const { activated: isActivated, needsMigration: domainNeedsMigration } = await isDomainActivated(domainNode);
       setActivated(isActivated);
+      setNeedsMigration(domainNeedsMigration);
 
       // Non-blocking fetch of resale approval + listing status, shared by both an activated name
       // and a wrapped-but-not-yet-activated top-level one below — same pattern as
@@ -469,6 +482,28 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
       setActivationError(err?.reason || err?.message || "Activation failed");
     } finally {
       setActivationLoading(false);
+    }
+  };
+
+  // Free, permissionless sync for a domain already activated on the deprecated V3 marketplace —
+  // see useSubnamePricing.js's isDomainActivated/migrateActivation for why this exists at all.
+  // Re-reads currentPrice after migrating since V4's own subnamePricePerYear for this domain is
+  // whatever it happened to already be (usually still 0/unset — V3 prices don't carry over, see
+  // src/config.js's own note on that), not necessarily what's shown here from a stale check.
+  const handleMigrateActivation = async () => {
+    setMigrationError(null);
+    setMigrationLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      await migrateActivation(node, signer);
+      setNeedsMigration(false);
+      const price = await getSubnamePricePerYear(node);
+      setCurrentPrice(price);
+    } catch (err) {
+      console.error("Activation migration failed:", err);
+      setMigrationError(err?.reason || err?.message || "Migration failed");
+    } finally {
+      setMigrationLoading(false);
     }
   };
 
@@ -647,7 +682,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setCancelListingLoading(true);
     try {
       const signer = await wallet.getSigner();
-      await cancelListing(listing.listingId, signer);
+      await cancelListing(listing.listingId, signer, listing.marketplaceAddress);
       setListing(null);
     } catch (err) {
       console.error("Cancelling listing failed:", err);
@@ -1177,7 +1212,28 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
             )}
 
-            {activated === true && approved === false && (
+            {activated === true && needsMigration === true && (
+              <div>
+                <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
+                  This name was already activated on our previous marketplace contract — sync it
+                  here for free before setting a price (no charge, it's already paid for).
+                </div>
+                {migrationError && (
+                  <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{migrationError}</div>
+                )}
+                <NeonButton
+                  variant="dark"
+                  onClick={handleMigrateActivation}
+                  disabled={migrationLoading}
+                  loading={migrationLoading}
+                  style={{ width: "100%", justifyContent: "center" }}
+                >
+                  {migrationLoading ? "Syncing..." : "Sync Activation (Free)"}
+                </NeonButton>
+              </div>
+            )}
+
+            {activated === true && !needsMigration && approved === false && (
               <div>
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                   Approve the marketplace to create subnames on your behalf when they're purchased.
@@ -1198,7 +1254,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               </div>
             )}
 
-            {activated === true && approved === true && (
+            {activated === true && !needsMigration && approved === true && (
               <div>
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                   {currentPrice && currentPrice > 0n

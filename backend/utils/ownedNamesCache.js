@@ -33,9 +33,17 @@ import { createRpcProvider } from "./rpcProvider.js";
 // transfer never touches the Marketplace contract, so no event here would ever reflect it) — but
 // "activated" status is trusted from DomainActivated alone, not re-checked live, since activation
 // only ever happens through that one event and never reverts once set.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15873016;
+// The deprecated V3 marketplace — a name registered/activated/subname-registered through V3 is
+// still a real wrapped name this wallet owns, and "Manage & Resell"/"Register Subdomain" should
+// still list it even though MARKETPLACE_ADDRESS now points at V4. Scanned alongside V4 on its own
+// cursor, same pattern as activatedDomainsCache.js's own legacy scan.
+const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's ETN_NODE — namehash("etn") — needed to derive a top-level node
@@ -58,10 +66,19 @@ const MAX_BLOCKS_PER_CYCLE = process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE
 // every CACHE_INTERVAL_MS forever: "x.etn" -> "x.etn.etn" -> "x.etn.etn.etn" -> ...). Bumped so
 // existing corrupted v1 cache entries get discarded and rebuilt from a clean full rescan instead
 // of carrying the corruption forward.
-const CACHE_SCHEMA_VERSION = 2;
+// v3: added legacy V3 scanning (see LEGACY_MARKETPLACE_ADDRESS above) alongside V4 — bumped to
+// force a full rebuild from both contracts, same reasoning as activatedDomainsCache.js's own bump.
+const CACHE_SCHEMA_VERSION = 3;
 const VERIFY_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [
+  "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
+  "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+];
+// V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — NameRegistered/DomainActivated
+// are identical.
+const LEGACY_MARKETPLACE_ABI = [
   "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
@@ -171,7 +188,7 @@ async function readCurrentData(nameWrapper, node) {
 
 let isRunning = false;
 
-async function scanAndPublish(marketplace, nameWrapper) {
+async function scanAndPublish(marketplace, legacyMarketplace, nameWrapper) {
   if (isRunning) return;
   isRunning = true;
   try {
@@ -187,21 +204,30 @@ async function scanAndPublish(marketplace, nameWrapper) {
       ])
     );
 
-    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
     const latestBlock = await marketplace.runner.getBlockNumber();
+
+    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
     const toBlock = Math.min(fromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
     const blocksRemainingAfterThisCycle = latestBlock - toBlock;
 
-    if (fromBlock <= latestBlock) {
-      const [registeredEvents, activatedEvents, subnameEvents] = await Promise.all([
-        queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock),
+    // Own cursor for the deprecated V3 contract — see LEGACY_MARKETPLACE_ADDRESS's comment above.
+    const legacyFromBlock = cached?.legacyLastScannedBlock ? cached.legacyLastScannedBlock + 1 : LEGACY_MARKETPLACE_DEPLOY_BLOCK;
+    const legacyToBlock = Math.min(legacyFromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
+
+    if (fromBlock <= latestBlock || legacyFromBlock <= latestBlock) {
+      const [registeredEvents, activatedEvents, subnameEvents, legacyRegisteredEvents, legacyActivatedEvents, legacySubnameEvents] = await Promise.all([
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.NameRegistered(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.DomainActivated(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.SubnameRegistered(), legacyFromBlock, legacyToBlock) : [],
       ]);
 
-      const allEvents = [...registeredEvents, ...activatedEvents, ...subnameEvents].sort(
-        (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
-      );
+      const allEvents = [
+        ...registeredEvents, ...activatedEvents, ...subnameEvents,
+        ...legacyRegisteredEvents, ...legacyActivatedEvents, ...legacySubnameEvents,
+      ].sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
       for (const event of allEvents) {
         if (event.eventName === "NameRegistered") {
@@ -275,12 +301,12 @@ async function scanAndPublish(marketplace, nameWrapper) {
       });
     }
 
-    await setOwnedNamesCache(names, toBlock, CACHE_SCHEMA_VERSION);
+    await setOwnedNamesCache(names, toBlock, CACHE_SCHEMA_VERSION, legacyToBlock);
 
     const backlogNote = blocksRemainingAfterThisCycle > 0
       ? ` (${blocksRemainingAfterThisCycle} block(s) of backlog left — continues next cycle)`
       : "";
-    console.log(`📡 Owned names cache updated — ${names.length} name(s), scanned to block ${toBlock}${backlogNote}`);
+    console.log(`📡 Owned names cache updated — ${names.length} name(s) (V3+V4), scanned to block ${toBlock}${backlogNote} (legacy V3 to ${legacyToBlock})`);
   } catch (err) {
     console.error("⚠️  Owned names cache scan failed:", err.message);
   } finally {
@@ -311,9 +337,10 @@ export function startOwnedNamesCache() {
   // from the start this time rather than as a follow-up fix.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
   console.log(`📡 Owned names cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(marketplace, nameWrapper);
-  setInterval(() => scanAndPublish(marketplace, nameWrapper), CACHE_INTERVAL_MS);
+  scanAndPublish(marketplace, legacyMarketplace, nameWrapper);
+  setInterval(() => scanAndPublish(marketplace, legacyMarketplace, nameWrapper), CACHE_INTERVAL_MS);
 }

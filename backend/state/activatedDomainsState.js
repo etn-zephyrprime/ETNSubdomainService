@@ -53,12 +53,14 @@ export async function getActivatedDomainsCache() {
 }
 
 /**
- * Publishes `{ domains, lastScannedBlock, schemaVersion, updatedAt }`. Short cache lifetime, same
- * as subnameDomainsState.js — ownership/expiry get re-verified every scan cycle (see
- * activatedDomainsCache.js), so a stale CDN copy would show an outdated owner or a "time left"
- * that's already ticked past zero.
+ * Publishes `{ domains, lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt }`.
+ * Short cache lifetime, same as subnameDomainsState.js — ownership/expiry get re-verified every
+ * scan cycle (see activatedDomainsCache.js), so a stale CDN copy would show an outdated owner or a
+ * "time left" that's already ticked past zero. legacyLastScannedBlock tracks the deprecated V3
+ * contract's own scan cursor (see activatedDomainsCache.js's LEGACY_MARKETPLACE_ADDRESS) —
+ * separate from lastScannedBlock (V4's) since the two contracts have different deploy blocks.
  */
-export async function setActivatedDomainsCache(domains, lastScannedBlock, schemaVersion) {
+export async function setActivatedDomainsCache(domains, lastScannedBlock, schemaVersion, legacyLastScannedBlock) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -66,7 +68,7 @@ export async function setActivatedDomainsCache(domains, lastScannedBlock, schema
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ domains, lastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ domains, lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })

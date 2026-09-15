@@ -18,9 +18,18 @@ import { createRpcProvider } from "./rpcProvider.js";
 // of truth for their current owner/expiry. This is the dominant RPC cost here and the main thing
 // to revisit (e.g. re-verify on a slower rotating schedule instead of every entry every cycle) if
 // the number of activated domains grows large enough for it to matter.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15873016;
+// The deprecated V3 marketplace — a domain activated (or a subname registered) on V3 is real
+// lifetime activity that shouldn't vanish from "Activated Domains"/the dashboard's Name Service
+// section just because MARKETPLACE_ADDRESS now points at a fresh V4 contract with no memory of
+// V3's own history. Scanned alongside V4 on its own cursor, same pattern as
+// nameServiceStatsCache.js's own legacy scan.
+const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed here to resolve each owner's
@@ -50,7 +59,9 @@ const CACHE_INTERVAL_MS = process.env.ACTIVATED_DOMAINS_CACHE_INTERVAL_MS
 const MAX_BLOCKS_PER_CYCLE = process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE
   ? parseInt(process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE, 10)
   : 50000;
-const CACHE_SCHEMA_VERSION = 1;
+// v2: added legacy V3 scanning (see LEGACY_MARKETPLACE_ADDRESS above) alongside V4 — bumped to
+// force a full rebuild from both contracts, same reasoning as nameServiceStatsCache.js's v5 bump.
+const CACHE_SCHEMA_VERSION = 2;
 
 // How many getData()/primary-name lookups run at once during the re-verification pass — bounded
 // the same way queryLogsChunked below bounds its own concurrency, so a growing domain count
@@ -58,6 +69,11 @@ const CACHE_SCHEMA_VERSION = 1;
 const VERIFY_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [
+  "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+];
+// V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — DomainActivated is identical.
+const LEGACY_MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
 ];
@@ -202,7 +218,7 @@ async function resolvePrimaryName(reverseRegistrar, resolver, addr) {
 
 let isRunning = false;
 
-async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistrar) {
+async function scanAndPublish(provider, marketplace, legacyMarketplace, nameWrapper, reverseRegistrar) {
   if (isRunning) return; // previous run still in flight — skip this tick
   isRunning = true;
   try {
@@ -218,8 +234,9 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
       ])
     );
 
-    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
     const latestBlock = await provider.getBlockNumber();
+
+    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
     // This cycle's target — the real chain tip, or less if there's more backlog than
     // MAX_BLOCKS_PER_CYCLE allows in one pass (see that constant's comment). Checkpointed as
     // lastScannedBlock below instead of latestBlock, so a capped cycle correctly resumes from
@@ -227,19 +244,30 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
     const toBlock = Math.min(fromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
     const blocksRemainingAfterThisCycle = latestBlock - toBlock;
 
-    if (fromBlock <= latestBlock) {
-      const [activatedEvents, subnameEvents] = await Promise.all([
-        queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock),
+    // Own cursor for the deprecated V3 contract — its whole history is already in the past
+    // relative to V4's deploy block, so this catches up within a few cycles and then just finds
+    // nothing new on every poll after.
+    const legacyFromBlock = cached?.legacyLastScannedBlock ? cached.legacyLastScannedBlock + 1 : LEGACY_MARKETPLACE_DEPLOY_BLOCK;
+    const legacyToBlock = Math.min(legacyFromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
+
+    if (fromBlock <= latestBlock || legacyFromBlock <= latestBlock) {
+      const [activatedEvents, subnameEvents, legacyActivatedEvents, legacySubnameEvents] = await Promise.all([
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.DomainActivated(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.SubnameRegistered(), legacyFromBlock, legacyToBlock) : [],
       ]);
+
+      const allActivatedEvents = [...activatedEvents, ...legacyActivatedEvents];
+      const allSubnameEvents = [...subnameEvents, ...legacySubnameEvents];
 
       // Ascending order so processing reflects on-chain sequence, though it only matters here for
       // consistent logging — unlike subnameDomainsCache.js's price folding, discovery doesn't
       // depend on event order (a node's label/existence doesn't change after the fact).
-      activatedEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
-      subnameEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+      allActivatedEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+      allSubnameEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
-      for (const event of activatedEvents) {
+      for (const event of allActivatedEvents) {
         const { node } = event.args;
         if (domainByNode.has(node)) continue;
 
@@ -252,7 +280,7 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
         }
       }
 
-      for (const event of subnameEvents) {
+      for (const event of allSubnameEvents) {
         const { parentNode, label } = event.args;
         const domain = domainByNode.get(parentNode);
         // A subname of a domain we haven't seen DomainActivated for yet (shouldn't happen under
@@ -331,13 +359,13 @@ async function scanAndPublish(provider, marketplace, nameWrapper, reverseRegistr
       })),
     }));
 
-    await setActivatedDomainsCache(domains, toBlock, CACHE_SCHEMA_VERSION);
+    await setActivatedDomainsCache(domains, toBlock, CACHE_SCHEMA_VERSION, legacyToBlock);
 
     const subnameCount = domains.reduce((sum, d) => sum + d.subnames.length, 0);
     const backlogNote = blocksRemainingAfterThisCycle > 0
       ? ` (${blocksRemainingAfterThisCycle} block(s) of backlog left — continues next cycle)`
       : "";
-    console.log(`📡 Activated domains cache updated — ${domains.length} domain(s), ${subnameCount} subname(s), scanned to block ${toBlock}${backlogNote}`);
+    console.log(`📡 Activated domains cache updated — ${domains.length} domain(s), ${subnameCount} subname(s) (V3+V4), scanned to block ${toBlock}${backlogNote} (legacy V3 to ${legacyToBlock})`);
   } catch (err) {
     console.error("⚠️  Activated domains cache scan failed:", err.message);
   } finally {
@@ -366,10 +394,11 @@ export function startActivatedDomainsCache() {
   // every concurrent call down with it.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const reverseRegistrar = new ethers.Contract(REVERSE_REGISTRAR_ADDRESS, REVERSE_REGISTRAR_ABI, provider);
 
   console.log(`📡 Activated domains cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(provider, marketplace, nameWrapper, reverseRegistrar);
-  setInterval(() => scanAndPublish(provider, marketplace, nameWrapper, reverseRegistrar), CACHE_INTERVAL_MS);
+  scanAndPublish(provider, marketplace, legacyMarketplace, nameWrapper, reverseRegistrar);
+  setInterval(() => scanAndPublish(provider, marketplace, legacyMarketplace, nameWrapper, reverseRegistrar), CACHE_INTERVAL_MS);
 }

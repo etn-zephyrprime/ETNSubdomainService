@@ -17,10 +17,10 @@ import { createRpcProvider } from "./rpcProvider.js";
 // "fine to drift independently" philosophy already established for the several other copies of
 // this helper in this codebase. Keeps this cache's failure/disablement fully decoupled from
 // ownedNamesCache.js's.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15873016;
 // BaseRegistrarImplementation — the canonical, chain-level registrar every .etn top-level domain
 // is minted through, regardless of which frontend/app was used. Added so this tab can show real
 // network-wide registration activity, not just the subset that happened to also flow through this
@@ -33,8 +33,17 @@ const BASE_REGISTRAR_ADDRESS = process.env.BASE_REGISTRAR_ADDRESS || "0x5207496C
 const BASE_REGISTRAR_DEPLOY_BLOCK = process.env.BASE_REGISTRAR_DEPLOY_BLOCK
   ? parseInt(process.env.BASE_REGISTRAR_DEPLOY_BLOCK, 10)
   : 15031631;
-// Earlier of the two — the scan's actual starting point (see the cursor-bootstrap logic below).
-const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_DEPLOY_BLOCK);
+// The deprecated V3 marketplace (PlanetZephyrosSubdomainServiceV3) — MARKETPLACE_ADDRESS now
+// points at V4, a fresh contract with no memory of V3's own history. Scanned here too, on its own
+// cursor, so "Total Domain Revenue" (totalSellerRevenueWei) is genuinely lifetime V3 + V4, not
+// just whatever V4 has produced since its own deploy — same reasoning as useBurnPool.js's
+// getTotalCoreBurned summing both contracts' totalCoreBurned() for the CORE-burned figure.
+const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15207471;
+// Earliest of the three — the scan's actual starting point (see the cursor-bootstrap logic below).
+const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_DEPLOY_BLOCK, LEGACY_MARKETPLACE_DEPLOY_BLOCK);
 // Bumped from the unversioned v1 (Marketplace-only) shape: a cache published before this change
 // already has `lastScannedBlock` advanced past MARKETPLACE_DEPLOY_BLOCK, which would silently
 // skip the entire BaseRegistrar pre-Marketplace block range forever (the cursor logic below only
@@ -49,7 +58,12 @@ const EARLIEST_DEPLOY_BLOCK = Math.min(MARKETPLACE_DEPLOY_BLOCK, BASE_REGISTRAR_
 // dashboard's daily seller-revenue bar chart. Same rescan requirement as v3, for the same reason:
 // an event pushed before this change has no sellerAmountWei field, so the dashboard's per-day sum
 // would silently treat every pre-upgrade sale as $0 revenue without a full rescan.
-const CACHE_SCHEMA_VERSION = 4;
+// v5: MARKETPLACE_ADDRESS switched from V3 to V4 (a fresh contract) and legacy V3 scanning (see
+// LEGACY_MARKETPLACE_ADDRESS above) was added alongside it — forces a full rescan so
+// totalSellerRevenueWei and the event history are rebuilt from both contracts together, instead of
+// carrying forward a running total that (without this bump) would only be v3-through-the-switch
+// plus v4-from-here, silently missing any v3 activity the backend hadn't caught up to scanning yet.
+const CACHE_SCHEMA_VERSION = 5;
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
@@ -66,6 +80,19 @@ const MAX_HISTORY_EVENTS = 2000;
 const TIMESTAMP_CONCURRENCY = 8;
 
 const MARKETPLACE_ABI = [
+  "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
+  "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "function nextListingId() view returns (uint256)",
+  "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
+];
+// V3's SubnameRegistered has no paymentToken (V3 was ETN-only, predating multi-currency pricing)
+// — everything else is identical to MARKETPLACE_ABI above, so decoding V3's raw logs with the V4
+// signature (an extra indexed topic V3 logs don't have) would fail/misdecode. nextListingId/
+// listings ARE still needed here — a V3 listing never sold/cancelled is still real and still
+// buyable (see useMarketplaceListings.js), so the live listings snapshot below reads both.
+const LEGACY_MARKETPLACE_ABI = [
   "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
@@ -162,7 +189,7 @@ async function mapWithConcurrency(items, concurrency, fn) {
 
 let isRunning = false;
 
-async function scanAndPublish(marketplace, baseRegistrar, provider) {
+async function scanAndPublish(marketplace, legacyMarketplace, baseRegistrar, provider) {
   if (isRunning) return;
   isRunning = true;
   try {
@@ -170,30 +197,43 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
     const cached = rawCached?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCached : null;
     const events = Array.isArray(cached?.events) ? cached.events.slice() : [];
     // Lifetime sum of sellerAmount (the contract's own emitted 80% cut — see SELLER_BPS in
-    // PlanetZephyrosSubdomainNameServiceV3.sol, not something this cache recomputes itself) across
-    // every SubnameRegistered and ListingSold ever seen. Deliberately a running total seeded from
-    // the cache, NOT derived by summing the `events` array above — that array is trimmed to
-    // MAX_HISTORY_EVENTS (oldest dropped first), which would silently undercount a lifetime total
-    // once the ecosystem has more sales than that cap. Mirrors the Marketplace contract's own
-    // totalCoreBurned pattern (a running counter, not replayed from history each time) — see
-    // useBurnPool.js's getTotalCoreBurned for the on-chain equivalent of this same idea.
+    // PlanetZephyrosSubdomainServiceV4.sol, not something this cache recomputes itself) across
+    // every SubnameRegistered and ListingSold ever seen, on EITHER the current (V4) or deprecated
+    // (legacy V3) marketplace — see LEGACY_MARKETPLACE_ADDRESS's comment. Deliberately a running
+    // total seeded from the cache, NOT derived by summing the `events` array above — that array is
+    // trimmed to MAX_HISTORY_EVENTS (oldest dropped first), which would silently undercount a
+    // lifetime total once the ecosystem has more sales than that cap. Mirrors the Marketplace
+    // contract's own totalCoreBurned pattern (a running counter, not replayed from history each
+    // time) — see useBurnPool.js's getTotalCoreBurned for the on-chain equivalent of this same idea.
     let totalSellerRevenueWei = BigInt(cached?.totalSellerRevenueWei || "0");
 
-    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : EARLIEST_DEPLOY_BLOCK;
     const latestBlock = await marketplace.runner.getBlockNumber();
+
+    const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : EARLIEST_DEPLOY_BLOCK;
     const toBlock = Math.min(fromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
 
-    if (fromBlock <= latestBlock) {
-      const [registered, activated, subnamesReg, sold, networkRegistered] = await Promise.all([
-        queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock),
-        queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock, toBlock),
-        queryLogsChunked(baseRegistrar, baseRegistrar.filters.NameRegistered(), fromBlock, toBlock),
+    // Own cursor, independent of the main one above — legacy's whole history is already in the
+    // past relative to V4's deploy block, so this catches up within a few cycles and then just
+    // finds nothing new on every poll after, same shape as the main scan hitting the chain tip.
+    const legacyFromBlock = cached?.legacyLastScannedBlock ? cached.legacyLastScannedBlock + 1 : LEGACY_MARKETPLACE_DEPLOY_BLOCK;
+    const legacyToBlock = Math.min(legacyFromBlock + MAX_BLOCKS_PER_CYCLE - 1, latestBlock);
+
+    if (fromBlock <= latestBlock || legacyFromBlock <= latestBlock) {
+      const [registered, activated, subnamesReg, sold, networkRegistered, legacyRegistered, legacyActivated, legacySubnamesReg, legacySold] = await Promise.all([
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock, toBlock) : [],
+        fromBlock <= latestBlock ? queryLogsChunked(baseRegistrar, baseRegistrar.filters.NameRegistered(), fromBlock, toBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.NameRegistered(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.DomainActivated(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.SubnameRegistered(), legacyFromBlock, legacyToBlock) : [],
+        legacyFromBlock <= latestBlock ? queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.ListingSold(), legacyFromBlock, legacyToBlock) : [],
       ]);
-      const allEvents = [...registered, ...activated, ...subnamesReg, ...sold, ...networkRegistered].sort(
-        (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
-      );
+      const allEvents = [
+        ...registered, ...activated, ...subnamesReg, ...sold, ...networkRegistered,
+        ...legacyRegistered, ...legacyActivated, ...legacySubnamesReg, ...legacySold,
+      ].sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
       if (allEvents.length > 0) {
         // Dedup timestamp lookups by block — several events can share a block (e.g. a batch of
@@ -230,6 +270,9 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
           } else if (event.eventName === "DomainActivated") {
             events.push({ type: "domain_activated", timestampMs });
           } else if (event.eventName === "SubnameRegistered") {
+            // event.args.paymentToken (V4) is ignored here — totalSellerRevenueWei assumes every
+            // amount is ETN/18-decimals. Fine while no ERC20 payment token is whitelisted (Phase
+            // 1), but once one is, an ERC20-paid sale would get summed in as if it were ETN.
             events.push({ type: "subname_registered", label: event.args.label, priceWei: event.args.price.toString(), sellerAmountWei: event.args.sellerAmount.toString(), timestampMs });
             totalSellerRevenueWei += event.args.sellerAmount;
           } else if (event.eventName === "ListingSold") {
@@ -254,19 +297,30 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
     // "currently active" from ExistingNameListed/ListingSold/ListingCancelled events would be
     // fragile (reorg edge cases, event-processing-order bugs); reading the contract's own current
     // state directly is what the site's live Marketplace page already trusts.
+    // Merged with the deprecated V3 contract's own live listings — same reasoning as
+    // useMarketplaceListings.js's getActiveListings() on the frontend: a V3 listing never
+    // sold/cancelled is still real and still buyable, so "Active Listings"/"Floor Price" would
+    // undercount and could show a stale, no-longer-lowest price if V3 were left out.
+    async function readActiveListings(contract) {
+      const nextId = await contract.nextListingId();
+      const count = Number(nextId) - 1;
+      if (count <= 0) return [];
+      const ids = Array.from({ length: count }, (_, i) => i + 1);
+      const raw = await mapWithConcurrency(ids, TIMESTAMP_CONCURRENCY, (id) => contract.listings(id));
+      return raw.filter((l) => l.active);
+    }
+
     let floorPriceWei = null;
     let activeListingsCount = 0;
     try {
-      const nextId = await marketplace.nextListingId();
-      const count = Number(nextId) - 1;
-      if (count > 0) {
-        const ids = Array.from({ length: count }, (_, i) => i + 1);
-        const raw = await mapWithConcurrency(ids, TIMESTAMP_CONCURRENCY, (id) => marketplace.listings(id));
-        const active = raw.filter((l) => l.active);
-        activeListingsCount = active.length;
-        if (active.length > 0) {
-          floorPriceWei = active.reduce((min, l) => (l.price < min ? l.price : min), active[0].price).toString();
-        }
+      const [currentActive, legacyActive] = await Promise.all([
+        readActiveListings(marketplace),
+        readActiveListings(legacyMarketplace),
+      ]);
+      const active = [...currentActive, ...legacyActive];
+      activeListingsCount = active.length;
+      if (active.length > 0) {
+        floorPriceWei = active.reduce((min, l) => (l.price < min ? l.price : min), active[0].price).toString();
       }
     } catch (err) {
       console.warn("⚠️  Name Service stats: failed to read live listings snapshot:", err.message);
@@ -278,10 +332,11 @@ async function scanAndPublish(marketplace, baseRegistrar, provider) {
       activeListingsCount,
       totalSellerRevenueWei: totalSellerRevenueWei.toString(),
       lastScannedBlock: toBlock,
+      legacyLastScannedBlock: legacyToBlock,
       schemaVersion: CACHE_SCHEMA_VERSION,
     });
 
-    console.log(`📡 Name Service stats cache updated — ${trimmedEvents.length} event(s) tracked, ${activeListingsCount} active listing(s), ${ethers.formatEther(totalSellerRevenueWei)} ETN lifetime seller revenue, scanned to block ${toBlock}`);
+    console.log(`📡 Name Service stats cache updated — ${trimmedEvents.length} event(s) tracked, ${activeListingsCount} active listing(s), ${ethers.formatEther(totalSellerRevenueWei)} ETN lifetime seller revenue (V3+V4), scanned to block ${toBlock} (legacy V3 to ${legacyToBlock})`);
   } catch (err) {
     console.error("⚠️  Name Service stats scan failed:", err.message);
   } finally {
@@ -302,9 +357,10 @@ export function startNameServiceStatsCache() {
   // batchMaxCount: 1 — same fix as this repo's other per-item-call-heavy caches.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
   const baseRegistrar = new ethers.Contract(BASE_REGISTRAR_ADDRESS, BASE_REGISTRAR_ABI, provider);
 
   console.log(`📡 Name Service stats cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(marketplace, baseRegistrar, provider);
-  setInterval(() => scanAndPublish(marketplace, baseRegistrar, provider), CACHE_INTERVAL_MS);
+  scanAndPublish(marketplace, legacyMarketplace, baseRegistrar, provider);
+  setInterval(() => scanAndPublish(marketplace, legacyMarketplace, baseRegistrar, provider), CACHE_INTERVAL_MS);
 }

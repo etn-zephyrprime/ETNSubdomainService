@@ -24,7 +24,11 @@ import { getState, setState } from "../state/subdomainAdvertState.js";
 import { createAdvertScheduler } from "./advertScheduler.js";
 import { createRpcProvider } from "./rpcProvider.js";
 
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
+// The deprecated V3 marketplace — a V3 listing never sold/cancelled is still real and still
+// buyable (see useMarketplaceListings.js), so the "Marketplace" advert reads both, same as the
+// site's own Marketplace page.
+const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default/override as marketplaceWatcher.js's SITE_URL — every link in these adverts is
 // relative to this.
@@ -129,21 +133,27 @@ async function buildSubnamesAdvert() {
   );
 }
 
-async function buildMarketplaceAdvert(marketplace, nameWrapper) {
+// nextListingId()/listings() are unchanged getters between V3 and V4 (same selectors), so one
+// helper works against either contract instance.
+async function getActiveListings(marketplace) {
   const nextId = await marketplace.nextListingId();
   const count = Number(nextId) - 1;
+  if (count <= 0) return [];
 
+  const ids = Array.from({ length: count }, (_, i) => i + 1);
+  const raw = await mapWithConcurrency(ids, 8, (id) => marketplace.listings(id));
+  return raw.filter((l) => l.active);
+}
+
+async function buildMarketplaceAdvert(marketplace, legacyMarketplace, nameWrapper) {
   const emptyMessage = (
     `🏪 *Marketplace*\n\n` +
     `No active listings right now — check back soon, or list a name of your own!\n\n` +
     `[View Marketplace](${SITE_URL}/marketplace)`
   );
 
-  if (count <= 0) return emptyMessage;
-
-  const ids = Array.from({ length: count }, (_, i) => i + 1);
-  const raw = await mapWithConcurrency(ids, 8, (id) => marketplace.listings(id));
-  const active = raw.filter((l) => l.active);
+  const [current, legacy] = await Promise.all([getActiveListings(marketplace), getActiveListings(legacyMarketplace)]);
+  const active = [...current, ...legacy];
 
   if (active.length === 0) return emptyMessage;
 
@@ -184,6 +194,7 @@ export async function startSubdomainAdvertScheduler() {
 
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
   const start = createAdvertScheduler({
@@ -194,7 +205,7 @@ export async function startSubdomainAdvertScheduler() {
     buildMessage: async (index) => {
       if (index === 0) return buildActivateAdvert();
       if (index === 1) return buildSubnamesAdvert();
-      return buildMarketplaceAdvert(marketplace, nameWrapper);
+      return buildMarketplaceAdvert(marketplace, legacyMarketplace, nameWrapper);
     },
     sendMessage: (text) => sendTelegramMessage(text),
     isConfigured: telegramConfigured,

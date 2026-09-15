@@ -44,8 +44,13 @@ export async function getOwnedNamesCache() {
   }
 }
 
-/** Publishes `{ names: [...], lastScannedBlock, schemaVersion, updatedAt }`. */
-export async function setOwnedNamesCache(names, lastScannedBlock, schemaVersion) {
+/**
+ * Publishes `{ names: [...], lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt }`.
+ * legacyLastScannedBlock tracks the deprecated V3 marketplace's own scan cursor (see
+ * ownedNamesCache.js's LEGACY_MARKETPLACE_ADDRESS) — separate from lastScannedBlock (V4's) since
+ * the two contracts have different deploy blocks.
+ */
+export async function setOwnedNamesCache(names, lastScannedBlock, schemaVersion, legacyLastScannedBlock) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -53,7 +58,7 @@ export async function setOwnedNamesCache(names, lastScannedBlock, schemaVersion)
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ names, lastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ names, lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })
