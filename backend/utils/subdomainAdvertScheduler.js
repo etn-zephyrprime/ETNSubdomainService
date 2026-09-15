@@ -115,6 +115,31 @@ async function mapWithConcurrency(items, concurrency, fn) {
   return results;
 }
 
+const CURRENCY_ROTATION_STATE_KEY = "subnames-currency-rotation";
+
+// Rotates which currency headlines a domain's price in buildSubnamesAdvert when it's priced in
+// more than one — without this, a domain priced in both ETN and a token would show ETN in every
+// single post forever (see the old "prefer ETN, else whatever it IS priced in" comment this
+// replaced), never giving the other currencies it actually accepts any visibility. Advances by 1
+// every time this advert is actually sent — buildMessage only runs at send time, and the
+// "Subnames" advert is one of three in a daily rotation (see advertScheduler.js), so in practice
+// this ticks roughly once a day. Persisted via subdomainAdvertState.js's same getState/setState
+// so the rotation survives restarts/redeploys instead of resetting to 0 (which would just mean
+// "always show ETN first" — see the ordering below) every boot. Falls back to cycle 0 on any
+// read/write failure — a broken rotation is a cosmetic annoyance, not worth failing the advert
+// over.
+async function nextCurrencyRotationCycle() {
+  try {
+    const saved = await getState(CURRENCY_ROTATION_STATE_KEY);
+    const cycle = Number.isInteger(saved?.cycle) ? saved.cycle : 0;
+    await setState(CURRENCY_ROTATION_STATE_KEY, { cycle: cycle + 1 });
+    return cycle;
+  } catch (err) {
+    console.warn("⚠️  Failed to read/advance subnames currency rotation, defaulting to ETN-first:", err.message);
+    return 0;
+  }
+}
+
 function buildActivateAdvert() {
   return (
     `🌐 *Activate Your .etn Domain*\n\n` +
@@ -137,17 +162,27 @@ async function buildSubnamesAdvert() {
 
   // A domain can be priced in several currencies at once (pricesByCurrency — see
   // subnameDomainsCache.js's own header comment) — this advert only has room for one headline
-  // figure per domain, same "prefer ETN, else whatever it IS priced in" choice
-  // SubnameSearch.jsx's own chipPriceLabel makes. Only ETN-priced domains get sorted by price
-  // (comparing raw magnitudes across different currencies/decimals wouldn't mean anything); a
-  // domain priced only in a token is listed after them, in whatever order it was found.
+  // figure per domain. Rather than always defaulting to ETN (which would mean a domain that also
+  // accepts, say, USDC never gets to show that in this promo), the headline currency rotates
+  // across successive posts — see nextCurrencyRotationCycle above. ETN is still ordered first
+  // within each domain's own currency list when present, so cycle 0 (and any brand-new domain
+  // with only one currency) shows the same ETN-preferred figure the old single-currency version
+  // did; tokens follow in a stable (sorted-by-address) order so the rotation is deterministic
+  // rather than jumping around based on on-chain event ordering.
+  const cycle = await nextCurrencyRotationCycle();
+
   const withHeadline = domains.map((d) => {
     const currencies = Object.keys(d.pricesByCurrency || {});
-    const isEtn = currencies.includes(ethers.ZeroAddress);
-    const primary = isEtn ? ethers.ZeroAddress : currencies[0];
+    if (currencies.length === 0) return null;
+    const ordered = [
+      ...(currencies.includes(ethers.ZeroAddress) ? [ethers.ZeroAddress] : []),
+      ...currencies.filter((c) => c !== ethers.ZeroAddress).sort(),
+    ];
+    const primary = ordered[cycle % ordered.length];
+    const isEtn = primary === ethers.ZeroAddress;
     const token = TOKEN_DECIMALS_BY_ADDRESS[primary] || { symbol: "?", decimals: 18 };
     return { ...d, isEtn, headlinePriceWei: d.pricesByCurrency?.[primary], headlineSymbol: isEtn ? "ETN" : token.symbol, headlineDecimals: token.decimals };
-  }).filter((d) => d.headlinePriceWei != null);
+  }).filter((d) => d && d.headlinePriceWei != null);
 
   const sorted = [
     ...withHeadline.filter((d) => d.isEtn).sort((a, b) => (BigInt(a.headlinePriceWei) < BigInt(b.headlinePriceWei) ? -1 : 1)),
