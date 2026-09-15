@@ -97,33 +97,60 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
 // the event — SubnamePricePerYearSet only carries the hashed node. Only reached as a fallback now
 // (see getAvailableParentDomains) — the normal path fetches backend/utils/subnameDomainsCache.js's
 // published result instead of running this scan in every visitor's browser.
+//
+// No paymentToken filter — mirrors subnameDomainsCache.js's own multi-currency scan, so this
+// fallback returns the same shape (pricesByCurrency, not a single ETN-only pricePerYear) the
+// published cache does; a caller shouldn't be able to tell which path actually served a given
+// result. Deliberately does NOT live-check whitelistedPaymentTokens the way the backend cache
+// does (that's an extra RPC round trip per unique token, only worth paying once server-side, not
+// once per fallback-triggering visitor) — a de-whitelisted token's stale price could theoretically
+// still show up here until this scan's history naturally aged past it, a narrower version of the
+// same "fine to be slower/less polished on the fallback path" tradeoff this function already
+// accepts everywhere else.
 async function scanAvailableParentDomainsOnChain({ marketplace, nameWrapper }) {
   const latestBlock = await marketplace.runner.getBlockNumber();
-  // paymentToken is now an indexed event arg (V4: prices are per-token) — filtered to ETN
-  // (address(0)) here so an owner-set ERC20 price never gets conflated with the ETN price this
-  // app displays/quotes against (Phase 1 is ETN-only).
   const events = await queryLogsChunked(
     marketplace,
-    marketplace.filters.SubnamePricePerYearSet(null, ethers.ZeroAddress),
+    marketplace.filters.SubnamePricePerYearSet(),
     MARKETPLACE_DEPLOY_BLOCK,
     latestBlock
   );
 
   // Ascending (block, logIndex) order — queryLogsChunked's chunks are reassembled in block order
-  // regardless of completion timing, so a plain overwrite keeps each node's latest rate, including
-  // 0 for domains that turned subname sales back off.
-  const latestPriceByNode = new Map();
+  // regardless of completion timing, so a plain overwrite keeps each (node, currency) pair's
+  // latest rate, including 0 for a currency that was turned back off.
+  events.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+
+  // node -> { [tokenAddress]: pricePerYear (bigint) }
+  const pricesByNode = new Map();
   for (const event of events) {
-    latestPriceByNode.set(event.args.parentNode, event.args.pricePerYear);
+    const { parentNode, paymentToken, pricePerYear } = event.args;
+    let prices = pricesByNode.get(parentNode);
+    if (!prices) {
+      prices = new Map();
+      pricesByNode.set(parentNode, prices);
+    }
+    if (pricePerYear === 0n) {
+      prices.delete(paymentToken);
+    } else {
+      prices.set(paymentToken, pricePerYear);
+    }
   }
 
-  const activeNodes = [...latestPriceByNode.entries()].filter(([, pricePerYear]) => pricePerYear > 0n);
+  const activeNodes = [...pricesByNode.entries()].filter(([, prices]) => prices.size > 0);
 
   const domains = await Promise.all(
-    activeNodes.map(async ([node, pricePerYear]) => {
+    activeNodes.map(async ([node, prices]) => {
       const encoded = await nameWrapper.names(node);
       const label = decodeFirstLabel(encoded);
-      return label ? { label, node, pricePerYear } : null;
+      if (!label) return null;
+      // Real bigints, not stringified — unlike subnameDomainsCache.js's own published cache
+      // (which has to serialize through JSON), this function's return value goes straight to the
+      // caller with no re-conversion step, so getAvailableParentDomains' own BigInt(...) pass
+      // (only applied to the JSON-cache path) must never run against this one — see that
+      // function's own comment.
+      const pricesByCurrency = Object.fromEntries([...prices.entries()]);
+      return { label, node, pricesByCurrency };
     })
   );
 
@@ -201,7 +228,15 @@ export function useSubnameRegistration() {
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data?.domains)) {
-          return data.domains.map((d) => ({ ...d, pricePerYear: BigInt(d.pricePerYear) }));
+          // pricesByCurrency's values arrive as strings (plain JSON has no bigint) — convert each
+          // one back to a real bigint, same as the single-value pricePerYear conversion this used
+          // to do before pricing became per-currency.
+          return data.domains.map((d) => ({
+            ...d,
+            pricesByCurrency: Object.fromEntries(
+              Object.entries(d.pricesByCurrency || {}).map(([token, price]) => [token, BigInt(price)])
+            ),
+          }));
         }
       }
     } catch (err) {

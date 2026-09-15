@@ -31,12 +31,18 @@ const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
 // v3: MARKETPLACE_ADDRESS moved from V4 to V5 (a fresh contract, lower block number than the old
 // cache's already-advanced lastScannedBlock) — without a bump, the stale cursor would read as
 // "already past V5's own deploy block", so this would silently stop finding ANY of V5's real
-// SubnamePricePerYearSet events instead of rescanning from V5's actual start. Not meant to be
-// bumped routinely — only when a past scan's correctness is actually in question, same as v2.
-const CACHE_SCHEMA_VERSION = 3;
+// SubnamePricePerYearSet events instead of rescanning from V5's actual start.
+// v4: each domain entry's shape changed from a single `pricePerYear` (ETN-only, the event filter
+// used to hard-code paymentToken === address(0)) to `pricesByCurrency` (a map of every currency
+// the domain is actually priced in) — a v3 cache's entries are the old shape and would break every
+// consumer expecting the new one, so this forces a clean rebuild rather than trying to migrate the
+// shape in place. Not meant to be bumped routinely — only when a past scan's correctness or shape
+// is actually in question, same as v2/v3.
+const CACHE_SCHEMA_VERSION = 4;
 
 const MARKETPLACE_ABI = [
   "event SubnamePricePerYearSet(bytes32 indexed parentNode, address indexed paymentToken, uint256 pricePerYear)",
+  "function whitelistedPaymentTokens(address) view returns (bool)",
 ];
 // Same minimal signature as marketplaceWatcher.js's own copy.
 const NAME_WRAPPER_ABI = ["function names(bytes32 node) view returns (bytes)"];
@@ -141,36 +147,44 @@ async function scanAndPublish(provider, marketplace, nameWrapper) {
     const rawCache = await getSubnameDomainsCache();
     // Discard anything published under an older schema version — see CACHE_SCHEMA_VERSION above.
     const cached = rawCache?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCache : null;
-    const domainByNode = new Map((cached?.domains || []).map((d) => [d.node, d]));
+    // node -> { label, pricesByCurrency: { [tokenAddress]: pricePerYearString } } — carried
+    // forward from the previous publish so an already-known domain/currency isn't lost, only
+    // ever updated by a newer event for that same (node, currency) pair.
+    const domainByNode = new Map(
+      (cached?.domains || []).map((d) => [d.node, { label: d.label, pricesByCurrency: { ...d.pricesByCurrency } }])
+    );
     const fromBlock = cached?.lastScannedBlock ? cached.lastScannedBlock + 1 : MARKETPLACE_DEPLOY_BLOCK;
 
     const latestBlock = await provider.getBlockNumber();
     if (fromBlock > latestBlock) return; // already caught up
 
-    // paymentToken is now an indexed event arg (V4: prices are per-token) — filtered to ETN
-    // (address(0)) so an owner-set ERC20 price never gets folded into this ETN-price cache
-    // (Phase 1 is ETN-only; the published subname-domains.json is consumed as ETN pricing).
+    // No paymentToken filter — unlike the ETN-only Phase 1 version of this cache, every
+    // currency's price-set events are scanned, so a domain can be published as for-sale in
+    // several currencies at once (exactly what setSubnamePricePerYear itself allows on-chain).
     const events = await queryLogsChunked(
       marketplace,
-      marketplace.filters.SubnamePricePerYearSet(null, ethers.ZeroAddress),
+      marketplace.filters.SubnamePricePerYearSet(),
       fromBlock,
       latestBlock
     );
-    // Ascending (block, logIndex) order so "latest price wins" folds correctly regardless of
-    // which chunk's request happened to finish first.
+    // Ascending (block, logIndex) order so "latest price wins" folds correctly per (node,
+    // currency) pair, regardless of which chunk's request happened to finish first.
     events.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
     for (const event of events) {
-      const { parentNode, pricePerYear } = event.args;
+      const { parentNode, paymentToken, pricePerYear } = event.args;
+
       if (pricePerYear === 0n) {
-        domainByNode.delete(parentNode);
+        // Only this ONE currency was turned off — a domain still for sale in any other currency
+        // stays published; the domain entry itself is only dropped later, once (and if) it has
+        // no currencies left at all.
+        delete domainByNode.get(parentNode)?.pricesByCurrency?.[paymentToken];
         continue;
       }
 
-      // Reuse the already-known label if we've seen this node active before — a name's label
-      // never changes once set, so no need to re-decode it on every price update.
-      let label = domainByNode.get(parentNode)?.label;
-      if (!label) {
+      let domain = domainByNode.get(parentNode);
+      if (!domain) {
+        let label;
         try {
           label = decodeFirstLabel(await nameWrapper.names(parentNode));
         } catch (err) {
@@ -178,13 +192,49 @@ async function scanAndPublish(provider, marketplace, nameWrapper) {
           continue; // don't publish a domain we can't show a name for
         }
         if (!label) continue;
+        domain = { label, pricesByCurrency: {} };
+        domainByNode.set(parentNode, domain);
       }
 
-      domainByNode.set(parentNode, { label, node: parentNode, pricePerYear: pricePerYear.toString() });
+      domain.pricesByCurrency[paymentToken] = pricePerYear.toString();
     }
 
-    await setSubnameDomainsCache([...domainByNode.values()], latestBlock, CACHE_SCHEMA_VERSION);
-    console.log(`📡 Subname domains cache updated — ${domainByNode.size} domain(s) selling subnames, scanned to block ${latestBlock}`);
+    // Live-verify every non-ETN currency still whitelisted — a token the owner has since
+    // de-whitelisted would otherwise keep showing here with a stale price that reverts
+    // ("Token not whitelisted") the moment a buyer actually tries to register in it. ETN
+    // (address(0)) is always implicitly valid and never appears in this mapping, so it's the
+    // only currency skipped here rather than checked.
+    const allTokens = new Set();
+    for (const domain of domainByNode.values()) {
+      for (const token of Object.keys(domain.pricesByCurrency)) {
+        if (token !== ethers.ZeroAddress) allTokens.add(token);
+      }
+    }
+    const whitelistedByToken = new Map();
+    await Promise.all([...allTokens].map(async (token) => {
+      try {
+        whitelistedByToken.set(token, await marketplace.whitelistedPaymentTokens(token));
+      } catch (err) {
+        console.warn(`⚠️  Couldn't verify whitelist status for ${token}, excluding it to be safe:`, err.message);
+        whitelistedByToken.set(token, false);
+      }
+    }));
+
+    for (const [node, domain] of [...domainByNode.entries()]) {
+      for (const token of Object.keys(domain.pricesByCurrency)) {
+        if (token !== ethers.ZeroAddress && !whitelistedByToken.get(token)) {
+          delete domain.pricesByCurrency[token];
+        }
+      }
+      // A domain that's ended up with no currencies left at all (every one turned off, or every
+      // ERC20 it was priced in has since been de-whitelisted, and it was never priced in ETN)
+      // isn't for sale in anything — drop it entirely rather than publish an empty listing.
+      if (Object.keys(domain.pricesByCurrency).length === 0) domainByNode.delete(node);
+    }
+
+    const domains = [...domainByNode.entries()].map(([node, domain]) => ({ node, ...domain }));
+    await setSubnameDomainsCache(domains, latestBlock, CACHE_SCHEMA_VERSION);
+    console.log(`📡 Subname domains cache updated — ${domains.length} domain(s) selling subnames, scanned to block ${latestBlock}`);
   } catch (err) {
     console.error("⚠️  Subname domains cache scan failed:", err.message);
   } finally {

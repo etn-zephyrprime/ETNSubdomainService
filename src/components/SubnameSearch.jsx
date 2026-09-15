@@ -4,14 +4,34 @@ import { ArrowLeft } from "lucide-react";
 import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
 import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
+import { usePaymentTokens } from "../hooks/usePaymentTokens.js";
 import { computeNode } from "../utils/ens.js";
-import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import Spinner from "./Spinner.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
-import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
+import CurrencySelect, { ETN_OPTION } from "./CurrencySelect.jsx";
+import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS, CANDIDATE_PAYMENT_TOKENS } from "../config.js";
+
+// Headline price shown on a "domains selling subnames" chip — a domain can be priced in several
+// currencies at once (see the `checked`/pricesByCurrency comment below), but a chip only has room
+// for one figure. Prefers ETN if the domain sells in it (the familiar default), otherwise whatever
+// currency it IS priced in; `+like N more` in the chip text signals there's more than one when
+// relevant. Symbol/decimals come from CANDIDATE_PAYMENT_TOKENS (config.js's static list) purely
+// for display here — a live whitelist check isn't needed just to label a chip, unlike an actual
+// purchase, which handleCheck below re-verifies against the real on-chain price at that moment
+// regardless of what this chip showed.
+function chipPriceLabel(pricesByCurrency) {
+  const currencies = Object.keys(pricesByCurrency);
+  const primary = currencies.includes(ETN_OPTION.address) ? ETN_OPTION.address : currencies[0];
+  const token = primary === ETN_OPTION.address
+    ? ETN_OPTION
+    : CANDIDATE_PAYMENT_TOKENS.find((t) => t.address === primary) || { symbol: "?", decimals: 18 };
+  const amount = ethers.formatUnits(pricesByCurrency[primary], token.decimals);
+  const moreCount = currencies.length - 1;
+  return `${amount} ${token.symbol}/year${moreCount > 0 ? ` (+${moreCount} more)` : ""}`;
+}
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
 const DAY_SECONDS = 24 * 60 * 60;
@@ -43,10 +63,16 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
   );
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkError, setCheckError] = useState(null);
-  const [checked, setChecked] = useState(null); // { subLabel, parentLabel, parentNode, pricePerYear, availableDurations }
+  // { subLabel, parentLabel, parentNode, pricesByCurrency, availableDurations } — pricesByCurrency
+  // is a { [tokenAddress]: pricePerYearWei } map, one entry per currency the parent domain's owner
+  // has actually set a non-zero price in (see handleCheck below) — never every whitelisted token,
+  // only the ones this specific domain is actually for sale in.
+  const [checked, setChecked] = useState(null);
   const [selectedDuration, setSelectedDuration] = useState(null);
+  const [selectedCurrency, setSelectedCurrency] = useState(ETN_OPTION.address);
 
   const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerApproving, setRegisterApproving] = useState(false);
   const [registerError, setRegisterError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [txHash, setTxHash] = useState(null);
@@ -69,6 +95,21 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
     registerSubname,
   } = useSubnameRegistration();
   const { setAddr } = useAddressRecord();
+  const { getAvailablePaymentTokens, ensureAllowance } = usePaymentTokens();
+
+  // Whitelisted ERC20 payment tokens currently available, alongside ETN — see
+  // ManageSubdomain.jsx's identical fetch for the full reasoning (null = loading, [] = ETN-only).
+  const [paymentTokens, setPaymentTokens] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    getAvailablePaymentTokens()
+      .then((tokens) => { if (!cancelled) setPaymentTokens(tokens); })
+      .catch((err) => {
+        console.error("Failed to load available payment tokens:", err);
+        if (!cancelled) setPaymentTokens([]);
+      });
+    return () => { cancelled = true; };
+  }, [getAvailablePaymentTokens]);
 
   useEffect(() => {
     (async () => {
@@ -123,6 +164,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
     setCheckError(null);
     setChecked(null);
     setSelectedDuration(null);
+    setSelectedCurrency(ETN_OPTION.address);
     setRegisterError(null);
 
     const parsed = parseInput(rawInput);
@@ -140,9 +182,21 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
     setCheckLoading(true);
     try {
       const parentNode = computeNode(parentLabel);
-      const pricePerYear = await getSubnamePricePerYear(parentNode);
 
-      if (pricePerYear === 0n) {
+      // A domain's price is set per-currency (subnamePricePerYear is keyed by payment token) —
+      // check ETN plus every currently-whitelisted token, and keep only the ones this specific
+      // domain's owner has actually set a non-zero price in (never every whitelisted token; most
+      // domains only ever price in one or two currencies, not all of them).
+      const candidateCurrencies = [ETN_OPTION, ...(paymentTokens || [])];
+      const rawPrices = await Promise.all(
+        candidateCurrencies.map((t) => getSubnamePricePerYear(parentNode, t.address))
+      );
+      const pricesByCurrency = {};
+      candidateCurrencies.forEach((t, i) => {
+        if (rawPrices[i] > 0n) pricesByCurrency[t.address] = rawPrices[i];
+      });
+
+      if (Object.keys(pricesByCurrency).length === 0) {
         setCheckError(`"${parentLabel}.etn" isn't selling subnames`);
         return;
       }
@@ -188,8 +242,13 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
         return;
       }
 
-      setChecked({ subLabel, parentLabel, parentNode, pricePerYear, availableDurations });
+      setChecked({ subLabel, parentLabel, parentNode, pricesByCurrency, availableDurations });
       setSelectedDuration(availableDurations[0].seconds);
+      // Default to ETN if the domain is priced in it, otherwise whichever currency it IS priced
+      // in — never leave the picker defaulted to a currency this specific domain isn't for sale in.
+      setSelectedCurrency(
+        pricesByCurrency[ETN_OPTION.address] != null ? ETN_OPTION.address : Object.keys(pricesByCurrency)[0]
+      );
     } catch (err) {
       console.error("Subname check failed:", err);
       setCheckError(err?.reason || err?.message || "Check failed");
@@ -239,12 +298,20 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
     }
   };
 
+  // The currencies this specific domain is actually for sale in, and whichever one's currently
+  // selected — derived here (not stored in state) so it always stays in sync with `checked`/
+  // `paymentTokens` without a separate effect to keep them aligned.
+  const availableCurrencies = checked
+    ? [ETN_OPTION, ...(paymentTokens || [])].filter((t) => checked.pricesByCurrency[t.address] != null)
+    : [];
+  const selectedToken = availableCurrencies.find((t) => t.address === selectedCurrency) || ETN_OPTION;
+
   // Mirrors the contract's own quoteSubname math exactly (pricePerYear * duration / 365 days) —
-  // computed client-side so the price updates instantly as the buyer changes the duration
+  // computed client-side so the price updates instantly as the buyer changes the duration/currency
   // picker, without a round trip per click.
   const selectedPrice =
-    checked && selectedDuration != null
-      ? (checked.pricePerYear * BigInt(selectedDuration)) / BigInt(YEAR_SECONDS)
+    checked && selectedDuration != null && checked.pricesByCurrency[selectedCurrency] != null
+      ? (checked.pricesByCurrency[selectedCurrency] * BigInt(selectedDuration)) / BigInt(YEAR_SECONDS)
       : 0n;
 
   const handleRegister = async () => {
@@ -259,7 +326,17 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
       await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       const { subLabel, parentLabel, parentNode } = checked;
-      const result = await registerSubname(parentNode, subLabel, selectedDuration, selectedPrice, signer);
+
+      // ERC20 purchases need an approval before registerSubname's own transferFrom can succeed —
+      // the contract enforces msg.value === 0 for a token purchase (see registerSubname's own
+      // comment), so there's no ETN leg to send alongside it, just the approve + the purchase tx.
+      if (selectedCurrency !== ETN_OPTION.address) {
+        setRegisterApproving(true);
+        await ensureAllowance(selectedCurrency, selectedPrice, signer);
+        setRegisterApproving(false);
+      }
+
+      const result = await registerSubname(parentNode, subLabel, selectedDuration, selectedPrice, signer, selectedCurrency);
 
       setTxHash(result.txHash);
       setSuccess(true);
@@ -269,12 +346,13 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
       console.error("Subname registration failed:", err);
       setRegisterError(err?.reason || err?.message || "Registration failed");
     } finally {
+      setRegisterApproving(false);
       setRegisterLoading(false);
     }
   };
 
   const displayName = checked ? `${checked.subLabel}.${checked.parentLabel}.etn` : "";
-  const priceEth = checked ? formatEth(selectedPrice) : "0.00";
+  const priceDisplay = checked ? ethers.formatUnits(selectedPrice, selectedToken.decimals) : "0.00";
 
   if (success) {
     return (
@@ -485,7 +563,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             Domains selling subnames
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {parentDomains.map(({ label, pricePerYear }) => (
+            {parentDomains.map(({ label, pricesByCurrency }) => (
               <button
                 key={label}
                 onClick={() => handleSelectParent(label)}
@@ -507,7 +585,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
               >
                 {label}.etn
                 <span style={{ fontSize: 11, fontWeight: 600, color: mutedLight }}>
-                  {formatEth(pricePerYear)} ETN/year
+                  {chipPriceLabel(pricesByCurrency)}
                 </span>
               </button>
             ))}
@@ -593,6 +671,31 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             </div>
           )}
 
+          {/* Only worth showing a picker once this domain is actually for sale in more than one
+              currency — a single-currency domain (the overwhelmingly common case today) has
+              nothing to pick between. */}
+          {availableCurrencies.length > 1 && (
+            <>
+              <div style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                color: muted,
+                marginBottom: 10,
+              }}>
+                Currency
+              </div>
+              <CurrencySelect
+                tokens={availableCurrencies}
+                value={selectedCurrency}
+                onChange={setSelectedCurrency}
+                disabled={registerLoading}
+                style={{ marginBottom: 16 }}
+              />
+            </>
+          )}
+
           <div style={{
             display: "flex",
             justifyContent: "space-between",
@@ -604,8 +707,8 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
           }}>
             <span>Price</span>
             <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-              {priceEth} ETN
-              <UsdEstimate etn={priceEth} />
+              {priceDisplay} {selectedToken.symbol}
+              {selectedToken.address === ETN_OPTION.address && <UsdEstimate etn={priceDisplay} />}
             </span>
           </div>
 
@@ -625,8 +728,8 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             {!wallet.isConnected
               ? "Connect Wallet"
               : registerLoading
-              ? "Registering..."
-              : `Register for ${priceEth} ETN`}
+              ? (registerApproving ? "Approving..." : "Registering...")
+              : `Register for ${priceDisplay} ${selectedToken.symbol}`}
           </NeonButton>
         </div>
       )}

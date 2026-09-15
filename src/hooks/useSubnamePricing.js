@@ -26,12 +26,21 @@ export function useSubnamePricing() {
     };
   }, []);
 
-  // paymentToken defaults to ETN (address(0)) — V4's subnamePricePerYear is now keyed per
-  // payment token (mapping(bytes32 => mapping(address => uint256))), but this app is ETN-only
-  // for now (Phase 1: point at V4 without exposing the new multi-currency surface yet).
+  // paymentToken defaults to ETN (address(0)) — subnamePricePerYear is keyed per payment token
+  // (mapping(bytes32 => mapping(address => uint256))).
   const getSubnamePricePerYear = useCallback(async (parentNode, paymentToken = ethers.ZeroAddress) => {
     const { marketplace } = getReadContracts();
     return await marketplace.subnamePricePerYear(parentNode, paymentToken);
+  }, [getReadContracts]);
+
+  // Owner-adjustable floor under a subname's per-year price for `paymentToken` — genuinely
+  // different per token (e.g. confirmed live 2026-09-15: DCNT's floor is 20,000 DCNT/year, PDY's
+  // is 32,000,000,000 PDY/year), so a currency picker can't reuse config.js's
+  // MIN_SUBNAME_PRICE_PER_YEAR_ETN constant for anything but ETN itself — every non-ETN currency
+  // needs this live read instead.
+  const getMinSubnamePricePerYear = useCallback(async (paymentToken) => {
+    const { marketplace } = getReadContracts();
+    return await marketplace.minSubnamePricePerYear(paymentToken);
   }, [getReadContracts]);
 
   // Checks the current contract first (the real source of truth for anything it itself gates —
@@ -236,6 +245,55 @@ export function useSubnamePricing() {
     }
   }, []);
 
+  // How far out to set activateDomainWithToken's deadline from the moment the tx is submitted —
+  // same reasoning/value as useBurnPool.js's DEADLINE_BUFFER_SECONDS: generous enough to clear
+  // this chain's block times comfortably, the contract only uses it to bound how stale the swap
+  // quote can get, not a UI concern.
+  const ACTIVATION_TOKEN_DEADLINE_BUFFER_SECONDS = 20 * 60;
+
+  // Quotes what a whitelisted ERC20 activation would cost right now, in that token's own smallest
+  // unit — a staticCall against the REAL activateDomainWithToken (not a separate view function;
+  // the contract doesn't have one, since the quote is computed live inside the same function that
+  // would spend it — see PlanetZephyrosSubdomainServiceV5.sol's own comment on why). Needs a real
+  // signer, not just a read-only provider: _requireNodeOwner checks msg.sender against the domain's
+  // actual owner, and a staticCall still evaluates the full function body (just discards state
+  // changes) — same pattern this repo's own V5 test suite uses to get a pre-flight quote. Passing
+  // ethers.MaxUint256 as maxTokenAmount here means this call can never itself revert on "quote
+  // exceeds max" — only the real activation call (below) enforces that, with the caller's actual
+  // slippage cap.
+  const quoteActivationInToken = useCallback(async (node, label, paymentToken, signer) => {
+    const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+    const deadline = Math.floor(Date.now() / 1000) + ACTIVATION_TOKEN_DEADLINE_BUFFER_SECONDS;
+    return marketplace.activateDomainWithToken.staticCall(node, label, paymentToken, ethers.MaxUint256, deadline);
+  }, []);
+
+  // ERC20-denominated counterpart to activateDomain above. `maxTokenAmount` is the caller's own
+  // slippage cap (same spirit as buyBackAndBurn's minCoreOut) — pass quoteActivationInToken's own
+  // result plus a buffer (the UI applies the same 5% this app's ETN activation estimate already
+  // uses), not the raw quote, since a few seconds pass between quoting and this transaction
+  // actually mining. Caller must have already approved the marketplace to spend at least
+  // maxTokenAmount of paymentToken (see usePaymentTokens.js's ERC20 approve flow) — this doesn't
+  // check or request that itself, same division of responsibility as registerSubname's own ERC20
+  // path.
+  const activateDomainWithToken = useCallback(async (node, label, paymentToken, maxTokenAmount, signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+      const deadline = Math.floor(Date.now() / 1000) + ACTIVATION_TOKEN_DEADLINE_BUFFER_SECONDS;
+      const tx = await marketplace.activateDomainWithToken(node, label, paymentToken, maxTokenAmount, deadline, { gasLimit: 600000 });
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error("Activation failed");
+      return { success: true, txHash: tx.hash };
+    } catch (err) {
+      console.error("Domain activation (token) failed:", err);
+      setError(err?.reason || err?.message || "Activation failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // paymentToken defaults to ETN (address(0)) — see getSubnamePricePerYear above.
   const setSubnamePricePerYear = useCallback(async (node, pricePerYearWei, signer, paymentToken = ethers.ZeroAddress) => {
     setLoading(true);
@@ -257,6 +315,7 @@ export function useSubnamePricing() {
 
   return {
     getSubnamePricePerYear,
+    getMinSubnamePricePerYear,
     isDomainActivated,
     migrateActivation,
     isMarketplaceApproved,
@@ -265,6 +324,8 @@ export function useSubnamePricing() {
     approveBaseRegistrar,
     getActivationFee,
     activateDomain,
+    quoteActivationInToken,
+    activateDomainWithToken,
     setSubnamePricePerYear,
     loading,
     error,

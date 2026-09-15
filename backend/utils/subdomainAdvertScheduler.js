@@ -41,6 +41,24 @@ const SITE_URL = process.env.SITE_URL || "https://nameservice.planetzephyros.xyz
 // link to see the rest.
 const ADVERT_LIST_LIMIT = 10;
 
+// Symbol/decimals for display only — same 9 tokens src/config.js's own CANDIDATE_PAYMENT_TOKENS
+// tracks, duplicated here rather than imported since this backend has no access to the frontend's
+// src/ tree (same "fine to drift independently" convention this whole file already follows for
+// MARKETPLACE_ABI etc.). Only used to label a domain's price in buildSubnamesAdvert below — never
+// used to decide whether a token is actually usable (that's still a real on-chain fact, checked by
+// subnameDomainsCache.js itself before a domain/currency ever reaches the cache this reads).
+const TOKEN_DECIMALS_BY_ADDRESS = {
+  "0x043fAa1b5C5FC9a7dc35171f290c29ECDE0cCff1": { symbol: "BOLT", decimals: 18 },
+  "0x309B916b3A90cb3E071697Ea9680e9217A30066f": { symbol: "CORE", decimals: 18 },
+  "0xEe432C220273e4F949007B4c1946562826Efa055": { symbol: "DYNO", decimals: 18 },
+  "0xc20d02538368D8F7deBeAeB99D9a8b4d4D1DDC1C": { symbol: "PDY", decimals: 18 },
+  "0x075533AB8EeC6A6999F07C8bc2f1900eB8312e25": { symbol: "FUGAZI", decimals: 18 },
+  "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e": { symbol: "USDC", decimals: 6 },
+  "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7": { symbol: "USDT", decimals: 6 },
+  "0xC9FC4AB00911793D99b5c7Bd01f01203C21D4131": { symbol: "CLUB", decimals: 18 },
+  "0xE74e4E7A064310466f3bdBd3F3Ce4e8c8F7CF1d5": { symbol: "DCNT", decimals: 18 },
+};
+
 const MARKETPLACE_ABI = [
   "function nextListingId() view returns (uint256)",
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
@@ -117,14 +135,34 @@ async function buildSubnamesAdvert() {
     );
   }
 
-  const sorted = [...domains].sort((a, b) => (BigInt(a.pricePerYear) < BigInt(b.pricePerYear) ? -1 : 1));
+  // A domain can be priced in several currencies at once (pricesByCurrency — see
+  // subnameDomainsCache.js's own header comment) — this advert only has room for one headline
+  // figure per domain, same "prefer ETN, else whatever it IS priced in" choice
+  // SubnameSearch.jsx's own chipPriceLabel makes. Only ETN-priced domains get sorted by price
+  // (comparing raw magnitudes across different currencies/decimals wouldn't mean anything); a
+  // domain priced only in a token is listed after them, in whatever order it was found.
+  const withHeadline = domains.map((d) => {
+    const currencies = Object.keys(d.pricesByCurrency || {});
+    const isEtn = currencies.includes(ethers.ZeroAddress);
+    const primary = isEtn ? ethers.ZeroAddress : currencies[0];
+    const token = TOKEN_DECIMALS_BY_ADDRESS[primary] || { symbol: "?", decimals: 18 };
+    return { ...d, isEtn, headlinePriceWei: d.pricesByCurrency?.[primary], headlineSymbol: isEtn ? "ETN" : token.symbol, headlineDecimals: token.decimals };
+  }).filter((d) => d.headlinePriceWei != null);
+
+  const sorted = [
+    ...withHeadline.filter((d) => d.isEtn).sort((a, b) => (BigInt(a.headlinePriceWei) < BigInt(b.headlinePriceWei) ? -1 : 1)),
+    ...withHeadline.filter((d) => !d.isEtn),
+  ];
   const shown = sorted.slice(0, ADVERT_LIST_LIMIT);
   const remaining = sorted.length - shown.length;
 
   const lines = shown.map((d) => {
     const name = `${d.label}.etn`;
     const link = `${SITE_URL}/subnames/${name}`;
-    return `• [${name}](${link}) — ${formatEtnCompact(d.pricePerYear)} ETN/year`;
+    const priceText = d.isEtn
+      ? `${formatEtnCompact(d.headlinePriceWei)} ETN`
+      : `${ethers.formatUnits(d.headlinePriceWei, d.headlineDecimals)} ${d.headlineSymbol}`;
+    return `• [${name}](${link}) — ${priceText}/year`;
   });
 
   return (

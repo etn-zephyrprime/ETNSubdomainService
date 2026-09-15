@@ -46,6 +46,29 @@ export const LEGACY_MARKETPLACES = [
   { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016 }, // V4
   { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471 }, // V3
 ];
+
+// Candidate ERC20 payment tokens whitelisted on V5 as of the currency-configuration pass done via
+// PlanetZephyros's configureMarketplaceV5Currencies_remix.ts (2026-09-15) — same 9 tokens, same
+// addresses/symbols/decimals that script itself used. This list is NOT the authoritative source of
+// truth: whitelistedPaymentTokens is an on-chain, owner-adjustable mapping with no enumeration
+// function (a plain mapping can't be iterated on-chain), so there is no way to ask the contract
+// "what's whitelisted right now" directly — every consumer of this list (usePaymentTokens.js) must
+// still live-check marketplace.whitelistedPaymentTokens(token) for each candidate here before
+// trusting it as actually usable, so a token the owner later de-whitelists disappears from the UI
+// on its own, and a genuinely new token added later needs a code change here (or, if this ever
+// becomes a real pain point, its own tiny published cache the same way subnameDomainsCache.js
+// publishes domain pricing today).
+export const CANDIDATE_PAYMENT_TOKENS = [
+  { symbol: "BOLT", address: "0x043fAa1b5C5FC9a7dc35171f290c29ECDE0cCff1", decimals: 18 },
+  { symbol: "CORE", address: "0x309B916b3A90cb3E071697Ea9680e9217A30066f", decimals: 18 },
+  { symbol: "DYNO", address: "0xEe432C220273e4F949007B4c1946562826Efa055", decimals: 18 },
+  { symbol: "PDY", address: "0xc20d02538368D8F7deBeAeB99D9a8b4d4D1DDC1C", decimals: 18 },
+  { symbol: "FUGAZI", address: "0x075533AB8EeC6A6999F07C8bc2f1900eB8312e25", decimals: 18 },
+  { symbol: "USDC", address: "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e", decimals: 6 },
+  { symbol: "USDT", address: "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7", decimals: 6 },
+  { symbol: "CLUB", address: "0xC9FC4AB00911793D99b5c7Bd01f01203C21D4131", decimals: 18 },
+  { symbol: "DCNT", address: "0xE74e4E7A064310466f3bdBd3F3Ce4e8c8F7CF1d5", decimals: 18 },
+];
 export const REGISTRAR_CONTROLLER_ADDRESS = import.meta.env.VITE_REGISTRAR_CONTROLLER_ADDRESS || "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C";
 export const BASE_REGISTRAR_ADDRESS = import.meta.env.VITE_BASE_REGISTRAR_ADDRESS || "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59";
 // registerName() (via this app) always wraps — the raw ERC721 ends up owned by NameWrapper
