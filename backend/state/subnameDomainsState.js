@@ -52,12 +52,16 @@ export async function getSubnameDomainsCache() {
 }
 
 /**
- * Publishes `{ domains, lastScannedBlock, schemaVersion, updatedAt }`. Short cache lifetime
- * (unlike NFT images' immutable 1-year one in R2Upload.js) — this changes every time an owner
- * sets/changes a subname price, so a stale CDN copy would show wrong prices or miss new domains
- * for however long it's cached. schemaVersion is opaque here — subnameDomainsCache.js is what
- * actually interprets it (to force a full rescan when it doesn't match the current build's
- * expectation) — this just persists whatever it's given.
+ * Publishes `{ domains, lastScannedBlock, schemaVersion, updatedAt }`, where each entry in
+ * `domains` is `{ node, label, pricesByCurrency }` — `pricesByCurrency` is a
+ * `{ [tokenAddress]: pricePerYearString }` map (address(0) = ETN), one entry per currency this
+ * domain is actually for sale in right now, not just ETN (see subnameDomainsCache.js's own header
+ * comment for the full multi-currency reasoning). Short cache lifetime (unlike NFT images'
+ * immutable 1-year one in R2Upload.js) — this changes every time an owner sets/changes a subname
+ * price, so a stale CDN copy would show wrong prices or miss new domains for however long it's
+ * cached. schemaVersion is opaque here — subnameDomainsCache.js is what actually interprets it (to
+ * force a full rescan when it doesn't match the current build's expectation) — this just persists
+ * whatever it's given.
  */
 export async function setSubnameDomainsCache(domains, lastScannedBlock, schemaVersion) {
   const r2 = getR2Client();

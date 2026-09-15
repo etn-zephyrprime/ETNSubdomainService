@@ -6,14 +6,32 @@ import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { usePaymentTokens } from "../hooks/usePaymentTokens.js";
 import { computeNode } from "../utils/ens.js";
-import { formatEth } from "../utils/format.js";
 import { containsBlockedWord } from "../utils/obscenity.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import Spinner from "./Spinner.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
 import CurrencySelect, { ETN_OPTION } from "./CurrencySelect.jsx";
-import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS } from "../config.js";
+import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DURATION_OPTIONS, CANDIDATE_PAYMENT_TOKENS } from "../config.js";
+
+// Headline price shown on a "domains selling subnames" chip — a domain can be priced in several
+// currencies at once (see the `checked`/pricesByCurrency comment below), but a chip only has room
+// for one figure. Prefers ETN if the domain sells in it (the familiar default), otherwise whatever
+// currency it IS priced in; `+like N more` in the chip text signals there's more than one when
+// relevant. Symbol/decimals come from CANDIDATE_PAYMENT_TOKENS (config.js's static list) purely
+// for display here — a live whitelist check isn't needed just to label a chip, unlike an actual
+// purchase, which handleCheck below re-verifies against the real on-chain price at that moment
+// regardless of what this chip showed.
+function chipPriceLabel(pricesByCurrency) {
+  const currencies = Object.keys(pricesByCurrency);
+  const primary = currencies.includes(ETN_OPTION.address) ? ETN_OPTION.address : currencies[0];
+  const token = primary === ETN_OPTION.address
+    ? ETN_OPTION
+    : CANDIDATE_PAYMENT_TOKENS.find((t) => t.address === primary) || { symbol: "?", decimals: 18 };
+  const amount = ethers.formatUnits(pricesByCurrency[primary], token.decimals);
+  const moreCount = currencies.length - 1;
+  return `${amount} ${token.symbol}/year${moreCount > 0 ? ` (+${moreCount} more)` : ""}`;
+}
 
 const YEAR_SECONDS = 365 * 24 * 60 * 60;
 const DAY_SECONDS = 24 * 60 * 60;
@@ -545,7 +563,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             Domains selling subnames
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {parentDomains.map(({ label, pricePerYear }) => (
+            {parentDomains.map(({ label, pricesByCurrency }) => (
               <button
                 key={label}
                 onClick={() => handleSelectParent(label)}
@@ -567,7 +585,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
               >
                 {label}.etn
                 <span style={{ fontSize: 11, fontWeight: 600, color: mutedLight }}>
-                  {formatEth(pricePerYear)} ETN/year
+                  {chipPriceLabel(pricesByCurrency)}
                 </span>
               </button>
             ))}
