@@ -94,20 +94,30 @@ async function poll(token, symbol, decimals, resolveDisplayName) {
         const formatted = Number(ethers.formatUnits(value, decimals));
         const prettyAmount = formatted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-        const donor = addressFromTopic(log.topics[1]);
-        const donorDisplay = await resolveDisplayName(donor);
+        // Fallback only — see below for why the tx's own `from` is strongly preferred whenever
+        // it's available.
+        let donor = addressFromTopic(log.topics[1]);
 
         // Which app mechanism triggered this — looks at the *transaction's* own destination
-        // contract, not `donor` above, since CORE's own fee-on-transfer tax means donor is often
-        // just whoever happened to be moving tokens at that moment (a swap pool, a user's wallet
-        // mid-swap), not itself a meaningful label. See burnSourceLabels.js's own header comment.
+        // contract, not the raw Transfer log's `from`, since CORE's own fee-on-transfer tax means
+        // that `from` is often just whichever contract happened to be forwarding tokens at that
+        // moment (e.g. the ElectroSwap LP pool itself, mid-swap, paying out a trader) rather than
+        // a meaningful label. See burnSourceLabels.js's own header comment.
         let source = "Manual burn";
         try {
           const tx = await provider.getTransaction(log.transactionHash);
           source = await labelBurnSource(tx?.to, EXPLORER_BASE_URL);
+          // Same reasoning applies to `donor`: the burn Transfer log's `from` is frequently just
+          // the LP pool auto-forwarding the transfer tax, not the actual trader who caused the
+          // burn — tx.from (the EOA that actually signed and submitted this transaction) is the
+          // real human/wallet behind it, so prefer it whenever the tx itself was fetched
+          // successfully.
+          if (tx?.from) donor = tx.from;
         } catch (err) {
           console.warn(`⚠️  Burn watcher: could not classify source for tx ${log.transactionHash}:`, err.message);
         }
+
+        const donorDisplay = await resolveDisplayName(donor);
 
         const totalSupplyRaw = await token.totalSupply({ blockTag: log.blockNumber });
         const totalSupplyFormatted = Number(ethers.formatUnits(totalSupplyRaw, decimals));
