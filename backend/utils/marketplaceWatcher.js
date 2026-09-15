@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { sendTelegramMessage, sendTelegramPhoto, sendTelegramDirectMessage, telegramConfigured } from "./telegramNotifier.js";
-import { getLastProcessedBlock, setLastProcessedBlock, getLastProcessedLegacyBlock, setLastProcessedLegacyBlock } from "../state/state.js";
+import { getLastProcessedV5Block, setLastProcessedV5Block, getLastProcessedV4Block, setLastProcessedV4Block, getLastProcessedV3Block, setLastProcessedV3Block } from "../state/state.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getLinkedChatId } from "./telegramLinkRouter.js";
 import { createRpcProvider } from "./rpcProvider.js";
@@ -9,21 +9,12 @@ import { createRpcProvider } from "./rpcProvider.js";
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
 // as the rest of the backend (see scripts/backfillNftImages.js), overridable via env for a
 // different deployment.
-// PlanetZephyrosSubdomainServiceV4 — same defaults as src/config.js's MARKETPLACE_ADDRESS/
-// MARKETPLACE_DEPLOY_BLOCK. The real MARKETPLACE_ADDRESS env var on Render still needs updating
-// to this V4 address for the live backend to actually pick it up.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
+// PlanetZephyrosSubdomainServiceV5 — same defaults as src/config.js's MARKETPLACE_ADDRESS/
+// MARKETPLACE_DEPLOY_BLOCK.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15873016;
-// The deprecated V3 marketplace — polled on its own separate cursor (getLastProcessedLegacyBlock/
-// setLastProcessedLegacyBlock) alongside V4, so any residual V3 activity (a listing never
-// sold/cancelled being bought/cancelled directly, or the admin flushing V3's leftover burn pool)
-// still gets a Telegram alert instead of going silently unwatched.
-const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
-const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
-  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15874925;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed to resolve buyer/seller/payer
 // addresses to a primary name (see notifyDomainActivated etc. and primaryNameResolver.js).
@@ -56,8 +47,8 @@ const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 
 // indexed-ness must match src/abis/MarketplaceABI.json exactly, same lesson learned building
 // scripts/backfillNftImages.js — get it wrong and ethers silently fails to decode every log.
-// SubnameRegistered gained an indexed `paymentToken` in V4 (multi-currency subname pricing) —
-// DomainActivated/ExistingNameListed/ListingSold are unchanged from V3.
+// SubnameRegistered gained an indexed `paymentToken` in V4 (multi-currency subname pricing,
+// unchanged shape in V5) — DomainActivated/ExistingNameListed/ListingSold are unchanged from V3.
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
@@ -67,7 +58,7 @@ const MARKETPLACE_ABI = [
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
 // V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — everything else is identical.
-const LEGACY_MARKETPLACE_ABI = [
+const LEGACY_V3_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
@@ -75,6 +66,30 @@ const LEGACY_MARKETPLACE_ABI = [
   "function burnPool() view returns (uint256)",
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
+
+// Every deprecated marketplace this app used to point at, most-recent first — each polled on its
+// own separate persisted cursor alongside the current contract, so any residual activity (a
+// listing never sold/cancelled being bought/cancelled directly, or the admin flushing a leftover
+// burn pool) still gets a Telegram alert instead of going silently unwatched.
+const LEGACY_MARKETPLACES = [
+  {
+    address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2",
+    deployBlock: 15873016,
+    abi: MARKETPLACE_ABI,
+    getCursor: getLastProcessedV4Block,
+    setCursor: setLastProcessedV4Block,
+    label: " (legacy V4)",
+  },
+  {
+    address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13",
+    deployBlock: 15207471,
+    abi: LEGACY_V3_ABI,
+    getCursor: getLastProcessedV3Block,
+    setCursor: setLastProcessedV3Block,
+    label: " (legacy V3)",
+  },
+];
+
 const NAME_WRAPPER_ABI = [
   "function names(bytes32 node) view returns (bytes)",
   "function getData(uint256 id) view returns (address owner, uint32 fuses, uint64 expiry)",
@@ -194,12 +209,11 @@ async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
 
 async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName) {
   const { parentNode, label, buyer, paymentToken, price, burnAmount } = event.args;
-  // No ERC20 payment token is whitelisted on V4 yet (Phase 1: this app only ever pays in ETN),
-  // so every real SubnameRegistered right now has paymentToken == address(0). paymentToken is
-  // undefined entirely for a legacy V3 event (V3 predates multi-currency pricing and never had
-  // this field) — only warn when it's actually present and non-ETN, not just falsy. Once Phase 2
-  // adds multi-currency support this formatting will need a real per-token symbol/decimals lookup
-  // instead of assuming ETN/18-decimals — flag loudly rather than silently mislabel the amount.
+  // paymentToken is undefined entirely for a legacy V3 event (V3 predates multi-currency pricing
+  // and never had this field) — only warn when it's actually present and non-ETN, not just falsy.
+  // Once a real ERC20 sale happens (V4/V5 both support whitelisted tokens now), this formatting
+  // needs a real per-token symbol/decimals lookup instead of assuming ETN/18-decimals — flag
+  // loudly rather than silently mislabel the amount until that's built.
   if (paymentToken !== undefined && paymentToken !== ethers.ZeroAddress) {
     console.warn(`⚠️  SubnameRegistered paid in non-ETN token ${paymentToken} — notification will mislabel the amount as ETN`);
   }
@@ -307,12 +321,9 @@ async function notifyListingSold(event, nameWrapper, marketplace, resolveDisplay
 }
 
 // Parametrized by contract/deploy-block/cursor getters+setters/log-label so the exact same poll
-// logic backs both the current (V4) watcher and the deprecated V3 contract's own independent poll
-// (see startMarketplaceWatcher) — two entirely separate cursors, since the two contracts have
-// different deploy blocks and there's no reason a gap in one's history should affect the other's.
-let isPolling = false;
-let isPollingLegacy = false;
-
+// logic backs the current contract's watcher and every deprecated contract's own independent poll
+// (see startMarketplaceWatcher) — each source gets its own cursor, since each has a different
+// deploy block and there's no reason a gap in one's history should affect any other's.
 async function pollContract(marketplace, nameWrapper, resolveDisplayName, deployBlock, getCursor, setCursor, logLabel) {
   const latestBlock = await marketplace.runner.getBlockNumber();
   let fromBlock = await getCursor();
@@ -361,29 +372,19 @@ async function pollContract(marketplace, nameWrapper, resolveDisplayName, deploy
   await setCursor(latestBlock);
 }
 
-async function poll(marketplace, nameWrapper, resolveDisplayName) {
-  if (isPolling) return; // previous poll still running (e.g. a slow RPC) — skip this tick
-  isPolling = true;
-  try {
-    await pollContract(marketplace, nameWrapper, resolveDisplayName, MARKETPLACE_DEPLOY_BLOCK, getLastProcessedBlock, setLastProcessedBlock, "");
-  } catch (err) {
-    console.error("⚠️  Marketplace watcher poll failed:", err.message);
-  } finally {
-    isPolling = false;
-  }
-}
+// Guards each source's poll independently by address, so a slow poll of one contract overlapping
+// with itself on the next tick never blocks (or gets blocked by) any other source's own poll.
+const pollingGuards = new Map(); // address -> boolean
 
-// Same poll logic, pointed at the deprecated V3 contract on its own cursor — see
-// LEGACY_MARKETPLACE_ADDRESS's comment above for why this still runs at all.
-async function pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName) {
-  if (isPollingLegacy) return;
-  isPollingLegacy = true;
+async function guardedPoll(address, marketplace, nameWrapper, resolveDisplayName, deployBlock, getCursor, setCursor, logLabel) {
+  if (pollingGuards.get(address)) return;
+  pollingGuards.set(address, true);
   try {
-    await pollContract(legacyMarketplace, nameWrapper, resolveDisplayName, LEGACY_MARKETPLACE_DEPLOY_BLOCK, getLastProcessedLegacyBlock, setLastProcessedLegacyBlock, " (legacy V3)");
+    await pollContract(marketplace, nameWrapper, resolveDisplayName, deployBlock, getCursor, setCursor, logLabel);
   } catch (err) {
-    console.error("⚠️  Marketplace watcher legacy poll failed:", err.message);
+    console.error(`⚠️  Marketplace watcher poll failed${logLabel}:`, err.message);
   } finally {
-    isPollingLegacy = false;
+    pollingGuards.set(address, false);
   }
 }
 
@@ -401,13 +402,26 @@ export function startMarketplaceWatcher() {
   // provider now also resolves buyer/seller/payer primary names via primaryNameResolver.js.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
-  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
-  console.log(`📡 Marketplace watcher started (polling every ${POLL_INTERVAL_MS / 1000}s, V3+V4)`);
-  poll(marketplace, nameWrapper, resolveDisplayName); // run once immediately rather than waiting a full interval
-  pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName);
-  setInterval(() => poll(marketplace, nameWrapper, resolveDisplayName), POLL_INTERVAL_MS);
-  setInterval(() => pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName), POLL_INTERVAL_MS);
+  const sources = [
+    { address: MARKETPLACE_ADDRESS, deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace, getCursor: getLastProcessedV5Block, setCursor: setLastProcessedV5Block, label: "" },
+    ...LEGACY_MARKETPLACES.map((m) => ({
+      address: m.address,
+      deployBlock: m.deployBlock,
+      contract: new ethers.Contract(m.address, m.abi, provider),
+      getCursor: m.getCursor,
+      setCursor: m.setCursor,
+      label: m.label,
+    })),
+  ];
+
+  const runAllPolls = () => {
+    for (const s of sources) guardedPoll(s.address, s.contract, nameWrapper, resolveDisplayName, s.deployBlock, s.getCursor, s.setCursor, s.label);
+  };
+
+  console.log(`📡 Marketplace watcher started (polling every ${POLL_INTERVAL_MS / 1000}s, ${sources.length} source(s): current + every deprecated marketplace)`);
+  runAllPolls(); // run once immediately rather than waiting a full interval
+  setInterval(runAllPolls, POLL_INTERVAL_MS);
 }

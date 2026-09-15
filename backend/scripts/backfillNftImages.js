@@ -21,17 +21,10 @@ import { sendTelegramPhoto, telegramConfigured } from "../utils/telegramNotifier
 // Must point at the same chain/deployment as the frontend (see src/config.js) — otherwise this
 // scans/derives nodes for names that don't exist on whatever chain it's actually pointed at.
 const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15873016;
-// The deprecated V3 marketplace — a name only ever registered/activated through V3 still needs an
-// image, so this scans both and dedupes by node (a name's node is a global hash, not scoped to
-// either contract, so it naturally collapses without double-generating anything).
-const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
-const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
-  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15207471;
+  : 15874925;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default + notification-link style as marketplaceWatcher.js — a backfilled image gets its
 // own "ready" notification since the original live one (if any) went out as text-only, having
@@ -54,11 +47,21 @@ const MARKETPLACE_ABI = [
 ];
 // V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — NameRegistered/DomainActivated
 // are identical.
-const LEGACY_MARKETPLACE_ABI = [
+const LEGACY_V3_ABI = [
   "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
 ];
+
+// Every deprecated marketplace this app used to point at — a name only ever registered/activated
+// through one of them still needs an image, so this scans all of them and dedupes by node (a
+// name's node is a global hash, not scoped to any one contract, so it naturally collapses without
+// double-generating anything).
+const LEGACY_MARKETPLACES = [
+  { address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016, abi: MARKETPLACE_ABI },
+  { address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471, abi: LEGACY_V3_ABI },
+];
+
 const NAME_WRAPPER_ABI = [
   "function ownerOf(uint256 id) view returns (address owner)",
   "function names(bytes32 node) view returns (bytes)",
@@ -125,36 +128,44 @@ async function main() {
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
-  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
+  const legacyContracts = LEGACY_MARKETPLACES.map((m) => new ethers.Contract(m.address, m.abi, provider));
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
-  const latestBlock = await provider.getBlockNumber();
-  console.log(`Scanning blocks ${MARKETPLACE_DEPLOY_BLOCK} -> ${latestBlock} on ${RPC_URL} (V4), and ${LEGACY_MARKETPLACE_DEPLOY_BLOCK} -> ${latestBlock} (legacy V3)...`);
+  const sources = [
+    { deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace, label: "current" },
+    ...LEGACY_MARKETPLACES.map((m, i) => ({ deployBlock: m.deployBlock, contract: legacyContracts[i], label: `legacy ${m.address.slice(0, 8)}…` })),
+  ];
 
-  const [registered, activated, subnamesRegistered, legacyRegistered, legacyActivated, legacySubnamesRegistered] = await Promise.all([
-    queryLogsChunked(marketplace, marketplace.filters.NameRegistered(), MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-    queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-    queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-    queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.NameRegistered(), LEGACY_MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-    queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.DomainActivated(), LEGACY_MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-    queryLogsChunked(legacyMarketplace, legacyMarketplace.filters.SubnameRegistered(), LEGACY_MARKETPLACE_DEPLOY_BLOCK, latestBlock),
-  ]);
+  const latestBlock = await provider.getBlockNumber();
+  console.log(`Scanning ${sources.length} marketplace source(s) up to block ${latestBlock} on ${RPC_URL}: ${sources.map((s) => `${s.label} from ${s.deployBlock}`).join(", ")}...`);
+
+  const perSourceEvents = await Promise.all(
+    sources.map(({ contract, deployBlock }) => Promise.all([
+      queryLogsChunked(contract, contract.filters.NameRegistered(), deployBlock, latestBlock),
+      queryLogsChunked(contract, contract.filters.DomainActivated(), deployBlock, latestBlock),
+      queryLogsChunked(contract, contract.filters.SubnameRegistered(), deployBlock, latestBlock),
+    ]))
+  );
+  const registered = perSourceEvents.flatMap(([r]) => r);
+  const activated = perSourceEvents.flatMap(([, a]) => a);
+  const subnamesRegistered = perSourceEvents.flatMap(([, , s]) => s);
 
   // Dedupe by node — e.g. a name registered through this app also gets a DomainActivated event,
   // so it'd otherwise show up from both NameRegistered and DomainActivated (and, now, potentially
-  // from both V4 and legacy V3 too — a node's hash is global, not scoped to either contract, so
-  // this collapses correctly either way). Template is "namespace" (gold) for any top-level name,
-  // "default" (blue) for subnames — same split RegistrationFlow.jsx / SubnameSearch.jsx use live.
+  // from more than one marketplace source too — a node's hash is global, not scoped to any one
+  // contract, so this collapses correctly either way). Template is "namespace" (gold) for any
+  // top-level name, "default" (blue) for subnames — same split RegistrationFlow.jsx /
+  // SubnameSearch.jsx use live.
   const candidates = new Map(); // node -> { template }
-  for (const event of [...registered, ...legacyRegistered]) {
+  for (const event of registered) {
     if (!event.args) { console.warn(`⚠️  Undecoded NameRegistered log at tx ${event.transactionHash}, skipping`); continue; }
     candidates.set(computeNode(event.args.label), { template: "namespace" });
   }
-  for (const event of [...activated, ...legacyActivated]) {
+  for (const event of activated) {
     if (!event.args) { console.warn(`⚠️  Undecoded DomainActivated log at tx ${event.transactionHash}, skipping`); continue; }
     candidates.set(event.args.node, { template: "namespace" });
   }
-  for (const event of [...subnamesRegistered, ...legacySubnamesRegistered]) {
+  for (const event of subnamesRegistered) {
     if (!event.args) { console.warn(`⚠️  Undecoded SubnameRegistered log at tx ${event.transactionHash}, skipping`); continue; }
     const node = computeSubnode(event.args.parentNode, event.args.label);
     candidates.set(node, { template: "default" });

@@ -4,32 +4,43 @@ import { fileURLToPath } from "url";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(__dirname, "..", "data", "state.json");
-const LEGACY_STATE_FILE = path.join(__dirname, "..", "data", "state-legacy.json");
-// Same bucket the NFT images live in (see R2Upload.js) — this key can't collide with a real
-// image key, which is always exactly 64 hex chars + ".png" (a node), never this.
-const STATE_KEY = "watcher-state.json";
-// marketplaceWatcher.js's own cursor for the deprecated V3 marketplace — separate key/file since
-// V3 and V4 have different deploy blocks and this tracks them independently (see
-// getLastProcessedLegacyBlock/setLastProcessedLegacyBlock below).
-const LEGACY_STATE_KEY = "watcher-state-legacy.json";
 
 /**
- * Tracks the last block marketplaceWatcher.js has fully processed, so a restart doesn't have to
- * guess how far back to scan.
+ * Tracks the last block marketplaceWatcher.js has fully processed, per marketplace contract
+ * generation, so a restart doesn't have to guess how far back to scan.
  *
  * Backed by R2 (the same bucket/credentials already configured for NFT images) whenever
  * R2_ENDPOINT/R2_BUCKET_NAME/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY are set — this is what makes
  * state survive Render's free tier, whose local filesystem is wiped on every spin-down/spin-up
- * cycle (a plain local file would otherwise reset every single time, defeating the point).
- * Falls back to a local JSON file when R2 isn't configured (e.g. local dev), matching this
- * module's original behavior — durable across restarts on a normal machine, just not across a
- * wiped filesystem.
+ * cycle (a plain local file would otherwise reset every single time, defeating the point). Falls
+ * back to a local JSON file when R2 isn't configured (e.g. local dev), matching this module's
+ * original behavior — durable across restarts on a normal machine, just not across a wiped
+ * filesystem.
  *
- * Parametrized by file/R2 key so the same logic backs both the current (V4) cursor and the
- * deprecated V3 marketplace's own separate cursor, without duplicating the R2-vs-local-file
- * fallback dance twice.
+ * IMPORTANT — these keys are deliberately VERSION-STABLE (one per contract generation: V3, V4,
+ * V5, ...), never ROLE-based ("current"/"legacy"). A contract's role shifts on every redeploy (V4
+ * was "current" until V5 shipped, and is "legacy" from here on), but whichever key already holds
+ * that contract's own real accumulated progress must keep meaning exactly that contract forever —
+ * reusing a role-based key across a redeploy would silently apply one contract's cursor value to a
+ * DIFFERENT contract's scan. Confirmed live 2026-09-15: V5 deployed at block 15874925 while V4's
+ * own real cursor (having run continuously since V4 was "current") was already past that block —
+ * if V5 had reused V4's old "current" key as-is, the watcher would have read that already-advanced
+ * value, believed itself already caught up, and silently skipped scanning V5's own genesis
+ * activity entirely. getLastProcessedV5Block below is a brand new key for exactly this reason;
+ * getLastProcessedV4Block/getLastProcessedV3Block deliberately keep the SAME file/R2 key names
+ * this module has always used for each of them (the v4State/v3State constants below), even though
+ * what those constants are named no longer matches which redeploy is "current" — renaming the
+ * underlying key would have thrown away real, already-accumulated progress for no reason.
  */
+
+const v4StateFile = path.join(__dirname, "..", "data", "state.json");
+const v4StateKey = "watcher-state.json";
+const v3StateFile = path.join(__dirname, "..", "data", "state-legacy.json");
+const v3StateKey = "watcher-state-legacy.json";
+// New in the V5 rewiring — no prior data to preserve, so this one *can* follow the current
+// version number.
+const v5StateFile = path.join(__dirname, "..", "data", "state-v5.json");
+const v5StateKey = "watcher-state-v5.json";
 
 let cachedR2Client = null;
 function getR2Client() {
@@ -121,20 +132,29 @@ async function setLastProcessedBlockFor(stateFile, stateKey, blockNumber) {
   }
 }
 
-export async function getLastProcessedBlock() {
-  return getLastProcessedBlockFor(STATE_FILE, STATE_KEY);
+/** V5's own cursor (the current contract as of this rewiring) — brand new key, see this module's
+ * own header comment for why it can't reuse V4's old "current" key. */
+export async function getLastProcessedV5Block() {
+  return getLastProcessedBlockFor(v5StateFile, v5StateKey);
+}
+export async function setLastProcessedV5Block(blockNumber) {
+  return setLastProcessedBlockFor(v5StateFile, v5StateKey, blockNumber);
 }
 
-export async function setLastProcessedBlock(blockNumber) {
-  return setLastProcessedBlockFor(STATE_FILE, STATE_KEY, blockNumber);
+/** V4's own cursor — same key this module has always used for V4 (back when V4 was "current"),
+ * carrying its real accumulated progress forward unchanged now that V4 is a legacy source. */
+export async function getLastProcessedV4Block() {
+  return getLastProcessedBlockFor(v4StateFile, v4StateKey);
+}
+export async function setLastProcessedV4Block(blockNumber) {
+  return setLastProcessedBlockFor(v4StateFile, v4StateKey, blockNumber);
 }
 
-/** Same as getLastProcessedBlock, but for the deprecated V3 marketplace's own cursor. */
-export async function getLastProcessedLegacyBlock() {
-  return getLastProcessedBlockFor(LEGACY_STATE_FILE, LEGACY_STATE_KEY);
+/** V3's own cursor — same key this module has always used for V3 (its own legacy cursor since V4
+ * first shipped), unaffected by this rewiring at all. */
+export async function getLastProcessedV3Block() {
+  return getLastProcessedBlockFor(v3StateFile, v3StateKey);
 }
-
-/** Same as setLastProcessedBlock, but for the deprecated V3 marketplace's own cursor. */
-export async function setLastProcessedLegacyBlock(blockNumber) {
-  return setLastProcessedBlockFor(LEGACY_STATE_FILE, LEGACY_STATE_KEY, blockNumber);
+export async function setLastProcessedV3Block(blockNumber) {
+  return setLastProcessedBlockFor(v3StateFile, v3StateKey, blockNumber);
 }

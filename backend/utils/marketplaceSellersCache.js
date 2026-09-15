@@ -17,12 +17,16 @@ import { createRpcProvider } from "./rpcProvider.js";
 // the connected user's own names), which needs to reflect a just-submitted transaction
 // immediately — a 5-minute-stale R2 cache would be a real regression there. Listings stay a live
 // on-chain read; only the seller-name resolution (the part that was actually broken) moves here.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
-// The deprecated V3 marketplace — useMarketplaceListings.js's getActiveListings() now merges V4's
-// listings with V3's (a V3 listing never sold/cancelled is still real and still buyable), so this
-// cache has to resolve primary names for V3's active sellers too, or every one of them would show
-// as a raw address on the Marketplace page.
-const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Every deprecated marketplace this app used to point at — useMarketplaceListings.js's
+// getActiveListings() merges the current contract's listings with all of theirs (a listing never
+// sold/cancelled is still real and still buyable), so this cache has to resolve primary names for
+// their active sellers too, or every one of them would show as a raw address on the Marketplace
+// page.
+const LEGACY_MARKETPLACE_ADDRESSES = [
+  process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2",
+  process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13",
+];
 const REVERSE_REGISTRAR_ADDRESS = process.env.REVERSE_REGISTRAR_ADDRESS || "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A";
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
@@ -69,8 +73,8 @@ async function resolvePrimaryName(reverseRegistrar, resolver, addr) {
   }
 }
 
-// nextListingId()/listings() are unchanged getters between V3 and V4 (same selectors), so one
-// call works against either contract instance.
+// nextListingId()/listings() are unchanged getters across V3/V4/V5 (same selectors), so one call
+// works against any contract instance.
 async function getActiveSellers(marketplace) {
   const nextId = await marketplace.nextListingId();
   const count = Number(nextId) - 1;
@@ -83,15 +87,14 @@ async function getActiveSellers(marketplace) {
 
 let isRunning = false;
 
-async function scanAndPublish(marketplace, legacyMarketplace, reverseRegistrar, provider) {
+async function scanAndPublish(marketplace, legacyMarketplaces, reverseRegistrar, provider) {
   if (isRunning) return; // previous run still in flight — skip this tick
   isRunning = true;
   try {
-    const [currentSellers, legacySellers] = await Promise.all([
-      getActiveSellers(marketplace),
-      getActiveSellers(legacyMarketplace),
-    ]);
-    const activeSellers = new Set([...currentSellers, ...legacySellers]);
+    const sellersPerContract = await Promise.all(
+      [marketplace, ...legacyMarketplaces].map((contract) => getActiveSellers(contract))
+    );
+    const activeSellers = new Set(sellersPerContract.flat());
 
     if (activeSellers.size === 0) {
       await setMarketplaceSellersCache({});
@@ -136,10 +139,10 @@ export function startMarketplaceSellersCache() {
   // the pattern (many concurrent per-item calls) that triggered Ankr's batch-size rejection there.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
-  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplaces = LEGACY_MARKETPLACE_ADDRESSES.map((addr) => new ethers.Contract(addr, MARKETPLACE_ABI, provider));
   const reverseRegistrar = new ethers.Contract(REVERSE_REGISTRAR_ADDRESS, REVERSE_REGISTRAR_ABI, provider);
 
   console.log(`📡 Marketplace sellers cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s)`);
-  scanAndPublish(marketplace, legacyMarketplace, reverseRegistrar, provider);
-  setInterval(() => scanAndPublish(marketplace, legacyMarketplace, reverseRegistrar, provider), CACHE_INTERVAL_MS);
+  scanAndPublish(marketplace, legacyMarketplaces, reverseRegistrar, provider);
+  setInterval(() => scanAndPublish(marketplace, legacyMarketplaces, reverseRegistrar, provider), CACHE_INTERVAL_MS);
 }

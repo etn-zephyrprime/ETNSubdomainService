@@ -53,14 +53,15 @@ export async function getActivatedDomainsCache() {
 }
 
 /**
- * Publishes `{ domains, lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt }`.
- * Short cache lifetime, same as subnameDomainsState.js — ownership/expiry get re-verified every
- * scan cycle (see activatedDomainsCache.js), so a stale CDN copy would show an outdated owner or a
- * "time left" that's already ticked past zero. legacyLastScannedBlock tracks the deprecated V3
- * contract's own scan cursor (see activatedDomainsCache.js's LEGACY_MARKETPLACE_ADDRESS) —
- * separate from lastScannedBlock (V4's) since the two contracts have different deploy blocks.
+ * Publishes `{ domains, lastScannedBlocks, schemaVersion, updatedAt }`. Short cache lifetime, same
+ * as subnameDomainsState.js — ownership/expiry get re-verified every scan cycle (see
+ * activatedDomainsCache.js), so a stale CDN copy would show an outdated owner or a "time left"
+ * that's already ticked past zero. lastScannedBlocks is a map of { [contractAddress]: block },
+ * one entry per marketplace contract this app has ever scanned (the current one plus every
+ * deprecated one — see activatedDomainsCache.js's own MARKETPLACE_SOURCES) — each contract has its
+ * own deploy block, so each needs its own independent cursor.
  */
-export async function setActivatedDomainsCache(domains, lastScannedBlock, schemaVersion, legacyLastScannedBlock) {
+export async function setActivatedDomainsCache(domains, lastScannedBlocks, schemaVersion) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -68,7 +69,7 @@ export async function setActivatedDomainsCache(domains, lastScannedBlock, schema
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ domains, lastScannedBlock, legacyLastScannedBlock, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ domains, lastScannedBlocks, schemaVersion, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })

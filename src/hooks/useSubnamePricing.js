@@ -1,11 +1,16 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACES, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
 import { computeTokenId } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import ETHRegistrarControllerABI from "../abis/ETHRegistrarControllerABI.json";
 import BaseRegistrarABI from "../abis/BaseRegistrarABI.json";
+
+// Every marketplace this app has ever pointed at, most-recent (current) first — shared by
+// isDomainActivated/migrateActivation below to walk this app's whole contract history rather than
+// just one hop back.
+const MARKETPLACE_CHAIN = [MARKETPLACE_ADDRESS, ...LEGACY_MARKETPLACES.map((m) => m.address)];
 
 export function useSubnamePricing() {
   const [loading, setLoading] = useState(false);
@@ -29,42 +34,71 @@ export function useSubnamePricing() {
     return await marketplace.subnamePricePerYear(parentNode, paymentToken);
   }, [getReadContracts]);
 
-  // Checks V4 first (the real, current source of truth for anything V4 itself gates — setting a
-  // price, registering a subname, etc. all live there). If V4 says not-activated, falls back to
-  // the deprecated V3 contract: a domain paid to activate on V3 and never migrated is still real,
-  // already-paid-for activation, not a fresh "please pay again" case — V4's own permissionless
-  // migrateActivation(node) exists specifically to carry that over for free. Returns
-  // `needsMigration: true` in exactly that case so the caller can offer the free sync instead of
-  // silently charging the (potentially goldlist-floor-sized) activation fee a second time — this
-  // was a real double-charge risk introduced by pointing this app at a fresh V4 contract whose own
-  // domainActivated starts false for every domain, regardless of its real V3 history.
+  // Checks the current contract first (the real source of truth for anything it itself gates —
+  // setting a price, registering a subname, etc.). If not activated there, walks every deprecated
+  // marketplace this app has ever pointed at (most recent first — MARKETPLACE_CHAIN) looking for a
+  // real, already-paid activation: a domain paid to activate on an old contract and never migrated
+  // forward is still real, already-paid-for activation, not a fresh "please pay again" case — each
+  // contract's own permissionless migrateActivation(node) exists specifically to carry that over
+  // for free, one hop at a time (its own immutable legacyMarketplace). A domain activated several
+  // redeploys back (e.g. only ever activated on V3, never touched V4) needs that many
+  // migrateActivation calls chained together to reach the current contract, not just one — this
+  // returns the exact ordered list (`migrationSteps`, oldest-needed hop first) so the caller can
+  // run all of them as one action instead of the user having to notice and repeat this manually.
+  // This is what prevents a real double-charge risk: pointing this app at a fresh contract whose
+  // own domainActivated starts false for every domain, regardless of real prior history, would
+  // otherwise show the paid "Activate" flow again for a domain that's already been paid for once.
   const isDomainActivated = useCallback(async (node) => {
-    const { marketplace } = getReadContracts();
-    const activatedOnCurrent = await marketplace.domainActivated(node);
-    if (activatedOnCurrent) return { activated: true, needsMigration: false };
+    const provider = new ethers.JsonRpcProvider(RPC_URL);
+    const contracts = MARKETPLACE_CHAIN.map((address) => new ethers.Contract(address, MarketplaceABI, provider));
 
-    try {
-      const provider = new ethers.JsonRpcProvider(RPC_URL);
-      const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, MarketplaceABI, provider);
-      const activatedOnLegacy = await legacyMarketplace.domainActivated(node);
-      return { activated: activatedOnLegacy, needsMigration: activatedOnLegacy };
-    } catch (err) {
-      console.warn("Couldn't check legacy V3 activation status:", err.message);
-      return { activated: false, needsMigration: false };
+    let firstActivatedIndex = -1;
+    for (let i = 0; i < contracts.length; i++) {
+      let activated = false;
+      try {
+        activated = await contracts[i].domainActivated(node);
+      } catch (err) {
+        console.warn(`Couldn't check activation status on ${MARKETPLACE_CHAIN[i]}:`, err.message);
+        break; // don't guess past a genuinely failed read
+      }
+      if (activated) {
+        firstActivatedIndex = i;
+        break;
+      }
     }
-  }, [getReadContracts]);
+
+    if (firstActivatedIndex === -1) return { activated: false, needsMigration: false, migrationSteps: [] };
+    if (firstActivatedIndex === 0) return { activated: true, needsMigration: false, migrationSteps: [] };
+
+    // Oldest-needed hop first: fixing index i requires calling THAT contract's own
+    // migrateActivation, which itself reads one hop further back (i+1) — so index
+    // (firstActivatedIndex - 1) has to actually land before index (firstActivatedIndex - 2) can
+    // succeed, and so on down to index 0 (the current contract) last.
+    const migrationSteps = [];
+    for (let i = firstActivatedIndex - 1; i >= 0; i--) migrationSteps.push(MARKETPLACE_CHAIN[i]);
+
+    return { activated: true, needsMigration: true, migrationSteps };
+  }, []);
 
   // Permissionless on-chain (anyone can call it, not just the domain owner) — carries a domain's
-  // already-paid V3 activation over to V4 for free. See isDomainActivated's `needsMigration` above.
-  const migrateActivation = useCallback(async (node, signer) => {
+  // already-paid activation forward to the current contract for free. `steps` is
+  // isDomainActivated's own `migrationSteps` (oldest-needed hop first) — each is a separate
+  // migrateActivation transaction (the function takes no batching parameter), awaited in order
+  // since a later step's own require(legacyMarketplace.domainActivated(node)) only passes once the
+  // earlier step has actually landed.
+  const migrateActivation = useCallback(async (node, signer, steps) => {
     setLoading(true);
     setError(null);
     try {
-      const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-      const tx = await marketplace.migrateActivation(node, { gasLimit: 150000 });
-      const receipt = await tx.wait();
-      if (!receipt) throw new Error("Migration failed");
-      return { success: true, txHash: tx.hash };
+      let lastTxHash = null;
+      for (const marketplaceAddress of steps) {
+        const marketplace = new ethers.Contract(marketplaceAddress, MarketplaceABI, signer);
+        const tx = await marketplace.migrateActivation(node, { gasLimit: 150000 });
+        const receipt = await tx.wait();
+        if (!receipt) throw new Error("Migration failed");
+        lastTxHash = tx.hash;
+      }
+      return { success: true, txHash: lastTxHash };
     } catch (err) {
       console.error("Activation migration failed:", err);
       setError(err?.reason || err?.message || "Migration failed");

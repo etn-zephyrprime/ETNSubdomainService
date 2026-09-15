@@ -24,11 +24,14 @@ import { getState, setState } from "../state/subdomainAdvertState.js";
 import { createAdvertScheduler } from "./advertScheduler.js";
 import { createRpcProvider } from "./rpcProvider.js";
 
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
-// The deprecated V3 marketplace — a V3 listing never sold/cancelled is still real and still
-// buyable (see useMarketplaceListings.js), so the "Marketplace" advert reads both, same as the
-// site's own Marketplace page.
-const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Every deprecated marketplace this app used to point at — a listing on any of them never
+// sold/cancelled is still real and still buyable (see useMarketplaceListings.js), so the
+// "Marketplace" advert reads all of them, same as the site's own Marketplace page.
+const LEGACY_MARKETPLACE_ADDRESSES = [
+  process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2",
+  process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13",
+];
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default/override as marketplaceWatcher.js's SITE_URL — every link in these adverts is
 // relative to this.
@@ -145,15 +148,15 @@ async function getActiveListings(marketplace) {
   return raw.filter((l) => l.active);
 }
 
-async function buildMarketplaceAdvert(marketplace, legacyMarketplace, nameWrapper) {
+async function buildMarketplaceAdvert(marketplace, legacyMarketplaces, nameWrapper) {
   const emptyMessage = (
     `🏪 *Marketplace*\n\n` +
     `No active listings right now — check back soon, or list a name of your own!\n\n` +
     `[View Marketplace](${SITE_URL}/marketplace)`
   );
 
-  const [current, legacy] = await Promise.all([getActiveListings(marketplace), getActiveListings(legacyMarketplace)]);
-  const active = [...current, ...legacy];
+  const perSource = await Promise.all([marketplace, ...legacyMarketplaces].map((c) => getActiveListings(c)));
+  const active = perSource.flat();
 
   if (active.length === 0) return emptyMessage;
 
@@ -194,7 +197,7 @@ export async function startSubdomainAdvertScheduler() {
 
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
-  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplaces = LEGACY_MARKETPLACE_ADDRESSES.map((addr) => new ethers.Contract(addr, MARKETPLACE_ABI, provider));
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
   const start = createAdvertScheduler({
@@ -205,7 +208,7 @@ export async function startSubdomainAdvertScheduler() {
     buildMessage: async (index) => {
       if (index === 0) return buildActivateAdvert();
       if (index === 1) return buildSubnamesAdvert();
-      return buildMarketplaceAdvert(marketplace, legacyMarketplace, nameWrapper);
+      return buildMarketplaceAdvert(marketplace, legacyMarketplaces, nameWrapper);
     },
     sendMessage: (text) => sendTelegramMessage(text),
     isConfigured: telegramConfigured,

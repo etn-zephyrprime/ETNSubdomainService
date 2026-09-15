@@ -18,12 +18,16 @@
 // any known app).
 import { CORE_TOKEN_ADDRESS, CORE_WETN_POOL_ADDRESS } from "./coreClashConfig.js";
 
-const MARKETPLACE_ADDRESS = (process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2").toLowerCase();
-// The deprecated V3 marketplace (PlanetZephyrosSubdomainServiceV3) — MARKETPLACE_ADDRESS now
-// points at V4, but V3's own leftover burnPool can still be flushed via a direct admin call to it
-// (see useBurnPool.js's comment on why that balance isn't migrated), so a V3-triggered burn should
-// still get the real "ETN Subdomain Service" label instead of falling through to "Manual burn".
-const LEGACY_MARKETPLACE_ADDRESS = (process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13").toLowerCase();
+const MARKETPLACE_ADDRESS = (process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7").toLowerCase();
+// Every deprecated marketplace this app used to point at — MARKETPLACE_ADDRESS now points at V5,
+// but a deprecated contract's own leftover burnPool can still be flushed via a direct admin call
+// to it (see useBurnPool.js's comment on why that balance isn't migrated), so a burn triggered
+// from any of them should still get the real "ETN Subdomain Service" label instead of falling
+// through to "Manual burn".
+const LEGACY_MARKETPLACE_ADDRESSES = [
+  (process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2").toLowerCase(),
+  (process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13").toLowerCase(),
+];
 const PREMIUM_SUBSCRIPTION_ADDRESS = (process.env.PREMIUM_SUBSCRIPTION_ADDRESS || "0x05Cc5a4Cbf18113f7e9c1675a0Ffc702BA7876E1").toLowerCase();
 // Confirmed live via Blockscout's verified contract names during this feature's own build —
 // not otherwise used as shared constants anywhere else in this backend yet.
@@ -46,7 +50,7 @@ const KNOWN_BURN_SOURCES = new Map([
   // funded it, so the label covers both rather than naming only the original, narrower one.
   [PREMIUM_SUBSCRIPTION_ADDRESS, "Argus Dashboard and PnL Statements"],
   [MARKETPLACE_ADDRESS, "ETN Subdomain Service"],
-  [LEGACY_MARKETPLACE_ADDRESS, "ETN Subdomain Service"],
+  ...LEGACY_MARKETPLACE_ADDRESSES.map((addr) => [addr, "ETN Subdomain Service"]),
   [CORE_CLASH_TRADING_CARD_GAME_ADDRESS, "Core Clash"],
   [CORE_CLASH_GAME_ADDRESS, "Core Clash"],
   [CLUB_SPIN_VAULT_ADDRESS, "Core Clash"],

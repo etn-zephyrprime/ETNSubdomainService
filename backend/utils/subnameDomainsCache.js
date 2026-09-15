@@ -9,10 +9,10 @@ import { createRpcProvider } from "./rpcProvider.js";
 // and it only grows — every day adds another ~17k blocks/~17 round trips to that scan, forever,
 // for every visitor). Same chain/contract defaults as marketplaceWatcher.js, overridable via env
 // for a different deployment.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2";
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15873016;
+  : 15874925;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Deliberately coarser than WATCHER_POLL_INTERVAL_MS (60s) — subname pricing changes far less
 // often than domain activations/registrations, and after the first run this only ever scans the
@@ -23,13 +23,17 @@ const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
   ? parseInt(process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS, 10)
   : 900000;
 
-// Bumped once, deliberately, to force every deployed instance's next tick to do a full fresh
+// v2: bumped once, deliberately, to force every deployed instance's next tick to do a full fresh
 // rescan from MARKETPLACE_DEPLOY_BLOCK instead of trusting a previously-published cache's
 // lastScannedBlock — the chunked scan had a bug (see queryLogsChunked below) that could silently
 // drop a domain's events, so a cache published before this fix may already be missing entries
 // (confirmed: community.etn) that scanning forward from its lastScannedBlock would never revisit.
-// Not meant to be bumped routinely — only when a past scan's correctness is actually in question.
-const CACHE_SCHEMA_VERSION = 2;
+// v3: MARKETPLACE_ADDRESS moved from V4 to V5 (a fresh contract, lower block number than the old
+// cache's already-advanced lastScannedBlock) — without a bump, the stale cursor would read as
+// "already past V5's own deploy block", so this would silently stop finding ANY of V5's real
+// SubnamePricePerYearSet events instead of rescanning from V5's actual start. Not meant to be
+// bumped routinely — only when a past scan's correctness is actually in question, same as v2.
+const CACHE_SCHEMA_VERSION = 3;
 
 const MARKETPLACE_ABI = [
   "event SubnamePricePerYearSet(bytes32 indexed parentNode, address indexed paymentToken, uint256 pricePerYear)",
