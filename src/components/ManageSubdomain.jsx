@@ -544,6 +544,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setActivationError(null);
     setActivationLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await activateDomain(node, verifiedName, activationFee, signer);
       setActivated(true);
@@ -582,7 +583,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     let cancelled = false;
     setActivationTokenQuote(null);
     setActivationTokenQuoteError(null);
-    wallet.getSigner()
+    wallet.ensureCorrectNetwork()
+      .then(() => wallet.getSigner())
       .then((signer) => quoteActivationInToken(node, verifiedName, activationCurrency, signer))
       .then((quote) => { if (!cancelled) setActivationTokenQuote(quote); })
       .catch((err) => {
@@ -605,6 +607,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setActivationError(null);
     setActivationLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       const maxTokenAmount = (activationTokenQuote * 105n) / 100n;
 
@@ -643,6 +646,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setMigrationError(null);
     setMigrationLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await migrateActivation(node, signer, migrationSteps);
       setNeedsMigration(false);
@@ -661,6 +665,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setBaseRegistrarApproveError(null);
     setBaseRegistrarApproveLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await approveBaseRegistrar(signer);
       setBaseRegistrarApproved(true);
@@ -676,6 +681,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setApproveError(null);
     setApproveLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await approveMarketplace(signer);
       setApproved(true);
@@ -699,6 +705,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
     setPriceLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await setSubnamePricePerYear(node, priceWei, signer, priceCurrency);
       setCurrentPrice(priceWei);
@@ -717,6 +724,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setSetPrimarySuccess(false);
     setSetPrimaryLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       const fullName = `${verifiedName}.etn`;
       await setReverseName(fullName, signer);
@@ -742,6 +750,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setClearPrimarySuccess(false);
     setClearPrimaryLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await setReverseName("", signer);
       setPrimaryNameState(null);
@@ -759,6 +768,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setSetAddrSuccess(false);
     setSetAddrLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await setAddr(node, wallet.account, signer);
       setResolvedAddress(wallet.account);
@@ -787,6 +797,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
     setSendLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       const result = await transferSubname(node, wallet.account, trimmedAddress, signer);
       setSendTxHash(result.txHash);
@@ -814,6 +825,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
     setResellLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await listName(BigInt(node), priceWei, signer);
       setResellPriceInput("");
@@ -831,6 +843,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setCancelListingError(null);
     setCancelListingLoading(true);
     try {
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       await cancelListing(listing.listingId, signer, listing.marketplaceAddress);
       setListing(null);
@@ -867,6 +880,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
     try {
       const { totalPrice } = await quoteRenewal(verifiedName, DEFAULT_DURATION_SECONDS);
+      await wallet.ensureCorrectNetwork();
       const signer = await wallet.getSigner();
       const result = await renewName(verifiedName, DEFAULT_DURATION_SECONDS, ethers.ZeroHash, totalPrice, signer);
 
