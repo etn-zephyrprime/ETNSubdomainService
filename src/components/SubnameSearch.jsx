@@ -708,7 +708,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             <span>Price</span>
             <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
               {priceDisplay} {selectedToken.symbol}
-              {selectedToken.address === ETN_OPTION.address && <UsdEstimate etn={priceDisplay} />}
+              <UsdEstimate etn={priceDisplay} tokenAddress={selectedToken.address} />
             </span>
           </div>
 

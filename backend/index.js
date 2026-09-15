@@ -14,6 +14,7 @@ import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js
 import { startOwnedNamesCache } from "./utils/ownedNamesCache.js";
 import { startNameServiceStatsCache } from "./utils/nameServiceStatsCache.js";
 import { startEtnPriceCache } from "./utils/etnPriceCache.js";
+import { startTokenPriceCache } from "./utils/tokenPriceCache.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
 import { startDashboardStatsCache } from "./utils/dashboardStatsCache.js";
 import { startNftSalesCache } from "./utils/nftSalesCache.js";
@@ -106,6 +107,7 @@ app.listen(PORT, () => {
   startOwnedNamesCache();
   startNameServiceStatsCache();
   startEtnPriceCache();
+  startTokenPriceCache();
   startExpiryAlertScheduler();
   startDashboardStatsCache();
   startNftSalesCache();
