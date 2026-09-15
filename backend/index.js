@@ -16,6 +16,7 @@ import { startNameServiceStatsCache } from "./utils/nameServiceStatsCache.js";
 import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startTokenPriceCache } from "./utils/tokenPriceCache.js";
 import { startTeamWalletsCache } from "./utils/teamWalletsCache.js";
+import { startTeamWalletsBalanceHistory } from "./utils/teamWalletsBalanceHistory.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
 import { startDashboardStatsCache } from "./utils/dashboardStatsCache.js";
 import { startNftSalesCache } from "./utils/nftSalesCache.js";
@@ -110,6 +111,7 @@ app.listen(PORT, () => {
   startEtnPriceCache();
   startTokenPriceCache();
   startTeamWalletsCache();
+  startTeamWalletsBalanceHistory();
   startExpiryAlertScheduler();
   startDashboardStatsCache();
   startNftSalesCache();
