@@ -252,10 +252,17 @@ export function useSubnameRegistration() {
     setError(null);
     try {
       const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+      // registerSubname's own on-chain check (PlanetZephyrosSubdomainServiceV5.sol) is exactly
+      // the inverse of "always attach value": `require(msg.value == 0, "Unexpected ETN sent")`
+      // for any non-ETN paymentToken, since a token payment is pulled via transferFrom against
+      // the allowance ensureAllowance already secured above, not sent as call value. Attaching
+      // priceWei as value for a token purchase would both show a wallet's confirm screen a
+      // completely wrong "send N ETN" prompt AND revert on-chain the moment it's actually mined.
+      const value = paymentToken === ethers.ZeroAddress ? priceWei : 0n;
       // Explicit gas limit — this chain's eth_estimateGas has proven unreliable elsewhere in
       // this app (registerName ran out of gas at its auto-estimated limit), so writes use a
       // fixed generous limit instead of trusting the wallet's estimate.
-      const tx = await marketplace.registerSubname(parentNode, label, duration, paymentToken, { value: priceWei, gasLimit: 450000 });
+      const tx = await marketplace.registerSubname(parentNode, label, duration, paymentToken, { value, gasLimit: 450000 });
       const receipt = await tx.wait();
       if (!receipt) throw new Error("Registration failed");
 
