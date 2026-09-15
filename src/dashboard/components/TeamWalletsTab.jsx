@@ -160,14 +160,17 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         </div>
       </div>
 
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
         Recent ETN Movements
+      </div>
+      <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+        Transfers of 1,000,000 ETN or more only.
       </div>
       <div style={{ padding: "0 14px", background: panel2, border: `1px solid ${border}`, borderRadius: 12 }}>
         {wallets === null ? (
           <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>Loading…</div>
         ) : movements.length === 0 ? (
-          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No recent ETN movements found.</div>
+          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No movements of 1,000,000+ ETN found recently.</div>
         ) : (
           movements.map((m) => <MovementRow key={m.hash} movement={m} />)
         )}
