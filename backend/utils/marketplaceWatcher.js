@@ -49,12 +49,18 @@ const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 // scripts/backfillNftImages.js — get it wrong and ethers silently fails to decode every log.
 // SubnameRegistered gained an indexed `paymentToken` in V4 (multi-currency subname pricing,
 // unchanged shape in V5) — DomainActivated/ExistingNameListed/ListingSold are unchanged from V3.
+// DomainActivatedWithToken/erc20BurnPool are V4+ (multi-currency) additions — see
+// PlanetZephyrosSubdomainServiceV4.sol/V5.sol's own comments: `burnPool` stays the ETN-only pool
+// unchanged from V3, while `erc20BurnPool[token]` is a separate running total per non-ETN
+// currency a subname's ever been paid in.
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
+  "event DomainActivatedWithToken(bytes32 indexed node, address indexed payer, address indexed paymentToken, uint256 tokenAmountPaid, uint256 etnEquivalentFee)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
   "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "function burnPool() view returns (uint256)",
+  "function erc20BurnPool(address) view returns (uint256)",
   "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
 // V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — everything else is identical.
@@ -111,6 +117,58 @@ function decodeDnsName(hex) {
 
 function formatEtn(wei) {
   return parseFloat(ethers.formatEther(wei)).toFixed(2);
+}
+
+// Symbol/decimals for display only — same 9 tokens subdomainAdvertScheduler.js's own
+// TOKEN_DECIMALS_BY_ADDRESS tracks, duplicated here per this file's own established
+// "small per-file helpers are fine to drift independently" convention (see queryLogsChunked's
+// header comment below). Only used to label an amount in a notification — never to decide
+// whether a token is actually usable (that's a real on-chain fact the contract itself already
+// enforced before any of these events could ever exist).
+const TOKEN_DECIMALS_BY_ADDRESS = {
+  "0x043fAa1b5C5FC9a7dc35171f290c29ECDE0cCff1": { symbol: "BOLT", decimals: 18 },
+  "0x309B916b3A90cb3E071697Ea9680e9217A30066f": { symbol: "CORE", decimals: 18 },
+  "0xEe432C220273e4F949007B4c1946562826Efa055": { symbol: "DYNO", decimals: 18 },
+  "0xc20d02538368D8F7deBeAeB99D9a8b4d4D1DDC1C": { symbol: "PDY", decimals: 18 },
+  "0x075533AB8EeC6A6999F07C8bc2f1900eB8312e25": { symbol: "FUGAZI", decimals: 18 },
+  "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e": { symbol: "USDC", decimals: 6 },
+  "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7": { symbol: "USDT", decimals: 6 },
+  "0xC9FC4AB00911793D99b5c7Bd01f01203C21D4131": { symbol: "CLUB", decimals: 18 },
+  "0xE74e4E7A064310466f3bdBd3F3Ce4e8c8F7CF1d5": { symbol: "DCNT", decimals: 18 },
+};
+
+// Resolves an event's `paymentToken` field to display info. `undefined` covers a legacy V3
+// event, which predates multi-currency pricing and never had this field at all — always ETN, same
+// as `ethers.ZeroAddress` (V4/V5's own convention for "priced in ETN"). Falls back to a
+// "?"/18-decimals placeholder for a genuinely unrecognized token address rather than throwing —
+// flagged loudly via console.warn so it's visible, but a notification with an unlabeled amount is
+// still better than no notification at all for a real on-chain sale.
+function resolveCurrency(paymentToken) {
+  if (paymentToken === undefined || paymentToken === ethers.ZeroAddress) {
+    return { symbol: "ETN", decimals: 18, isEtn: true, address: ethers.ZeroAddress };
+  }
+  const known = TOKEN_DECIMALS_BY_ADDRESS[paymentToken];
+  if (!known) {
+    console.warn(`⚠️  Unrecognized payment token ${paymentToken} — notification will show "?" instead of a real symbol`);
+    return { symbol: "?", decimals: 18, isEtn: false, address: paymentToken };
+  }
+  return { ...known, isEtn: false, address: paymentToken };
+}
+
+// listExistingName/buyListing (resale) stayed `payable`-only, ETN-exclusive across V3/V4/V5 —
+// only subname registration and activation ever gained multi-currency support (registerSubname/
+// activateDomainWithToken) — so notifyNameListed/notifyListingSold below are deliberately left on
+// formatEtn rather than resolveCurrency/formatAmount; there's no paymentToken to resolve.
+function formatAmount(wei, currency) {
+  return `${parseFloat(ethers.formatUnits(wei, currency.decimals)).toFixed(2)} ${currency.symbol}`;
+}
+
+// Whether `contract`'s own ABI declares an event named `eventName` — used to skip querying
+// DomainActivatedWithToken against a legacy V3 source, whose ABI predates it entirely (querying a
+// filter for an event a contract's interface doesn't declare throws, which would otherwise take
+// down that source's whole poll via the Promise.all it's grouped into below).
+function contractHasEvent(contract, eventName) {
+  return contract.interface.fragments.some((f) => f.type === "event" && f.name === eventName);
 }
 
 // Same construction as src/utils/ens.js's computeSubnode — needed here because
@@ -207,16 +265,31 @@ async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
   );
 }
 
+// ERC20 counterpart to notifyDomainActivated above — activateDomainWithToken's own event (V4+
+// only, see MARKETPLACE_ABI's comment). Shows the ETN-equivalent fee alongside the actual token
+// amount paid since that's the figure everyone's used to seeing for activation cost, and the
+// token amount alone doesn't convey that on its own.
+async function notifyDomainActivatedWithToken(event, nameWrapper, resolveDisplayName) {
+  const { node, payer, paymentToken, tokenAmountPaid, etnEquivalentFee } = event.args;
+  const currency = resolveCurrency(paymentToken);
+  const domain = decodeDnsName(await nameWrapper.names(node)) || "(unknown)";
+  const buyerDisplay = await resolveDisplayName(payer);
+  const txUrl = `${EXPLORER_BASE_URL}/tx/${event.transactionHash}`;
+
+  await sendWithImage(
+    node,
+    `🌐 *Domain Activated*\n` +
+    `Domain: \`${domain}\`\n` +
+    `Buyer: \`${buyerDisplay}\`\n` +
+    `Price Paid: \`${formatAmount(tokenAmountPaid, currency)}\` (≈ ${formatEtn(etnEquivalentFee)} ETN)\n` +
+    `[View Transaction](${txUrl})\n` +
+    SITE_LINK_LINE
+  );
+}
+
 async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName) {
   const { parentNode, label, buyer, paymentToken, price, burnAmount } = event.args;
-  // paymentToken is undefined entirely for a legacy V3 event (V3 predates multi-currency pricing
-  // and never had this field) — only warn when it's actually present and non-ETN, not just falsy.
-  // Once a real ERC20 sale happens (V4/V5 both support whitelisted tokens now), this formatting
-  // needs a real per-token symbol/decimals lookup instead of assuming ETN/18-decimals — flag
-  // loudly rather than silently mislabel the amount until that's built.
-  if (paymentToken !== undefined && paymentToken !== ethers.ZeroAddress) {
-    console.warn(`⚠️  SubnameRegistered paid in non-ETN token ${paymentToken} — notification will mislabel the amount as ETN`);
-  }
+  const currency = resolveCurrency(paymentToken);
   const domain = decodeDnsName(await nameWrapper.names(parentNode)) || "(unknown)";
   const subname = `${label}.${domain}`;
   const subNode = computeSubnode(parentNode, label);
@@ -225,13 +298,19 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveD
 
   // Queried as of this event's own block (not just "latest") so it reads as the running total
   // right after *this* sale specifically, even if a later poll cycle picks up several
-  // registrations at once. Goes back to ~0 whenever buyBackAndBurn is called, same as the
-  // frontend's BurnPoolCard.
+  // registrations at once. Goes back to ~0 whenever buyBackAndBurn/buyBackAndBurnToken is called,
+  // same as the frontend's BurnPoolCard. An ETN sale reads the shared burnPool(); a token sale
+  // reads that token's own erc20BurnPool(token) instead — the two are tracked entirely separately
+  // on-chain (see MARKETPLACE_ABI's comment above), so mixing them here would be meaningless. A
+  // legacy V3 event never has a real paymentToken (see resolveCurrency), so this only ever takes
+  // the ETN branch for V3 sales — which is also the only branch its ABI actually supports.
   let burnPoolTotal;
   try {
-    burnPoolTotal = await marketplace.burnPool({ blockTag: event.blockNumber });
+    burnPoolTotal = currency.isEtn
+      ? await marketplace.burnPool({ blockTag: event.blockNumber })
+      : await marketplace.erc20BurnPool(currency.address, { blockTag: event.blockNumber });
   } catch (err) {
-    console.warn("⚠️  Couldn't read burnPool() total:", err.message);
+    console.warn("⚠️  Couldn't read burn pool total:", err.message);
   }
 
   await sendWithImage(
@@ -240,9 +319,9 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveD
     `Domain: \`${domain}\`\n` +
     `Subname: \`${subname}\`\n` +
     `Buyer: \`${buyerDisplay}\`\n` +
-    `Price Paid: \`${formatEtn(price)} ETN\`\n` +
-    `🔥 Added to Burn Pool (20%): \`${formatEtn(burnAmount)} ETN\`\n` +
-    (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatEtn(burnPoolTotal)} ETN\`\n` : "") +
+    `Price Paid: \`${formatAmount(price, currency)}\`\n` +
+    `🔥 Added to Burn Pool (20%): \`${formatAmount(burnAmount, currency)}\`\n` +
+    (burnPoolTotal !== undefined ? `🔥 Burn Pool Running Total: \`${formatAmount(burnPoolTotal, currency)}\`\n` : "") +
     `[View Transaction](${txUrl})\n` +
     SITE_LINK_LINE
   );
@@ -254,8 +333,8 @@ async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveD
     const parentData = await nameWrapper.getData(parentNode);
     await notifyOwnerDirect(
       parentData.owner,
-      `🏷️ *${subname}* just sold for *${formatEtn(price)} ETN*\n\n` +
-      `You earned *${formatEtn(event.args.sellerAmount)} ETN* (80%).\n\n` +
+      `🏷️ *${subname}* just sold for *${formatAmount(price, currency)}*\n\n` +
+      `You earned *${formatAmount(event.args.sellerAmount, currency)}* (80%).\n\n` +
       `[View Transaction](${txUrl})`
     );
   } catch (err) {
@@ -338,15 +417,23 @@ async function pollContract(marketplace, nameWrapper, resolveDisplayName, deploy
 
   if (latestBlock <= fromBlock) return; // nothing new
 
-  const [activated, subnamesRegistered, nameListed, listingSold] = await Promise.all([
+  // DomainActivatedWithToken doesn't exist on a legacy V3 contract's own ABI at all (see
+  // MARKETPLACE_ABI's comment) — querying a filter for an event a contract's interface doesn't
+  // declare throws, so this is only ever included for a source that actually has it.
+  const queries = [
     queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock + 1, latestBlock),
     queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock + 1, latestBlock),
     queryLogsChunked(marketplace, marketplace.filters.ExistingNameListed(), fromBlock + 1, latestBlock),
     queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock + 1, latestBlock),
-  ]);
+  ];
+  const supportsTokenActivation = contractHasEvent(marketplace, "DomainActivatedWithToken");
+  if (supportsTokenActivation) {
+    queries.push(queryLogsChunked(marketplace, marketplace.filters.DomainActivatedWithToken(), fromBlock + 1, latestBlock));
+  }
+  const [activated, subnamesRegistered, nameListed, listingSold, activatedWithToken] = await Promise.all(queries);
 
   // Merge and process in on-chain order, not per-event-type order.
-  const events = [...activated, ...subnamesRegistered, ...nameListed, ...listingSold].sort(
+  const events = [...activated, ...subnamesRegistered, ...nameListed, ...listingSold, ...(activatedWithToken || [])].sort(
     (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
   );
 
@@ -354,6 +441,8 @@ async function pollContract(marketplace, nameWrapper, resolveDisplayName, deploy
     try {
       if (event.eventName === "DomainActivated") {
         await notifyDomainActivated(event, nameWrapper, resolveDisplayName);
+      } else if (event.eventName === "DomainActivatedWithToken") {
+        await notifyDomainActivatedWithToken(event, nameWrapper, resolveDisplayName);
       } else if (event.eventName === "SubnameRegistered") {
         await notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName);
       } else if (event.eventName === "ExistingNameListed") {
