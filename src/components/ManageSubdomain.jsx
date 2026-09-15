@@ -9,12 +9,14 @@ import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { useOwnedNames } from "../hooks/useOwnedNames.js";
+import { usePaymentTokens } from "../hooks/usePaymentTokens.js";
 import { computeNode, computeSubnode, computeNftImageUrl } from "../utils/ens.js";
 import { formatEth, formatTimeLeft, isExpired } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
 import TelegramAlertsCard from "./TelegramAlertsCard.jsx";
+import CurrencySelect, { ETN_OPTION } from "./CurrencySelect.jsx";
 import { DEFAULT_DURATION_SECONDS, MIN_SUBNAME_PRICE_PER_YEAR_ETN, BACKEND_IMAGE_URL } from "../config.js";
 
 const MIN_SUBNAME_PRICE_PER_YEAR_WEI = ethers.parseEther(MIN_SUBNAME_PRICE_PER_YEAR_ETN);
@@ -105,6 +107,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [activationFee, setActivationFee] = useState(null);
   const [activationLoading, setActivationLoading] = useState(false);
   const [activationError, setActivationError] = useState(null);
+  // Which currency the "Activate" flow is paying in — ETN_OPTION.address (ethers.ZeroAddress) by
+  // default. Switching this re-quotes via quoteActivationInToken instead of getActivationFee.
+  const [activationCurrency, setActivationCurrency] = useState(ETN_OPTION.address);
+  const [activationTokenApproving, setActivationTokenApproving] = useState(false);
 
   // True when this domain was already activated on a deprecated marketplace but never migrated
   // forward to the current one (see useSubnamePricing.js's isDomainActivated) — `activated` is
@@ -144,6 +150,11 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
   const [priceLoading, setPriceLoading] = useState(false);
   const [priceError, setPriceError] = useState(null);
   const [priceSuccess, setPriceSuccess] = useState(false);
+  // Which currency the "Set Price" form is pricing subnames in — ETN_OPTION.address
+  // (ethers.ZeroAddress) by default. subnamePricePerYear is keyed per token on-chain, so each
+  // currency's price is independent; switching this just changes which one this form reads/writes,
+  // it never clears or affects any other currency's own already-set price.
+  const [priceCurrency, setPriceCurrency] = useState(ETN_OPTION.address);
 
   const [primaryName, setPrimaryNameState] = useState(null);
   const [primaryNameLoading, setPrimaryNameLoading] = useState(false);
@@ -199,17 +210,77 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     migrateActivation,
     getActivationFee,
     activateDomain,
+    quoteActivationInToken,
+    activateDomainWithToken,
     isMarketplaceApproved,
     approveMarketplace,
     isBaseRegistrarApproved,
     approveBaseRegistrar,
     getSubnamePricePerYear,
+    getMinSubnamePricePerYear,
     setSubnamePricePerYear,
   } = useSubnamePricing();
   const { getPrimaryName, setName: setReverseName } = useReverseRecord();
   const { getResolvedAddress, setAddr } = useAddressRecord();
   const { getListingForToken, listName, cancelListing } = useMarketplaceListings();
   const { getNamesOwnedBy } = useOwnedNames();
+  const { getAvailablePaymentTokens, ensureAllowance } = usePaymentTokens();
+
+  // Whitelisted ERC20 payment tokens currently available, alongside ETN, for pricing/activation —
+  // fetched once (this list changes rarely — only when the marketplace owner whitelists/revokes a
+  // token — not worth re-fetching per lookup). null = loading, [] = ETN-only (either genuinely no
+  // tokens whitelisted, or the fetch failed — indistinguishable to the UI, and either way ETN-only
+  // is always still a fully working fallback).
+  const [paymentTokens, setPaymentTokens] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    getAvailablePaymentTokens()
+      .then((tokens) => { if (!cancelled) setPaymentTokens(tokens); })
+      .catch((err) => {
+        console.error("Failed to load available payment tokens:", err);
+        if (!cancelled) setPaymentTokens([]);
+      });
+    return () => { cancelled = true; };
+  }, [getAvailablePaymentTokens]);
+
+  // Re-reads currentPrice whenever the "Set Price" form's selected currency changes — each
+  // currency's price is independent on-chain (subnamePricePerYear is keyed per token), so
+  // switching currency has to re-fetch, not just relabel whatever ETN price was already loaded.
+  // Only runs once a real lookup has completed and the domain is activated (node is set,
+  // currentPrice already has some value from the initial ETN-default load) — a plain `node`-less
+  // guard would otherwise fire once, redundantly, on every fresh lookup too.
+  useEffect(() => {
+    if (!node || activated !== true) return;
+    let cancelled = false;
+    getSubnamePricePerYear(node, priceCurrency)
+      .then((price) => { if (!cancelled) setCurrentPrice(price); })
+      .catch((err) => console.error("Failed to load price for selected currency:", err));
+    return () => { cancelled = true; };
+  }, [node, activated, priceCurrency, getSubnamePricePerYear]);
+
+  // The full token option list (ETN + whatever's currently whitelisted) and the one matching
+  // whichever address is currently selected in the "Set Price" form — needed for its decimals
+  // (ETN/most tokens are 18, but USDC/USDT are 6) whenever parsing/formatting priceInput/
+  // currentPrice against the actual selected currency, not a hardcoded assumption.
+  const allCurrencyOptions = [ETN_OPTION, ...(paymentTokens || [])];
+  const selectedPriceToken = allCurrencyOptions.find((t) => t.address === priceCurrency) || ETN_OPTION;
+  const selectedActivationToken = allCurrencyOptions.find((t) => t.address === activationCurrency) || ETN_OPTION;
+
+  // Live per-token minimum price — see getMinSubnamePricePerYear's own comment for why this can't
+  // be config.js's ETN-only MIN_SUBNAME_PRICE_PER_YEAR_ETN constant for a non-ETN currency. null
+  // while loading; re-fetched whenever the selected currency changes.
+  const [priceCurrencyMin, setPriceCurrencyMin] = useState(MIN_SUBNAME_PRICE_PER_YEAR_WEI);
+  useEffect(() => {
+    let cancelled = false;
+    setPriceCurrencyMin(null);
+    getMinSubnamePricePerYear(priceCurrency)
+      .then((min) => { if (!cancelled) setPriceCurrencyMin(min); })
+      .catch((err) => {
+        console.error("Failed to load minimum price for selected currency:", err);
+        if (!cancelled) setPriceCurrencyMin(0n); // fail open on the client — the contract itself is the real enforcement
+      });
+    return () => { cancelled = true; };
+  }, [priceCurrency, getMinSubnamePricePerYear]);
 
   // Owned-names list — the primary way to pick a name to manage now, replacing "type a name and
   // hope you remember it exactly". null = loading, [] = loaded but empty. A genuinely unwrapped
@@ -302,6 +373,8 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPriceInput("");
     setPriceError(null);
     setPriceSuccess(false);
+    setPriceCurrency(ETN_OPTION.address);
+    setActivationCurrency(ETN_OPTION.address);
     setPrimaryNameState(null);
     setSetPrimaryError(null);
     setSetPrimarySuccess(false);
@@ -491,6 +564,74 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     }
   };
 
+  // Live token-denominated quote for the currently-selected activation currency — only meaningful
+  // once activationFee > 0n (a goldlisted/free domain has nothing to quote in any currency, and
+  // the plain ETN handleActivate path above already handles that case for free). Needs a real
+  // signer, not just wallet.account, since quoteActivationInToken's own staticCall checks
+  // msg.sender against the domain's real owner (see that function's own comment) — refetched
+  // whenever the selected currency changes, so switching currencies always shows a fresh quote
+  // rather than a stale one left over from a previous selection.
+  const [activationTokenQuote, setActivationTokenQuote] = useState(null);
+  const [activationTokenQuoteError, setActivationTokenQuoteError] = useState(null);
+  useEffect(() => {
+    if (activationCurrency === ETN_OPTION.address || !node || !activationFee || activationFee <= 0n) {
+      setActivationTokenQuote(null);
+      setActivationTokenQuoteError(null);
+      return;
+    }
+    let cancelled = false;
+    setActivationTokenQuote(null);
+    setActivationTokenQuoteError(null);
+    wallet.getSigner()
+      .then((signer) => quoteActivationInToken(node, verifiedName, activationCurrency, signer))
+      .then((quote) => { if (!cancelled) setActivationTokenQuote(quote); })
+      .catch((err) => {
+        console.error("Failed to quote activation in token:", err);
+        if (!cancelled) setActivationTokenQuoteError(err?.reason || err?.message || "Couldn't get a quote");
+      });
+    return () => { cancelled = true; };
+    // wallet.account (not the raw `wallet` object) — same convention the owned-names effect above
+    // already uses: useReownWallet.jsx returns a plain object literal every render, so depending
+    // on the object itself would re-fire (and re-quote) this effect on every unrelated re-render
+    // of whatever parent passes `wallet` down, not just on an actual account/connection change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activationCurrency, node, verifiedName, activationFee, quoteActivationInToken, wallet.account]);
+
+  // ERC20 counterpart to handleActivate above. maxTokenAmount is the live quote plus a 5% buffer
+  // (same margin getActivationFee's own ETN estimate already applies) — a few seconds pass between
+  // quoting and this transaction actually mining, during which the router's live rate can move.
+  const handleActivateWithToken = async () => {
+    if (activationTokenQuote == null) return;
+    setActivationError(null);
+    setActivationLoading(true);
+    try {
+      const signer = await wallet.getSigner();
+      const maxTokenAmount = (activationTokenQuote * 105n) / 100n;
+
+      setActivationTokenApproving(true);
+      await ensureAllowance(activationCurrency, maxTokenAmount, signer);
+      setActivationTokenApproving(false);
+
+      await activateDomainWithToken(node, verifiedName, activationCurrency, maxTokenAmount, signer);
+      setActivated(true);
+      setWrapped(true);
+      generateNftAndLink(`${verifiedName}.etn`, node, signer);
+
+      const [isApproved, price] = await Promise.all([
+        isMarketplaceApproved(wallet.account),
+        getSubnamePricePerYear(node),
+      ]);
+      setApproved(isApproved);
+      setCurrentPrice(price);
+    } catch (err) {
+      console.error("Activation (token) failed:", err);
+      setActivationError(err?.reason || err?.message || "Activation failed");
+    } finally {
+      setActivationTokenApproving(false);
+      setActivationLoading(false);
+    }
+  };
+
   // Free, permissionless sync for a domain already activated on a deprecated marketplace — see
   // useSubnamePricing.js's isDomainActivated/migrateActivation for why this exists at all, and why
   // migrationSteps can be more than one hop (a domain only ever activated several redeploys back).
@@ -550,16 +691,16 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     setPriceError(null);
     setPriceSuccess(false);
 
-    const priceWei = turnOff ? 0n : ethers.parseEther(priceInput || "0");
-    if (!turnOff && priceWei < MIN_SUBNAME_PRICE_PER_YEAR_WEI) {
-      setPriceError(`Minimum price is ${MIN_SUBNAME_PRICE_PER_YEAR_ETN} ETN/year`);
+    const priceWei = turnOff ? 0n : ethers.parseUnits(priceInput || "0", selectedPriceToken.decimals);
+    if (!turnOff && priceCurrencyMin != null && priceWei < priceCurrencyMin) {
+      setPriceError(`Minimum price is ${ethers.formatUnits(priceCurrencyMin, selectedPriceToken.decimals)} ${selectedPriceToken.symbol}/year`);
       return;
     }
 
     setPriceLoading(true);
     try {
       const signer = await wallet.getSigner();
-      await setSubnamePricePerYear(node, priceWei, signer);
+      await setSubnamePricePerYear(node, priceWei, signer, priceCurrency);
       setCurrentPrice(priceWei);
       setPriceSuccess(true);
       if (turnOff) setPriceInput("");
@@ -1202,28 +1343,53 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   </div>
                 )}
 
+                {/* A goldlisted/free domain (activationFee === 0n) has nothing to pay in any
+                    currency, so the picker only appears once there's a real fee to actually
+                    choose a currency for. */}
+                {activationFee != null && activationFee > 0n && (
+                  <CurrencySelect
+                    tokens={allCurrencyOptions}
+                    value={activationCurrency}
+                    onChange={(addr) => { setActivationCurrency(addr); setActivationError(null); }}
+                    disabled={activationLoading}
+                    style={{ marginBottom: 10 }}
+                  />
+                )}
+
                 {activationError && (
                   <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{activationError}</div>
                 )}
+                {activationCurrency !== ETN_OPTION.address && activationTokenQuoteError && (
+                  <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{activationTokenQuoteError}</div>
+                )}
                 <NeonButton
                   variant="dark"
-                  onClick={handleActivate}
+                  onClick={activationCurrency === ETN_OPTION.address ? handleActivate : handleActivateWithToken}
                   // activationFee is 0n for a goldlisted domain (see useSubnamePricing.js's
                   // getActivationFee) — a plain truthiness check treats 0n as "not loaded yet" and
                   // permanently disables the button / shows "Loading fee..." forever, exactly the
                   // bug that made a genuinely free activation look stuck. null is the real
                   // "still loading" state; 0n is a real, final answer.
-                  disabled={activationLoading || activationFee === null || baseRegistrarApproved === false}
+                  disabled={
+                    activationLoading ||
+                    activationFee === null ||
+                    baseRegistrarApproved === false ||
+                    (activationCurrency !== ETN_OPTION.address && activationFee > 0n && activationTokenQuote == null)
+                  }
                   loading={activationLoading}
                   style={{ width: "100%", justifyContent: "center" }}
                 >
                   {activationLoading
-                    ? "Activating..."
+                    ? (activationTokenApproving ? "Approving..." : "Activating...")
                     : activationFee === null
                     ? "Loading fee..."
                     : activationFee === 0n
                     ? "Activate (Free — Goldlisted)"
-                    : `Activate (${formatEth(activationFee)} ETN)`}
+                    : activationCurrency === ETN_OPTION.address
+                    ? `Activate (${formatEth(activationFee)} ETN)`
+                    : activationTokenQuote == null
+                    ? "Getting quote…"
+                    : `Activate (~${ethers.formatUnits(activationTokenQuote, selectedActivationToken.decimals)} ${selectedActivationToken.symbol})`}
                 </NeonButton>
               </div>
             )}
@@ -1275,13 +1441,24 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
               <div>
                 <div style={{ fontSize: 12, color: mutedLight, marginBottom: 10 }}>
                   {currentPrice && currentPrice > 0n
-                    ? `Currently selling subnames for ${formatEth(currentPrice)} ETN/year.`
-                    : "Not currently selling subnames."}
+                    ? `Currently selling subnames for ${ethers.formatUnits(currentPrice, selectedPriceToken.decimals)} ${selectedPriceToken.symbol}/year.`
+                    : `Not currently selling subnames in ${selectedPriceToken.symbol}.`}
                 </div>
+                <CurrencySelect
+                  tokens={allCurrencyOptions}
+                  value={priceCurrency}
+                  onChange={(addr) => { setPriceCurrency(addr); setPriceInput(""); setPriceError(null); setPriceSuccess(false); }}
+                  disabled={priceLoading}
+                  style={{ marginBottom: 8 }}
+                />
                 <input
                   type="text"
                   inputMode="decimal"
-                  placeholder={`Price per year in ETN (min ${MIN_SUBNAME_PRICE_PER_YEAR_ETN})`}
+                  placeholder={
+                    priceCurrencyMin != null
+                      ? `Price per year in ${selectedPriceToken.symbol} (min ${ethers.formatUnits(priceCurrencyMin, selectedPriceToken.decimals)})`
+                      : "Loading minimum…"
+                  }
                   value={priceInput}
                   onChange={(e) => setPriceInput(e.target.value)}
                   style={{
@@ -1299,7 +1476,9 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   }}
                 />
                 <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-                  Minimum {MIN_SUBNAME_PRICE_PER_YEAR_ETN} ETN/year, or 0 to turn sales off.
+                  {priceCurrencyMin != null
+                    ? `Minimum ${ethers.formatUnits(priceCurrencyMin, selectedPriceToken.decimals)} ${selectedPriceToken.symbol}/year, or 0 to turn sales off in this currency.`
+                    : "Loading minimum…"}
                 </div>
                 {priceError && (
                   <div style={{ fontSize: 12, color: error, marginBottom: 10 }}>{priceError}</div>
