@@ -1,6 +1,9 @@
 import React, { useMemo, useState } from "react";
 import { border, muted, mutedLight, panel, VALIDATOR_PALETTE } from "../theme.js";
 import { formatInt, shortHash } from "../utils/format.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
+import TeamWalletTag from "./TeamWalletTag.jsx";
+import CexTag from "./CexTag.jsx";
 
 // Floor only, not a fixed size — see the grid's own gridTemplateColumns comment below for why
 // this no longer determines the rendered size on a wide container.
@@ -27,7 +30,7 @@ function intensityColor(value, max) {
 // single color per *day* couldn't meaningfully represent "which validator" anyway — every day
 // mixes dozens of them roughly evenly. Instead, the legend assigns the window's most active
 // validators a fixed color each, and hovering a day shows that day's real breakdown against it.
-export default function CalendarHeatmap({ days }) {
+export default function CalendarHeatmap({ days, cexMap = new Map() }) {
   const [hoverDate, setHoverDate] = useState(null);
 
   const { cells, weeks, maxTx, validatorColors, topValidators } = useMemo(() => {
@@ -142,6 +145,8 @@ export default function CalendarHeatmap({ days }) {
                     <div key={addr} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ width: 8, height: 8, borderRadius: 2, flexShrink: 0, background: validatorColors.get(addr) || OTHER_COLOR }} />
                       <span style={{ color: mutedLight, fontFamily: "monospace" }}>{shortHash(addr)}</span>
+                      {isTeamWallet(addr) && <TeamWalletTag style={{ fontSize: 7 }} />}
+                      {cexMap.get(addr.toLowerCase()) && <CexTag label={cexMap.get(addr.toLowerCase())} style={{ fontSize: 7 }} />}
                       <span style={{ color: "#fff", marginLeft: "auto" }}>{count}</span>
                     </div>
                   ))}
@@ -157,6 +162,8 @@ export default function CalendarHeatmap({ days }) {
             <div key={addr} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: mutedLight }}>
               <span style={{ width: 8, height: 8, borderRadius: 2, flexShrink: 0, background: validatorColors.get(addr) }} />
               <span style={{ fontFamily: "monospace" }}>{shortHash(addr)}</span>
+              {isTeamWallet(addr) && <TeamWalletTag style={{ fontSize: 7 }} />}
+              {cexMap.get(addr.toLowerCase()) && <CexTag label={cexMap.get(addr.toLowerCase())} style={{ fontSize: 7 }} />}
             </div>
           ))}
           <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: mutedLight }}>

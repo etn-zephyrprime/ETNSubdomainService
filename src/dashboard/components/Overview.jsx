@@ -6,7 +6,9 @@ import { useDashboardStats, reconstructCumulativeTransactions, mergeDailyTransac
 import { useDailyBlockStats } from "../hooks/useDailyBlockStats.js";
 import { useHourlyActivity } from "../hooks/useHourlyActivity.js";
 import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
+import { useCexAddresses } from "../hooks/useCexAddresses.js";
 import { formatCompact, formatInt, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import TileChart from "./TileChart.jsx";
 import EtnPriceChart from "./EtnPriceChart.jsx";
@@ -14,6 +16,22 @@ import CalendarHeatmap from "./CalendarHeatmap.jsx";
 import WeekHourHeatmap from "./WeekHourHeatmap.jsx";
 import BlockTimeConstant from "./BlockTimeConstant.jsx";
 import ValidatorLineChart from "./ValidatorLineChart.jsx";
+import TeamWalletTag from "./TeamWalletTag.jsx";
+import CexTag from "./CexTag.jsx";
+
+// Dropped next to any address this tab renders — both checks are cheap/synchronous
+// (isTeamWallet) or a plain Map lookup (cexMap, from useCexAddresses.js), so every call site just
+// renders this unconditionally rather than duplicating the "which tag, if any" branching.
+function AddressTags({ address, cexMap }) {
+  if (!address) return null;
+  const cexLabel = cexMap.get(address.toLowerCase());
+  return (
+    <>
+      {isTeamWallet(address) && <TeamWalletTag style={{ fontSize: 8 }} />}
+      {cexLabel && <CexTag label={cexLabel} style={{ fontSize: 8 }} />}
+    </>
+  );
+}
 
 function IndexingBadge({ status }) {
   if (!status) return null;
@@ -39,7 +57,7 @@ function IndexingBadge({ status }) {
   );
 }
 
-function TxRow({ tx, rank }) {
+function TxRow({ tx, rank, cexMap }) {
   const label = tx.from?.ens_domain_name || shortHash(tx.from?.hash);
   return (
     <a
@@ -56,8 +74,9 @@ function TxRow({ tx, rank }) {
           <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {shortHash(tx.hash)}
           </div>
-          <div style={{ fontSize: 11, color: mutedLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: mutedLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {tx.method || "transfer"} · from {label}
+            <AddressTags address={tx.from?.hash} cexMap={cexMap} />
           </div>
         </div>
       </div>
@@ -127,7 +146,7 @@ function useBlockValueMoved(height) {
   return totalWei;
 }
 
-function BlockRow({ block }) {
+function BlockRow({ block, cexMap }) {
   const totalWei = useBlockValueMoved(block.height);
   return (
     <a
@@ -138,9 +157,10 @@ function BlockRow({ block }) {
     >
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 12, color: "#fff", fontWeight: 600 }}>#{formatInt(block.height)}</div>
-        <div style={{ fontSize: 11, color: mutedLight }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: mutedLight, flexWrap: "wrap" }}>
           {block.transaction_count} tx{block.transaction_count === 1 ? "" : "s"} · miner {shortHash(block.miner?.hash)}
           {totalWei != null && ` · ${formatEtnBalance(totalWei)} ETN moved`}
+          <AddressTags address={block.miner?.hash} cexMap={cexMap} />
         </div>
       </div>
       <div style={{ fontSize: 10, color: muted, flexShrink: 0 }}>{timeAgo(block.timestamp)}</div>
@@ -183,6 +203,7 @@ export default function Overview({ onSelectAddress }) {
   const { getDailyBlockStats } = useDailyBlockStats();
   const { getHourlyActivity } = useHourlyActivity();
   const { getValidatorRewards } = useValidatorRewards();
+  const cexMap = useCexAddresses();
 
   const [stats, setStats] = useState(null);
   const [txChart, setTxChart] = useState(null);
@@ -424,13 +445,13 @@ export default function Overview({ onSelectAddress }) {
 
   const activeFormatValue = METRICS.find((m) => m.id === activeMetric).formatValue;
   const renderChart = activeMetric === "totalBlocks"
-    ? () => <CalendarHeatmap days={dailyBlockStats} />
+    ? () => <CalendarHeatmap days={dailyBlockStats} cexMap={cexMap} />
     : activeMetric === "txsToday"
     ? () => <WeekHourHeatmap hours={hourlyActivity} />
     : activeMetric === "avgBlockTime" && stats && blockTimeIsConstant
     ? () => <BlockTimeConstant blockTimeSeconds={stats.average_block_time / 1000} />
     : activeMetric === "validators"
-    ? () => <ValidatorLineChart days={validatorRewards} onSelectAddress={onSelectAddress} />
+    ? () => <ValidatorLineChart days={validatorRewards} onSelectAddress={onSelectAddress} cexMap={cexMap} />
     : null;
 
   return (
@@ -462,7 +483,7 @@ export default function Overview({ onSelectAddress }) {
             <div style={{ fontSize: 12, color: muted }}>Loading…</div>
           ) : (
             <>
-              {transactions.slice(0, txShowCount).map((tx) => <TxRow key={tx.hash} tx={tx} />)}
+              {transactions.slice(0, txShowCount).map((tx) => <TxRow key={tx.hash} tx={tx} cexMap={cexMap} />)}
               <ShowMoreButton onClick={handleShowMoreTransactions} loading={txLoadingMore} label={`Show ${RECENT_TX_STEP} more`} />
             </>
           )}
@@ -475,7 +496,7 @@ export default function Overview({ onSelectAddress }) {
             <div style={{ fontSize: 12, color: muted }}>Loading…</div>
           ) : (
             <>
-              {blocks.slice(0, blocksShowCount).map((block) => <BlockRow key={block.hash} block={block} />)}
+              {blocks.slice(0, blocksShowCount).map((block) => <BlockRow key={block.hash} block={block} cexMap={cexMap} />)}
               <ShowMoreButton onClick={handleShowMoreBlocks} loading={blocksLoadingMore} label={`Show ${RECENT_BLOCKS_STEP} more`} />
             </>
           )}
@@ -497,7 +518,7 @@ export default function Overview({ onSelectAddress }) {
                   ? `Real rolling window, ${topTxCoverageDays.toFixed(1)} of 7 days covered so far (growing daily).`
                   : "Real rolling last 7 days, by ETN value."}
               </div>
-              {visibleTopTxByVolume.map((tx, i) => <TxRow key={tx.hash} tx={tx} rank={i + 1} />)}
+              {visibleTopTxByVolume.map((tx, i) => <TxRow key={tx.hash} tx={tx} rank={i + 1} cexMap={cexMap} />)}
               {topTxShowCount < topTxByVolume.length && (
                 <ShowMoreButton onClick={handleShowMoreTopTx} label={`Show ${TOP_TX_STEP} more`} />
               )}

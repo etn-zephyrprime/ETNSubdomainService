@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { border, green, muted, mutedLight, panel, panel2, VALIDATOR_PALETTE } from "../theme.js";
 import { formatInt, formatEtnBalance, formatChartDate, shortHash } from "../utils/format.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
+import TeamWalletTag from "./TeamWalletTag.jsx";
+import CexTag from "./CexTag.jsx";
 
 const WIDTH = 560;
 const HEIGHT = 200;
@@ -35,7 +38,7 @@ function colorForRank(rank) {
 // validator's real ETN balance/activity (DashboardApp.jsx wires this the same way it already
 // does for TokenDetail's "view holder" links). Omitted entirely, the address is plain text and
 // the row's only behavior is the existing checkbox toggle.
-export default function ValidatorLineChart({ days, onSelectAddress }) {
+export default function ValidatorLineChart({ days, onSelectAddress, cexMap = new Map() }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
   const [enabled, setEnabled] = useState(null); // null until the default top-4 selection is applied once
@@ -204,6 +207,8 @@ export default function ValidatorLineChart({ days, onSelectAddress }) {
                 <div key={addr} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ width: 8, height: 8, borderRadius: 2, flexShrink: 0, background: color }} />
                   <span style={{ color: mutedLight, fontFamily: "monospace" }}>{shortHash(addr)}</span>
+                  {isTeamWallet(addr) && <TeamWalletTag style={{ fontSize: 7 }} />}
+                  {cexMap.get(addr.toLowerCase()) && <CexTag label={cexMap.get(addr.toLowerCase())} style={{ fontSize: 7 }} />}
                   <span style={{ color: "#fff", marginLeft: "auto", fontWeight: 700 }}>{typeof v === "number" ? `${v} blk` : "—"}</span>
                 </div>
               );
@@ -268,6 +273,8 @@ export default function ValidatorLineChart({ days, onSelectAddress }) {
               ) : (
                 <span style={{ color: mutedLight, fontFamily: "monospace" }}>{shortHash(addr)}</span>
               )}
+              {isTeamWallet(addr) && <TeamWalletTag style={{ fontSize: 8 }} />}
+              {cexMap.get(addr.toLowerCase()) && <CexTag label={cexMap.get(addr.toLowerCase())} style={{ fontSize: 8 }} />}
               <span style={{ color: muted, marginLeft: "auto" }}>{formatInt(blocks)} blocks</span>
               <span style={{ color: "#fff", fontWeight: 700, minWidth: 90, textAlign: "right" }}>{formatEtnBalance(rewardWei)} ETN</span>
             </label>
