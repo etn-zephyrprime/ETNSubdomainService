@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
+import { MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ADDRESS, NAME_WRAPPER_ADDRESS, REGISTRAR_CONTROLLER_ADDRESS, BASE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
 import { computeTokenId } from "../utils/ens.js";
 import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
@@ -29,10 +29,50 @@ export function useSubnamePricing() {
     return await marketplace.subnamePricePerYear(parentNode, paymentToken);
   }, [getReadContracts]);
 
+  // Checks V4 first (the real, current source of truth for anything V4 itself gates — setting a
+  // price, registering a subname, etc. all live there). If V4 says not-activated, falls back to
+  // the deprecated V3 contract: a domain paid to activate on V3 and never migrated is still real,
+  // already-paid-for activation, not a fresh "please pay again" case — V4's own permissionless
+  // migrateActivation(node) exists specifically to carry that over for free. Returns
+  // `needsMigration: true` in exactly that case so the caller can offer the free sync instead of
+  // silently charging the (potentially goldlist-floor-sized) activation fee a second time — this
+  // was a real double-charge risk introduced by pointing this app at a fresh V4 contract whose own
+  // domainActivated starts false for every domain, regardless of its real V3 history.
   const isDomainActivated = useCallback(async (node) => {
     const { marketplace } = getReadContracts();
-    return await marketplace.domainActivated(node);
+    const activatedOnCurrent = await marketplace.domainActivated(node);
+    if (activatedOnCurrent) return { activated: true, needsMigration: false };
+
+    try {
+      const provider = new ethers.JsonRpcProvider(RPC_URL);
+      const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, MarketplaceABI, provider);
+      const activatedOnLegacy = await legacyMarketplace.domainActivated(node);
+      return { activated: activatedOnLegacy, needsMigration: activatedOnLegacy };
+    } catch (err) {
+      console.warn("Couldn't check legacy V3 activation status:", err.message);
+      return { activated: false, needsMigration: false };
+    }
   }, [getReadContracts]);
+
+  // Permissionless on-chain (anyone can call it, not just the domain owner) — carries a domain's
+  // already-paid V3 activation over to V4 for free. See isDomainActivated's `needsMigration` above.
+  const migrateActivation = useCallback(async (node, signer) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
+      const tx = await marketplace.migrateActivation(node, { gasLimit: 150000 });
+      const receipt = await tx.wait();
+      if (!receipt) throw new Error("Migration failed");
+      return { success: true, txHash: tx.hash };
+    } catch (err) {
+      console.error("Activation migration failed:", err);
+      setError(err?.reason || err?.message || "Migration failed");
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const isMarketplaceApproved = useCallback(async (ownerAddress) => {
     const { nameWrapper } = getReadContracts();
@@ -171,6 +211,7 @@ export function useSubnamePricing() {
   return {
     getSubnamePricePerYear,
     isDomainActivated,
+    migrateActivation,
     isMarketplaceApproved,
     approveMarketplace,
     isBaseRegistrarApproved,

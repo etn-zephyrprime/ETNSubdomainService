@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { sendTelegramMessage, sendTelegramPhoto, sendTelegramDirectMessage, telegramConfigured } from "./telegramNotifier.js";
-import { getLastProcessedBlock, setLastProcessedBlock } from "../state/state.js";
+import { getLastProcessedBlock, setLastProcessedBlock, getLastProcessedLegacyBlock, setLastProcessedLegacyBlock } from "../state/state.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getLinkedChatId } from "./telegramLinkRouter.js";
 import { createRpcProvider } from "./rpcProvider.js";
@@ -16,6 +16,14 @@ const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xfE95DdE1832453
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
   : 15873016;
+// The deprecated V3 marketplace — polled on its own separate cursor (getLastProcessedLegacyBlock/
+// setLastProcessedLegacyBlock) alongside V4, so any residual V3 activity (a listing never
+// sold/cancelled being bought/cancelled directly, or the admin flushing V3's leftover burn pool)
+// still gets a Telegram alert instead of going silently unwatched.
+const LEGACY_MARKETPLACE_ADDRESS = process.env.LEGACY_MARKETPLACE_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13";
+const LEGACY_MARKETPLACE_DEPLOY_BLOCK = process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK
+  ? parseInt(process.env.LEGACY_MARKETPLACE_DEPLOY_BLOCK, 10)
+  : 15207471;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed to resolve buyer/seller/payer
 // addresses to a primary name (see notifyDomainActivated etc. and primaryNameResolver.js).
@@ -53,6 +61,15 @@ const SITE_LINK_LINE = `[Active Domain or Register Subnames Here](${SITE_URL})`;
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
+  "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "function burnPool() view returns (uint256)",
+  "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
+];
+// V3's SubnameRegistered has no paymentToken (V3 was ETN-only) — everything else is identical.
+const LEGACY_MARKETPLACE_ABI = [
+  "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
+  "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "event ExistingNameListed(uint256 indexed listingId, address indexed seller, uint256 indexed tokenId, uint256 price)",
   "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "function burnPool() view returns (uint256)",
@@ -178,10 +195,12 @@ async function notifyDomainActivated(event, nameWrapper, resolveDisplayName) {
 async function notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName) {
   const { parentNode, label, buyer, paymentToken, price, burnAmount } = event.args;
   // No ERC20 payment token is whitelisted on V4 yet (Phase 1: this app only ever pays in ETN),
-  // so every real SubnameRegistered right now has paymentToken == address(0). Once Phase 2 adds
-  // multi-currency support this formatting will need a real per-token symbol/decimals lookup
+  // so every real SubnameRegistered right now has paymentToken == address(0). paymentToken is
+  // undefined entirely for a legacy V3 event (V3 predates multi-currency pricing and never had
+  // this field) — only warn when it's actually present and non-ETN, not just falsy. Once Phase 2
+  // adds multi-currency support this formatting will need a real per-token symbol/decimals lookup
   // instead of assuming ETN/18-decimals — flag loudly rather than silently mislabel the amount.
-  if (paymentToken !== ethers.ZeroAddress) {
+  if (paymentToken !== undefined && paymentToken !== ethers.ZeroAddress) {
     console.warn(`⚠️  SubnameRegistered paid in non-ETN token ${paymentToken} — notification will mislabel the amount as ETN`);
   }
   const domain = decodeDnsName(await nameWrapper.names(parentNode)) || "(unknown)";
@@ -287,61 +306,84 @@ async function notifyListingSold(event, nameWrapper, marketplace, resolveDisplay
   );
 }
 
+// Parametrized by contract/deploy-block/cursor getters+setters/log-label so the exact same poll
+// logic backs both the current (V4) watcher and the deprecated V3 contract's own independent poll
+// (see startMarketplaceWatcher) — two entirely separate cursors, since the two contracts have
+// different deploy blocks and there's no reason a gap in one's history should affect the other's.
 let isPolling = false;
+let isPollingLegacy = false;
+
+async function pollContract(marketplace, nameWrapper, resolveDisplayName, deployBlock, getCursor, setCursor, logLabel) {
+  const latestBlock = await marketplace.runner.getBlockNumber();
+  let fromBlock = await getCursor();
+
+  if (fromBlock === null) {
+    // No saved state — either a genuine first run, or state was wiped out from under us (see
+    // WATCHER_LOOKBACK_BLOCKS above). Look back a bounded window rather than either replaying
+    // the whole contract history or skipping straight to "latest" and missing anything.
+    fromBlock = Math.max(deployBlock, latestBlock - WATCHER_LOOKBACK_BLOCKS) - 1;
+    console.log(`📡 Marketplace watcher${logLabel} initialized — no saved state, looking back to block ${fromBlock + 1}`);
+  }
+
+  if (latestBlock <= fromBlock) return; // nothing new
+
+  const [activated, subnamesRegistered, nameListed, listingSold] = await Promise.all([
+    queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock + 1, latestBlock),
+    queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock + 1, latestBlock),
+    queryLogsChunked(marketplace, marketplace.filters.ExistingNameListed(), fromBlock + 1, latestBlock),
+    queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock + 1, latestBlock),
+  ]);
+
+  // Merge and process in on-chain order, not per-event-type order.
+  const events = [...activated, ...subnamesRegistered, ...nameListed, ...listingSold].sort(
+    (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
+  );
+
+  for (const event of events) {
+    try {
+      if (event.eventName === "DomainActivated") {
+        await notifyDomainActivated(event, nameWrapper, resolveDisplayName);
+      } else if (event.eventName === "SubnameRegistered") {
+        await notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName);
+      } else if (event.eventName === "ExistingNameListed") {
+        await notifyNameListed(event, nameWrapper, resolveDisplayName);
+      } else if (event.eventName === "ListingSold") {
+        await notifyListingSold(event, nameWrapper, marketplace, resolveDisplayName);
+      }
+    } catch (err) {
+      // One bad event (e.g. a transient Telegram API error) shouldn't stop the rest, and
+      // shouldn't stop the cursor from advancing — this is best-effort notification, not a
+      // source of truth.
+      console.error(`⚠️  Failed to notify for tx ${event.transactionHash}:`, err.message);
+    }
+  }
+
+  await setCursor(latestBlock);
+}
 
 async function poll(marketplace, nameWrapper, resolveDisplayName) {
   if (isPolling) return; // previous poll still running (e.g. a slow RPC) — skip this tick
   isPolling = true;
   try {
-    const latestBlock = await marketplace.runner.getBlockNumber();
-    let fromBlock = await getLastProcessedBlock();
-
-    if (fromBlock === null) {
-      // No saved state — either a genuine first run, or state was wiped out from under us (see
-      // WATCHER_LOOKBACK_BLOCKS above). Look back a bounded window rather than either replaying
-      // the whole contract history or skipping straight to "latest" and missing anything.
-      fromBlock = Math.max(MARKETPLACE_DEPLOY_BLOCK, latestBlock - WATCHER_LOOKBACK_BLOCKS) - 1;
-      console.log(`📡 Marketplace watcher initialized — no saved state, looking back to block ${fromBlock + 1}`);
-    }
-
-    if (latestBlock <= fromBlock) return; // nothing new
-
-    const [activated, subnamesRegistered, nameListed, listingSold] = await Promise.all([
-      queryLogsChunked(marketplace, marketplace.filters.DomainActivated(), fromBlock + 1, latestBlock),
-      queryLogsChunked(marketplace, marketplace.filters.SubnameRegistered(), fromBlock + 1, latestBlock),
-      queryLogsChunked(marketplace, marketplace.filters.ExistingNameListed(), fromBlock + 1, latestBlock),
-      queryLogsChunked(marketplace, marketplace.filters.ListingSold(), fromBlock + 1, latestBlock),
-    ]);
-
-    // Merge and process in on-chain order, not per-event-type order.
-    const events = [...activated, ...subnamesRegistered, ...nameListed, ...listingSold].sort(
-      (a, b) => a.blockNumber - b.blockNumber || a.index - b.index
-    );
-
-    for (const event of events) {
-      try {
-        if (event.eventName === "DomainActivated") {
-          await notifyDomainActivated(event, nameWrapper, resolveDisplayName);
-        } else if (event.eventName === "SubnameRegistered") {
-          await notifySubnameRegistered(event, nameWrapper, marketplace, resolveDisplayName);
-        } else if (event.eventName === "ExistingNameListed") {
-          await notifyNameListed(event, nameWrapper, resolveDisplayName);
-        } else if (event.eventName === "ListingSold") {
-          await notifyListingSold(event, nameWrapper, marketplace, resolveDisplayName);
-        }
-      } catch (err) {
-        // One bad event (e.g. a transient Telegram API error) shouldn't stop the rest, and
-        // shouldn't stop lastProcessedBlock from advancing — this is best-effort notification,
-        // not a source of truth.
-        console.error(`⚠️  Failed to notify for tx ${event.transactionHash}:`, err.message);
-      }
-    }
-
-    await setLastProcessedBlock(latestBlock);
+    await pollContract(marketplace, nameWrapper, resolveDisplayName, MARKETPLACE_DEPLOY_BLOCK, getLastProcessedBlock, setLastProcessedBlock, "");
   } catch (err) {
     console.error("⚠️  Marketplace watcher poll failed:", err.message);
   } finally {
     isPolling = false;
+  }
+}
+
+// Same poll logic, pointed at the deprecated V3 contract on its own cursor — see
+// LEGACY_MARKETPLACE_ADDRESS's comment above for why this still runs at all.
+async function pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName) {
+  if (isPollingLegacy) return;
+  isPollingLegacy = true;
+  try {
+    await pollContract(legacyMarketplace, nameWrapper, resolveDisplayName, LEGACY_MARKETPLACE_DEPLOY_BLOCK, getLastProcessedLegacyBlock, setLastProcessedLegacyBlock, " (legacy V3)");
+  } catch (err) {
+    console.error("⚠️  Marketplace watcher legacy poll failed:", err.message);
+  } finally {
+    isPollingLegacy = false;
   }
 }
 
@@ -359,10 +401,13 @@ export function startMarketplaceWatcher() {
   // provider now also resolves buyer/seller/payer primary names via primaryNameResolver.js.
   const provider = createRpcProvider({ batchMaxCount: 1 });
   const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MARKETPLACE_ABI, provider);
+  const legacyMarketplace = new ethers.Contract(LEGACY_MARKETPLACE_ADDRESS, LEGACY_MARKETPLACE_ABI, provider);
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
-  console.log(`📡 Marketplace watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
+  console.log(`📡 Marketplace watcher started (polling every ${POLL_INTERVAL_MS / 1000}s, V3+V4)`);
   poll(marketplace, nameWrapper, resolveDisplayName); // run once immediately rather than waiting a full interval
+  pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName);
   setInterval(() => poll(marketplace, nameWrapper, resolveDisplayName), POLL_INTERVAL_MS);
+  setInterval(() => pollLegacy(legacyMarketplace, nameWrapper, resolveDisplayName), POLL_INTERVAL_MS);
 }

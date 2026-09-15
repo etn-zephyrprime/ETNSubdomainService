@@ -90,13 +90,15 @@ const MARKETPLACE_ABI = [
 // V3's SubnameRegistered has no paymentToken (V3 was ETN-only, predating multi-currency pricing)
 // — everything else is identical to MARKETPLACE_ABI above, so decoding V3's raw logs with the V4
 // signature (an extra indexed topic V3 logs don't have) would fail/misdecode. nextListingId/
-// listings aren't needed here — legacy is only ever scanned for its event history, never for a
-// live listings snapshot (V4 is the only contract still accepting new listings).
+// listings ARE still needed here — a V3 listing never sold/cancelled is still real and still
+// buyable (see useMarketplaceListings.js), so the live listings snapshot below reads both.
 const LEGACY_MARKETPLACE_ABI = [
   "event NameRegistered(address indexed buyer, string label, uint256 basePrice, uint256 brokerageFee, address wrappedTo, uint16 fuses)",
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
   "event ListingSold(uint256 indexed listingId, address indexed buyer, address indexed seller, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "function nextListingId() view returns (uint256)",
+  "function listings(uint256) view returns (address seller, uint256 tokenId, uint256 price, bool active)",
 ];
 // Standard ENS-style BaseRegistrarImplementation shape — confirmed live against the real
 // contract. Deliberately no plaintext label: this event only ever carries the hashed tokenId
@@ -295,19 +297,30 @@ async function scanAndPublish(marketplace, legacyMarketplace, baseRegistrar, pro
     // "currently active" from ExistingNameListed/ListingSold/ListingCancelled events would be
     // fragile (reorg edge cases, event-processing-order bugs); reading the contract's own current
     // state directly is what the site's live Marketplace page already trusts.
+    // Merged with the deprecated V3 contract's own live listings — same reasoning as
+    // useMarketplaceListings.js's getActiveListings() on the frontend: a V3 listing never
+    // sold/cancelled is still real and still buyable, so "Active Listings"/"Floor Price" would
+    // undercount and could show a stale, no-longer-lowest price if V3 were left out.
+    async function readActiveListings(contract) {
+      const nextId = await contract.nextListingId();
+      const count = Number(nextId) - 1;
+      if (count <= 0) return [];
+      const ids = Array.from({ length: count }, (_, i) => i + 1);
+      const raw = await mapWithConcurrency(ids, TIMESTAMP_CONCURRENCY, (id) => contract.listings(id));
+      return raw.filter((l) => l.active);
+    }
+
     let floorPriceWei = null;
     let activeListingsCount = 0;
     try {
-      const nextId = await marketplace.nextListingId();
-      const count = Number(nextId) - 1;
-      if (count > 0) {
-        const ids = Array.from({ length: count }, (_, i) => i + 1);
-        const raw = await mapWithConcurrency(ids, TIMESTAMP_CONCURRENCY, (id) => marketplace.listings(id));
-        const active = raw.filter((l) => l.active);
-        activeListingsCount = active.length;
-        if (active.length > 0) {
-          floorPriceWei = active.reduce((min, l) => (l.price < min ? l.price : min), active[0].price).toString();
-        }
+      const [currentActive, legacyActive] = await Promise.all([
+        readActiveListings(marketplace),
+        readActiveListings(legacyMarketplace),
+      ]);
+      const active = [...currentActive, ...legacyActive];
+      activeListingsCount = active.length;
+      if (active.length > 0) {
+        floorPriceWei = active.reduce((min, l) => (l.price < min ? l.price : min), active[0].price).toString();
       }
     } catch (err) {
       console.warn("⚠️  Name Service stats: failed to read live listings snapshot:", err.message);
