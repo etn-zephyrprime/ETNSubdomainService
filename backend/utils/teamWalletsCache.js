@@ -9,13 +9,19 @@ const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplore
 const CACHE_INTERVAL_MS = process.env.TEAM_WALLETS_CACHE_INTERVAL_MS
   ? parseInt(process.env.TEAM_WALLETS_CACHE_INTERVAL_MS, 10)
   : 10 * 60 * 1000; // 10 minutes — balances/movements don't need to be sub-minute fresh
-// How many of each wallet's own most-recent transactions (already filtered to real ETN value) to
-// keep before merging — Blockscout's default one-page response (~50 items, unpaginated here) for
-// a wallet that's mostly zero-value contract calls could easily contain fewer than this many real
-// transfers; that's fine, this is "recent activity", not an exhaustive ledger.
+// How many of each wallet's own most-recent transactions (already filtered to real, large ETN
+// value — see MIN_MOVEMENT_ETN_WEI below) to keep before merging — Blockscout's default one-page
+// response (~50 items, unpaginated here) for a wallet that's mostly small/zero-value activity
+// could easily contain fewer than this many qualifying transfers; that's fine, this is "recent
+// large activity", not an exhaustive ledger.
 const MAX_MOVEMENTS_PER_WALLET = 25;
 // Cap on the published, merged-across-every-wallet feed's size.
 const MAX_MOVEMENTS_TOTAL = 150;
+// "Recent ETN Movements" only cares about genuinely large transfers — everyday small transfers
+// between team wallets/counterparties would otherwise crowd out the movements actually worth
+// noticing. Confirmed live plenty of real team-wallet transfers clear this bar (e.g. single
+// transfers of 9M, 10M, 15M, 80M ETN seen across a handful of team wallets' own recent history).
+const MIN_MOVEMENT_ETN_WEI = 1_000_000n * 10n ** 18n; // 1,000,000 ETN
 
 // Anyone holding more than 49 of "The Three Graces Of The Sea" (SEAS, an ERC-721 collection at
 // 0x1760321f42A9BE39b39c779D92373769d829ef48) is a confirmed genuine Electroneum team wallet — see
@@ -62,11 +68,18 @@ async function fetchWalletSnapshot(address) {
     fetchJson(`/addresses/${address}/transactions`),
   ]);
 
-  // Real ETN moves only — most of a busy wallet's transactions are zero-value contract calls
-  // (subname activity, marketplace approvals, etc.), which "tracks the movement of ETN" has no
-  // reason to surface here.
+  // Large ETN moves only — most of a busy wallet's transactions are either zero-value contract
+  // calls (subname activity, marketplace approvals, etc.) or everyday small transfers, neither of
+  // which "Recent ETN Movements" needs to surface; see MIN_MOVEMENT_ETN_WEI's own comment.
   const movements = (txRes.items || [])
-    .filter((tx) => tx.value && tx.value !== "0")
+    .filter((tx) => {
+      if (!tx.value) return false;
+      try {
+        return BigInt(tx.value) >= MIN_MOVEMENT_ETN_WEI;
+      } catch {
+        return false;
+      }
+    })
     .slice(0, MAX_MOVEMENTS_PER_WALLET)
     .map((tx) => ({
       hash: tx.hash,
