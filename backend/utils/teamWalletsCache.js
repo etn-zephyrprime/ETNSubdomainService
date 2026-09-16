@@ -27,8 +27,9 @@ const MIN_MOVEMENT_ETN_WEI = 1_000_000n * 10n ** 18n; // 1,000,000 ETN
 // 0x1760321f42A9BE39b39c779D92373769d829ef48) is a confirmed genuine Electroneum team wallet — see
 // that collection's own holders list:
 // https://blockexplorer.electroneum.com/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders
-// Snapshotted 2026-09-15 (11 wallets from that list, >49 SEAS each) plus 6 additional wallets
-// confirmed separately (one on 2026-09-15, five more the same day). This is a point-in-time list,
+// Snapshotted 2026-09-15 (11 wallets from that list, >49 SEAS each) plus 8 additional wallets
+// confirmed separately (one on 2026-09-15, five more the same day, two more on 2026-09-16). This
+// is a point-in-time list,
 // not a live on-chain check — if the team's own wallets are ever reorganized, re-verify against
 // that collection's holders and update both this list AND the frontend's own copy
 // (src/dashboard/utils/teamWallets.js) — no shared build step between backend/frontend in this
@@ -53,6 +54,8 @@ export const TEAM_WALLET_ADDRESSES = [
   "0xd8185212c609a99c3446E7044D605C6732bdae7a",
   "0x096121F2f56b390eb2c7Dd02F8746450345d8255",
   "0x9266c334BABCEfE07577bE4C34C9D9028c4BDb03",
+  "0x3C85Da8873F0baC9F22222a9887554a657D54312",
+  "0x1fe3c69EF519f3452c4370CeCB77514773DaF56D",
 ];
 const TEAM_WALLET_SET = new Set(TEAM_WALLET_ADDRESSES.map((a) => a.toLowerCase()));
 
