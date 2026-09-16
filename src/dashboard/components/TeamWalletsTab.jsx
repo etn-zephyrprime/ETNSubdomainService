@@ -115,11 +115,11 @@ export default function TeamWalletsTab({ onSelectAddress }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16, lineHeight: 1.5 }}>
-        Wallets confirmed as belonging to the Electroneum team — anyone holding more than 49 of{" "}
+        Suspected Electroneum team wallets — anyone holding more than 49 of{" "}
         <a href={`${EXPLORER_BASE_URL}/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders`} target="_blank" rel="noreferrer" style={{ color: blue }}>
           The Three Graces Of The Sea
         </a>{" "}
-        (SEAS), plus one wallet confirmed separately. {TEAM_WALLET_ADDRESSES.length} wallets tracked.
+        (SEAS), plus a few flagged separately. {TEAM_WALLET_ADDRESSES.length} wallets tracked.
       </div>
 
       {loadError && (
