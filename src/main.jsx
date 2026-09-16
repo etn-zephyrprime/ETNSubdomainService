@@ -20,7 +20,7 @@ const isDashboardHost = /^dashboard\./i.test(window.location.hostname) || new UR
 // two separate HTML files (Vercel serves one build from one project; see the header comment
 // above for why that's a deliberate constraint, not an oversight).
 if (isDashboardHost) {
-  document.title = "Electroneum Dashboard | Planet Zephyros";
+  document.title = "Argus Dashboard | Planet Zephyros";
   const favicon = document.querySelector('link[rel="icon"]');
   if (favicon) favicon.href = "/PlanetZephyrosLogo.png";
 }

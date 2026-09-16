@@ -1,11 +1,10 @@
 import React from "react";
-import { PlanetZephyrosLogo, ElectroneumLogo, CoreClashLogo, ElectroSwap, TelegramLogo, XLogo, TransparentSubdomainLogo } from "../../../backend/assets/media.js";
+import { PlanetZephyrosLogo, ElectroneumLogo, ElectroSwap, TelegramLogo, XLogo, TransparentSubdomainLogo } from "../../../backend/assets/media.js";
 import { muted, mutedLight, border } from "../theme.js";
 import { SITE_URL } from "../config.js";
 import EcosystemBanner from "../../components/EcosystemBanner.jsx";
 
 const ELECTRONEUM_URL = "https://electroneum.com";
-const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
 const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
 const TELEGRAM_URL = "https://t.me/PlanetZephyros";
 const X_URL = "https://x.com/ETNSubdomain";
@@ -79,7 +78,6 @@ export default function DashboardFooter({ isMobile = false }) {
       }}>
         <EcosystemBanner onClick={() => openLink(SITE_URL)} imageSrc={TransparentSubdomainLogo} alt="ETN Subdomain Service" isMobile={isMobile} />
         <EcosystemBanner onClick={() => openLink(ELECTRONEUM_URL)} imageSrc={ElectroneumLogo} alt="Electroneum" isMobile={isMobile} />
-        <EcosystemBanner onClick={() => openLink(CORECLASH_URL)} imageSrc={CoreClashLogo} alt="CoreClash" isMobile={isMobile} />
         <EcosystemBanner onClick={() => openLink(ELECTROSWAP_URL)} imageSrc={ElectroSwap} alt="ElectroSwap" isMobile={isMobile} />
       </div>
 
