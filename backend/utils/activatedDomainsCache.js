@@ -56,7 +56,18 @@ const MAX_BLOCKS_PER_CYCLE = process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE
 // legacyLastScannedBlock — bumped for the same "force a clean rebuild rather than trust a
 // differently-shaped cache" reasoning as v2, and every future redeploy, same reasoning
 // nameServiceStatsCache.js's own version bumps give.
-const CACHE_SCHEMA_VERSION = 3;
+// v4: added each domain's own `activatedOn` version tag (below) — a domain whose DomainActivated
+// event lives on a legacy contract and hasn't migrated forward yet still needs to show up here
+// (see this file's own header comment on why it's included at all), but the frontend needs to know
+// which contract it's actually paid-up-and-live on to tag it correctly rather than imply it's
+// current-V5. Bumped for the same "differently-shaped cache" reasoning as v2/v3.
+const CACHE_SCHEMA_VERSION = 4;
+
+// Human-readable version label for each entry in `sources` below, matched by array position —
+// index 0 (MARKETPLACE_ADDRESS) is always the current contract, "V5"; LEGACY_MARKETPLACES then
+// follows in the same V4-then-V3 order every other consumer of that list already assumes (see
+// src/config.js's own LEGACY_MARKETPLACES comment).
+const SOURCE_VERSION_LABELS = ["V5", "V4", "V3"];
 
 // How many getData()/primary-name lookups run at once during the re-verification pass — bounded
 // the same way queryLogsChunked below bounds its own concurrency, so a growing domain count
@@ -64,10 +75,14 @@ const CACHE_SCHEMA_VERSION = 3;
 const VERIFY_CONCURRENCY = 8;
 
 // V4/V5 share this event shape exactly. V3's SubnameRegistered has no paymentToken (V3 predates
-// multi-currency pricing) — DomainActivated is identical everywhere.
+// multi-currency pricing) — DomainActivated is identical everywhere. domainActivated() (the plain
+// public mapping getter) is only ever called against the CURRENT contract (see scanAndPublish's
+// migration re-check) but declared here rather than a separate ABI since MARKETPLACE_ABI is
+// already shared with the V4 legacy contract, which has the exact same getter.
 const MARKETPLACE_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
   "event SubnameRegistered(bytes32 indexed parentNode, string label, address indexed buyer, address indexed paymentToken, uint256 price, uint256 sellerAmount, uint256 burnAmount)",
+  "function domainActivated(bytes32 node) view returns (bool)",
 ];
 const LEGACY_V3_ABI = [
   "event DomainActivated(bytes32 indexed node, address indexed payer, uint256 feePaid)",
@@ -232,12 +247,16 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
     const rawCache = await getActivatedDomainsCache();
     const cached = rawCache?.schemaVersion === CACHE_SCHEMA_VERSION ? rawCache : null;
 
-    // node -> { label, subnames: Map(subNode -> { label }) } — carried forward from the previous
-    // publish so already-discovered domains/subnames aren't lost, only ever added to by new events.
+    // node -> { label, subnames: Map(subNode -> { label }), activatedOn } — carried forward from
+    // the previous publish so already-discovered domains/subnames aren't lost, only ever added to
+    // by new events. activatedOn defaults to "V5" for any pre-v4-schema entry it might somehow see
+    // (shouldn't happen — the schema-version check above already forces a full rebuild on v4's
+    // first run — but a domain actually native to V5 needs this same default too, since its
+    // DomainActivated event assigns activatedOn itself only at the point of first discovery below).
     const domainByNode = new Map(
       (cached?.domains || []).map((d) => [
         d.node,
-        { label: d.label, subnames: new Map((d.subnames || []).map((s) => [s.node, { label: s.label }])) },
+        { label: d.label, subnames: new Map((d.subnames || []).map((s) => [s.node, { label: s.label }])), activatedOn: d.activatedOn || "V5" },
       ])
     );
 
@@ -249,8 +268,8 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
     // histories are already in the past relative to a fresh deploy, so each legacy source catches
     // up within a few cycles and then just finds nothing new on every poll after).
     const sources = [
-      { address: MARKETPLACE_ADDRESS, deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace },
-      ...LEGACY_MARKETPLACES.map((m, i) => ({ address: m.address, deployBlock: m.deployBlock, contract: legacyContracts[i] })),
+      { address: MARKETPLACE_ADDRESS, deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace, versionLabel: SOURCE_VERSION_LABELS[0] },
+      ...LEGACY_MARKETPLACES.map((m, i) => ({ address: m.address, deployBlock: m.deployBlock, contract: legacyContracts[i], versionLabel: SOURCE_VERSION_LABELS[i + 1] })),
     ];
 
     const ranges = sources.map(({ address, deployBlock }) => {
@@ -276,23 +295,29 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
         })
       );
 
-      const allActivatedEvents = perSourceEvents.flatMap(([activated]) => activated);
+      // Each event paired with which source found it — a domain's DomainActivated only ever fires
+      // once, on whichever contract it was originally activated on (migrateActivation emits its
+      // own ActivationMigrated instead, never a second DomainActivated), so this is a reliable,
+      // one-time tag rather than something that needs picking "the right" event among duplicates.
+      const allActivatedEvents = perSourceEvents.flatMap(([activated], i) =>
+        activated.map((event) => ({ event, versionLabel: sources[i].versionLabel }))
+      );
       const allSubnameEvents = perSourceEvents.flatMap(([, subnames]) => subnames);
 
       // Ascending order so processing reflects on-chain sequence, though it only matters here for
       // consistent logging — unlike subnameDomainsCache.js's price folding, discovery doesn't
       // depend on event order (a node's label/existence doesn't change after the fact).
-      allActivatedEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+      allActivatedEvents.sort((a, b) => a.event.blockNumber - b.event.blockNumber || a.event.index - b.event.index);
       allSubnameEvents.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
 
-      for (const event of allActivatedEvents) {
+      for (const { event, versionLabel } of allActivatedEvents) {
         const { node } = event.args;
         if (domainByNode.has(node)) continue;
 
         try {
           const label = decodeFirstLabel(await nameWrapper.names(node));
           if (!label) continue;
-          domainByNode.set(node, { label, subnames: new Map() });
+          domainByNode.set(node, { label, subnames: new Map(), activatedOn: versionLabel });
         } catch (err) {
           console.error(`⚠️  Failed to decode label for activated domain ${node}:`, err.message);
         }
@@ -322,14 +347,28 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
     // list so the concurrency bound applies across all of them together, not per-domain.
     const allNodes = [];
     for (const [node, domain] of domainByNode.entries()) {
-      allNodes.push({ node, target: domain });
+      allNodes.push({ node, target: domain, isDomain: true });
       for (const [subNode, sub] of domain.subnames.entries()) {
-        allNodes.push({ node: subNode, target: sub, parentNode: node });
+        allNodes.push({ node: subNode, target: sub, parentNode: node, isDomain: false });
       }
     }
 
-    await mapWithConcurrency(allNodes, VERIFY_CONCURRENCY, async ({ node, target }) => {
+    await mapWithConcurrency(allNodes, VERIFY_CONCURRENCY, async ({ node, target, isDomain }) => {
       target.current = await readCurrentData(nameWrapper, node);
+
+      // A domain discovered via a legacy contract's own DomainActivated (activatedOn !== "V5")
+      // might have been migrated forward since the last cycle (migrateActivation, run from
+      // ManageSubdomain.jsx) — re-check the CURRENT contract's own domainActivated for it every
+      // cycle and flip the tag to "V5" once that's true, so a migrated domain stops looking like
+      // it's still stuck on the old one. Subnames have no activation/migration status of their own
+      // (only their parent domain does), so this only ever runs for isDomain entries.
+      if (isDomain && target.activatedOn && target.activatedOn !== "V5") {
+        try {
+          if (await marketplace.domainActivated(node)) target.activatedOn = "V5";
+        } catch (err) {
+          console.warn(`⚠️  domainActivated(${node}) migration check failed, keeping previous activatedOn tag:`, err.message);
+        }
+      }
     });
 
     // Drop anything getData() reverted on (see readCurrentData) — genuinely gone, not just expired.
@@ -368,6 +407,7 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
       owner: domain.current.owner,
       ownerPrimaryName: primaryNameByOwner.get(domain.current.owner) || null,
       expiry: domain.current.expiry,
+      activatedOn: domain.activatedOn,
       subnames: [...domain.subnames.entries()].map(([subNode, sub]) => ({
         node: subNode,
         label: sub.label,

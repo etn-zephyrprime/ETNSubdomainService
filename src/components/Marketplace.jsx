@@ -5,7 +5,18 @@ import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
-import { EXPLORER_BASE_URL, MARKETPLACE_ADDRESS } from "../config.js";
+import { EXPLORER_BASE_URL, MARKETPLACE_ADDRESS, LEGACY_MARKETPLACES } from "../config.js";
+
+// LEGACY_MARKETPLACES is ordered V4-then-V3 (see its own comment in config.js) — a listing not on
+// the current contract could be from either, so this labels it by whichever one it's actually on
+// rather than assuming every legacy listing is V3 (that assumption used to be baked into the badge
+// below as a plain "Legacy" label with a hardcoded "(V3)" in its tooltip, which would have quietly
+// mislabeled a real V4 listing).
+const LEGACY_VERSION_LABELS = ["V4", "V3"];
+function legacyVersionLabel(marketplaceAddress) {
+  const index = LEGACY_MARKETPLACES.findIndex((m) => m.address === marketplaceAddress);
+  return index === -1 ? "Legacy" : LEGACY_VERSION_LABELS[index];
+}
 
 // Browse/buy screen for the resale marketplace — every active listing on the deployed
 // Marketplace contract's own `listings` mapping, bought atomically via buyListing (payment +
@@ -209,7 +220,7 @@ export default function Marketplace({ wallet, onBack = null }) {
                     )}
                     {listing.marketplaceAddress !== MARKETPLACE_ADDRESS && (
                       <span
-                        title="Listed on this service's previous (V3) marketplace contract — still a real, live listing, just not the current one"
+                        title={`Listed on this service's previous (${legacyVersionLabel(listing.marketplaceAddress)}) marketplace contract — still a real, live listing, just not the current one`}
                         style={{
                           flexShrink: 0,
                           fontSize: 9,
@@ -222,7 +233,7 @@ export default function Marketplace({ wallet, onBack = null }) {
                           padding: "2px 5px",
                         }}
                       >
-                        Legacy
+                        {legacyVersionLabel(listing.marketplaceAddress)}
                       </span>
                     )}
                   </div>
