@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useReownWallet } from "./hooks/useReownWallet.jsx";
-import { panel, muted } from "./styles/theme.js";
+import { panel, muted, pageBackground } from "./styles/theme.js";
 import SearchBar from "./components/SearchBar.jsx";
 import RegistrationFlow from "./components/RegistrationFlow.jsx";
 import ManageSubdomain from "./components/ManageSubdomain.jsx";
@@ -30,7 +30,7 @@ function AppContent() {
     return (
       <div style={{
         minHeight: "100vh",
-        background: "#011528",
+        background: pageBackground,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -218,7 +218,7 @@ function AppContent() {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "#011528",
+      background: pageBackground,
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
