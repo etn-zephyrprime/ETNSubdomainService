@@ -89,8 +89,8 @@ export default function HowItWorks() {
       }}>
         <div style={{ fontSize: 12, color: mutedLight, marginBottom: 6 }}>Example</div>
         <div style={{ fontSize: 14, color: "#fff", fontWeight: 600, lineHeight: 1.6 }}>
-          Set <span style={{ color: green }}>shop.yourname.etn</span> at 5 ETN/year &rarr; someone registers it
-          &rarr; you keep <span style={{ color: green, fontWeight: 900 }}>4 ETN</span> instantly.
+          Set <span style={{ color: green }}>shop.yourname.etn</span> at 1000 ETN/year &rarr; someone registers it
+          &rarr; you keep <span style={{ color: green, fontWeight: 900 }}>800 ETN</span> instantly.
         </div>
       </div>
     </div>
