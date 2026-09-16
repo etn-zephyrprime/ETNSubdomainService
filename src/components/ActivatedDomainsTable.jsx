@@ -35,7 +35,34 @@ function ownerLabel(node) {
   return node.ownerPrimaryName || shortAddress(node.owner);
 }
 
-function Row({ label, ownerAddress, ownerText, timeLeft, expired, depth, expandable, expanded, onToggle, childCount }) {
+// Same badge Marketplace.jsx's own "Legacy" resale tag uses — a domain whose DomainActivated event
+// lives on a legacy contract still shows up here (see useActivatedDomains.js/
+// activatedDomainsCache.js for why: it's real, already-paid activation, not something to hide just
+// because it hasn't been migrated to the current contract yet), so this just makes which contract
+// it's actually live on visible rather than implying it's current-V5.
+function VersionTag({ activatedOn }) {
+  if (!activatedOn || activatedOn === "V5") return null;
+  return (
+    <span
+      title={`Activated on this service's previous (${activatedOn}) marketplace contract — hasn't migrated to the current one yet, but is still real, already-paid activation`}
+      style={{
+        flexShrink: 0,
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: 0.4,
+        textTransform: "uppercase",
+        color: muted,
+        border: `1px solid ${border}`,
+        borderRadius: 4,
+        padding: "2px 5px",
+      }}
+    >
+      {activatedOn}
+    </span>
+  );
+}
+
+function Row({ label, ownerAddress, ownerText, timeLeft, expired, depth, expandable, expanded, onToggle, childCount, activatedOn }) {
   return (
     <div
       onClick={expandable ? onToggle : undefined}
@@ -61,10 +88,11 @@ function Row({ label, ownerAddress, ownerText, timeLeft, expired, depth, expanda
           <span style={{ width: 14, display: "inline-block" }} />
         )}
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: depth === 0 ? 14 : 13, fontWeight: depth === 0 ? 700 : 500, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            <a href={nameExplorerUrl(label)} target="_blank" rel="noreferrer" onClick={stopRowToggle} style={inlineLinkStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: depth === 0 ? 14 : 13, fontWeight: depth === 0 ? 700 : 500, color: "#fff" }}>
+            <a href={nameExplorerUrl(label)} target="_blank" rel="noreferrer" onClick={stopRowToggle} style={{ ...inlineLinkStyle, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {label}
             </a>
+            <VersionTag activatedOn={activatedOn} />
           </div>
           <div style={{ fontSize: 11, color: mutedLight, marginTop: 1 }}>
             <a href={addressExplorerUrl(ownerAddress)} target="_blank" rel="noreferrer" onClick={stopRowToggle} style={inlineLinkStyle}>
@@ -183,6 +211,7 @@ export default function ActivatedDomainsTable() {
                   expanded={expanded}
                   onToggle={() => toggle(domain.node)}
                   childCount={domain.subnames.length}
+                  activatedOn={domain.activatedOn}
                 />
                 {expanded && (
                   <div style={{ background: panel2, border: `1px solid ${border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
