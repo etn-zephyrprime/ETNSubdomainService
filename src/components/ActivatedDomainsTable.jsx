@@ -215,6 +215,9 @@ export default function ActivatedDomainsTable() {
                 />
                 {expanded && (
                   <div style={{ background: panel2, border: `1px solid ${border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+                    <div style={{ fontSize: 10, color: muted, padding: "8px 12px", paddingLeft: 32, borderBottom: `1px solid ${border}` }}>
+                      Showing subnames rented via ETN Subdomain Service
+                    </div>
                     {subnames.length === 0 ? (
                       <div style={{ fontSize: 12, color: muted, padding: "10px 12px", paddingLeft: 32 }}>
                         No subnames registered yet.
