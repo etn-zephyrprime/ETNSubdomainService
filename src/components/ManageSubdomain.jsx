@@ -567,11 +567,11 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
 
   // Live token-denominated quote for the currently-selected activation currency — only meaningful
   // once activationFee > 0n (a goldlisted/free domain has nothing to quote in any currency, and
-  // the plain ETN handleActivate path above already handles that case for free). Needs a real
-  // signer, not just wallet.account, since quoteActivationInToken's own staticCall checks
-  // msg.sender against the domain's real owner (see that function's own comment) — refetched
-  // whenever the selected currency changes, so switching currencies always shows a fresh quote
-  // rather than a stale one left over from a previous selection.
+  // the plain ETN handleActivate path above already handles that case for free). Pure read calls
+  // (see quoteActivationInToken's own comment for why it no longer needs a signer or an existing
+  // token approval to quote) — refetched whenever the selected currency changes, so switching
+  // currencies always shows a fresh quote rather than a stale one left over from a previous
+  // selection.
   const [activationTokenQuote, setActivationTokenQuote] = useState(null);
   const [activationTokenQuoteError, setActivationTokenQuoteError] = useState(null);
   useEffect(() => {
@@ -583,21 +583,14 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
     let cancelled = false;
     setActivationTokenQuote(null);
     setActivationTokenQuoteError(null);
-    wallet.ensureCorrectNetwork()
-      .then(() => wallet.getSigner())
-      .then((signer) => quoteActivationInToken(node, verifiedName, activationCurrency, signer))
+    quoteActivationInToken(node, verifiedName, activationCurrency)
       .then((quote) => { if (!cancelled) setActivationTokenQuote(quote); })
       .catch((err) => {
         console.error("Failed to quote activation in token:", err);
         if (!cancelled) setActivationTokenQuoteError(err?.reason || err?.message || "Couldn't get a quote");
       });
     return () => { cancelled = true; };
-    // wallet.account (not the raw `wallet` object) — same convention the owned-names effect above
-    // already uses: useReownWallet.jsx returns a plain object literal every render, so depending
-    // on the object itself would re-fire (and re-quote) this effect on every unrelated re-render
-    // of whatever parent passes `wallet` down, not just on an actual account/connection change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activationCurrency, node, verifiedName, activationFee, quoteActivationInToken, wallet.account]);
+  }, [activationCurrency, node, verifiedName, activationFee, quoteActivationInToken]);
 
   // ERC20 counterpart to handleActivate above. maxTokenAmount is the live quote plus a 5% buffer
   // (same margin getActivationFee's own ETN estimate already applies) — a few seconds pass between
@@ -1405,6 +1398,24 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     ? "Getting quote…"
                     : `Activate (~${ethers.formatUnits(activationTokenQuote, selectedActivationToken.decimals)} ${selectedActivationToken.symbol})`}
                 </NeonButton>
+
+                {/* Same "≈ $X.XX" treatment renewQuote/listing prices already get — priced in
+                    whichever currency is actually selected, ETN or token, so switching currencies
+                    keeps this in sync with the button's own amount above. */}
+                {activationFee != null && activationFee > 0n && (
+                  <div style={{ textAlign: "center", marginTop: 8 }}>
+                    {activationCurrency === ETN_OPTION.address ? (
+                      <UsdEstimate etn={formatEth(activationFee)} />
+                    ) : (
+                      activationTokenQuote != null && (
+                        <UsdEstimate
+                          etn={ethers.formatUnits(activationTokenQuote, selectedActivationToken.decimals)}
+                          tokenAddress={activationCurrency}
+                        />
+                      )
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
