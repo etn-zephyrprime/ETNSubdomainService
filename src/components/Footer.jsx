@@ -1,10 +1,9 @@
 import React from "react";
-import { PlanetZephyrosLogo, ElectroneumLogo, CoreClashLogo, ElectroSwap, TelegramLogo, XLogo } from "../../backend/assets/media.js";
+import { PlanetZephyrosLogo, ElectroneumLogo, ElectroSwap, TelegramLogo, XLogo } from "../../backend/assets/media.js";
 import { muted, mutedLight } from "../styles/theme.js";
 import EcosystemBanner from "./EcosystemBanner.jsx";
 
 const ELECTRONEUM_URL = "https://electroneum.com";
-const CORECLASH_URL = "https://coreclash.planetzephyros.xyz";
 const ELECTROSWAP_URL = "https://app.electroswap.io/swap?inputCurrency=ETN&outputCurrency=0x309b916b3a90cb3e071697ea9680e9217a30066f";
 const TELEGRAM_URL = "https://t.me/PlanetZephyros";
 const X_URL = "https://x.com/ETNSubdomain";
@@ -16,9 +15,9 @@ function openLink(url) {
 
 // Same visual footprint as EcosystemBanner (background/border/radius/height) but text instead of
 // a logo image — the dashboard has no dedicated logo graphic of its own; its actual visual
-// identity is this Orbitron-set "Electroneum Dashboard" wordmark (see
-// dashboard/DashboardApp.jsx's own heading), so that's what represents it here rather than
-// reusing the Planet Zephyros logo already shown elsewhere in this same footer.
+// identity is this Orbitron-set "Argus Dashboard" wordmark (matches dashboard/DashboardApp.jsx's
+// own "Argus" heading), so that's what represents it here rather than reusing the Planet Zephyros
+// logo already shown elsewhere in this same footer.
 function DashboardBanner({ isMobile }) {
   return (
     <div
@@ -48,9 +47,9 @@ function DashboardBanner({ isMobile }) {
           color: "#fff",
           letterSpacing: 0.5,
         }}>
-          Electroneum Dashboard
+          Argus Dashboard
         </span>
-        <span style={{ fontSize: 10, color: muted, marginTop: 2 }}>Live network stats & activity</span>
+        <span style={{ fontSize: 10, color: muted, marginTop: 2 }}>Wallet tracking, PnL statements & more</span>
       </div>
     </div>
   );
@@ -123,12 +122,6 @@ export default function Footer({ isMobile = false }) {
           onClick={() => openLink(ELECTRONEUM_URL)}
           imageSrc={ElectroneumLogo}
           alt="Electroneum"
-          isMobile={isMobile}
-        />
-        <EcosystemBanner
-          onClick={() => openLink(CORECLASH_URL)}
-          imageSrc={CoreClashLogo}
-          alt="CoreClash"
           isMobile={isMobile}
         />
         <EcosystemBanner
