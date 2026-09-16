@@ -6,11 +6,24 @@ import MarketplaceABI from "../abis/MarketplaceABI.json";
 import NameWrapperABI from "../abis/NameWrapperABI.json";
 import ETHRegistrarControllerABI from "../abis/ETHRegistrarControllerABI.json";
 import BaseRegistrarABI from "../abis/BaseRegistrarABI.json";
+import UniswapV2RouterLiteABI from "../abis/UniswapV2RouterLiteABI.json";
+import ElectroSwapV3PoolLiteABI from "../abis/ElectroSwapV3PoolLiteABI.json";
 
 // Every marketplace this app has ever pointed at, most-recent (current) first — shared by
 // isDomainActivated/migrateActivation below to walk this app's whole contract history rather than
 // just one hop back.
 const MARKETPLACE_CHAIN = [MARKETPLACE_ADDRESS, ...LEGACY_MARKETPLACES.map((m) => m.address)];
+
+// JS port of PlanetZephyrosSubdomainServiceV5.sol's V3PriceMath.getQuoteFromSqrtPriceX96 — used by
+// quoteActivationInToken below to price a V3-pooled token off its live slot0() spot price without
+// going through the contract itself (see that function's own comment for why). BigInt has no
+// fixed-width overflow to guard against (unlike Solidity's uint256), so this skips the
+// two-path/FullMath split the on-chain version needs and just does the multiplication directly —
+// same result, since sqrtPriceX96 is at most 160 bits and BigInt handles arbitrary precision.
+function getQuoteFromSqrtPriceX96(sqrtPriceX96, baseAmount, baseIsToken0) {
+  const ratioX192 = sqrtPriceX96 * sqrtPriceX96;
+  return baseIsToken0 ? (ratioX192 * baseAmount) / (1n << 192n) : ((1n << 192n) * baseAmount) / ratioX192;
+}
 
 export function useSubnamePricing() {
   const [loading, setLoading] = useState(false);
@@ -252,20 +265,43 @@ export function useSubnamePricing() {
   const ACTIVATION_TOKEN_DEADLINE_BUFFER_SECONDS = 20 * 60;
 
   // Quotes what a whitelisted ERC20 activation would cost right now, in that token's own smallest
-  // unit — a staticCall against the REAL activateDomainWithToken (not a separate view function;
-  // the contract doesn't have one, since the quote is computed live inside the same function that
-  // would spend it — see PlanetZephyrosSubdomainServiceV5.sol's own comment on why). Needs a real
-  // signer, not just a read-only provider: _requireNodeOwner checks msg.sender against the domain's
-  // actual owner, and a staticCall still evaluates the full function body (just discards state
-  // changes) — same pattern this repo's own V5 test suite uses to get a pre-flight quote. Passing
-  // ethers.MaxUint256 as maxTokenAmount here means this call can never itself revert on "quote
-  // exceeds max" — only the real activation call (below) enforces that, with the caller's actual
-  // slippage cap.
-  const quoteActivationInToken = useCallback(async (node, label, paymentToken, signer) => {
-    const marketplace = new ethers.Contract(MARKETPLACE_ADDRESS, MarketplaceABI, signer);
-    const deadline = Math.floor(Date.now() / 1000) + ACTIVATION_TOKEN_DEADLINE_BUFFER_SECONDS;
-    return marketplace.activateDomainWithToken.staticCall(node, label, paymentToken, ethers.MaxUint256, deadline);
-  }, []);
+  // unit — replicates activateDomainWithToken's own on-chain pricing (the contract has no separate
+  // view function for this — see its own comment) using plain read calls against the swap
+  // router/pool directly, rather than a staticCall against the real activateDomainWithToken.
+  //
+  // A staticCall against the real function was tried first and doesn't work as a quote: that
+  // function unconditionally ends with `IERC20(paymentToken).transferFrom(msg.sender, ...)`, which
+  // most real ERC20s (confirmed live with CORE) REVERT on — not just return false — when the
+  // caller's allowance is insufficient. Since quoting has to happen *before* anyone knows how much
+  // to approve, msg.sender's allowance is always 0 at quote time, so that staticCall reverted with
+  // the token's own "insufficient allowance" every single time, for every token, on every
+  // first-ever activation — permanently stuck (the Activate button gates on a successful quote, so
+  // it could never even offer the approve step). Pricing this off pure view reads instead sidesteps
+  // the token entirely: nothing here ever touches transferFrom or allowance.
+  const quoteActivationInToken = useCallback(async (node, label, paymentToken) => {
+    const { marketplace } = getReadContracts();
+    const provider = new ethers.JsonRpcProvider(RPC_URL);
+
+    const etnFee = await getActivationFee(label, node);
+    if (etnFee === 0n) return 0n; // goldlisted/free — nothing to price in any currency
+
+    const [swapRouterAddress, v3Pool] = await Promise.all([
+      marketplace.swapRouter(),
+      marketplace.v3PoolForToken(paymentToken),
+    ]);
+    if (swapRouterAddress === ethers.ZeroAddress) throw new Error("Swap router not configured");
+    const router = new ethers.Contract(swapRouterAddress, UniswapV2RouterLiteABI, provider);
+    const weth = await router.WETH();
+
+    if (v3Pool !== ethers.ZeroAddress) {
+      const pool = new ethers.Contract(v3Pool, ElectroSwapV3PoolLiteABI, provider);
+      const [token0, slot0] = await Promise.all([pool.token0(), pool.slot0()]);
+      return getQuoteFromSqrtPriceX96(slot0.sqrtPriceX96, etnFee, token0.toLowerCase() === weth.toLowerCase());
+    }
+
+    const amounts = await router.getAmountsOut(etnFee, [weth, paymentToken]);
+    return amounts[amounts.length - 1];
+  }, [getReadContracts, getActivationFee]);
 
   // ERC20-denominated counterpart to activateDomain above. `maxTokenAmount` is the caller's own
   // slippage cap (same spirit as buyBackAndBurn's minCoreOut) — pass quoteActivationInToken's own
