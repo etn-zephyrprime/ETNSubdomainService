@@ -2,8 +2,8 @@
 // 0x1760321f42A9BE39b39c779D92373769d829ef48) is a confirmed genuine Electroneum team wallet —
 // see that collection's own holders list:
 // https://blockexplorer.electroneum.com/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders
-// Snapshotted 2026-09-15 (11 wallets from that list, >49 SEAS each) plus 8 additional wallets
-// confirmed separately (one on 2026-09-15, five more the same day, two more on 2026-09-16). This
+// Snapshotted 2026-09-15 (11 wallets from that list, >49 SEAS each) plus 10 additional wallets
+// confirmed separately (one on 2026-09-15, five more the same day, four more on 2026-09-16). This
 // is a point-in-time list,
 // not a live on-chain check — re-verify against that collection's holders if the team's own
 // wallets are ever reorganized. Kept in sync by hand with the backend's own copy
@@ -34,6 +34,8 @@ export const TEAM_WALLET_ADDRESSES = [
   "0x9266c334BABCEfE07577bE4C34C9D9028c4BDb03",
   "0x3C85Da8873F0baC9F22222a9887554a657D54312",
   "0x1fe3c69EF519f3452c4370CeCB77514773DaF56D",
+  "0x90e5B91d961d3E1288311389d6cBA5cE6b053551",
+  "0xB62d61E4077dD40d3a152E60F9f678860bAf026F",
 ];
 
 const TEAM_WALLET_SET = new Set(TEAM_WALLET_ADDRESSES.map((a) => a.toLowerCase()));
