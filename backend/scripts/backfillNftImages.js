@@ -21,10 +21,12 @@ import { sendTelegramPhoto, telegramConfigured } from "../utils/telegramNotifier
 // Must point at the same chain/deployment as the frontend (see src/config.js) — otherwise this
 // scans/derives nodes for names that don't exist on whatever chain it's actually pointed at.
 const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same default + notification-link style as marketplaceWatcher.js — a backfilled image gets its
 // own "ready" notification since the original live one (if any) went out as text-only, having
@@ -58,6 +60,7 @@ const LEGACY_V3_ABI = [
 // name's node is a global hash, not scoped to any one contract, so it naturally collapses without
 // double-generating anything).
 const LEGACY_MARKETPLACES = [
+  { address: process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7", deployBlock: 15874925, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471, abi: LEGACY_V3_ABI },
 ];

@@ -33,10 +33,12 @@ import { createRpcProvider } from "./rpcProvider.js";
 // transfer never touches the Marketplace contract, so no event here would ever reflect it) — but
 // "activated" status is trusted from DomainActivated alone, not re-checked live, since activation
 // only ever happens through that one event and never reverts once set.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's ETN_NODE — namehash("etn") — needed to derive a top-level node
 // from NameRegistered's plaintext label the same way computeNode() does client-side.
@@ -63,7 +65,9 @@ const MAX_BLOCKS_PER_CYCLE = process.env.OWNED_NAMES_MAX_BLOCKS_PER_CYCLE
 // to a list (LEGACY_MARKETPLACES below, now V4 + V3) with per-address cursors instead of a single
 // legacyLastScannedBlock — bumped for the same "force a clean rebuild" reasoning as v3, and every
 // future redeploy.
-const CACHE_SCHEMA_VERSION = 4;
+// v5: MARKETPLACE_ADDRESS moved from V5 to V6 (a SECURITY FIX redeploy, see that constant's own
+// comment) and V5 joined LEGACY_MARKETPLACES — same "force a clean rebuild" reasoning as v4.
+const CACHE_SCHEMA_VERSION = 5;
 const VERIFY_CONCURRENCY = 8;
 
 // V4/V5 share this event shape exactly. V3's SubnameRegistered has no paymentToken (V3 predates
@@ -85,6 +89,7 @@ const LEGACY_V3_ABI = [
 // now points at a fresh contract. Each scanned on its own cursor (see scanAndPublish's
 // MARKETPLACE_SOURCES) since each has a different deploy block.
 const LEGACY_MARKETPLACES = [
+  { address: process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7", deployBlock: 15874925, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471, abi: LEGACY_V3_ABI },
 ];

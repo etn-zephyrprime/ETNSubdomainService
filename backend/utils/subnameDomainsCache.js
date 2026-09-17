@@ -9,10 +9,12 @@ import { createRpcProvider } from "./rpcProvider.js";
 // and it only grows — every day adds another ~17k blocks/~17 round trips to that scan, forever,
 // for every visitor). Same chain/contract defaults as marketplaceWatcher.js, overridable via env
 // for a different deployment.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Deliberately coarser than WATCHER_POLL_INTERVAL_MS (60s) — subname pricing changes far less
 // often than domain activations/registrations, and after the first run this only ever scans the
@@ -38,7 +40,11 @@ const CACHE_INTERVAL_MS = process.env.SUBNAME_DOMAINS_CACHE_INTERVAL_MS
 // consumer expecting the new one, so this forces a clean rebuild rather than trying to migrate the
 // shape in place. Not meant to be bumped routinely — only when a past scan's correctness or shape
 // is actually in question, same as v2/v3.
-const CACHE_SCHEMA_VERSION = 4;
+// v5: MARKETPLACE_ADDRESS moved from V5 to V6 (security fix redeploy) — same exact reasoning as
+// the v3 bump above: subname prices do NOT carry over across a redeploy (each owner must
+// re-call setSubnamePricePerYear on the new contract themselves), so without this bump the cache
+// would keep publishing every domain's stale V5-era pricesByCurrency as if still real/current.
+const CACHE_SCHEMA_VERSION = 5;
 
 const MARKETPLACE_ABI = [
   "event SubnamePricePerYearSet(bytes32 indexed parentNode, address indexed paymentToken, uint256 pricePerYear)",

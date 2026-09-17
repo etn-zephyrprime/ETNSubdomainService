@@ -18,13 +18,16 @@
 // any known app).
 import { CORE_TOKEN_ADDRESS, CORE_WETN_POOL_ADDRESS } from "./coreClashConfig.js";
 
-const MARKETPLACE_ADDRESS = (process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7").toLowerCase();
-// Every deprecated marketplace this app used to point at — MARKETPLACE_ADDRESS now points at V5,
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = (process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5").toLowerCase();
+// Every deprecated marketplace this app used to point at — MARKETPLACE_ADDRESS now points at V6,
 // but a deprecated contract's own leftover burnPool can still be flushed via a direct admin call
 // to it (see useBurnPool.js's comment on why that balance isn't migrated), so a burn triggered
 // from any of them should still get the real "ETN Subdomain Service" label instead of falling
 // through to "Manual burn".
 const LEGACY_MARKETPLACE_ADDRESSES = [
+  (process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7").toLowerCase(),
   (process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2").toLowerCase(),
   (process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13").toLowerCase(),
 ];
