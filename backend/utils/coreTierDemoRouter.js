@@ -281,7 +281,11 @@ export async function computeDemoData() {
     const addr = DEMO_WALLET_ADDRESSES[i];
     const candidateTokens = (combinedHoldings.perWalletTokens[i] || [])
       .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
-      .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
+      // Number(...) -- tb.token.decimals is a STRING straight off Blockscout's raw JSON; see
+      // lpPositionValuation.js's own getLiquidityPositionsUsd comment for the "invalid unit"
+      // failure this avoids (that function now also coerces defensively, so this is
+      // belt-and-suspenders, not the only fix).
+      .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
     const result = await getLiquidityPositionsUsd(addr, candidateTokens).catch((err) => {
       console.warn(`⚠️  Core Tier demo: liquidity position lookup failed for a demo wallet:`, err.message);
       return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: true, lpTokenAddresses: new Set() };
