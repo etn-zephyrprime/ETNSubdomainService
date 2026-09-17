@@ -24,11 +24,14 @@ import { getState, setState } from "../state/subdomainAdvertState.js";
 import { createAdvertScheduler } from "./advertScheduler.js";
 import { createRpcProvider } from "./rpcProvider.js";
 
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 // Every deprecated marketplace this app used to point at — a listing on any of them never
 // sold/cancelled is still real and still buyable (see useMarketplaceListings.js), so the
 // "Marketplace" advert reads all of them, same as the site's own Marketplace page.
 const LEGACY_MARKETPLACE_ADDRESSES = [
+  process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7",
   process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2",
   process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13",
 ];

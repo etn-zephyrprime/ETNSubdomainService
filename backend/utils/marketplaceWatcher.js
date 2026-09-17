@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { sendTelegramMessage, sendTelegramPhoto, sendTelegramDirectMessage, telegramConfigured } from "./telegramNotifier.js";
-import { getLastProcessedV5Block, setLastProcessedV5Block, getLastProcessedV4Block, setLastProcessedV4Block, getLastProcessedV3Block, setLastProcessedV3Block } from "../state/state.js";
+import { getLastProcessedV6Block, setLastProcessedV6Block, getLastProcessedV5Block, setLastProcessedV5Block, getLastProcessedV4Block, setLastProcessedV4Block, getLastProcessedV3Block, setLastProcessedV3Block } from "../state/state.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getLinkedChatId } from "./telegramLinkRouter.js";
 import { createRpcProvider } from "./rpcProvider.js";
@@ -9,12 +9,15 @@ import { createRpcProvider } from "./rpcProvider.js";
 // ListingSold events and posts a Telegram notification for each — same chain/contract defaults
 // as the rest of the backend (see scripts/backfillNftImages.js), overridable via env for a
 // different deployment.
-// PlanetZephyrosSubdomainServiceV5 — same defaults as src/config.js's MARKETPLACE_ADDRESS/
-// MARKETPLACE_DEPLOY_BLOCK.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// PlanetZephyrosSubdomainServiceV6 — same defaults as src/config.js's MARKETPLACE_ADDRESS/
+// MARKETPLACE_DEPLOY_BLOCK. Redeployed 2026-09-17 as a SECURITY FIX (registerSubname could
+// silently reassign an already-sold subname; see PlanetZephyros's own
+// PlanetZephyrosSubdomainServiceV6.sol header comment) — V5, V4, and V3 were all paused the same
+// day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed to resolve buyer/seller/payer
 // addresses to a primary name (see notifyDomainActivated etc. and primaryNameResolver.js).
@@ -78,6 +81,14 @@ const LEGACY_V3_ABI = [
 // listing never sold/cancelled being bought/cancelled directly, or the admin flushing a leftover
 // burn pool) still gets a Telegram alert instead of going silently unwatched.
 const LEGACY_MARKETPLACES = [
+  {
+    address: process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7",
+    deployBlock: 15874925,
+    abi: MARKETPLACE_ABI,
+    getCursor: getLastProcessedV5Block,
+    setCursor: setLastProcessedV5Block,
+    label: " (legacy V5)",
+  },
   {
     address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2",
     deployBlock: 15873016,
@@ -495,7 +506,7 @@ export function startMarketplaceWatcher() {
   const resolveDisplayName = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
 
   const sources = [
-    { address: MARKETPLACE_ADDRESS, deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace, getCursor: getLastProcessedV5Block, setCursor: setLastProcessedV5Block, label: "" },
+    { address: MARKETPLACE_ADDRESS, deployBlock: MARKETPLACE_DEPLOY_BLOCK, contract: marketplace, getCursor: getLastProcessedV6Block, setCursor: setLastProcessedV6Block, label: "" },
     ...LEGACY_MARKETPLACES.map((m) => ({
       address: m.address,
       deployBlock: m.deployBlock,

@@ -5,22 +5,31 @@ export const RPC_URL = import.meta.env.VITE_RPC_URL || "https://rpc.ankr.com/ele
 export const EXPLORER_BASE_URL = import.meta.env.VITE_EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 
 // Contract addresses
-// Redeployed 2026-09-15 as PlanetZephyrosSubdomainServiceV5 — real ElectroSwap V3-pool support
-// for whitelisted ERC20 payment tokens whose liquidity isn't reachable through V4's plain
-// UniswapV2-style swapRouter path (see PlanetZephyros's own PlanetZephyrosSubdomainServiceV5.sol
-// header comment). V4 has no upgrade path (plain Ownable, immutable constructor wiring), so this
-// is a new deployment, not the previous contract's bytecode changing in place —
-// migrateActivation() lets a domain already activated on V4 carry that status over to V5 for
-// free, but existing V4 subname prices do NOT carry over automatically; each owner needs to
-// re-call setSubnamePricePerYear on V5 themselves.
-export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as PlanetZephyrosSubdomainServiceV6 — SECURITY FIX, not a feature bump.
+// V5's registerSubname (_fulfillSubname) had no check that a label wasn't already taken: every
+// subname V3 through V5 has ever created is wrapped with fuses = 0, so NameWrapper's own
+// PARENT_CANNOT_CONTROL protection was never active on it, meaning ANYONE (not just the parent
+// owner) could call registerSubname again for an already-sold label, pay the current price, and
+// silently take over a subname someone else already held. Confirmed exploitable live via a
+// read-only eth_call simulation against enssubdomain.etn's real "admin" subname, 2026-09-17.
+// V6 adds an availability check (existing, unexpired subnode blocks the sale; a genuinely expired
+// one stays purchasable, same as NameWrapper's own expiry rule) — see PlanetZephyros's own
+// PlanetZephyrosSubdomainServiceV6.sol header comment for the full writeup. V5, V4, and V3 were
+// all paused (owner setPaused(true)) the same day and stay paused permanently — none of them can
+// be patched in place (no upgrade path, plain Ownable, immutable constructor wiring), so this is a
+// new deployment, not the previous contract's bytecode changing. migrateActivation() lets a domain
+// already activated on V5 carry that status over to V6 for free, but existing V5 subname prices do
+// NOT carry over automatically; each owner needs to re-call setSubnamePricePerYear on V6
+// themselves, and re-approve V6 on NameWrapper (setApprovalForAll) before any subname sale under
+// their domain will succeed — same one-time step every prior version bump already required.
+export const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 // Block MARKETPLACE_ADDRESS was deployed at — the public RPC rejects eth_getLogs queries with an
 // unscoped fromBlock ("Block range is too large"), so log scans (e.g. discovering which domains
 // have a subname price set) start here instead of from genesis. Must be updated alongside
 // MARKETPLACE_ADDRESS on every redeploy.
 export const MARKETPLACE_DEPLOY_BLOCK = import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(import.meta.env.VITE_MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 // Marketplace contract owner — confirmed live via eth_call to owner() on MARKETPLACE_ADDRESS
 // right after the V5 deploy (same address V3/V4 already used, unchanged). Gates the
 // buyBackAndBurn button in BurnPoolCard: that function is onlyOwner on-chain, so anyone else's
@@ -43,8 +52,9 @@ export const MARKETPLACE_OWNER_ADDRESS = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B42
 // 0x1191C7c0558F52a7282C00Bc477aA16187C1fE64 block 15188489) are also left live on-chain but
 // predate this list — no known real activity there beyond what V3 itself already accounts for.
 export const LEGACY_MARKETPLACES = [
-  { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016 }, // V4
-  { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471 }, // V3
+  { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7", deployBlock: 15874925 }, // V5 -- paused 2026-09-17, see MARKETPLACE_ADDRESS's own comment
+  { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016 }, // V4 -- paused 2026-09-17
+  { address: import.meta.env.VITE_LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471 }, // V3 -- paused 2026-09-17
 ];
 
 // Candidate ERC20 payment tokens whitelisted on V5 as of the currency-configuration pass done via

@@ -41,6 +41,11 @@ const v3StateKey = "watcher-state-legacy.json";
 // version number.
 const v5StateFile = path.join(__dirname, "..", "data", "state-v5.json");
 const v5StateKey = "watcher-state-v5.json";
+// New in the V6 rewiring (2026-09-17, a security fix redeploy — see marketplaceWatcher.js's own
+// MARKETPLACE_ADDRESS comment) — same reasoning as v5StateFile/v5StateKey above: no prior data to
+// preserve, so this one can follow the current version number too.
+const v6StateFile = path.join(__dirname, "..", "data", "state-v6.json");
+const v6StateKey = "watcher-state-v6.json";
 
 let cachedR2Client = null;
 function getR2Client() {
@@ -132,8 +137,17 @@ async function setLastProcessedBlockFor(stateFile, stateKey, blockNumber) {
   }
 }
 
-/** V5's own cursor (the current contract as of this rewiring) — brand new key, see this module's
- * own header comment for why it can't reuse V4's old "current" key. */
+/** V6's own cursor (the current contract as of this rewiring) — brand new key, see this module's
+ * own header comment for why it can't reuse V5's old "current" key. */
+export async function getLastProcessedV6Block() {
+  return getLastProcessedBlockFor(v6StateFile, v6StateKey);
+}
+export async function setLastProcessedV6Block(blockNumber) {
+  return setLastProcessedBlockFor(v6StateFile, v6StateKey, blockNumber);
+}
+
+/** V5's own cursor — same key this module has always used for V5 (back when V5 was "current"),
+ * carrying its real accumulated progress forward unchanged now that V5 is a legacy source. */
 export async function getLastProcessedV5Block() {
   return getLastProcessedBlockFor(v5StateFile, v5StateKey);
 }

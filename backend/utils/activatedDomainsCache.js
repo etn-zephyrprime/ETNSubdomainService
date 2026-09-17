@@ -18,10 +18,15 @@ import { createRpcProvider } from "./rpcProvider.js";
 // of truth for their current owner/expiry. This is the dominant RPC cost here and the main thing
 // to revisit (e.g. re-verify on a slower rotating schedule instead of every entry every cycle) if
 // the number of activated domains grows large enough for it to matter.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX (registerSubname could silently reassign an
+// already-sold subname to anyone willing to pay the current price; see PlanetZephyros's own
+// PlanetZephyrosSubdomainServiceV6.sol header comment). V5, V4, and V3 were all paused the same
+// day and stay paused permanently -- same reasoning src/config.js's own MARKETPLACE_ADDRESS
+// comment gives, kept in sync by hand here per this file's established convention.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 const NAME_WRAPPER_ADDRESS = process.env.NAME_WRAPPER_ADDRESS || "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64";
 // Same value as src/config.js's REVERSE_REGISTRAR_ADDRESS — needed here to resolve each owner's
 // primary name server-side instead of per-listing in the browser (see useReverseRecord.js, which
@@ -61,13 +66,18 @@ const MAX_BLOCKS_PER_CYCLE = process.env.ACTIVATED_DOMAINS_MAX_BLOCKS_PER_CYCLE
 // (see this file's own header comment on why it's included at all), but the frontend needs to know
 // which contract it's actually paid-up-and-live on to tag it correctly rather than imply it's
 // current-V5. Bumped for the same "differently-shaped cache" reasoning as v2/v3.
-const CACHE_SCHEMA_VERSION = 4;
+// v5: MARKETPLACE_ADDRESS moved from V5 to V6 (security fix, see that constant's own comment) and
+// V5 joined LEGACY_MARKETPLACES -- bumped for the same "differently-shaped cache" reasoning as
+// v2/v3/v4 (SOURCE_VERSION_LABELS below changed shape, and every already-cached domain's own
+// `activatedOn: "V5"` needs re-deriving fresh against the new sources list rather than being
+// trusted as still meaning "the current contract").
+const CACHE_SCHEMA_VERSION = 5;
 
 // Human-readable version label for each entry in `sources` below, matched by array position —
-// index 0 (MARKETPLACE_ADDRESS) is always the current contract, "V5"; LEGACY_MARKETPLACES then
-// follows in the same V4-then-V3 order every other consumer of that list already assumes (see
-// src/config.js's own LEGACY_MARKETPLACES comment).
-const SOURCE_VERSION_LABELS = ["V5", "V4", "V3"];
+// index 0 (MARKETPLACE_ADDRESS) is always the current contract, "V6"; LEGACY_MARKETPLACES then
+// follows in the same V5-then-V4-then-V3 order every other consumer of that list already assumes
+// (see src/config.js's own LEGACY_MARKETPLACES comment).
+const SOURCE_VERSION_LABELS = ["V6", "V5", "V4", "V3"];
 
 // How many getData()/primary-name lookups run at once during the re-verification pass — bounded
 // the same way queryLogsChunked below bounds its own concurrency, so a growing domain count
@@ -95,6 +105,7 @@ const LEGACY_V3_ABI = [
 // points at a fresh contract with no memory of that history. Each scanned on its own cursor (see
 // scanAndPublish's MARKETPLACE_SOURCES) since each has a different deploy block.
 const LEGACY_MARKETPLACES = [
+  { address: process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7", deployBlock: 15874925, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471, abi: LEGACY_V3_ABI },
 ];

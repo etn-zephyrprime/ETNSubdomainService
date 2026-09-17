@@ -17,10 +17,12 @@ import { createRpcProvider } from "./rpcProvider.js";
 // "fine to drift independently" philosophy already established for the several other copies of
 // this helper in this codebase. Keeps this cache's failure/disablement fully decoupled from
 // ownedNamesCache.js's.
-const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7";
+// Redeployed 2026-09-17 as V6 -- a SECURITY FIX, see src/config.js's own MARKETPLACE_ADDRESS
+// comment. V5, V4, and V3 were all paused the same day and stay paused permanently.
+const MARKETPLACE_ADDRESS = process.env.MARKETPLACE_ADDRESS || "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5";
 const MARKETPLACE_DEPLOY_BLOCK = process.env.MARKETPLACE_DEPLOY_BLOCK
   ? parseInt(process.env.MARKETPLACE_DEPLOY_BLOCK, 10)
-  : 15874925;
+  : 15906639;
 // BaseRegistrarImplementation — the canonical, chain-level registrar every .etn top-level domain
 // is minted through, regardless of which frontend/app was used. Added so this tab can show real
 // network-wide registration activity, not just the subset that happened to also flow through this
@@ -55,7 +57,9 @@ const BASE_REGISTRAR_DEPLOY_BLOCK = process.env.BASE_REGISTRAR_DEPLOY_BLOCK
 // marketplace/BaseRegistrar sharing one and legacy having a second — bumped for the same "force a
 // clean rebuild rather than trust a differently-shaped cache" reasoning as v5, and every future
 // redeploy.
-const CACHE_SCHEMA_VERSION = 6;
+// v7: MARKETPLACE_ADDRESS moved from V5 to V6 (a SECURITY FIX redeploy, see that constant's own
+// comment) and V5 joined LEGACY_MARKETPLACES — same "differently-shaped cache" reasoning as v6.
+const CACHE_SCHEMA_VERSION = 7;
 // Was 5 minutes — bumped to 15 as part of cutting this backend's overall RPC volume across the
 // board (see rpcProvider.js), same reasoning as every other cache/watcher's own interval bump.
 const CACHE_INTERVAL_MS = process.env.NAME_SERVICE_STATS_CACHE_INTERVAL_MS
@@ -98,6 +102,7 @@ const LEGACY_V3_ABI = [
 // the trend chart just because MARKETPLACE_ADDRESS now points at a fresh contract. Each scanned on
 // its own cursor (see scanAndPublish's own `sources`) since each has a different deploy block.
 const LEGACY_MARKETPLACES = [
+  { address: process.env.LEGACY_MARKETPLACE_V5_ADDRESS || "0x2ac8363A60CB054A948CFdf8b34F3813E4528AE7", deployBlock: 15874925, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V4_ADDRESS || "0xfE95DdE1832453D2A73E48C737aBFA21463C63d2", deployBlock: 15873016, abi: MARKETPLACE_ABI },
   { address: process.env.LEGACY_MARKETPLACE_V3_ADDRESS || "0x392fd031910e5D58650160f41a501ccc29B1eD13", deployBlock: 15207471, abi: LEGACY_V3_ABI },
 ];
