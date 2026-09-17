@@ -32,6 +32,7 @@
 // directly client-side; that's an intentional, narrower exception carried over from this demo's
 // very first version, not a new gap).
 import express from "express";
+import { ethers } from "ethers";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots, backfillPnlHistory } from "../services/pnlSnapshotService.js";
 import { backfillCategoryPnlHistory, CATEGORIES } from "../services/categoryPnlService.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
@@ -42,6 +43,8 @@ import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots, buildRollups } f
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getDemoSnapshot } from "../state/coreTierDemoState.js";
 import { getTokenMetadata } from "../services/pnlIngestion.js";
+import { getBatchPricesUsd } from "./tokenChartRouter.js";
+import { getEtnPriceCache } from "../state/etnPriceState.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 
@@ -261,6 +264,48 @@ export async function computeDemoData() {
   }
   const combinedHoldings = await getCombinedHoldings();
 
+  // Per explicit request: the ENTIRE demo is static once generated -- nothing should move between
+  // one visitor's view and the next, or between "Total Portfolio Balance" and the PnL panel's own
+  // "Current Value" (both of which used to price the SAME underlying holdings at two DIFFERENT
+  // times: this figure frozen at whenever this script last ran, that one re-fetched live on every
+  // page view -- confirmed live, 2026-09-17, as an exact, real mismatch a demo viewer would
+  // immediately notice: $9,098 live vs $20,301.50 frozen for the same 3 wallets). Pricing every
+  // holding ONCE, right here, and persisting the resulting USD values alongside the balances they
+  // came from is what makes every number in this payload agree with every other one, forever,
+  // until the next time this script is deliberately re-run -- there is no other live pricing call
+  // anywhere in the demo's Portfolio/Composition view once this lands (CoreTierDemo.jsx's own
+  // DemoPortfolio no longer calls useBatchTokenPrices/useEtnPrice at all).
+  const [etnPriceCache, tokenPricesUsd] = await Promise.all([
+    getEtnPriceCache(),
+    getBatchPricesUsd(combinedHoldings.tokens.map((t) => t.tokenAddress)),
+  ]);
+  const etnUsd = Number.isFinite(etnPriceCache?.usd) && etnPriceCache.usd > 0 ? etnPriceCache.usd : null;
+
+  // usdValue is null (not 0) for a token neither ElectroSwap nor GeckoTerminal could price at
+  // generation time -- same "absent/null means unpriced, not worthless" convention this app
+  // already uses everywhere else (see e.g. lpPositionValuation.js's own hasUnpriced handling).
+  function priceTokens(tokens) {
+    return tokens.map((t) => {
+      const priceUsd = tokenPricesUsd[t.tokenAddress] ?? null;
+      let usdValue = null;
+      if (priceUsd != null) {
+        try {
+          usdValue = parseFloat(ethers.formatUnits(t.rawBalance, Number(t.decimals ?? 18))) * priceUsd;
+        } catch {
+          usdValue = null; // malformed rawBalance/decimals -- leave unpriced rather than throw
+        }
+      }
+      return { ...t, usdValue };
+    });
+  }
+  function etnUsdValueFor(rawWeiString) {
+    if (etnUsd == null) return null;
+    return parseFloat(ethers.formatEther(rawWeiString || "0")) * etnUsd;
+  }
+
+  const pricedCombinedTokens = priceTokens(combinedHoldings.tokens);
+  const combinedEtnUsdValue = etnUsdValueFor(combinedHoldings.totalCoinBalance);
+
   const combined = combineLivePnlSnapshots(snapshots);
   const perWallet = DEMO_WALLET_ADDRESSES.map((addr, i) => ({
     // Index only — CoreTierDemo.jsx labels these "Wallet 1/2/3"; the real address never leaves
@@ -369,7 +414,8 @@ export async function computeDemoData() {
       nftPnl: nftSnapshots[i] ? await excludeTestNftCollections(nftSnapshots[i]) : null,
       combinedHoldings: {
         totalCoinBalance: combinedHoldings.perWalletCoinBalances[i],
-        tokens: buildPerWalletHoldingsTokens(combinedHoldings.perWalletTokens[i] || []),
+        etnUsdValue: etnUsdValueFor(combinedHoldings.perWalletCoinBalances[i]),
+        tokens: priceTokens(buildPerWalletHoldingsTokens(combinedHoldings.perWalletTokens[i] || [])),
       },
     }))
   );
@@ -385,7 +431,8 @@ export async function computeDemoData() {
     nftPnl,
     combinedHoldings: {
       totalCoinBalance: combinedHoldings.totalCoinBalance,
-      tokens: combinedHoldings.tokens,
+      etnUsdValue: combinedEtnUsdValue,
+      tokens: pricedCombinedTokens,
     },
   };
 }
