@@ -16,7 +16,7 @@
 import express from "express";
 import { ethers } from "ethers";
 import { getPricePointsSince } from "../db/pricePoints.js";
-import { getCandles as getElectroSwapCandles } from "./electroSwapApi.js";
+import { getCandles as getElectroSwapCandles, getBatchTokenPrices } from "./electroSwapApi.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -47,6 +47,53 @@ const cache = new Map(); // `${address}:${range}` -> { expiresAt, payload }
 // page. Keyed by address alone, not address:range.
 const POOL_CACHE_TTL_MS = 15 * 60 * 1000;
 const poolCache = new Map(); // address -> { expiresAt, pools }
+
+// Backs /token-prices — a portfolio view (CoreTierPortfolio.jsx/CoreTierDemo.jsx/
+// AddressLookup.jsx) pricing up to 50 distinct holdings at once used to fire 50 individual
+// /token-chart requests (each one a full pool-discovery + OHLCV-candle fetch, just to read the
+// single latest close) through this file's own rate-limited GeckoTerminal queue — confirmed live
+// a single cold /token-chart call can itself take 90+ seconds when ElectroSwap's own candles
+// endpoint is slow to respond and retries before falling back, so 50 of them fired in parallel
+// could never realistically finish inside a normal page view, leaving a portfolio's "Tokens" slice
+// looking like $0 regardless of real holdings. This endpoint prices a whole batch in two calls
+// total instead of up to 50: ElectroSwap's own batched /prices endpoint first (already used
+// elsewhere in this backend, e.g. tokenPriceCache.js — cheap, one round trip for up to 50
+// addresses), then GeckoTerminal's "simple" token_price endpoint (confirmed live: a real current
+// price, no pool discovery or candle history needed) for whatever ElectroSwap didn't have a price
+// for. Cached per-address (not per-request address list) so two overlapping portfolios' requests
+// still share cache hits.
+const PRICE_CACHE_TTL_MS = 5 * 60 * 1000;
+const priceCache = new Map(); // address (lowercase) -> { expiresAt, price }
+// GeckoTerminal's own documented cap for this endpoint — separate from ElectroSwap's own
+// MAX_BATCH_ADDRESSES (50) above since it's a different API with its own limit.
+const GECKOTERMINAL_PRICE_BATCH_SIZE = 30;
+
+/** GeckoTerminal's lightweight current-price endpoint — a real spot price straight from its own
+ * indexed pools, no pool-selection or OHLCV-candle fetch needed (unlike loadTokenChart below,
+ * which exists to serve a full chart, not just today's number). Routed through the same
+ * fetchGeckoTerminal queue as every other GeckoTerminal call in this file, so it shares the same
+ * rate-limit protection rather than opening a second, uncoordinated path to the same budget.
+ * Returns a Map (address -> price); an address GeckoTerminal has no price for is simply absent,
+ * not an error — same "missing means unpriced, not failed" contract as getBatchTokenPrices. */
+async function getBatchGeckoTerminalPrices(addresses) {
+  const prices = new Map();
+  for (let i = 0; i < addresses.length; i += GECKOTERMINAL_PRICE_BATCH_SIZE) {
+    const chunk = addresses.slice(i, i + GECKOTERMINAL_PRICE_BATCH_SIZE);
+    try {
+      const res = await fetchGeckoTerminal(`/simple/networks/${NETWORK}/token_price/${chunk.join(",")}`);
+      const tokenPrices = res?.data?.attributes?.token_prices || {};
+      for (const [address, price] of Object.entries(tokenPrices)) {
+        const parsed = Number(price);
+        if (Number.isFinite(parsed)) prices.set(address.toLowerCase(), parsed);
+      }
+    } catch (err) {
+      console.warn(`⚠️  GeckoTerminal batch price lookup failed for ${chunk.length} token(s):`, err.message);
+      // Continue to the next chunk — a transient failure for one chunk of up to 30 shouldn't
+      // also cost the OTHER chunks their prices, same resilience as ElectroSwap's own batch call.
+    }
+  }
+  return prices;
+}
 
 // All outbound GeckoTerminal calls are serialized through this queue with an enforced minimum
 // gap between them — confirmed live that a burst of requests without any spacing (e.g. a user
@@ -332,6 +379,83 @@ router.get("/token-chart", async (req, res) => {
     console.error(`⚠️  Token chart failed for ${address}:`, err.message);
     res.status(502).json({ error: "Couldn't load chart data" });
   }
+});
+
+// Batch current-price lookup — see priceCache's own comment above for why this exists (a whole
+// portfolio's worth of holdings priced in two calls total, instead of up to 50 individual
+// /token-chart requests). `prices` in the response only ever contains addresses a real price was
+// found for — same "absent means unpriced, not failed" contract every caller already expects from
+// a missing tokenPrices[addr] entry (see e.g. CoreTierPortfolio.jsx's own tokenUsdValue).
+router.get("/token-prices", async (req, res) => {
+  const raw = String(req.query.addresses || "");
+  const addresses = [...new Set(raw.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean))];
+
+  if (addresses.length === 0) {
+    return res.status(400).json({ error: "Provide at least one address via ?addresses=a,b,c" });
+  }
+  if (addresses.some((a) => !ethers.isAddress(a))) {
+    return res.status(400).json({ error: "One or more addresses is invalid" });
+  }
+  // Generous relative to every real caller's own MAX_PRICED_HOLDINGS cap (50) — just a sanity
+  // ceiling against a malformed/abusive request, not a limit anyone legitimate should ever hit.
+  if (addresses.length > 100) {
+    return res.status(400).json({ error: "Too many addresses — 100 max per request" });
+  }
+
+  const now = Date.now();
+  const prices = {};
+  const missing = [];
+  for (const addr of addresses) {
+    const cached = priceCache.get(addr);
+    if (cached && cached.expiresAt > now) {
+      if (cached.price != null) prices[addr] = cached.price;
+    } else {
+      missing.push(addr);
+    }
+  }
+
+  if (missing.length > 0) {
+    try {
+      // ElectroSwap first — one batched call, no per-token overhead (see this file's header
+      // comment / electroSwapApi.js's own for why this is preferred over GeckoTerminal at all).
+      const electroSwapPrices = await getBatchTokenPrices(missing);
+      const stillMissing = [];
+      for (const addr of missing) {
+        const entry = electroSwapPrices.get(addr);
+        if (entry?.usd != null) {
+          prices[addr] = entry.usd;
+          priceCache.set(addr, { price: entry.usd, expiresAt: now + PRICE_CACHE_TTL_MS });
+        } else {
+          stillMissing.push(addr);
+        }
+      }
+
+      // GeckoTerminal for whatever ElectroSwap didn't have (a token it doesn't index at all, or
+      // ELECTROSWAP_API_KEY isn't configured in this environment).
+      if (stillMissing.length > 0) {
+        const gtPrices = await getBatchGeckoTerminalPrices(stillMissing);
+        for (const addr of stillMissing) {
+          const price = gtPrices.get(addr);
+          if (price != null) {
+            prices[addr] = price;
+            priceCache.set(addr, { price, expiresAt: now + PRICE_CACHE_TTL_MS });
+          } else {
+            // Neither source has a price — cache the miss too (same TTL) so a portfolio holding
+            // genuinely unpriced/spam tokens doesn't re-attempt both APIs for them on every
+            // request within the cache window, same reasoning getPools's own comment gives.
+            priceCache.set(addr, { price: null, expiresAt: now + PRICE_CACHE_TTL_MS });
+          }
+        }
+      }
+    } catch (err) {
+      // Whatever's already in `prices` (cache hits, plus any result that landed before this
+      // failed) is still returned — a partial batch is more useful to a portfolio view than a
+      // hard failure that blanks out every holding's price.
+      console.error("⚠️  Batch token price lookup failed:", err.message);
+    }
+  }
+
+  res.json({ prices });
 });
 
 export default router;
