@@ -5,7 +5,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useDiamondHandsScore } from "../../hooks/useDiamondHandsScore.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
-import { green, orange, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import { green, blue, orange, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
@@ -21,6 +21,31 @@ const TIER_COLORS = {
   "Paper Hands": mutedLight,
 };
 
+// Small helper since every color this component tints (TIER_COLORS, and green/blue/orange from
+// theme.js) is a plain 6-digit hex string, not one of theme.js's own separately-defined rgba
+// Glow constants (those only exist for green/orange/blue/gold/silver/error, not the tier palette
+// above) -- this covers all of them from one place instead of hand-writing an rgba() per color.
+function withAlpha(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function tabButtonStyle(active) {
+  return {
+    padding: "6px 14px",
+    borderRadius: 8,
+    border: `1px solid ${active ? green : border}`,
+    background: active ? withAlpha(green, 0.12) : panel2,
+    color: active ? green : mutedLight,
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+}
+
 function fmtDays(days) {
   if (days == null) return "—";
   if (days < 1) return "<1 day";
@@ -34,26 +59,130 @@ function fmtScore(score) {
   return score == null ? "—" : Math.round(score).toString();
 }
 
-/** The three underlying numbers behind a score, plus the score/tier itself — same shape shown at
- * every drill-down level (portfolio, wallet, asset) per the build brief's own "never just the
- * score in isolation" requirement. */
+// Circular 0-100 progress ring for the combined score -- the one number this feature is actually
+// named for gets the most visual weight, with the 3 components underneath as secondary detail
+// (see ComponentBar below), rather than every number competing at the same size.
+function ScoreGauge({ score, tierColor, size = 92 }) {
+  const strokeWidth = 8;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const pct = score == null ? 0 : Math.max(0, Math.min(100, score)) / 100;
+  const offset = circumference * (1 - pct);
+
+  return (
+    <svg width={size} height={size} style={{ flexShrink: 0 }}>
+      <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={border} strokeWidth={strokeWidth} />
+      {score != null && (
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={tierColor}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          style={{ transition: "stroke-dashoffset 0.6s ease" }}
+        />
+      )}
+      <text x="50%" y="46%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.3} fontWeight={900} fill={score == null ? mutedLight : "#fff"}>
+        {fmtScore(score)}
+      </text>
+      <text x="50%" y="68%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.1} fill={muted} style={{ textTransform: "uppercase", letterSpacing: 1 }}>
+        / 100
+      </text>
+    </svg>
+  );
+}
+
+// One component's normalized 0-100 sub-score as a labeled horizontal bar -- `value` comes straight
+// from the backend's own subScores (diamondHandsService.js's scoreFromComponents), never
+// recomputed here, so a bar can never silently drift from the number that actually fed the combined
+// score. An excluded/unknown component (null) renders as an empty, uncolored track rather than a
+// misleading 0% (0% would read as "the worst possible", not "not enough data yet").
+function ComponentBar({ label, value, color }) {
+  const pct = value == null ? 0 : Math.max(0, Math.min(100, value));
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+        <span style={{ color: mutedLight, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: value == null ? muted : "#fff", fontWeight: 700 }}>{value == null ? "—" : Math.round(value)}</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            borderRadius: 3,
+            background: value == null ? border : color,
+            transition: "width 0.6s ease",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The gauge + 3 component bars + raw figures behind a score — same shape shown at every
+ * drill-down level (portfolio, wallet, asset) per the build brief's own "never just the score in
+ * isolation" requirement. */
 function ScoreCard({ label, result }) {
   if (!result) return null;
-  const { components, score, tier } = result;
+  const { components, score, tier, subScores } = result;
   const tierColor = tier ? TIER_COLORS[tier] : mutedLight;
 
   return (
-    <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}` }}>
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+    <div
+      style={{
+        padding: 18,
+        borderRadius: 14,
+        background: panel2,
+        border: `1px solid ${tier ? withAlpha(tierColor, 0.5) : border}`,
+        boxShadow: tier ? `0 0 24px ${withAlpha(tierColor, 0.12)}` : "none",
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 16 }}>
         {label}
       </div>
 
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 14 }}>
-        <div style={{ fontSize: 34, fontWeight: 900, color: tierColor, lineHeight: 1 }}>{fmtScore(score)}</div>
-        <div style={{ fontSize: 15, fontWeight: 800, color: tierColor }}>{tier || "Not enough data yet"}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+          <ScoreGauge score={score} tierColor={tierColor} />
+          <div
+            style={{
+              padding: "4px 12px",
+              borderRadius: 999,
+              background: withAlpha(tierColor, 0.15),
+              border: `1px solid ${tierColor}`,
+              fontSize: 11,
+              fontWeight: 800,
+              color: tierColor,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {tier || "Not enough data"}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 190, display: "flex", flexDirection: "column", gap: 13 }}>
+          <ComponentBar label="Panic-Sell Avoidance" value={subScores?.panicSell} color={green} />
+          <ComponentBar label="Holding Period" value={subScores?.holdingPeriod} color={blue} />
+          <ComponentBar label="Retention Rate" value={subScores?.retention} color={orange} />
+        </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+          gap: 10,
+          marginTop: 18,
+          paddingTop: 14,
+          borderTop: `1px solid ${border}`,
+        }}
+      >
         <div>
           <div style={{ fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Avg. Holding Period</div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{fmtDays(components.avgHoldingDays)}</div>
@@ -120,6 +249,10 @@ function Methodology() {
             <strong style={{ color: TIER_COLORS["Diamond Hands"] }}>Diamond Hands</strong> (60–79) →{" "}
             <strong style={{ color: TIER_COLORS["Titanium Hands"] }}>Titanium Hands</strong> (80–100).
           </p>
+          <p style={{ margin: "0 0 10px" }}>
+            NFTs are scored per collection, not per tokenId — every item you've ever held or sold
+            from one collection is pooled into that collection's own row under "By Asset."
+          </p>
           <p style={{ margin: 0, fontSize: 11, color: muted }}>
             The exact weights, the panic-sell threshold/window, and the tier cutoffs above are
             provisional starting points, chosen before real usage data existed to calibrate against —
@@ -176,14 +309,29 @@ export default function CoreTierDiamondHands({ wallet, getAuthParams, coreTierAc
   const filteredWalletFailed = walletFilter !== "all" && (result?.failed || []).includes(walletFilter);
 
   const perAsset = result?.perAsset || [];
-  const { resolve: resolveTokenName } = useTokenNames(perAsset.map((a) => a.tokenAddress));
+  // Split by the backend's own classification (diamondHandsService.js's classifyAssetKey) rather
+  // than re-detecting NFTs here from key shape -- native ETN, fungible tokens, and V3 liquidity
+  // positions all read as "Tokens" (none of them are collectibles), only type "nft" (a grouped
+  // collection, never a raw tokenId) reads as "NFTs".
+  const tokenAssets = perAsset.filter((a) => a.type !== "nft");
+  const nftAssets = perAsset.filter((a) => a.type === "nft");
+  const hasBothKinds = tokenAssets.length > 0 && nftAssets.length > 0;
+
+  const [assetTab, setAssetTab] = useState("tokens");
+  // A wallet with only one kind of asset never shows the tab toggle at all (see below) -- this
+  // makes sure the list actually shown always matches the kind that exists, regardless of which
+  // tab happens to be selected in state, rather than silently rendering empty.
+  const effectiveAssetTab = hasBothKinds ? assetTab : nftAssets.length > 0 ? "nfts" : "tokens";
+  const activeAssetList = effectiveAssetTab === "nfts" ? nftAssets : tokenAssets;
+
+  const { resolve: resolveTokenName } = useTokenNames(activeAssetList.map((a) => a.tokenAddress));
 
   // Asset filter -- local to this panel, same "self-heals to none if it falls out of scope"
-  // reasoning as CoreTierNftPnl.jsx's own collection filter (a wallet-filter change or a refresh
-  // with different results shouldn't leave this pointed at a token no longer in scope).
+  // reasoning as CoreTierNftPnl.jsx's own collection filter (a wallet-filter change, a tab switch,
+  // or a refresh with different results shouldn't leave this pointed at an asset no longer in scope).
   const [assetFilterRaw, setAssetFilter] = useState("");
-  const assetFilter = perAsset.some((a) => a.tokenAddress === assetFilterRaw) ? assetFilterRaw : "";
-  const scopeAsset = assetFilter ? perAsset.find((a) => a.tokenAddress === assetFilter) : null;
+  const assetFilter = activeAssetList.some((a) => a.tokenAddress === assetFilterRaw) ? assetFilterRaw : "";
+  const scopeAsset = assetFilter ? activeAssetList.find((a) => a.tokenAddress === assetFilter) : null;
 
   return (
     <CollapsibleCoreTierPanel icon={Gem} title="Diamond Hands Score">
@@ -214,14 +362,26 @@ export default function CoreTierDiamondHands({ wallet, getAuthParams, coreTierAc
             <ScoreCard label={walletFilter === "all" ? "Portfolio" : "This Wallet"} result={scopeResult} />
 
             {perAsset.length > 0 && (
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 20 }}>
                 <div style={{ ...sectionHeaderStyle, display: "flex", alignItems: "center", gap: 6 }}>
                   By Asset
-                  <InfoTooltip text="Drill into one token (or native ETN) to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
+                  <InfoTooltip text="Drill into one token, NFT collection, or native ETN to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
                 </div>
+
+                {hasBothKinds && (
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                    <button type="button" onClick={() => setAssetTab("tokens")} style={tabButtonStyle(effectiveAssetTab === "tokens")}>
+                      Tokens ({tokenAssets.length})
+                    </button>
+                    <button type="button" onClick={() => setAssetTab("nfts")} style={tabButtonStyle(effectiveAssetTab === "nfts")}>
+                      NFTs ({nftAssets.length})
+                    </button>
+                  </div>
+                )}
+
                 <select value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)} style={{ ...selectStyle, width: "100%", marginBottom: 12 }}>
-                  <option value="">All Assets (combined, above)</option>
-                  {perAsset.map((a) => (
+                  <option value="">All {effectiveAssetTab === "nfts" ? "NFTs" : "Tokens"} (combined, above)</option>
+                  {activeAssetList.map((a) => (
                     <option key={a.tokenAddress} value={a.tokenAddress}>
                       {resolveTokenName(a.tokenAddress)} — {a.tier || "Not enough data"} ({fmtScore(a.score)})
                     </option>

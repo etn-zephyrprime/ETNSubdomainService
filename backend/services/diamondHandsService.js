@@ -22,7 +22,7 @@
 // ============================================================================================
 import Decimal from "decimal.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
-import { ingestWalletHistory } from "./pnlIngestion.js";
+import { ingestWalletHistory, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { buildEventsForWallet } from "./pnlSnapshotService.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { getPricePointsSince } from "../db/pricePoints.js";
@@ -69,6 +69,22 @@ function clamp100(x) {
   return Math.max(0, Math.min(100, x));
 }
 
+// Classifies one lot/event's own `tokenAddress` key for the per-asset breakdown below. Same
+// "address:tokenId" composite-key shape (and the same V3-position carve-out) as
+// groupNftHoldingsByCollection/pnlSnapshotService.js's own NFT_GROUPING_EXCLUSIONS use elsewhere
+// in this app — a real NFT tokenId groups into its collection (so "By Asset" shows one "Bored Ape"
+// row, not one row per tokenId ever bought/sold), while a V3 concentrated-liquidity position keeps
+// its own composite key ungrouped, same reasoning as those call sites: it's a financial position,
+// not a collectible to fold away.
+function classifyAssetKey(tokenAddress) {
+  if (tokenAddress === "NATIVE") return { type: "native", groupKey: tokenAddress };
+  const colonIndex = tokenAddress.indexOf(":");
+  if (colonIndex === -1) return { type: "token", groupKey: tokenAddress };
+  const prefix = tokenAddress.slice(0, colonIndex);
+  if (prefix === POSITION_MANAGER_ADDRESS) return { type: "lp", groupKey: tokenAddress };
+  return { type: "nft", groupKey: prefix };
+}
+
 // Same asset-key normalization getCachedHistoricalPriceUsd/getHistoricalPriceUsd use internally
 // (pnlPricing.js — not exported, so this is the smallest possible duplication of an already-
 // established one-line convention rather than a real second implementation of anything).
@@ -91,9 +107,15 @@ function cacheAssetFor(tokenAddress) {
 // Exported for direct unit testing (no DB dependency when `realizedEvents` is empty — the only
 // DB touch in here is the panic-sell price-history fetch, and Promise.all([]) short-circuits
 // cleanly when there are no disposals to classify).
-export async function computeComponentsForScope(lots, realizedEvents, tokenAddress, now) {
-  const scopedLots = tokenAddress ? lots.filter((l) => l.tokenAddress === tokenAddress) : lots;
-  const scopedEvents = tokenAddress ? realizedEvents.filter((e) => e.tokenAddress === tokenAddress) : realizedEvents;
+// `scope` is either a single tokenAddress string (exact match — the original shape, still what
+// portfolio-level/per-wallet calls and existing unit tests pass), a Set of tokenAddress strings
+// (matches any member — how a grouped NFT collection's several "collection:tokenId" keys get
+// pooled into one scope, see computeDiamondHandsScore's own asset-grouping below), or null/
+// undefined for no filtering at all.
+export async function computeComponentsForScope(lots, realizedEvents, scope, now) {
+  const matches = scope == null ? null : scope instanceof Set ? (addr) => scope.has(addr) : (addr) => addr === scope;
+  const scopedLots = matches ? lots.filter((l) => matches(l.tokenAddress)) : lots;
+  const scopedEvents = matches ? realizedEvents.filter((e) => matches(e.tokenAddress)) : realizedEvents;
   const nowMs = now.getTime();
 
   // ---- 1. Value-weighted average holding period ----
@@ -209,24 +231,36 @@ export async function computeComponentsForScope(lots, realizedEvents, tokenAddre
 // Exported for direct unit testing — fully pure, no I/O at all.
 export function scoreFromComponents(components) {
   const parts = [];
+  // Each component's own normalized 0-100 sub-score, surfaced alongside the combined score/tier
+  // purely for display (e.g. a progress bar per component) — null for whichever component got
+  // excluded/renormalized above, same null-handling as the combined score itself. Computed here,
+  // the one place normalization lives, rather than the frontend re-deriving them and risking drift.
+  const subScores = { holdingPeriod: null, retention: null, panicSell: null };
 
   if (components.avgHoldingDays != null) {
-    parts.push({ weight: WEIGHT_HOLDING_PERIOD, score: clamp100((components.avgHoldingDays / HOLDING_PERIOD_PERFECT_SCORE_DAYS) * 100) });
+    const s = clamp100((components.avgHoldingDays / HOLDING_PERIOD_PERFECT_SCORE_DAYS) * 100);
+    subScores.holdingPeriod = s;
+    parts.push({ weight: WEIGHT_HOLDING_PERIOD, score: s });
   }
   if (components.retentionRate != null) {
-    parts.push({ weight: WEIGHT_RETENTION, score: clamp100(components.retentionRate * 100) });
+    const s = clamp100(components.retentionRate * 100);
+    subScores.retention = s;
+    parts.push({ weight: WEIGHT_RETENTION, score: s });
   }
   if (components.totalSells === 0) {
+    subScores.panicSell = 100;
     parts.push({ weight: WEIGHT_PANIC_SELL, score: 100 });
   } else if (components.panicSellRate != null) {
-    parts.push({ weight: WEIGHT_PANIC_SELL, score: clamp100((1 - components.panicSellRate) * 100) });
+    const s = clamp100((1 - components.panicSellRate) * 100);
+    subScores.panicSell = s;
+    parts.push({ weight: WEIGHT_PANIC_SELL, score: s });
   }
 
   const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0);
-  if (totalWeight === 0) return { score: null, tier: null };
+  if (totalWeight === 0) return { score: null, tier: null, subScores };
 
   const score = parts.reduce((sum, p) => sum + p.score * p.weight, 0) / totalWeight;
-  return { score, tier: tierFor(score) };
+  return { score, tier: tierFor(score), subScores };
 }
 
 /** One wallet's own (lots, realizedEvents) pair — ingests + replays exactly like
@@ -260,9 +294,13 @@ async function getWalletLedgerState(trackedWallet, selfOwnedAddresses) {
  * Returns:
  *   portfolio: { components, score, tier } -- pooled across every wallet that succeeded
  *   perWallet: [{ walletAddress, components, score, tier }] -- only successful wallets
- *   perAsset: [{ tokenAddress, components, score, tier }] -- combined across successful wallets,
- *     one row per token that has ANY lot or disposal in scope (native ETN included, keyed as
- *     "NATIVE" — matches pnlEventBuilder.js's own convention for the chain's native asset)
+ *   perAsset: [{ tokenAddress, type, components, score, tier }] -- combined across successful
+ *     wallets, one row per DISTINCT ASSET that has any lot or disposal in scope: native ETN
+ *     (type "native", keyed as "NATIVE" — matches pnlEventBuilder.js's own convention), a fungible
+ *     token (type "token"), a V3 liquidity position (type "lp", one row per position — never
+ *     grouped, same as elsewhere in this app), or an NFT collection (type "nft", `tokenAddress` is
+ *     the COLLECTION address — every tokenId ever held/sold in that collection is pooled into this
+ *     one row, see classifyAssetKey's own comment on why)
  *   failed: [walletAddress, ...] -- any wallet whose ledger fetch itself failed, so the frontend
  *     can show which one(s) didn't load rather than silently under-reporting the combined totals
  */
@@ -298,11 +336,17 @@ export async function computeDiamondHandsScore(trackedWallets) {
   );
 
   const allTokenAddresses = [...new Set([...pooledLots.map((l) => l.tokenAddress), ...pooledEvents.map((e) => e.tokenAddress)])];
+  const assetGroups = new Map(); // groupKey -> { type, memberKeys: Set<realTokenAddress> }
+  for (const tokenAddress of allTokenAddresses) {
+    const { type, groupKey } = classifyAssetKey(tokenAddress);
+    if (!assetGroups.has(groupKey)) assetGroups.set(groupKey, { type, memberKeys: new Set() });
+    assetGroups.get(groupKey).memberKeys.add(tokenAddress);
+  }
   const perAsset = await Promise.all(
-    allTokenAddresses.map(async (tokenAddress) => {
-      const components = await computeComponentsForScope(pooledLots, pooledEvents, tokenAddress, now);
+    [...assetGroups.entries()].map(async ([groupKey, { type, memberKeys }]) => {
+      const components = await computeComponentsForScope(pooledLots, pooledEvents, memberKeys, now);
       const scoring = scoreFromComponents(components);
-      return { tokenAddress, components, ...scoring };
+      return { tokenAddress: groupKey, type, components, ...scoring };
     })
   );
   // Largest-position-first is the natural default sort for a drill-down list — same "biggest
