@@ -96,9 +96,19 @@ class FifoLedger {
     const qty = new Decimal(quantity);
     const { consumptions, remainingShort } = consumeFifo(lots, qty);
 
+    // Captured BEFORE the quantityRemaining mutation below, same reasoning as lock()'s own
+    // preFilterLots -- new in support of the Diamond Hands score, which needs each disposed
+    // portion's own ORIGINAL acquisition date to compute how long it was actually held (see
+    // realizedEvents.push below). openedTimestamp itself is never mutated by this loop, so
+    // capturing it here vs. before/after the assignment makes no difference -- done here purely to
+    // keep this one loop, not add a second pass over `consumptions`.
+    const lotOpenedTimestamps = new Map();
     for (const c of consumptions) {
       const lot = lots.find((l) => l.id === c.lotId);
-      if (lot) lot.quantityRemaining = c.newRemaining;
+      if (lot) {
+        lotOpenedTimestamps.set(c.lotId, lot.openedTimestamp);
+        lot.quantityRemaining = c.newRemaining;
+      }
     }
     // Drop fully-closed lots so later FIFO consumption skips them without re-checking each time.
     this.lotsByToken.set(tokenAddress, lots.filter((l) => l.quantityRemaining.gt(0)));
@@ -121,6 +131,11 @@ class FifoLedger {
         disposalTxHash: txHash,
         timestamp,
         lotId: c.lotId,
+        // null for the shortfall portion (lotId: null -- see remainingShort handling below), which
+        // has no real originating lot to report a holding period against. New in support of the
+        // Diamond Hands score's holding-period component -- no existing consumer of realizedEvents
+        // reads this field, so this is purely additive.
+        acquisitionTimestamp: c.lotId != null ? lotOpenedTimestamps.get(c.lotId) ?? null : null,
         quantityConsumed: c.quantityConsumed,
         costBasisUsd: c.costBasisUsd,
         proceedsUsd: proceeds,

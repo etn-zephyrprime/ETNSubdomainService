@@ -30,9 +30,12 @@ export const mutedLight = "#9a9a9a";
 export const error = "#ff6b6b";
 export const errorGlow = "rgba(255,107,107,0.35)"; // same alpha as greenGlow — SparklineChart's colorBySign mode
 
-// Page background — dark, desaturated green rather than the main site's navy (#011528), so the
-// bright accent green above actually reads as "on brand" instead of clashing.
-export const background = "#081c0a";
+// Page background — same dark, desaturated green hue as before (kept intentionally, so the bright
+// accent green above still reads as "on brand" instead of clashing), but as a subtle radial
+// gradient rather than one flat fill: a touch lighter behind the header, easing down to a near-black
+// green at the edges. Reads as a deliberately designed surface instead of a flat placeholder color,
+// without introducing a second hue.
+export const background = "radial-gradient(ellipse 1200px 800px at 50% -10%, #0d2b10 0%, #081c0a 45%, #05130a 100%)";
 
 // Fixed, validator-identity palette — deliberately distinct from any intensity/heat scale (which
 // encodes a quantity, not identity) so the two color dimensions never get visually confused.
