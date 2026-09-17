@@ -9,9 +9,7 @@ import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
-import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
-import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
@@ -33,7 +31,6 @@ const DEMO_WALLET_ADDRESSES = [
 ];
 const WALLET_LABELS = ["Wallet A", "Wallet B", "Wallet C"];
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
-const MAX_PRICED_HOLDINGS = 50; // matches CoreTierPortfolio.jsx's own cap
 
 // UI-only display scale — every USD/quantity/balance figure the demo shows is multiplied by this
 // before rendering, so a viewer who happens to know one of the 3 real wallets' actual balance can't
@@ -57,7 +54,7 @@ const DISPLAY_SCALE_NUMERATOR = BigInt(Math.round(DEMO_DISPLAY_SCALE * Number(DI
 const SCALED_FIELDS = new Set([
   "currentValueUsd", "unrealizedPnlUsd", "realizedPnlUsd", "totalValueUsd", "totalMarketValueUsd",
   "totalUnrealizedUsd", "costBasisUsd", "marketValueUsd", "quantity", "rawBalance", "totalCoinBalance",
-  "amount", "usdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
+  "amount", "usdValue", "etnUsdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
   "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd",
 ]);
 
@@ -250,44 +247,30 @@ function DemoBalanceHistory({ walletFilter }) {
 function DemoPortfolio({ data, walletFilter, onSelectToken }) {
   const walletCountLabel = walletFilter === "all" ? "3 demo wallets" : WALLET_LABELS[Number(walletFilter)];
   const trackedCountLabel = walletFilter === "all" ? "3 tracked wallets" : WALLET_LABELS[Number(walletFilter)];
-  const etnUsdPrice = useEtnPrice();
-  const { getBatchTokenPrices } = useBatchTokenPrices();
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
-  const [tokenPrices, setTokenPrices] = useState({});
   const [holdingsShown, setHoldingsShown] = useState(10);
 
   // Same exclusion CoreTierPortfolio.jsx's own allVisibleTokens applies for a real member: an LP
-  // pool token has no price feed of its own (getBatchTokenPrices below would just come back
-  // empty for it) and already has its own dedicated, correctly-valued display (Liquidity Positions) --
-  // showing it twice, once wrong (as an unpriced Combined Holdings row), would be worse than
-  // showing it once, right. Confirmed live as a real gap: this demo previously had no such
-  // exclusion at all, so an LP position sat as a dead, unpriced Combined Holdings row instead of
-  // being folded into Liquidity Positions -- contributing to a demo wallet's real, meaningful LP
-  // value going completely missing from the Portfolio Composition chart.
+  // pool token has no price feed of its own and already has its own dedicated, correctly-valued
+  // display (Liquidity Positions) -- showing it twice, once wrong (as an unpriced Combined
+  // Holdings row), would be worse than showing it once, right.
   const lpTokenAddressSet = new Set((data.liquidityPositions?.v2Positions || []).map((p) => p.tokenAddress));
   const fungibleTokens = (data.combinedHoldings.tokens || []).filter(
     (t) => t.tokenAddress && !isSpamTokenName(t.name) && !lpTokenAddressSet.has(t.tokenAddress.toLowerCase())
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    const addresses = fungibleTokens.slice(0, MAX_PRICED_HOLDINGS).map((t) => t.tokenAddress.toLowerCase());
-    if (addresses.length === 0) return;
-    getBatchTokenPrices(addresses)
-      .then((prices) => {
-        if (!cancelled) setTokenPrices(prices);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.combinedHoldings.tokens]);
-
-  const combinedEtnAmount = parseFloat(ethers.formatEther(BigInt(data.combinedHoldings.totalCoinBalance || 0)));
-  const combinedEtnUsd = etnUsdPrice != null ? combinedEtnAmount * etnUsdPrice : null;
+  // Per explicit request: this ENTIRE demo is static once generated -- every USD figure below
+  // (t.usdValue, data.combinedHoldings.etnUsdValue) is already computed and persisted server-side
+  // at snapshot-generation time (see coreTierDemoRouter.js's own computeDemoData, and its header
+  // comment for the real, confirmed mismatch this replaces: Total Portfolio Balance and the PnL
+  // panel's own Current Value used to price the SAME holdings at two different times -- one live,
+  // one frozen -- and could disagree by 2x+ depending on how long it had been since the snapshot
+  // was last regenerated). No live pricing call happens anywhere in this component; every number
+  // here can only ever change when the backend snapshot itself is regenerated.
+  const combinedEtnUsd = data.combinedHoldings.etnUsdValue ?? null;
 
   const visibleTokens = fungibleTokens
     .map((t) => {
-      const priceUsd = tokenPrices[t.tokenAddress.toLowerCase()];
       // Number(...) -- t.decimals comes straight from Blockscout's raw JSON (a STRING, e.g. "18"),
       // unmodified all the way from coreTierDemoRouter.js's getCombinedHoldings. ethers.formatUnits'
       // second argument only accepts a NUMBER of decimal places or a recognized unit NAME string
@@ -295,8 +278,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
       // (silently understandable as "18" isn't a unit name), which crashed this render with no
       // error boundary anywhere in the app -- a blank/black screen with zero indication why.
       const amount = parseFloat(ethers.formatUnits(BigInt(t.rawBalance), Number(t.decimals ?? 18)));
-      const usdValue = priceUsd != null && Number.isFinite(amount) ? amount * priceUsd : null;
-      return { ...t, amount, usdValue };
+      return { ...t, amount, usdValue: t.usdValue ?? null };
     })
     .sort((a, b) => {
       if (a.usdValue == null && b.usdValue == null) return 0;
@@ -310,7 +292,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
   const lpUsd = data.liquidityPositions.totalUsd != null ? Number(data.liquidityPositions.totalUsd) : null;
   const totalPortfolioUsd = (combinedEtnUsd ?? 0) + tokensUsdTotal + (defiUsd ?? 0) + (lpUsd ?? 0);
   const totalHasUnpriced =
-    (etnUsdPrice == null && combinedEtnAmount > 0) ||
+    (combinedEtnUsd == null && Number(data.combinedHoldings.totalCoinBalance || 0) > 0) ||
     visibleTokens.some((t) => t.usdValue == null && t.amount > 0) ||
     Boolean(data.defiPositions.hasUnpriced) ||
     Boolean(data.liquidityPositions.hasUnpriced);

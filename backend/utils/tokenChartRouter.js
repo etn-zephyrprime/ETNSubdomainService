@@ -381,27 +381,16 @@ router.get("/token-chart", async (req, res) => {
   }
 });
 
-// Batch current-price lookup — see priceCache's own comment above for why this exists (a whole
-// portfolio's worth of holdings priced in two calls total, instead of up to 50 individual
-// /token-chart requests). `prices` in the response only ever contains addresses a real price was
-// found for — same "absent means unpriced, not failed" contract every caller already expects from
-// a missing tokenPrices[addr] entry (see e.g. CoreTierPortfolio.jsx's own tokenUsdValue).
-router.get("/token-prices", async (req, res) => {
-  const raw = String(req.query.addresses || "");
-  const addresses = [...new Set(raw.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean))];
-
-  if (addresses.length === 0) {
-    return res.status(400).json({ error: "Provide at least one address via ?addresses=a,b,c" });
-  }
-  if (addresses.some((a) => !ethers.isAddress(a))) {
-    return res.status(400).json({ error: "One or more addresses is invalid" });
-  }
-  // Generous relative to every real caller's own MAX_PRICED_HOLDINGS cap (50) — just a sanity
-  // ceiling against a malformed/abusive request, not a limit anyone legitimate should ever hit.
-  if (addresses.length > 100) {
-    return res.status(400).json({ error: "Too many addresses — 100 max per request" });
-  }
-
+/** Batch current-price lookup — see priceCache's own comment above for why this exists (a whole
+ * portfolio's worth of holdings priced in two calls total, instead of up to 50 individual
+ * /token-chart requests). ElectroSwap first, GeckoTerminal's lightweight simple-price endpoint for
+ * whatever ElectroSwap didn't have. Returns a plain `{ [lowercased address]: usdPrice }` object —
+ * an address neither source has a price for is simply absent, not an error, same "missing means
+ * unpriced, not failed" contract as getBatchTokenPrices/getBatchGeckoTerminalPrices themselves.
+ * Exported so callers other than this file's own /token-prices route can share the exact same
+ * pricing logic/cache — e.g. computeDemoData() in coreTierDemoRouter.js, pricing the demo's
+ * holdings ONCE at snapshot-generation time rather than needing any live per-visitor pricing call. */
+export async function getBatchPricesUsd(addresses) {
   const now = Date.now();
   const prices = {};
   const missing = [];
@@ -449,12 +438,33 @@ router.get("/token-prices", async (req, res) => {
       }
     } catch (err) {
       // Whatever's already in `prices` (cache hits, plus any result that landed before this
-      // failed) is still returned — a partial batch is more useful to a portfolio view than a
-      // hard failure that blanks out every holding's price.
+      // failed) is still returned — a partial batch is more useful to a caller than a hard
+      // failure that blanks out every holding's price.
       console.error("⚠️  Batch token price lookup failed:", err.message);
     }
   }
 
+  return prices;
+}
+
+// See getBatchPricesUsd's own comment — this route is now a thin HTTP wrapper around it.
+router.get("/token-prices", async (req, res) => {
+  const raw = String(req.query.addresses || "");
+  const addresses = [...new Set(raw.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean))];
+
+  if (addresses.length === 0) {
+    return res.status(400).json({ error: "Provide at least one address via ?addresses=a,b,c" });
+  }
+  if (addresses.some((a) => !ethers.isAddress(a))) {
+    return res.status(400).json({ error: "One or more addresses is invalid" });
+  }
+  // Generous relative to every real caller's own MAX_PRICED_HOLDINGS cap (50) — just a sanity
+  // ceiling against a malformed/abusive request, not a limit anyone legitimate should ever hit.
+  if (addresses.length > 100) {
+    return res.status(400).json({ error: "Too many addresses — 100 max per request" });
+  }
+
+  const prices = await getBatchPricesUsd(addresses);
   res.json({ prices });
 });
 
