@@ -11,7 +11,7 @@ import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
-import { useTokenChart } from "../../hooks/useTokenChart.js";
+import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
@@ -251,14 +251,14 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
   const walletCountLabel = walletFilter === "all" ? "3 demo wallets" : WALLET_LABELS[Number(walletFilter)];
   const trackedCountLabel = walletFilter === "all" ? "3 tracked wallets" : WALLET_LABELS[Number(walletFilter)];
   const etnUsdPrice = useEtnPrice();
-  const { getTokenChart } = useTokenChart();
+  const { getBatchTokenPrices } = useBatchTokenPrices();
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
   const [tokenPrices, setTokenPrices] = useState({});
   const [holdingsShown, setHoldingsShown] = useState(10);
 
   // Same exclusion CoreTierPortfolio.jsx's own allVisibleTokens applies for a real member: an LP
-  // pool token has no price feed of its own (getTokenChart below would just waste a call finding
-  // nothing) and already has its own dedicated, correctly-valued display (Liquidity Positions) --
+  // pool token has no price feed of its own (getBatchTokenPrices below would just come back
+  // empty for it) and already has its own dedicated, correctly-valued display (Liquidity Positions) --
   // showing it twice, once wrong (as an unpriced Combined Holdings row), would be worse than
   // showing it once, right. Confirmed live as a real gap: this demo previously had no such
   // exclusion at all, so an LP position sat as a dead, unpriced Combined Holdings row instead of
@@ -271,15 +271,13 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
 
   useEffect(() => {
     let cancelled = false;
-    fungibleTokens.slice(0, MAX_PRICED_HOLDINGS).forEach((t) => {
-      const addr = t.tokenAddress.toLowerCase();
-      getTokenChart(addr, "7")
-        .then((res) => {
-          if (cancelled || !res?.candles?.length) return;
-          setTokenPrices((prev) => ({ ...prev, [addr]: res.candles[res.candles.length - 1].close }));
-        })
-        .catch(() => {});
-    });
+    const addresses = fungibleTokens.slice(0, MAX_PRICED_HOLDINGS).map((t) => t.tokenAddress.toLowerCase());
+    if (addresses.length === 0) return;
+    getBatchTokenPrices(addresses)
+      .then((prices) => {
+        if (!cancelled) setTokenPrices(prices);
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.combinedHoldings.tokens]);

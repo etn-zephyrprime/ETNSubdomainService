@@ -7,7 +7,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
-import { useTokenChart } from "../../hooks/useTokenChart.js";
+import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
@@ -110,7 +110,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getDefiPositions } = useDefiPositions();
   const { getLiquidityPositions } = useLiquidityPositions();
-  const { getTokenChart } = useTokenChart();
+  const { getBatchTokenPrices } = useBatchTokenPrices();
   const etnUsdPrice = useEtnPrice();
 
   const [managing, setManaging] = useState(false);
@@ -263,8 +263,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     return () => { cancelled = true; };
   }, [hasAccess, portfolio, getAuthParams, getLiquidityPositions, wallet.account]);
 
-  // USD price per merged token — one small independent request each, same pattern (and the same
-  // MAX_PRICED_HOLDINGS cap) as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
+  // USD price per merged token — one batched request for the whole holdings list (see
+  // useBatchTokenPrices's own header comment for why: firing one small independent request per
+  // token, up to MAX_PRICED_HOLDINGS of them, could take minutes to fully resolve once the
+  // rate-limited GeckoTerminal fallback got involved for enough of them, confirmed live). Same
+  // MAX_PRICED_HOLDINGS cap as AddressLookup.jsx's own price-fetching effect. Spam-named tokens
   // are excluded before the cap is applied (not just from the rendered list later) so a wallet
   // full of airdropped junk can't burn through the priced-token budget before it ever reaches a
   // real holding.
@@ -275,25 +278,17 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     );
     if (fungible.length === 0) return;
     let cancelled = false;
-    fungible.slice(0, MAX_PRICED_HOLDINGS).forEach((t) => {
-      const addr = t.token.address.toLowerCase();
-      getTokenChart(t.token.address, "7")
-        .then((res) => {
-          if (cancelled) return;
-          // No candles at all — whether from no pool ever existing, or a real pool with no trades
-          // in this specific 7-day window (see tokenChartRouter.js's own loadTokenChart) — just
-          // leaves tokenPrices unset for it, same as a fetch that's still pending. Either way it has
-          // no resolved USD value, so the render-time filter below hides it by default regardless of
-          // which case this was; no need to distinguish them here anymore.
-          if (!res?.candles?.length) return;
-          const price = res.candles[res.candles.length - 1].close;
-          setTokenPrices((prev) => ({ ...prev, [addr]: price }));
-          cacheTokenPrice(addr, price); // so the NEXT reload/reconnect can show this immediately too
-        })
-        .catch((err) => console.error(`Failed to load price for ${addr}:`, err.message));
-    });
+    const addresses = fungible.slice(0, MAX_PRICED_HOLDINGS).map((t) => t.token.address.toLowerCase());
+    getBatchTokenPrices(addresses)
+      .then((prices) => {
+        if (cancelled) return;
+        setTokenPrices((prev) => ({ ...prev, ...prices }));
+        // So the NEXT reload/reconnect can show these immediately too.
+        for (const [addr, price] of Object.entries(prices)) cacheTokenPrice(addr, price);
+      })
+      .catch((err) => console.error("Failed to load batch token prices:", err.message));
     return () => { cancelled = true; };
-  }, [portfolio, getTokenChart]);
+  }, [portfolio, getBatchTokenPrices]);
 
   const requestAdd = (rawAddress) => {
     setAddInputError(null);
