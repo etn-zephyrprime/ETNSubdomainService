@@ -251,7 +251,12 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         for (const w of portfolio.perWallet) {
           walletTokens[w.address.toLowerCase()] = (w.balances || [])
             .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name))
-            .map((tb) => ({ address: tb.token.address, decimals: tb.token.decimals, rawBalance: tb.value }));
+            // Number(...) -- tb.token.decimals is a STRING straight off Blockscout's raw JSON; see
+            // lpPositionValuation.js's own getLiquidityPositionsUsd comment for the "invalid unit"
+            // failure this avoids server-side (that function now also coerces defensively, so this
+            // is belt-and-suspenders, not the only fix) -- confirmed live this silently dropped a
+            // real, reserve-backed LP position a wallet held with zero trace anywhere.
+            .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
         }
         const res = await getLiquidityPositions(wallet.account, signature, timestamp, walletTokens);
         if (!cancelled) setLpPositions(res);

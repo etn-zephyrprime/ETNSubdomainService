@@ -371,7 +371,26 @@ async function finalizeV3Position(candidate, priceMap) {
 export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens = []) {
   const [v2Candidates, v3TokenIds] = await Promise.all([
     Promise.all(
-      heldFungibleTokens.map((t) => resolveV2LpCandidate(t.address, BigInt(t.rawBalance), t.decimals ?? 18).catch(() => null))
+      heldFungibleTokens.map((t) => {
+        // Number(...), not just `?? 18` -- t.decimals comes straight from Blockscout's raw JSON
+        // (a STRING, e.g. "18") on every caller of this function (both coreTierDemoRouter.js and
+        // CoreTierPortfolio.jsx build their own candidate list the same way, straight off
+        // tb.token.decimals with no coercion). `?? 18` only substitutes when decimals is
+        // null/undefined -- the string "18" is neither, so it passed straight through unchanged
+        // into ethers.formatUnits below (via resolveV2LpCandidate), which only accepts a NUMBER of
+        // decimal places or a recognized unit NAME string ("ether", "gwei", ...) and throws
+        // "invalid unit" on "18". That exception was then silently swallowed by the .catch(() =>
+        // null) below with no logging at all -- confirmed live: a real, reserve-backed ElectroSwap
+        // V2 pair a wallet held (ES-LP, ~$0 logged anywhere) came back completely absent from
+        // v2Positions, indistinguishable from "this candidate genuinely isn't a pool." This is the
+        // SAME known Blockscout gotcha already worked around elsewhere in this codebase (see
+        // CoreTierDemo.jsx's own token-pricing effect).
+        const decimals = Number(t.decimals ?? 18);
+        return resolveV2LpCandidate(t.address, BigInt(t.rawBalance), decimals).catch((err) => {
+          console.warn(`⚠️  LP position valuation: resolveV2LpCandidate failed for ${t.address} (treated as not-a-pair):`, err.message);
+          return null;
+        });
+      })
     ),
     getHeldV3TokenIds(walletAddress).catch((err) => {
       console.warn(`⚠️  LP position valuation: could not list V3 positions for ${walletAddress}:`, err.message);
