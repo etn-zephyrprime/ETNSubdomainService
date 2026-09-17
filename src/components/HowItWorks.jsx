@@ -11,7 +11,7 @@ const STEPS = [
   {
     icon: Users,
     title: "Set a subname price",
-    body: "As the owner, set a price per year for subnames under your name (e.g. shop.yourname.etn). Anyone can then self-register one by paying it — no listing, no waiting.",
+    body: "As the owner, set a price per year for subnames under your name (e.g. shop.yourname.etn). Anyone can then self-register one by paying it — no listing, no waiting, and each one is wrapped as its own NFT straight into the buyer's wallet.",
   },
   {
     icon: Coins,
