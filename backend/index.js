@@ -42,6 +42,7 @@ import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
+import diamondHandsRouter from "./utils/diamondHandsRouter.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
@@ -86,6 +87,7 @@ app.use("/api", pnlStatementRouter);
 app.use("/api", premiumDashboardRouter);
 app.use("/api", premiumAlertsRouter);
 app.use("/api", pnlSnapshotRouter);
+app.use("/api", diamondHandsRouter);
 app.use("/api", coreTierDemoRouter);
 
 const PORT = process.env.PORT || 3001;

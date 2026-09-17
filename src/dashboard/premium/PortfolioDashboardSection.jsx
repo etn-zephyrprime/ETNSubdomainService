@@ -9,6 +9,7 @@ import CoreTierPortfolio from "./components/CoreTierPortfolio.jsx";
 import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
 import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
+import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2 } from "../theme.js";
 
@@ -121,6 +122,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
         <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
       </div>
