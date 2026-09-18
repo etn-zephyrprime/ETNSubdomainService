@@ -61,11 +61,21 @@ const POLL_INTERVAL_MS = process.env.COREBOT_POLL_INTERVAL_MS
 
 // Swap alerts specifically were asked to be much more real-time than the other three watchers'
 // shared cadence above — confirmed decision: leave burn/NFT-mint/NFT-sale exactly as they are,
-// only tighten this one. 15s by default; separately overridable from POLL_INTERVAL_MS so tuning
-// one doesn't silently move the other three.
+// only tighten this one. Separately overridable from POLL_INTERVAL_MS so tuning one doesn't
+// silently move the other three.
+//
+// Was 15s — confirmed live (2026-09-18) that this was too aggressive: this poll calling
+// ElectroSwap's /trades endpoint 4x/minute, continuously, got the real production API key first
+// rate-limited ("Too many requests. Slow down.") and then suspended outright ("suspended after
+// repeated refused requests") — which broke ElectroSwap pricing for the WHOLE app, not just this
+// feature, since every other caller shares the one key. Backed off to 60s (still 5-20x more
+// real-time than the original ~1-5min default) while electroSwapApi.js's own new circuit breaker
+// protects against a repeat regardless of the exact interval. ElectroSwap hasn't published an
+// explicit rate-limit number to calibrate against — this may still need tuning down further if
+// 60s also proves too aggressive in practice.
 const SWAP_POLL_INTERVAL_MS = process.env.COREBOT_SWAP_POLL_INTERVAL_MS
   ? parseInt(process.env.COREBOT_SWAP_POLL_INTERVAL_MS, 10)
-  : 15000;
+  : 60000;
 
 // Same reasoning as marketplaceWatcher.js's WATCHER_LOOKBACK_BLOCKS: how far back to scan when
 // there's no saved cursor (first run, or R2 unreachable) — bounded so a cold start doesn't
