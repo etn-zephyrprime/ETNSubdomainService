@@ -275,9 +275,17 @@ export async function computeDemoData() {
   // until the next time this script is deliberately re-run -- there is no other live pricing call
   // anywhere in the demo's Portfolio/Composition view once this lands (CoreTierDemo.jsx's own
   // DemoPortfolio no longer calls useBatchTokenPrices/useEtnPrice at all).
+  // getBatchPricesUsd's own returned object is keyed by whatever casing was passed IN — every
+  // OTHER caller reaches it through the /token-prices route, which lowercases first (see
+  // tokenChartRouter.js's own route handler); this is the one caller that goes straight to the
+  // function, and t.tokenAddress arrives CHECKSUMMED (mixed-case) straight off Blockscout's raw
+  // JSON. Confirmed live: without lowercasing here, every single lookup below missed silently
+  // (ElectroSwap/GeckoTerminal's own price maps are keyed by lowercased address internally), which
+  // is why every Combined Holdings token showed $0.00 regardless of whether pricing itself was
+  // actually working — not a pricing-outage symptom, a pure case-mismatch bug.
   const [etnPriceCache, tokenPricesUsd] = await Promise.all([
     getEtnPriceCache(),
-    getBatchPricesUsd(combinedHoldings.tokens.map((t) => t.tokenAddress)),
+    getBatchPricesUsd(combinedHoldings.tokens.map((t) => t.tokenAddress.toLowerCase())),
   ]);
   const etnUsd = Number.isFinite(etnPriceCache?.usd) && etnPriceCache.usd > 0 ? etnPriceCache.usd : null;
 
@@ -286,7 +294,7 @@ export async function computeDemoData() {
   // already uses everywhere else (see e.g. lpPositionValuation.js's own hasUnpriced handling).
   function priceTokens(tokens) {
     return tokens.map((t) => {
-      const priceUsd = tokenPricesUsd[t.tokenAddress] ?? null;
+      const priceUsd = tokenPricesUsd[t.tokenAddress.toLowerCase()] ?? null;
       let usdValue = null;
       if (priceUsd != null) {
         try {
