@@ -29,8 +29,10 @@ const cache = new Map(); // lowercased address -> { expiresAt, result }
 // fields — just how many locks exist (always safe: an array's own length) and, best-effort, an
 // unlock date if a recognizable field is present — rather than trying to reconstruct amount/
 // percent-locked details this can't confidently verify. A visitor who wants the full breakdown gets
-// a link to ElectroSwap's own page for it (see the frontend's own TokenDetail.jsx).
-function normalizeLocks(rawLocks) {
+// a link to ElectroSwap's own page for it (see the frontend's own TokenDetail.jsx). Exported so
+// tokenLocksCache.js's own bulk refresh can share this exact parsing logic rather than a second,
+// possibly-drifting copy.
+export function normalizeLocks(rawLocks) {
   if (!Array.isArray(rawLocks)) return { count: 0, latestUnlockAt: null };
 
   let latestUnlockMs = null;
