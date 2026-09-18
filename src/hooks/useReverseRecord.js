@@ -1,8 +1,36 @@
 import { useState, useCallback } from "react";
 import { ethers } from "ethers";
-import { REVERSE_REGISTRAR_ADDRESS, RPC_URL } from "../config.js";
+import { REVERSE_REGISTRAR_ADDRESS, ENS_REGISTRY_ADDRESS, RPC_URL } from "../config.js";
 import ReverseRegistrarABI from "../abis/ReverseRegistrarABI.json";
 import NameResolverABI from "../abis/NameResolverABI.json";
+import EnsRegistryABI from "../abis/EnsRegistryABI.json";
+import PublicResolverABI from "../abis/PublicResolverABI.json";
+
+// Confirms a reverse-claimed name's FORWARD resolution actually points back to `addr` before
+// getPrimaryName below trusts it. Confirmed live (2026-09-18) this matters, not just theoretical:
+// a wallet's reverse record can keep claiming a name it's since transferred away indefinitely —
+// transferring a name doesn't clear the OLD owner's own reverse pointer unless they explicitly do
+// so, and nothing in ENS enforces the two stay in sync. Mirrors useAddressRecord.js's own
+// getResolvedAddress rather than importing it directly — composing two independent hooks'
+// internals through React's own hook system would be more awkward than this small, self-contained
+// duplicate (same "just duplicate the small constant/lookup" convention this app already uses for
+// ENS_REGISTRY_ADDRESS/REVERSE_REGISTRAR_ADDRESS existing independently per file). Never throws —
+// any failure (no resolver set for the name, a bad call) is treated as "can't verify" -> false,
+// never "assume it's fine".
+async function verifyPrimaryName(provider, name, addr) {
+  try {
+    const node = ethers.namehash(name);
+    const registry = new ethers.Contract(ENS_REGISTRY_ADDRESS, EnsRegistryABI, provider);
+    const resolverAddress = await registry.resolver(node);
+    if (resolverAddress === ethers.ZeroAddress) return false;
+    const resolver = new ethers.Contract(resolverAddress, PublicResolverABI, provider);
+    const forwardAddr = await resolver.addr(node);
+    return String(forwardAddr).toLowerCase() === String(addr).toLowerCase();
+  } catch (err) {
+    console.error("Failed to verify primary name:", err);
+    return false;
+  }
+}
 
 // Primary ("reverse") name — the name a wallet shows as its own, the opposite direction from
 // resolving a name to an address. Set via ReverseRegistrar.setName (self) or setNameForAddr
@@ -34,9 +62,11 @@ export function useReverseRecord() {
     return await reverseRegistrar.node(addr);
   }, [getReadContract]);
 
-  // Reads the primary name currently set for an address, or null if none is set. Reads straight
-  // off the registrar's own defaultResolver — the same one setName()/setNameForAddr() write
-  // through — so this reflects exactly what those calls would have set.
+  // Reads the primary name currently set for an address, or null if none is set/verified. Reads
+  // straight off the registrar's own defaultResolver — the same one setName()/setNameForAddr()
+  // write through — so this reflects exactly what those calls would have set. Verified via
+  // verifyPrimaryName above before being trusted — a reverse record alone isn't reliable (see
+  // that function's own comment for why).
   const getPrimaryName = useCallback(async (addr) => {
     try {
       const reverseRegistrar = getReadContract();
@@ -49,7 +79,8 @@ export function useReverseRecord() {
       const provider = new ethers.JsonRpcProvider(RPC_URL);
       const resolver = new ethers.Contract(resolverAddr, NameResolverABI, provider);
       const name = await resolver.name(node);
-      return name || null;
+      if (!name) return null;
+      return (await verifyPrimaryName(provider, name, addr)) ? name : null;
     } catch (err) {
       console.error("Failed to fetch primary name:", err);
       throw err;

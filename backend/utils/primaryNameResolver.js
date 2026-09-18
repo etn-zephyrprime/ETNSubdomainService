@@ -22,17 +22,59 @@ const REVERSE_REGISTRAR_ABI = [
 ];
 const RESOLVER_ABI = ["function name(bytes32 node) view returns (string)"];
 
+// Same address src/config.js's own ENS_REGISTRY_ADDRESS hardcodes for the frontend — needed here
+// to VERIFY a reverse-claimed name (see verifyPrimaryName's own comment on why that's necessary,
+// not optional).
+const ENS_REGISTRY_ADDRESS = process.env.ENS_REGISTRY_ADDRESS || "0x6F311F2212593165988Dff84977e24C1005dBb85";
+const REGISTRY_ABI = ["function resolver(bytes32 node) view returns (address)"];
+const FORWARD_RESOLVER_ABI = ["function addr(bytes32 node) view returns (address)"];
+
 export function shortAddress(address) {
   if (!address) return "Unknown";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 /**
+ * Confirms a reverse-claimed primary name's FORWARD resolution actually points back to `addr` —
+ * confirmed live (2026-09-18) that a wallet's reverse record can keep claiming a name it no longer
+ * owns, indefinitely: transferring a name/subname to a new owner does NOT clear the OLD owner's own
+ * reverse pointer unless they explicitly do so, and nothing in ENS enforces the two stay in sync.
+ * Real production example that surfaced this: a Telegram swap alert displayed "club.electroswap.etn"
+ * for a wallet that had since transferred that exact subname away — its reverse record still
+ * claimed it, but the name's own forward resolution (Registry.resolver(node) -> that resolver's
+ * addr(node)) pointed to a completely different, unrelated address. Used by every caller in this
+ * codebase that resolves a reverse name before trusting it — see activatedDomainsCache.js's and
+ * marketplaceSellersCache.js's own resolvePrimaryName, and src/hooks/useReverseRecord.js for the
+ * frontend's independent copy of this same check (can't share this module across the frontend/
+ * backend boundary, same as ENS_REGISTRY_ADDRESS/REVERSE_REGISTRAR_ADDRESS already being
+ * independently duplicated per side).
+ *
+ * Deliberately never cached — a name's forward owner can change at any moment, exactly the
+ * scenario this exists to catch — and never throws: any failure (no resolver set for the name, a
+ * bad call) is treated as "can't verify" -> false, never "assume it's fine".
+ */
+export async function verifyPrimaryName(provider, name, addr) {
+  try {
+    const node = ethers.namehash(name);
+    const registry = new ethers.Contract(ENS_REGISTRY_ADDRESS, REGISTRY_ABI, provider);
+    const resolverAddr = await registry.resolver(node);
+    if (resolverAddr === ethers.ZeroAddress) return false;
+    const resolver = new ethers.Contract(resolverAddr, FORWARD_RESOLVER_ABI, provider);
+    const forwardAddr = await resolver.addr(node);
+    return String(forwardAddr).toLowerCase() === String(addr).toLowerCase();
+  } catch (err) {
+    console.warn(`⚠️  Failed to verify primary name "${name}" for ${addr}:`, err.message);
+    return false;
+  }
+}
+
+/**
  * Returns an async `resolveDisplayName(addr) -> string` bound to one ReverseRegistrar. Always
- * resolves to a displayable string — the wallet's primary name if it has one set; failing that,
- * a name it merely OWNS but never set as primary (via Blockscout's own ownership indexing, see
- * ownedNameFromBlockscout below); failing that, `shortAddress(addr)` — so every caller gets a
- * best-effort display name without having to handle the null/error case itself.
+ * resolves to a displayable string — the wallet's primary name if it has one set AND it verifies
+ * (see verifyPrimaryName above); failing that, a name it merely OWNS but never set as primary (via
+ * Blockscout's own ownership indexing, see ownedNameFromBlockscout below); failing that,
+ * `shortAddress(addr)` — so every caller gets a best-effort display name without having to handle
+ * the null/error/stale case itself.
  *
  * `defaultResolver()` is a single global value (not address-dependent) that effectively never
  * changes, so it's fetched once and cached for the life of the process — these Telegram bots
@@ -81,7 +123,12 @@ export function createPrimaryNameResolver(provider, reverseRegistrarAddress) {
       const resolver = await getResolver();
       if (resolver) {
         const node = await reverseRegistrar.node(addr);
-        primaryName = await resolver.name(node);
+        const claimedName = await resolver.name(node);
+        // Verify before trusting — see verifyPrimaryName's own comment on why a reverse record
+        // alone isn't reliable (a wallet can keep claiming a name it's since transferred away).
+        if (claimedName && (await verifyPrimaryName(provider, claimedName, addr))) {
+          primaryName = claimedName;
+        }
       }
     } catch (err) {
       console.warn(`⚠️  Failed to resolve primary name for ${addr}:`, err.message);
