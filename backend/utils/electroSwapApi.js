@@ -186,22 +186,28 @@ export async function getRecentTrades(tokenAddress, limit = 25) {
   }
 }
 
-/** Every token ElectroSwap has listed (its own indexed universe — not every ERC20 Blockscout has
- * ever seen deployed, just the ones ElectroSwap actually tracks pricing/liquidity for), up to
- * `limit` (max 100 — larger REJECTED with 400, not clamped). Cost 100 + 5/item (max 600 for 100).
- * Same "no real pagination" situation as getRecentTrades — the Envelope schema's own cursor note
- * ("null on every list except trade.list") confirms this endpoint can never page past its own
- * `limit` cap either. Response shape is NOT confirmed live (untyped Envelope.data, no funded key
- * to verify against) — returns the RAW array unmodified so callers can defensively probe for
- * whatever field names are actually present (see tokenLiquidityCache.js's own comment on how it
- * does that for the liquidity figure specifically). Returns null — never throws — on any failure
- * or when ELECTROSWAP_API_KEY isn't configured. */
-export async function getTokenList(limit = 100) {
+/** V2 or V3 pools, up to `limit` (max 100 — larger REJECTED with 400, not clamped). Cost 200 +
+ * 5/item (max 700 for 100). Same "no real pagination" situation as getRecentTrades/getTokenPrice's
+ * own batch endpoint — capped at `limit` in one shot, no paging past it. `version` is 2 (default)
+ * or 3; the API takes one version per call, there's no combined list.
+ *
+ * CONFIRMED LIVE (2026-09-18, real funded key) — unlike getRecentTrades/getLiquidityLocks below,
+ * this one's shape IS verified, not guessed:
+ *   { data: [{ address, chainId, version,
+ *       token0: { address, name, symbol, decimals, chainId, blockAdded, deployer, totalSupply },
+ *       token1: { <same shape> } }, ...], cursor: null }
+ * Notably this does NOT include reserves or any liquidity/TVL figure — just the pool's own address
+ * and its two tokens' identity/metadata. Getting actual liquidity out of this means reading the
+ * pool contract's own current token balances on-chain afterward (see tokenLiquidityCache.js's own
+ * comment on why — confirmed live that neither this endpoint nor /tokens/{chainId}/{address}
+ * exposes a liquidity field anywhere in ElectroSwap's public API). Returns the raw array. Returns
+ * null — never throws — on any failure or when ELECTROSWAP_API_KEY isn't configured. */
+export async function getPools(version = 2, limit = 100) {
   try {
-    const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}?limit=${limit}`);
+    const data = await callElectroSwapApi(`/pools/${CHAIN_ID}?limit=${limit}&version=${version}`);
     return Array.isArray(data) ? data : null;
   } catch (err) {
-    console.warn(`⚠️  ElectroSwap token list lookup failed:`, err.message);
+    console.warn(`⚠️  ElectroSwap pools lookup failed (version ${version}):`, err.message);
     return null;
   }
 }
