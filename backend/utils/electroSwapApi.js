@@ -215,12 +215,17 @@ export async function getPools(version = 2, limit = 100) {
 /** Liquidity locks for one token — a "heavy" route (their own OpenAPI spec marks it
  * `heavy: true`, global concurrency limits, expect occasional 503 `server_busy` under load per
  * their own docs) and expensive (2000 credits flat, no batching available — this is a per-token
- * call, never call it in a loop over many tokens). Meant to be called LAZILY, per token a visitor
- * actually opens, with a long-lived cache on the caller's side (see
- * backend/utils/tokenLiquidityLockRouter.js's own in-memory TTL cache) — never as part of a bulk
- * list refresh the way getTokenList above is. Response shape is NOT confirmed live (untyped
- * Envelope.data) — returns the RAW value unmodified. Returns null — never throws — on any failure,
- * a 503 included, or when ELECTROSWAP_API_KEY isn't configured. */
+ * call, never call it in a loop with high concurrency). Called both lazily (per token a visitor
+ * opens, see tokenLiquidityLockRouter.js's own in-memory TTL cache) and in a slow, low-concurrency
+ * daily sweep (tokenLocksCache.js) — never hammered.
+ *
+ * CONFIRMED LIVE (2026-09-18, real funded key, a real CORE token lookup) — the response is an
+ * array of: `{ lockId, pair, owner, created (unix SECONDS), duration (SECONDS the lock runs for —
+ * there is no separate unlock-timestamp field; unlock time is created+duration), token0, token1,
+ * amountToken0, amountToken1 (raw integer strings), percentSupply, active (bool),
+ * version: "V2"|"V3" }`. Returns the RAW array unmodified — see tokenLiquidityLockRouter.js's own
+ * normalizeLocks for how this gets turned into a count + latest unlock date. Returns null — never
+ * throws — on any failure, a 503 included, or when ELECTROSWAP_API_KEY isn't configured. */
 export async function getLiquidityLocks(tokenAddress) {
   try {
     const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}/${tokenAddress}/liquidity-locks`);

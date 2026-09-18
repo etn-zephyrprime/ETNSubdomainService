@@ -23,30 +23,33 @@ const FAILURE_TTL_MS = 5 * 60 * 1000; // a transient 503/unavailable result shou
 
 const cache = new Map(); // lowercased address -> { expiresAt, result }
 
-// ElectroSwap's own lock-item schema is NOT confirmed live (untyped Envelope.data — see
-// electroSwapApi.js's own getLiquidityLocks comment, no funded key available to verify a real
-// response while building this). Deliberately extracts as LITTLE as possible from each lock's own
-// fields — just how many locks exist (always safe: an array's own length) and, best-effort, an
-// unlock date if a recognizable field is present — rather than trying to reconstruct amount/
-// percent-locked details this can't confidently verify. A visitor who wants the full breakdown gets
-// a link to ElectroSwap's own page for it (see the frontend's own TokenDetail.jsx). Exported so
-// tokenLocksCache.js's own bulk refresh can share this exact parsing logic rather than a second,
-// possibly-drifting copy.
+// ElectroSwap's own lock-item schema is CONFIRMED LIVE (2026-09-18, real funded key, a real CORE
+// lookup): { lockId, pair, owner, created (unix SECONDS), duration (SECONDS the lock runs for —
+// there is no unlock-timestamp field at all), token0, token1, amountToken0, amountToken1 (raw
+// integer strings), percentSupply, active (bool), version: "V2"|"V3" }. An earlier version of this
+// function guessed at unlock-timestamp-shaped field names (unlockDate/unlockTimestamp/etc.) that
+// don't exist — the real unlock time is `created + duration`.
+//
+// Only ACTIVE locks count — an inactive one (already unlocked, or withdrawn) isn't currently
+// protecting anything, so including it would overstate how much liquidity is actually still locked
+// right now. Exported so tokenLocksCache.js's own bulk refresh shares this exact parsing logic
+// rather than a second, possibly-drifting copy.
 export function normalizeLocks(rawLocks) {
   if (!Array.isArray(rawLocks)) return { count: 0, latestUnlockAt: null };
 
+  const activeLocks = rawLocks.filter((l) => l?.active !== false);
+
   let latestUnlockMs = null;
-  for (const raw of rawLocks) {
-    const rawDate = raw?.unlockDate ?? raw?.unlockTimestamp ?? raw?.unlocksAt ?? raw?.expiresAt ?? raw?.lockedUntil ?? raw?.endTime;
-    if (rawDate == null) continue;
-    // Accept either unix seconds or milliseconds, or an ISO string — same "don't assume one shape"
-    // caution as everywhere else touching this unconfirmed API.
-    const ms = typeof rawDate === "number" ? (rawDate > 1e12 ? rawDate : rawDate * 1000) : new Date(rawDate).getTime();
-    if (Number.isFinite(ms) && (latestUnlockMs == null || ms > latestUnlockMs)) latestUnlockMs = ms;
+  for (const lock of activeLocks) {
+    const created = Number(lock?.created);
+    const duration = Number(lock?.duration);
+    if (!Number.isFinite(created) || !Number.isFinite(duration)) continue;
+    const unlockMs = (created + duration) * 1000;
+    if (latestUnlockMs == null || unlockMs > latestUnlockMs) latestUnlockMs = unlockMs;
   }
 
   return {
-    count: rawLocks.length,
+    count: activeLocks.length,
     latestUnlockAt: latestUnlockMs != null ? new Date(latestUnlockMs).toISOString() : null,
   };
 }
