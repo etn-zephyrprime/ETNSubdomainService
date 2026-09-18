@@ -46,6 +46,39 @@ const FETCH_TIMEOUT_MS = 15000;
 const MAX_RETRIES = process.env.ELECTROSWAP_MAX_RETRIES ? parseInt(process.env.ELECTROSWAP_MAX_RETRIES, 10) : 2;
 const RETRY_DELAY_MS = process.env.ELECTROSWAP_RETRY_DELAY_MS ? parseInt(process.env.ELECTROSWAP_RETRY_DELAY_MS, 10) : 300;
 
+// Confirmed live (2026-09-18): a real key got suspended with the message "That key is suspended
+// after repeated refused requests. It will resume shortly." — and this file's own retry logic
+// (above) had no concept of that happening: every one of this backend's several independent
+// ElectroSwap callers (the 15s swap-discovery poll, the hourly liquidity cache, the daily locks
+// sweep, the 5-minute price cache, every visitor's own lazy per-token lock lookup) would have kept
+// retrying its own calls against the suspended key regardless, which can only make "repeated
+// refused requests" worse and potentially delay their own auto-recovery ("resume shortly") rather
+// than let it happen. This is a circuit breaker: the FIRST call that comes back suspended stops
+// EVERY caller (not just its own retries) from hitting the API at all for SUSPENSION_COOLDOWN_MS,
+// no matter which of this backend's several schedulers asks next. 10 minutes is a guess at a
+// respectful wait, not a number ElectroSwap has published — override via env if their own recovery
+// time turns out to be shorter or longer in practice.
+const SUSPENSION_COOLDOWN_MS = process.env.ELECTROSWAP_SUSPENSION_COOLDOWN_MS
+  ? parseInt(process.env.ELECTROSWAP_SUSPENSION_COOLDOWN_MS, 10)
+  : 10 * 60 * 1000;
+// Confirmed live the same day, actively while diagnosing the suspension above: "Too many requests.
+// Slow down." — a distinct, lighter warning that (per the suspension message's own wording,
+// "suspended after REPEATED refused requests") is almost certainly what accumulates INTO a
+// suspension if every caller just keeps retrying through it. Shorter cooldown than a full
+// suspension — this is ElectroSwap asking for a brief pause, not shutting the key off.
+const RATE_LIMIT_COOLDOWN_MS = process.env.ELECTROSWAP_RATE_LIMIT_COOLDOWN_MS
+  ? parseInt(process.env.ELECTROSWAP_RATE_LIMIT_COOLDOWN_MS, 10)
+  : 60 * 1000;
+let suspendedUntil = 0;
+let loggedSuspensionOnce = false;
+
+function isSuspensionError(message) {
+  return /suspend/i.test(message || "");
+}
+function isRateLimitError(message) {
+  return /too many requests|slow down|rate limit/i.test(message || "");
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -84,12 +117,34 @@ async function callElectroSwapApi(path) {
     return null;
   }
 
+  // Circuit breaker — see SUSPENSION_COOLDOWN_MS/RATE_LIMIT_COOLDOWN_MS's own comments above. Every
+  // caller across this whole backend shares this one gate (module-level state, not per-call), so
+  // ONE caller hitting a suspension/rate-limit stops ALL of them from making it worse, not just its
+  // own retries. Logged once per cooldown window, not on every skipped call, so a 15-second poller
+  // doesn't spam this line 40 times during a 10-minute cooldown.
+  if (Date.now() < suspendedUntil) {
+    if (!loggedSuspensionOnce) {
+      loggedSuspensionOnce = true;
+      console.warn(`⚠️  ElectroSwap circuit breaker open — skipping all calls until ${new Date(suspendedUntil).toISOString()}`);
+    }
+    return null;
+  }
+
   let lastErr;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       return await callElectroSwapApiOnce(path);
     } catch (err) {
       lastErr = err;
+
+      if (isSuspensionError(err.message) || isRateLimitError(err.message)) {
+        const cooldownMs = isSuspensionError(err.message) ? SUSPENSION_COOLDOWN_MS : RATE_LIMIT_COOLDOWN_MS;
+        suspendedUntil = Date.now() + cooldownMs;
+        loggedSuspensionOnce = false; // this IS the one log for this new window — let the NEXT window log again
+        console.error(`🛑 ElectroSwap ${isSuspensionError(err.message) ? "key suspended" : "rate-limited"} — pausing ALL ElectroSwap calls for ${cooldownMs / 1000}s:`, err.message);
+        throw err; // don't retry a suspension/rate-limit within this same call — that's exactly the "repeated" pattern that caused it
+      }
+
       if (attempt < MAX_RETRIES) {
         console.warn(`⚠️  ElectroSwap API call failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying:`, err.message);
         await sleep(RETRY_DELAY_MS);
