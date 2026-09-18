@@ -1,10 +1,24 @@
 import React, { useEffect, useState } from "react";
+import { Lock } from "lucide-react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
+import { useTokenLocks } from "../hooks/useTokenLocks.js";
 import { formatCompact, formatUsdPrice, shortHash, isSpamTokenName } from "../utils/format.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import NeonButton from "../../components/NeonButton.jsx";
+
+// Same best-effort date formatting as TokenDetail.jsx's own formatLockStatus, kept short for the
+// list row's tight width (a full "Locked until <date>" line, like the detail page shows, doesn't
+// fit here alongside the token name/address).
+function lockBadgeText(lockInfo) {
+  if (!lockInfo || lockInfo.count === 0) return null;
+  if (lockInfo.latestUnlockAt) {
+    const d = new Date(lockInfo.latestUnlockAt);
+    return `Until ${d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+  }
+  return `${lockInfo.count} lock${lockInfo.count === 1 ? "" : "s"}`;
+}
 
 const CATEGORIES = [
   { id: "tokens", label: "Tokens", type: "ERC-20" },
@@ -14,6 +28,7 @@ const CATEGORIES = [
 export default function TokenLeaderboard({ onSelectToken }) {
   const { getTokens } = useBlockscout();
   const liquidityByAddress = useTokenLiquidity();
+  const locksByAddress = useTokenLocks();
 
   const [category, setCategory] = useState("tokens");
   const [tokens, setTokens] = useState([]);
@@ -69,7 +84,11 @@ export default function TokenLeaderboard({ onSelectToken }) {
   // figures don't apply to a collection.
   const visibleTokens = tokens
     .filter((t) => !isSpamTokenName(t.name))
-    .map((t) => ({ ...t, liquidityUsd: category === "tokens" ? liquidityByAddress.get(t.address?.toLowerCase()) ?? null : null }))
+    .map((t) => ({
+      ...t,
+      liquidityUsd: category === "tokens" ? liquidityByAddress.get(t.address?.toLowerCase()) ?? null : null,
+      lockInfo: category === "tokens" ? locksByAddress.get(t.address?.toLowerCase()) ?? null : null,
+    }))
     .sort((a, b) => {
       if (category !== "tokens") return 0;
       if (a.liquidityUsd == null && b.liquidityUsd == null) return 0;
@@ -141,6 +160,12 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 {token.name || "Unnamed"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
               </div>
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(token.address)}</div>
+              {category === "tokens" && lockBadgeText(token.lockInfo) && (
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 700, color: green, marginTop: 2 }}>
+                  <Lock size={10} />
+                  {lockBadgeText(token.lockInfo)}
+                </div>
+              )}
               {category === "nfts" && (
                 <a
                   href={`https://app.electroswap.io/nfts/collection/${token.address}`}
