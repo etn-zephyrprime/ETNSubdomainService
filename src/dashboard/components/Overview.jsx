@@ -74,9 +74,13 @@ function TxRow({ tx, rank, cexMap }) {
           <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {shortHash(tx.hash)}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: mutedLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {tx.method || "transfer"} · from {label}
-            <AddressTags address={tx.from?.hash} cexMap={cexMap} />
+          <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: mutedLight, minWidth: 0 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+              {tx.method || "transfer"} · from {label}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <AddressTags address={tx.from?.hash} cexMap={cexMap} />
+            </span>
           </div>
         </div>
       </div>
