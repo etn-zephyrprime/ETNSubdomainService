@@ -18,6 +18,20 @@
 // received/sent — corrected here the same way, by reading the ERC20 Transfer logs in the same
 // receipt), the same USD-value thresholds gating which swaps get announced (BUY: $5-$50, SELL:
 // >$20), and the same message content/formatting posted to the Zephyros bot's general topic.
+//
+// SWAP DISCOVERY (added after the initial port): now tries ElectroSwap's own /trades endpoint
+// FIRST, polled much more frequently (SWAP_POLL_INTERVAL_MS, 15s by default) than this file's
+// original getLogs-based scan ever was — confirmed live that ElectroSwap has no way to expose
+// burns/NFT mints/NFT sales (no corresponding endpoint exists for any of those; only DEX trades),
+// so this is the one Core Clash watcher that could actually move. ElectroSwap is only ever used
+// for DISCOVERY (which tx hashes are recent CORE trades) — every actual amount/price/side in the
+// posted message still comes from parsing the pool's own on-chain Swap event out of that tx's
+// receipt, via the exact same processSwapLog() logic this file always used. That split matters
+// because ElectroSwap's own OpenAPI spec leaves a trade item's field names uncommitted/unconfirmed
+// (see electroSwapApi.js's own getRecentTrades comment) — the only thing this depends on
+// ElectroSwap getting right is a recognizable tx-hash field, never an amount or price. Falls back
+// to the original getLogs block-range scan (same on the new faster interval) whenever
+// ELECTROSWAP_API_KEY isn't set or a call fails, so this was never a new hard dependency.
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
 import { sendZephyrosAnimation, sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
@@ -27,13 +41,14 @@ import {
   CORE_WETN_POOL_ADDRESS,
   REVERSE_REGISTRAR_ADDRESS,
   WETN_ADDRESS,
-  POLL_INTERVAL_MS,
+  SWAP_POLL_INTERVAL_MS,
   LOOKBACK_BLOCKS,
 } from "./coreClashConfig.js";
 import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getCachedTokenPrice } from "./electroSwapPriceCache.js";
+import { getRecentTrades, isElectroSwapConfigured } from "./electroSwapApi.js";
 
 const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
@@ -170,12 +185,139 @@ function actualTaxedAmount(receipt, trader, side) {
 
 let isPolling = false;
 
+// The actual "read one Swap log, correct for CORE's transfer tax, check USD thresholds, post the
+// message" logic — unchanged from before, just factored out so both discovery paths below
+// (ElectroSwap fast-path and the getLogs fallback) can share it. Nothing here cares which path
+// found `log`, only that it's a real Swap event log from CORE_WETN_POOL_ADDRESS.
+async function processSwapLog(ctx, log, wetnUsd) {
+  const { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName } = ctx;
+
+  const parsed = pair.interface.parseLog(log);
+  const { amount0In, amount1In, amount0Out, amount1Out, to } = parsed.args;
+
+  const coreIn = coreIsToken0 ? amount0In : amount1In;
+  const coreOut = coreIsToken0 ? amount0Out : amount1Out;
+  const wetnIn = coreIsToken0 ? amount1In : amount0In;
+  const wetnOut = coreIsToken0 ? amount1Out : amount0Out;
+
+  const isSell = coreIn > 0n; // trader sent CORE into the pool
+  const rawCoreAmount = isSell ? coreIn : coreOut;
+  const rawWetnAmount = isSell ? wetnOut : wetnIn;
+  if (rawCoreAmount <= 0n) return;
+
+  const tx = await provider.getTransaction(log.transactionHash);
+  const receipt = await provider.getTransactionReceipt(log.transactionHash);
+  const trader = tx?.from || to;
+
+  const corrected = actualTaxedAmount(receipt, trader, isSell ? "SELL" : "BUY");
+  const coreAmountRaw = corrected ?? rawCoreAmount;
+
+  const wetnAmountFloat = Number(ethers.formatUnits(rawWetnAmount, 18));
+  const usdValue = wetnAmountFloat * wetnUsd;
+  // The maintained reference price (refreshed every PRICE_REFRESH_MS from pool reserves), not
+  // derived from this specific trade — matches priceEngine.js's getTokenUsd(), which is what the
+  // original's "CORE Price:" line reads from.
+  const corePriceUsd = cachedCorePriceUsd;
+
+  const shouldSend = isSell ? usdValue > 20 : usdValue > 5 && usdValue < 50;
+  if (!shouldSend) return;
+
+  const txUrl = `${EXPLORER_BASE_URL}/tx/${log.transactionHash}`;
+  const traderUrl = `${EXPLORER_BASE_URL}/address/${trader}`;
+  const traderDisplay = await resolveDisplayName(trader);
+  const emojiSequence = isSell ? ["🌎", "🌳"] : ["🌳", "🌎"];
+  const emojiCount = Math.min(Math.max(1, Math.floor(usdValue / 5)), 50);
+  const emojiLine = Array.from({ length: emojiCount }, (_, i) => emojiSequence[i % emojiSequence.length]).join("");
+
+  const caption =
+    `<b>CORE ${isSell ? "SELL" : "BUY"}</b> ($${usdValue.toFixed(2)})\n` +
+    `${emojiLine}\n\n` +
+    `💰 <b>${isSell ? "Received" : "Paid"}:</b> ${formatUnitsSafe(rawWetnAmount, 18)} WETN\n` +
+    `🔢 <b>Amount:</b> ${formatUnitsSafe(coreAmountRaw, coreDecimals)} ${escapeHtml(coreSymbol)}\n` +
+    (corePriceUsd != null ? `💵 <b>CORE Price:</b> $${corePriceUsd.toFixed(6)}\n` : "") +
+    `\n👤 <b>Buyer:</b> <a href="${traderUrl}">${escapeHtml(traderDisplay)}</a>\n` +
+    `🔗 <a href="${txUrl}">View Transaction</a>`;
+
+  if (!isSell) {
+    await sendZephyrosAnimation(BUY_ANIMATION_FILE_ID, caption, { threadId: GENERAL_THREAD_ID });
+  } else {
+    await sendZephyrosMessage(caption, { threadId: GENERAL_THREAD_ID });
+  }
+
+  console.log(`💱 Swap alert sent: ${isSell ? "SELL" : "BUY"} $${usdValue.toFixed(2)} (tx ${log.transactionHash})`);
+}
+
+// Kept across polls in persisted state (STATE_KEY's own seenTradeHashes), capped well past one
+// poll's worth (25) so a slow tick or a transient failure can't reintroduce an already-announced
+// trade as "new" the next time ElectroSwap serves it again in its most-recent-25 window.
+const MAX_SEEN_TRADE_HASHES = 200;
+
+// ElectroSwap's own trade-item field names aren't confirmed live (see electroSwapApi.js's own
+// getRecentTrades comment) — this only ever needs to recognize A transaction hash, nothing else.
+// Every other detail (side, amounts, price) is read straight from the pool's own on-chain Swap
+// event via that tx's receipt in pollViaElectroSwap below, exactly like the getLogs fallback path
+// always did — so a wrong guess here just means a trade gets missed this poll (the getLogs
+// fallback's own cursor is kept warm specifically so it can still catch it later), never a wrong
+// amount/price getting announced from a misread field.
+let loggedUnrecognizedTradeShapeOnce = false;
+function extractTxHash(rawTrade) {
+  const txHash = rawTrade?.txHash || rawTrade?.transactionHash || rawTrade?.hash || rawTrade?.tx;
+  if (!txHash && !loggedUnrecognizedTradeShapeOnce) {
+    loggedUnrecognizedTradeShapeOnce = true;
+    console.warn(
+      "⚠️  [SwapWatcher] ElectroSwap trade item didn't match any known tx-hash field name — falling back to on-chain discovery this tick. Raw item keys:",
+      Object.keys(rawTrade || {})
+    );
+  }
+  return txHash ? String(txHash) : null;
+}
+
+/** Tries ElectroSwap's /trades endpoint for fast swap discovery, mutating `seenTradeHashes` in
+ * place with whatever it processed. Returns true if it successfully talked to ElectroSwap (even
+ * with zero new trades this tick) — the caller should NOT also run the getLogs fallback in that
+ * case, to avoid double-announcing. Returns false if ElectroSwap isn't configured or the call
+ * itself failed, meaning the caller should fall back to getLogs for this tick. */
+async function pollViaElectroSwap(ctx, wetnUsd, seenTradeHashes) {
+  if (!isElectroSwapConfigured()) return false;
+
+  const rawTrades = await getRecentTrades(CORE_TOKEN_ADDRESS, 25);
+  if (rawTrades == null) return false; // unconfigured or the call itself failed — fall back on-chain
+
+  const seen = new Set(seenTradeHashes);
+  const newHashes = [];
+  // Newest-first per the API's own summary ("Recent trades, newest first") — reversed so multiple
+  // new trades in one poll get announced in chronological order, same as the getLogs path's own
+  // ascending-block order.
+  for (const raw of [...rawTrades].reverse()) {
+    const txHash = extractTxHash(raw);
+    if (!txHash || seen.has(txHash)) continue;
+    newHashes.push(txHash);
+
+    try {
+      const receipt = await ctx.provider.getTransactionReceipt(txHash);
+      if (!receipt) continue;
+      for (const log of receipt.logs || []) {
+        if (String(log.address).toLowerCase() !== CORE_WETN_POOL_ADDRESS.toLowerCase()) continue;
+        if (log.topics?.[0] !== SWAP_TOPIC) continue;
+        await processSwapLog(ctx, log, wetnUsd);
+      }
+    } catch (err) {
+      console.error(`⚠️  Failed to process ElectroSwap-discovered trade ${txHash}:`, err.message);
+    }
+  }
+
+  const updated = [...seenTradeHashes, ...newHashes].slice(-MAX_SEEN_TRADE_HASHES);
+  seenTradeHashes.length = 0;
+  seenTradeHashes.push(...updated);
+  return true;
+}
+
 async function poll(ctx) {
   if (isPolling) return;
   isPolling = true;
 
   try {
-    const { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName } = ctx;
+    const { provider, pair, coreIsToken0, coreDecimals } = ctx;
 
     // Runs every poll tick regardless of swap activity — same as priceEngine.js's placement
     // outside the log-scanning block, so a quiet period doesn't leave prices stale.
@@ -185,10 +327,29 @@ async function poll(ctx) {
       );
     }
 
+    const wetnUsd = cachedWetnUsd ?? (await fetchWetnUsd());
     const latestBlock = await provider.getBlockNumber();
     const safeBlock = Math.max(0, latestBlock - REORG_BUFFER_BLOCKS);
 
     const saved = await getState(STATE_KEY);
+    const seenTradeHashes = saved?.seenTradeHashes ? [...saved.seenTradeHashes] : [];
+
+    let usedElectroSwap = false;
+    try {
+      usedElectroSwap = await pollViaElectroSwap(ctx, wetnUsd, seenTradeHashes);
+    } catch (err) {
+      console.error("⚠️  [SwapWatcher] ElectroSwap discovery failed, falling back on-chain:", err.message);
+    }
+
+    if (usedElectroSwap) {
+      // Keeps the getLogs fallback's own block cursor from going stale while ElectroSwap is doing
+      // the actual discovery — see this file's own header comment on why a brief gap on failover
+      // (picking back up from ~now, not replaying everything missed while ElectroSwap was primary)
+      // is an acceptable tradeoff for a Telegram alert, not a financial record.
+      await setState(STATE_KEY, { lastBlock: safeBlock, seenTradeHashes });
+      return;
+    }
+
     let fromBlock = saved?.lastBlock ?? null;
 
     if (fromBlock == null) {
@@ -196,9 +357,10 @@ async function poll(ctx) {
       console.log(`💱 Swap watcher initialized — no saved state, looking back to block ${fromBlock + 1}`);
     }
 
-    if (safeBlock <= fromBlock) return;
-
-    const wetnUsd = cachedWetnUsd ?? (await fetchWetnUsd());
+    if (safeBlock <= fromBlock) {
+      await setState(STATE_KEY, { lastBlock: fromBlock, seenTradeHashes });
+      return;
+    }
 
     let start = fromBlock + 1;
     while (start <= safeBlock) {
@@ -207,59 +369,7 @@ async function poll(ctx) {
 
       for (const log of logs) {
         try {
-          const parsed = pair.interface.parseLog(log);
-          const { amount0In, amount1In, amount0Out, amount1Out, to } = parsed.args;
-
-          const coreIn = coreIsToken0 ? amount0In : amount1In;
-          const coreOut = coreIsToken0 ? amount0Out : amount1Out;
-          const wetnIn = coreIsToken0 ? amount1In : amount0In;
-          const wetnOut = coreIsToken0 ? amount1Out : amount0Out;
-
-          const isSell = coreIn > 0n; // trader sent CORE into the pool
-          const rawCoreAmount = isSell ? coreIn : coreOut;
-          const rawWetnAmount = isSell ? wetnOut : wetnIn;
-          if (rawCoreAmount <= 0n) continue;
-
-          const tx = await provider.getTransaction(log.transactionHash);
-          const receipt = await provider.getTransactionReceipt(log.transactionHash);
-          const trader = tx?.from || to;
-
-          const corrected = actualTaxedAmount(receipt, trader, isSell ? "SELL" : "BUY");
-          const coreAmountRaw = corrected ?? rawCoreAmount;
-
-          const wetnAmountFloat = Number(ethers.formatUnits(rawWetnAmount, 18));
-          const usdValue = wetnAmountFloat * wetnUsd;
-          // The maintained reference price (refreshed every PRICE_REFRESH_MS from pool
-          // reserves), not derived from this specific trade — matches priceEngine.js's
-          // getTokenUsd(), which is what the original's "CORE Price:" line reads from.
-          const corePriceUsd = cachedCorePriceUsd;
-
-          const shouldSend = isSell ? usdValue > 20 : usdValue > 5 && usdValue < 50;
-          if (!shouldSend) continue;
-
-          const txUrl = `${EXPLORER_BASE_URL}/tx/${log.transactionHash}`;
-          const traderUrl = `${EXPLORER_BASE_URL}/address/${trader}`;
-          const traderDisplay = await resolveDisplayName(trader);
-          const emojiSequence = isSell ? ["🌎", "🌳"] : ["🌳", "🌎"];
-          const emojiCount = Math.min(Math.max(1, Math.floor(usdValue / 5)), 50);
-          const emojiLine = Array.from({ length: emojiCount }, (_, i) => emojiSequence[i % emojiSequence.length]).join("");
-
-          const caption =
-            `<b>CORE ${isSell ? "SELL" : "BUY"}</b> ($${usdValue.toFixed(2)})\n` +
-            `${emojiLine}\n\n` +
-            `💰 <b>${isSell ? "Received" : "Paid"}:</b> ${formatUnitsSafe(rawWetnAmount, 18)} WETN\n` +
-            `🔢 <b>Amount:</b> ${formatUnitsSafe(coreAmountRaw, coreDecimals)} ${escapeHtml(coreSymbol)}\n` +
-            (corePriceUsd != null ? `💵 <b>CORE Price:</b> $${corePriceUsd.toFixed(6)}\n` : "") +
-            `\n👤 <b>Buyer:</b> <a href="${traderUrl}">${escapeHtml(traderDisplay)}</a>\n` +
-            `🔗 <a href="${txUrl}">View Transaction</a>`;
-
-          if (!isSell) {
-            await sendZephyrosAnimation(BUY_ANIMATION_FILE_ID, caption, { threadId: GENERAL_THREAD_ID });
-          } else {
-            await sendZephyrosMessage(caption, { threadId: GENERAL_THREAD_ID });
-          }
-
-          console.log(`💱 Swap alert sent: ${isSell ? "SELL" : "BUY"} $${usdValue.toFixed(2)} (tx ${log.transactionHash})`);
+          await processSwapLog(ctx, log, wetnUsd);
         } catch (err) {
           console.error("⚠️  Failed to process swap log:", err.message);
         }
@@ -268,7 +378,7 @@ async function poll(ctx) {
       start = end + 1;
     }
 
-    await setState(STATE_KEY, { lastBlock: safeBlock });
+    await setState(STATE_KEY, { lastBlock: safeBlock, seenTradeHashes });
   } catch (err) {
     console.error("⚠️  Swap watcher poll failed:", err.message);
   } finally {
@@ -317,7 +427,10 @@ export async function startCoreClashSwapWatcher() {
 
   const ctx = { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName };
 
-  console.log(`💱 Core Clash swap watcher started (polling every ${POLL_INTERVAL_MS / 1000}s)`);
+  console.log(
+    `💱 Core Clash swap watcher started (polling every ${SWAP_POLL_INTERVAL_MS / 1000}s, ` +
+      `${isElectroSwapConfigured() ? "ElectroSwap-first" : "on-chain only — ELECTROSWAP_API_KEY not set"})`
+  );
   poll(ctx);
-  setInterval(() => poll(ctx), POLL_INTERVAL_MS);
+  setInterval(() => poll(ctx), SWAP_POLL_INTERVAL_MS);
 }

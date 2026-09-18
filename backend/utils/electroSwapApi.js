@@ -159,6 +159,33 @@ export async function getCandles(tokenAddress, bucket, limit) {
   }
 }
 
+/** Recent trades for one token, newest first — up to 25 per call (a larger `limit` is REJECTED
+ * with 400, not clamped; confirmed live via the OpenAPI spec, same "reject don't clamp" pattern
+ * /candles's own `limit` uses). There is NO real pagination despite the response envelope carrying
+ * a `cursor` field: the spec's own Envelope schema states "v1 accepts no cursor on any route... it
+ * is null on every list except trade.list" — meaning `trade.list` is the one endpoint where cursor
+ * comes back non-null, but nothing accepts it back on a follow-up request, so it's reserved/
+ * informational only today. In practice this means each call is a snapshot of the most recent 25
+ * trades, not an incremental "since last call" feed — callers need their own dedup against
+ * whatever they've already announced (see coreClashSwapWatcher.js's own seenTradeHashes).
+ *
+ * UNLIKE getTokenPrice/getCandles above, this endpoint's response shape is NOT confirmed live —
+ * ElectroSwap's own OpenAPI spec leaves `trade.list`'s data as an untyped `Envelope.data` with no
+ * committed schema (no funded API key was available to verify a real response while building
+ * this). Returns the RAW array exactly as the API sends it, unmodified — callers should defensively
+ * probe for whatever field names are actually present rather than assume this file's guess is
+ * right, and log loudly (once) if nothing recognizable is found. Returns null — never throws — on
+ * any failure or when ELECTROSWAP_API_KEY isn't configured. */
+export async function getRecentTrades(tokenAddress, limit = 25) {
+  try {
+    const data = await callElectroSwapApi(`/trades/${CHAIN_ID}?token=${tokenAddress}&limit=${limit}`);
+    return Array.isArray(data) ? data : null;
+  } catch (err) {
+    console.warn(`⚠️  ElectroSwap trades lookup failed for ${tokenAddress}:`, err.message);
+    return null;
+  }
+}
+
 /** `{ usd, etn }` price for up to MAX_BATCH_ADDRESSES tokens in ONE call — 100 + 10/token credits
  * (e.g. 20 tokens: 300 credits batched vs. 1,000 calling getTokenPrice in a loop). Chunks
  * automatically if given more than MAX_BATCH_ADDRESSES. Returns a Map keyed by LOWERCASED address
