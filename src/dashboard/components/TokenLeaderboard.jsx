@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
-import { formatCompact, shortHash, isSpamTokenName } from "../utils/format.js";
+import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
+import { formatCompact, formatUsdPrice, shortHash, isSpamTokenName } from "../utils/format.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import NeonButton from "../../components/NeonButton.jsx";
 
@@ -12,6 +13,7 @@ const CATEGORIES = [
 
 export default function TokenLeaderboard({ onSelectToken }) {
   const { getTokens } = useBlockscout();
+  const liquidityByAddress = useTokenLiquidity();
 
   const [category, setCategory] = useState("tokens");
   const [tokens, setTokens] = useState([]);
@@ -56,7 +58,25 @@ export default function TokenLeaderboard({ onSelectToken }) {
     }
   };
 
-  const visibleTokens = tokens.filter((t) => !isSpamTokenName(t.name));
+  // Sorted by total liquidity (USD) descending, per ElectroSwap's own listed-token data (see
+  // useTokenLiquidity.js) — a far more useful default order than Blockscout's own ("in no
+  // particular order" per that list's own creation-order-ish default), since a token with real,
+  // deep liquidity is generally what a visitor actually cares about finding first. A token
+  // ElectroSwap doesn't list at all (most of Blockscout's much broader, noisier "every ERC20 ever
+  // deployed" list, including dead/spam tokens ElectroSwap never indexed) sorts to the bottom
+  // rather than being hidden — still findable, just not competing with real, liquid tokens for the
+  // top of the list. NFTs keep Blockscout's own order — ElectroSwap's fungible-token liquidity
+  // figures don't apply to a collection.
+  const visibleTokens = tokens
+    .filter((t) => !isSpamTokenName(t.name))
+    .map((t) => ({ ...t, liquidityUsd: category === "tokens" ? liquidityByAddress.get(t.address?.toLowerCase()) ?? null : null }))
+    .sort((a, b) => {
+      if (category !== "tokens") return 0;
+      if (a.liquidityUsd == null && b.liquidityUsd == null) return 0;
+      if (a.liquidityUsd == null) return 1;
+      if (b.liquidityUsd == null) return -1;
+      return b.liquidityUsd - a.liquidityUsd;
+    });
 
   if (error) {
     return <div style={{ fontSize: 13, color: errorColor, textAlign: "center", padding: 24 }}>{error}</div>;
@@ -88,7 +108,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
 
       <div style={{ display: "flex", padding: "0 12px 8px", fontSize: 11, fontWeight: 700, color: muted, textTransform: "uppercase", letterSpacing: 0.6 }}>
         <div style={{ flex: 1 }}>{category === "nfts" ? "Collection" : "Token"}</div>
-        <div style={{ width: 100, textAlign: "right" }}>Holders</div>
+        <div style={{ width: 100, textAlign: "right" }}>{category === "nfts" ? "Holders" : "Liquidity"}</div>
       </div>
 
       {loading ? (
@@ -134,8 +154,17 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 </a>
               )}
             </div>
-            <div style={{ width: 100, textAlign: "right", fontSize: 13, fontWeight: 700, color: green, flexShrink: 0 }}>
-              {formatCompact(token.holders)}
+            <div style={{ width: 100, textAlign: "right", flexShrink: 0 }}>
+              {category === "nfts" ? (
+                <span style={{ fontSize: 13, fontWeight: 700, color: green }}>{formatCompact(token.holders)}</span>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: green }}>
+                    {token.liquidityUsd != null ? formatUsdPrice(token.liquidityUsd) : "—"}
+                  </div>
+                  <div style={{ fontSize: 11, color: mutedLight }}>{formatCompact(token.holders)} holders</div>
+                </>
+              )}
             </div>
           </div>
         ))

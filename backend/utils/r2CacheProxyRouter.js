@@ -33,6 +33,7 @@ const ALLOWED_FILES = new Set([
   "activated-domains.json",
   "etn-price.json",
   "token-prices.json",
+  "token-liquidity.json",
   "marketplace-sellers.json",
   "owned-names.json",
   "subname-domains.json",

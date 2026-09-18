@@ -186,6 +186,45 @@ export async function getRecentTrades(tokenAddress, limit = 25) {
   }
 }
 
+/** Every token ElectroSwap has listed (its own indexed universe — not every ERC20 Blockscout has
+ * ever seen deployed, just the ones ElectroSwap actually tracks pricing/liquidity for), up to
+ * `limit` (max 100 — larger REJECTED with 400, not clamped). Cost 100 + 5/item (max 600 for 100).
+ * Same "no real pagination" situation as getRecentTrades — the Envelope schema's own cursor note
+ * ("null on every list except trade.list") confirms this endpoint can never page past its own
+ * `limit` cap either. Response shape is NOT confirmed live (untyped Envelope.data, no funded key
+ * to verify against) — returns the RAW array unmodified so callers can defensively probe for
+ * whatever field names are actually present (see tokenLiquidityCache.js's own comment on how it
+ * does that for the liquidity figure specifically). Returns null — never throws — on any failure
+ * or when ELECTROSWAP_API_KEY isn't configured. */
+export async function getTokenList(limit = 100) {
+  try {
+    const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}?limit=${limit}`);
+    return Array.isArray(data) ? data : null;
+  } catch (err) {
+    console.warn(`⚠️  ElectroSwap token list lookup failed:`, err.message);
+    return null;
+  }
+}
+
+/** Liquidity locks for one token — a "heavy" route (their own OpenAPI spec marks it
+ * `heavy: true`, global concurrency limits, expect occasional 503 `server_busy` under load per
+ * their own docs) and expensive (2000 credits flat, no batching available — this is a per-token
+ * call, never call it in a loop over many tokens). Meant to be called LAZILY, per token a visitor
+ * actually opens, with a long-lived cache on the caller's side (see
+ * backend/utils/tokenLiquidityLockRouter.js's own in-memory TTL cache) — never as part of a bulk
+ * list refresh the way getTokenList above is. Response shape is NOT confirmed live (untyped
+ * Envelope.data) — returns the RAW value unmodified. Returns null — never throws — on any failure,
+ * a 503 included, or when ELECTROSWAP_API_KEY isn't configured. */
+export async function getLiquidityLocks(tokenAddress) {
+  try {
+    const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}/${tokenAddress}/liquidity-locks`);
+    return data ?? null;
+  } catch (err) {
+    console.warn(`⚠️  ElectroSwap liquidity-locks lookup failed for ${tokenAddress}:`, err.message);
+    return null;
+  }
+}
+
 /** `{ usd, etn }` price for up to MAX_BATCH_ADDRESSES tokens in ONE call — 100 + 10/token credits
  * (e.g. 20 tokens: 300 credits batched vs. 1,000 calling getTokenPrice in a loop). Chunks
  * automatically if given more than MAX_BATCH_ADDRESSES. Returns a Map keyed by LOWERCASED address
