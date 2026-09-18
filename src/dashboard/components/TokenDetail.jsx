@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
+import { useLiquidityLock } from "../hooks/useLiquidityLock.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, shortHash } from "../utils/format.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
@@ -53,14 +54,32 @@ function holderUsdValue(value, decimals, priceUsd) {
   }
 }
 
+// Renders the liquidity-lock stat card's value — count/latestUnlockAt come from
+// backend/utils/tokenLiquidityLockRouter.js's own best-effort parse of an unconfirmed ElectroSwap
+// response shape (see that file's own comment), so this stays deliberately vague about anything
+// beyond "how many locks" and "the latest one's unlock date, if it could be determined" rather than
+// presenting details it can't be confident about.
+function formatLockStatus(lock) {
+  if (!lock) return "Checking…";
+  if (!lock.available) return "Unavailable";
+  if (lock.count === 0) return "No locks found";
+  if (lock.latestUnlockAt) {
+    const d = new Date(lock.latestUnlockAt);
+    return `Locked until ${d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
+  }
+  return `${lock.count} lock${lock.count === 1 ? "" : "s"} found`;
+}
+
 export default function TokenDetail({ address, onBack, onSelectAddress }) {
   const { getToken, getTokenHolders } = useBlockscout();
   const { getTokenChart } = useTokenChart();
+  const { getLiquidityLock } = useLiquidityLock();
 
   const [token, setToken] = useState(null);
   const [holders, setHolders] = useState([]);
   const [error, setError] = useState(null);
   const [priceUsd, setPriceUsd] = useState(null);
+  const [liquidityLock, setLiquidityLock] = useState(null); // null while loading; { available, count, latestUnlockAt } once resolved
   const [showAllHolders, setShowAllHolders] = useState(false);
 
   useEffect(() => {
@@ -98,6 +117,24 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
       .catch((err) => console.error("Failed to load token price for holder USD values:", err));
     return () => { cancelled = true; };
   }, [address, getTokenChart]);
+
+  // Liquidity lock — fungible tokens only (ElectroSwap's own /liquidity-locks endpoint is scoped
+  // to a token's LP pools, which an NFT collection doesn't have). Fetched once per token viewed —
+  // see useLiquidityLock.js/tokenLiquidityLockRouter.js's own comments on why this is lazy and
+  // per-token rather than bulk (ElectroSwap's own OpenAPI spec flags this specific route as
+  // "heavy" and expensive, 2000 credits with no batching).
+  useEffect(() => {
+    if (!token || token.type === "ERC-721" || token.type === "ERC-1155") return;
+    let cancelled = false;
+    setLiquidityLock(null);
+    getLiquidityLock(address)
+      .then((result) => { if (!cancelled) setLiquidityLock(result); })
+      .catch((err) => {
+        console.error("Failed to load liquidity lock info:", err);
+        if (!cancelled) setLiquidityLock({ available: false });
+      });
+    return () => { cancelled = true; };
+  }, [address, token, getLiquidityLock]);
 
   return (
     <div>
@@ -152,6 +189,12 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
               <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Type</div>
               <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{token.type}</div>
             </div>
+            {token.type !== "ERC-721" && token.type !== "ERC-1155" && (
+              <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
+                <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Liquidity Lock</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatLockStatus(liquidityLock)}</div>
+              </div>
+            )}
           </div>
 
           {token.type === "ERC-721" || token.type === "ERC-1155" ? (
