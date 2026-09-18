@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { getActivatedDomainsCache, setActivatedDomainsCache } from "../state/activatedDomainsState.js";
 import { createRpcProvider } from "./rpcProvider.js";
+import { verifyPrimaryName } from "./primaryNameResolver.js";
 
 // Keeps a small public JSON cache of every activated domain (and the subnames registered under
 // each) fresh in R2, for the homepage's "Activated Domains" table — same reasoning as
@@ -231,18 +232,24 @@ async function readCurrentData(nameWrapper, node) {
   }
 }
 
-// Resolves an address's primary ("reverse") name, or null if none is set — same lookup
+// Resolves an address's primary ("reverse") name, or null if none is set/verified — same lookup
 // useReverseRecord.js's getPrimaryName does, just run once per unique owner here instead of once
 // per listing in every visitor's browser. Takes an already-resolved `resolver` contract rather
 // than calling defaultResolver() itself — see scanAndPublish, where it's fetched once per cycle
 // instead of once per owner (it's a single global value, not address-dependent; re-fetching it
 // redundantly for every owner was half of what caused every primary name to fail to resolve, see
-// this file's header comment for the full story).
-async function resolvePrimaryName(reverseRegistrar, resolver, addr) {
+// this file's header comment for the full story). Verified via verifyPrimaryName before being
+// trusted — a reverse record can keep claiming a name its owner has since transferred away (see
+// that function's own comment in primaryNameResolver.js for a real example this table showed).
+async function resolvePrimaryName(reverseRegistrar, resolver, provider, addr) {
   try {
     const node = await reverseRegistrar.node(addr);
     const name = await resolver.name(node);
-    return name || null;
+    if (!name) return null;
+    // Verify before trusting — see verifyPrimaryName's own comment (primaryNameResolver.js) on
+    // why a reverse record alone isn't reliable: a wallet can keep claiming a name it's since
+    // transferred away, and nothing in ENS clears the old reverse pointer automatically.
+    return (await verifyPrimaryName(provider, name, addr)) ? name : null;
   } catch (err) {
     console.warn(`⚠️  Failed to resolve primary name for ${addr}:`, err.message);
     return null;
@@ -408,7 +415,7 @@ async function scanAndPublish(provider, marketplace, legacyContracts, nameWrappe
     if (defaultResolverAddr !== ethers.ZeroAddress) {
       const resolver = new ethers.Contract(defaultResolverAddr, RESOLVER_ABI, provider);
       await mapWithConcurrency([...uniqueOwners], VERIFY_CONCURRENCY, async (owner) => {
-        primaryNameByOwner.set(owner, await resolvePrimaryName(reverseRegistrar, resolver, owner));
+        primaryNameByOwner.set(owner, await resolvePrimaryName(reverseRegistrar, resolver, provider, owner));
       });
     }
 

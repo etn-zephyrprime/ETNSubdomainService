@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { getMarketplaceSellersCache, setMarketplaceSellersCache } from "../state/marketplaceSellersState.js";
 import { createRpcProvider } from "./rpcProvider.js";
+import { verifyPrimaryName } from "./primaryNameResolver.js";
 
 // Keeps a small public JSON cache of {seller address -> primary name} in R2 for the "Names For
 // Sale" marketplace screen, for the same reason and via the same fix as
@@ -65,11 +66,16 @@ async function mapWithConcurrency(items, concurrency, fn) {
   return results;
 }
 
-async function resolvePrimaryName(reverseRegistrar, resolver, addr) {
+// Verified via verifyPrimaryName before being trusted — a reverse record can keep claiming a name
+// its owner has since transferred away (see that function's own comment in primaryNameResolver.js
+// for a real example: a Telegram alert once showed a wallet's stale reverse-claimed subname after
+// it had already sold that subname to someone else).
+async function resolvePrimaryName(reverseRegistrar, resolver, provider, addr) {
   try {
     const node = await reverseRegistrar.node(addr);
     const name = await resolver.name(node);
-    return name || null;
+    if (!name) return null;
+    return (await verifyPrimaryName(provider, name, addr)) ? name : null;
   } catch (err) {
     console.warn(`⚠️  Failed to resolve primary name for ${addr}:`, err.message);
     return null;
@@ -111,7 +117,7 @@ async function scanAndPublish(marketplace, legacyMarketplaces, reverseRegistrar,
     if (defaultResolverAddr !== ethers.ZeroAddress) {
       const resolver = new ethers.Contract(defaultResolverAddr, RESOLVER_ABI, provider);
       await mapWithConcurrency([...activeSellers], VERIFY_CONCURRENCY, async (seller) => {
-        sellers[seller] = await resolvePrimaryName(reverseRegistrar, resolver, seller);
+        sellers[seller] = await resolvePrimaryName(reverseRegistrar, resolver, provider, seller);
       });
     } else {
       for (const seller of activeSellers) sellers[seller] = null;

@@ -18,8 +18,11 @@ export function useDiamondHandsScore() {
     const params = new URLSearchParams({ wallet, signature, timestamp });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/diamond-hands?${params}`);
     await parseErrorOrThrow(res);
-    // { asOf, portfolio: {components, score, tier}, perWallet: [{walletAddress, components, score,
-    //   tier}], perAsset: [{tokenAddress, components, score, tier}], failed: [walletAddress, ...] }
+    // { asOf, portfolio: {components, score, tier, subScores}, perWallet: [{walletAddress,
+    //   components, score, tier, subScores}], perAsset: [{tokenAddress, type: "native"|"token"|
+    //   "lp"|"nft", components, score, tier, subScores}] (an "nft" row's tokenAddress is the
+    //   COLLECTION address, pooling every tokenId ever held/sold in it -- see
+    //   diamondHandsService.js's own classifyAssetKey), failed: [walletAddress, ...] }
     return res.json();
   }, []);
 
