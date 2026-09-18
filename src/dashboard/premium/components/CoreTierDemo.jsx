@@ -268,6 +268,13 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
   // was last regenerated). No live pricing call happens anywhere in this component; every number
   // here can only ever change when the backend snapshot itself is regenerated.
   const combinedEtnUsd = data.combinedHoldings.etnUsdValue ?? null;
+  // Bug: this was referenced below (Combined ETN Balance) but never actually defined anywhere in
+  // this component -- a plain ReferenceError on every render, caught by DashboardErrorBoundary as
+  // "Something went wrong loading this section." Never surfaced until a snapshot was regenerated
+  // after the "make demo fully static" refactor actually got exercised end-to-end. totalCoinBalance
+  // is already in SCALED_FIELDS as a wei-string (see this file's own header comment), same
+  // formatUnits pattern visibleTokens below uses for each token's own rawBalance.
+  const combinedEtnAmount = parseFloat(ethers.formatUnits(BigInt(data.combinedHoldings.totalCoinBalance || "0"), 18));
 
   const visibleTokens = fungibleTokens
     .map((t) => {
