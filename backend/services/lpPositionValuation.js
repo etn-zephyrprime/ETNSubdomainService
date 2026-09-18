@@ -108,11 +108,17 @@ async function decimalsFor(tokenAddress) {
 // getReserves/totalSupply); if all four succeed, it's a real pool. A pool's IDENTITY (token0/
 // token1) never changes post-deploy, so a CONFIRMED positive is cached indefinitely. A negative
 // (any call reverts/fails) is deliberately NOT cached — same reasoning as
-// defiPositionValuation.js's own getFarmMeta: this app has no reliable way here to tell "this
-// genuinely isn't a pool" apart from "that was a transient RPC hiccup," and caching the latter as
-// a permanent negative would silently and permanently hide a real LP token's value. Re-probing a
-// genuinely-non-pool token costs a few RPC calls, bounded by how many distinct tokens a wallet
-// holds — not a hot path.
+// defiPositionValuation.js's own getFarmMeta: caching a negative that turns out to have been a
+// transient RPC hiccup rather than a genuine non-pair would silently and permanently hide a real
+// LP token's value. Re-probing a genuinely-non-pool token costs a few RPC calls, bounded by how
+// many distinct tokens a wallet holds — not a hot path.
+//
+// The two ARE reliably distinguishable, though (confirmed live 2026-09-18 — see probeV2Pool's own
+// comment): a genuine non-pair reverts with ethers' CALL_EXCEPTION (the RPC call itself completed;
+// the node's EVM returned a real, empty-data revert), while an actual transport-level hiccup
+// (timeout, dropped connection, non-200 response) surfaces as a different error code entirely.
+// Used to decide what's worth logging below, not whether to cache — the "never cache a negative"
+// choice above stays the cheap, conservative default either way.
 const v2PoolCache = new Map(); // address (lowercase) -> { token0, token1 } (only ever set on success)
 const V2_PAIR_IFACE = new ethers.Interface([
   "function token0() view returns (address)",
@@ -136,15 +142,21 @@ export async function probeV2Pool(address) {
     return meta;
   } catch (err) {
     // Deliberately NOT cached on failure (see this function's own header comment) — a later call
-    // gets a clean retry. But previously this swallowed EVERY failure identically, including a
-    // genuine V2 pair silently dropped from a wallet's LP positions by a transient RPC hiccup
-    // (timeout, rate limit) with zero trace anywhere — confirmed live: a real, reserve-backed
-    // ElectroSwap pair the wallet held ~11% of came back completely absent from the demo's LP
-    // section, and there was no way to tell after the fact whether it failed here or was never a
-    // real pair to begin with. Logged now (not thrown — a bad/non-pair address failing here is
-    // still the normal, expected case for most candidate tokens) so a genuine LP position missing
-    // from a wallet's results is at least visible instead of indistinguishable from "not a pair."
-    console.warn(`⚠️  LP position valuation: probeV2Pool failed for ${address} (treated as not-a-pair; a real V2 pair would retry clean next call):`, err.message);
+    // gets a clean retry. This used to warn on EVERY failure identically, including the
+    // overwhelmingly common, genuinely-expected case: probeV2Pool runs against every token
+    // balance a wallet holds, and most held tokens are plain ERC20s, not LP pairs — confirmed live
+    // that a plain token (e.g. CORE held directly, not as an LP position) reverts calling
+    // token0() with a real, empty-data EVM revert (raw JSON-RPC: {"code":-32000,"message":
+    // "execution reverted"}), consistently, every single call — ethers reports that as
+    // CALL_EXCEPTION. That's pure noise, not a signal anything went wrong.
+    //
+    // What's still worth surfacing: a genuine transport-level hiccup (timeout, dropped connection,
+    // non-200 response) — that's the case this function's own "never cache a negative" design
+    // exists to protect against (see this file's own header comment), and it reliably comes back
+    // as a DIFFERENT ethers error code, never CALL_EXCEPTION.
+    if (err.code !== "CALL_EXCEPTION") {
+      console.warn(`⚠️  LP position valuation: probeV2Pool failed for ${address} (treated as not-a-pair; a real V2 pair would retry clean next call):`, err.message);
+    }
     return null;
   }
 }
