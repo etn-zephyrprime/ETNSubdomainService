@@ -11,6 +11,7 @@ import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
 import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
+import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2 } from "../theme.js";
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
@@ -125,6 +126,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
         <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
+        <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
       </div>
     </div>
   );
