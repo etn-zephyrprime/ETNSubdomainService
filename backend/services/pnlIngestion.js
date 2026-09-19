@@ -972,6 +972,16 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
  * returning; both need the exact same downstream treatment (excluded from the plain-transfer walks,
  * fed to ingestInternalTransactions/ingestTokenTransfers below, which still run after this
  * completes since they filter on the now-complete set). */
+/** A reverted/failed top-level transaction — Blockscout marks it `status: "error"` (and `result:
+ * "execution reverted"` etc.; a successful one is `status: "ok"`, `result: "success"`). A failed tx
+ * moves NO value and NO tokens — only its gas is spent — so its `value` must never be booked as ETN
+ * leaving (or arriving in) the wallet. Confirmed against real data: two reverted `activateDomain`
+ * calls carrying ~305k ETN each were recorded as 611,050 ETN of outflows the wallet never made, which
+ * is the whole of that wallet's ledger-vs-on-chain ETN shortfall. Exported for direct testing. */
+export function isFailedTransaction(tx) {
+  return tx.status === "error" || (typeof tx.result === "string" && tx.result !== "success");
+}
+
 async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
@@ -992,8 +1002,9 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       // transfers attached — Blockscout's /transactions items already embed a token_transfers
       // array per tx (confirmed live), which is exactly the filter needed here without a second
       // per-tx fetch for every plain ETN send.
+      const txFailed = isFailedTransaction(tx);
       const tokenTransfers = tx.token_transfers || [];
-      const isContractCallWithTransfers = tokenTransfers.length > 0 && tx.to?.is_contract;
+      const isContractCallWithTransfers = !txFailed && tokenTransfers.length > 0 && tx.to?.is_contract;
       const isSwap = isContractCallWithTransfers
         ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets)
         : false;
@@ -1037,7 +1048,8 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       }
 
       // Plain top-level native ETN transfer (tx.value), separate from the gas-fee row above.
-      const value = BigInt(tx.value || "0");
+      // A failed tx still burned gas (recorded above) but transferred nothing — see isFailedTransaction.
+      const value = txFailed ? 0n : BigInt(tx.value || "0");
       if (value > 0n && (fromLc === walletLc || toLc === walletLc) && fromLc !== toLc) {
         if (isSwap || isLiquidityEvent || isV3PositionEvent) continue; // recorded via swap_trades or as decomposed liquidity/position legs instead, not as a plain transfer
         const direction = fromLc === walletLc ? "out" : "in";
