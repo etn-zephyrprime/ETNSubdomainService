@@ -332,10 +332,19 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
     walletFilter === "all"
       ? (data.perWalletBreakdown || []).map((w) => {
           const lpAddresses = new Set((w.liquidityPositions?.v2Positions || []).map((p) => p.tokenAddress));
-          const parts = holdingsParts(w.combinedHoldings.etnUsdValue ?? null, w.combinedHoldings.tokens, lpAddresses);
+          // Each row includes that wallet's own liquidity + staking/farm positions so the rows add up
+          // to the Total above (same as CoreTierPortfolio.jsx's own per-wallet rows).
+          const holdings = holdingsParts(w.combinedHoldings.etnUsdValue ?? null, w.combinedHoldings.tokens, lpAddresses);
+          const parts = [
+            ...holdings,
+            ...legParts(w.defiPositions?.positions),
+            ...legParts(w.liquidityPositions?.v2Positions),
+            ...legParts(w.liquidityPositions?.v3Positions),
+          ];
+          const positionsUsd = Number(w.defiPositions?.totalUsd ?? 0) + Number(w.liquidityPositions?.totalUsd ?? 0);
           return {
             walletIndex: w.walletIndex,
-            total: parts.reduce((sum, p) => sum + (p.value > 0 ? p.value : 0), 0),
+            total: holdings.reduce((sum, p) => sum + (p.value > 0 ? p.value : 0), 0) + positionsUsd,
             change: computePortfolioChange(parts),
           };
         })

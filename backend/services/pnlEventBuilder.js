@@ -532,7 +532,15 @@ export async function computeGasFeesUsd(transfersInPeriod) {
  * Called from pnlStatementGenerator.js, pnlSnapshotService.js (live snapshot, history backfill),
  * and categoryPnlService.js (category history backfill) — same "shared, not Statement-only" note
  * as computeGasFeesUsd above; its own log line below no longer says "Statement generator" either. */
-export async function valueInventoryAtTimestamp(lots, timestamp) {
+//
+// `livePricesUsd` (optional `{ [lowercased token address | "NATIVE"]: usdPrice }`) — spot prices to use
+// INSTEAD of getHistoricalPriceUsd for any token it covers; anything it doesn't cover (or covers
+// with a non-positive price) still falls back to the historical lookup exactly as before. Only the
+// live "right now" snapshot passes it: getHistoricalPriceUsd resolves to a per-UTC-day price that is
+// frozen for the rest of that day once first looked up, which is fine for a period-end Statement or
+// a past day's history point but made "Current Value" trail the live market (and disagree with the
+// Portfolio panel's live-priced total) whenever prices moved intraday.
+export async function valueInventoryAtTimestamp(lots, timestamp, livePricesUsd = null) {
   const byToken = new Map();
   for (const lot of lots) {
     if (!byToken.has(lot.tokenAddress)) byToken.set(lot.tokenAddress, []);
@@ -547,7 +555,8 @@ export async function valueInventoryAtTimestamp(lots, timestamp) {
     const costBasis = tokenLots.reduce((sum, l) => sum.plus(l.quantityRemaining.times(l.unitCostUsd)), new Decimal(0));
     let marketValue = null;
     try {
-      const priceUsd = await getHistoricalPriceUsd(tokenAddress, timestamp);
+      const live = livePricesUsd ? livePricesUsd[tokenAddress] ?? livePricesUsd[tokenAddress.toLowerCase()] : null;
+      const priceUsd = Number.isFinite(live) && live > 0 ? live : await getHistoricalPriceUsd(tokenAddress, timestamp);
       marketValue = quantity.times(priceUsd);
       totalMarketValueUsd = totalMarketValueUsd.plus(marketValue);
       totalUnrealizedUsd = totalUnrealizedUsd.plus(marketValue.minus(costBasis));
