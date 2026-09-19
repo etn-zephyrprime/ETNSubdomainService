@@ -44,7 +44,7 @@ const PREMIUM_SUBSCRIPTION_ABI = [
 ];
 
 // Same RPC block-range-flakiness handling as marketplaceWatcher.js's identical helper.
-async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, minChunkSize = 50) {
+export async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 1000, minChunkSize = 50) {
   const events = [];
   let start = fromBlock;
   while (start <= toBlock) {
