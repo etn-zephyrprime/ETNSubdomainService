@@ -21,6 +21,17 @@ const TIER_COLORS = {
   "Paper Hands": mutedLight,
 };
 
+// One image per outcome, served from /public/diamond-hands/ (see that folder's README.md for the
+// exact filenames/specs). `null` tier ("Not enough data") uses no-data.png. Every image is optional:
+// a missing file just falls back to the plain gem icon, so the panel never shows a broken image.
+const TIER_IMAGES = {
+  "Titanium Hands": "/diamond-hands/titanium-hands.png",
+  "Diamond Hands": "/diamond-hands/diamond-hands.png",
+  "Steady Hands": "/diamond-hands/steady-hands.png",
+  "Paper Hands": "/diamond-hands/paper-hands.png",
+};
+const NO_DATA_IMAGE = "/diamond-hands/no-data.png";
+
 // Small helper since every color this component tints (TIER_COLORS, and green/blue/orange from
 // theme.js) is a plain 6-digit hex string, not one of theme.js's own separately-defined rgba
 // Glow constants (those only exist for green/orange/blue/gold/silver/error, not the tier palette
@@ -57,6 +68,39 @@ function fmtPct(rate) {
 }
 function fmtScore(score) {
   return score == null ? "—" : Math.round(score).toString();
+}
+
+// The outcome's artwork on a soft radial glow in the tier's own color, so it reads as the "hero" of
+// the card. Keyed by src so a tier change (e.g. switching wallet/asset) remounts and retries rather
+// than inheriting a previous image's failed-to-load state.
+function TierImage({ tier, tierColor, size = 132 }) {
+  const src = tier ? TIER_IMAGES[tier] : NO_DATA_IMAGE;
+  const [failedSrc, setFailedSrc] = useState(null);
+  if (!src || failedSrc === src) return <Gem size={size * 0.4} color={tierColor} style={{ flexShrink: 0, opacity: 0.8 }} />;
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: size,
+        height: size,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: `radial-gradient(circle at 50% 55%, ${withAlpha(tierColor, 0.28)} 0%, ${withAlpha(tierColor, 0.08)} 55%, transparent 72%)`,
+      }}
+    >
+      <img
+        key={src}
+        src={src}
+        alt={tier || "Not enough data"}
+        width={size}
+        height={size}
+        onError={() => setFailedSrc(src)}
+        style={{ width: "100%", height: "100%", objectFit: "contain", filter: `drop-shadow(0 4px 14px ${withAlpha(tierColor, 0.45)})` }}
+      />
+    </div>
+  );
 }
 
 // Circular 0-100 progress ring for the combined score -- the one number this feature is actually
@@ -147,7 +191,8 @@ function ScoreCard({ label, result }) {
         {label}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "center" }}>
+        <TierImage tier={tier} tierColor={tierColor} />
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
           <ScoreGauge score={score} tierColor={tierColor} />
           <div
