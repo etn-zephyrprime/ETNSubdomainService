@@ -97,14 +97,20 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
       </div>
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6, marginBottom: 12 }}>
         Manually runs <code>executeSplitForPeriod</code> on the Premium Subscription contract with the safe amount (contract balance
-        − ETN still owed to PnL requests − safety buffer) and a 5%-slippage <code>minCoreOut</code>. Sent from your connected wallet, which must be the contract's operator.
+        − ETN still owed to PnL requests − a small margin) and a 5%-slippage <code>minCoreOut</code>. Sent from your connected wallet, which must be the contract's operator.
       </div>
 
       {quote && (
         <div style={{ padding: "8px 12px", borderRadius: 10, background: panel, border: `1px solid ${border}`, marginBottom: 12 }}>
           <div style={rowStyle}><span style={{ color: muted }}>Contract balance</span><span style={{ color: "#fff" }}>{fmtEtn(quote.balance)} ETN</span></div>
           <div style={rowStyle}><span style={{ color: muted }}>Owed to PnL requests</span><span style={{ color: "#fff" }}>{fmtEtn(quote.owed)} ETN</span></div>
-          <div style={rowStyle}><span style={{ color: muted }}>Safety buffer</span><span style={{ color: "#fff" }}>{fmtEtn(quote.safetyBuffer)} ETN</span></div>
+          {BigInt(quote.owedUnrecorded) > 0n && (
+            <div style={{ ...rowStyle, paddingTop: 0 }}>
+              <span style={{ color: muted, fontSize: 11 }}>↳ incl. on-chain purchases not yet recorded</span>
+              <span style={{ color: mutedLight, fontSize: 11 }}>{fmtEtn(quote.owedUnrecorded)} ETN</span>
+            </div>
+          )}
+          <div style={rowStyle}><span style={{ color: muted }}>Safety margin</span><span style={{ color: "#fff" }}>{fmtEtn(quote.safetyMargin)} ETN</span></div>
           <div style={{ ...rowStyle, borderTop: `1px solid ${border}`, marginTop: 4, paddingTop: 8 }}>
             <span style={{ color: mutedLight, fontWeight: 700 }}>amount</span>
             <span style={{ color: green, fontWeight: 800 }}>{fmtEtn(quote.amount)} ETN</span>

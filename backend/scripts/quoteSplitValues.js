@@ -1,10 +1,10 @@
 // backend/scripts/quoteSplitValues.js
 //
 // Read-only — computes the (amount, minCoreOut, deadline) values for a MANUAL
-// executeSplitForPeriod call, using the exact same safe-sweep formula
-// subscriptionRevenueSweepScheduler.js uses automatically: amount = (contract balance) - (ETN
-// still owed to PnL statement escrow) - (a safety buffer covering the worst-case single PnL
-// purchase, doubled). This is the number that's SAFE to split without accidentally sweeping money
+// executeSplitForPeriod call, using the exact same safe-sweep accounting
+// subscriptionRevenueSweepScheduler.js uses automatically (premiumSplitQuote.js's
+// computeSafeSplitAmount): amount = (contract balance) - (ETN still owed to PnL statement escrow,
+// including any purchases on-chain the watcher hasn't recorded yet) - (a small margin). This is the number that's SAFE to split without accidentally sweeping money
 // that's actually still owed to a pending/refundable PnL statement request — do not just pass the
 // contract's raw balance.
 //
@@ -21,23 +21,17 @@ import { ethers } from "ethers";
 import dotenv from "dotenv";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getPool } from "../db/pool.js";
-import { getTotalPnlEscrowOwed } from "../db/statementRequests.js";
-import { quoteMinCoreOut } from "../utils/premiumSplitQuote.js";
+import { quoteMinCoreOut, computeSafeSplitAmount } from "../utils/premiumSplitQuote.js";
 
 dotenv.config();
 
 const PREMIUM_SUBSCRIPTION_ADDRESS = process.env.PREMIUM_SUBSCRIPTION_ADDRESS;
 const SLIPPAGE_BPS = BigInt(process.env.PNL_SPLIT_SLIPPAGE_BPS || "500");
-// Same default/reasoning as subscriptionRevenueSweepScheduler.js's own SAFETY_BUFFER_MULTIPLIER.
-const SAFETY_BUFFER_MULTIPLIER = process.env.SUBSCRIPTION_SWEEP_SAFETY_MULTIPLIER
-  ? BigInt(process.env.SUBSCRIPTION_SWEEP_SAFETY_MULTIPLIER)
-  : 2n;
+const SAFETY_MARGIN_ETN = process.env.SUBSCRIPTION_SWEEP_SAFETY_MARGIN_ETN || "10";
 
 const ABI = [
   "function coreToken() view returns (address)",
   "function swapRouter() view returns (address)",
-  "function pnlPricePerPeriod() view returns (uint256)",
-  "function MAX_PERIODS_PER_PURCHASE() view returns (uint256)",
 ];
 
 async function main() {
@@ -51,22 +45,14 @@ async function main() {
   const provider = createRpcProvider();
   const contract = new ethers.Contract(PREMIUM_SUBSCRIPTION_ADDRESS, ABI, provider);
 
-  const [balance, owedRaw, pnlPricePerPeriod, maxPeriodsPerPurchase] = await Promise.all([
-    provider.getBalance(PREMIUM_SUBSCRIPTION_ADDRESS),
-    getTotalPnlEscrowOwed(),
-    contract.pnlPricePerPeriod(),
-    contract.MAX_PERIODS_PER_PURCHASE(),
-  ]);
-  const owed = BigInt(owedRaw);
-  const safetyBuffer = pnlPricePerPeriod * maxPeriodsPerPurchase * SAFETY_BUFFER_MULTIPLIER;
-
-  let amount = balance - owed - safetyBuffer;
-  if (amount < 0n) amount = 0n;
+  const { balance, owedDb, unrecorded, owed, safetyMarginWei, amount } = await computeSafeSplitAmount(provider, PREMIUM_SUBSCRIPTION_ADDRESS, {
+    safetyMarginWei: ethers.parseEther(SAFETY_MARGIN_ETN),
+  });
 
   console.log("Contract:      ", PREMIUM_SUBSCRIPTION_ADDRESS);
   console.log("Live balance:  ", ethers.formatEther(balance), "ETN");
-  console.log("Owed to PnL:   ", ethers.formatEther(owed), "ETN");
-  console.log("Safety buffer: ", ethers.formatEther(safetyBuffer), "ETN  (worst-case single PnL purchase × 2)");
+  console.log("Owed to PnL:   ", ethers.formatEther(owed), "ETN", unrecorded > 0n ? ` (${ethers.formatEther(owedDb)} recorded + ${ethers.formatEther(unrecorded)} on-chain not yet recorded by the watcher)` : "");
+  console.log("Safety margin: ", ethers.formatEther(safetyMarginWei), "ETN");
   console.log("─────────────────────────────────────────────");
   console.log("SAFE amount:   ", ethers.formatEther(amount), "ETN", amount === 0n ? "  ⚠️  nothing safe to split right now" : "");
 
