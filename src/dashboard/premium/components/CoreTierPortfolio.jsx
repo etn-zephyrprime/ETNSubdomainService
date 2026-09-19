@@ -506,9 +506,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     filteredWalletTotals.length > 0 || defiUsd != null || lpUsd != null
       ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0) + (lpUsd ?? 0)
       : null;
-  // 24h markers. Per-wallet rows show ETN + tokens only (same scope as the figure beside them);
-  // the grand total additionally folds in LP/V3 and farm/staking legs, same scope as
-  // totalPortfolioUsd. See portfolioChange.js for the method (current holdings, price movement only).
+  // 24h markers, same scope as the figures beside them: the grand total covers ETN + tokens +
+  // LP/V3 + farm/staking legs, and each per-wallet row covers that wallet's own of the same. See portfolioChange.js for the method (current holdings, price movement only).
   const legParts = (positions) =>
     (positions || []).flatMap((p) => (p.legs || []).map((leg) => ({ value: Number(leg.usdValue), change: priceChanges[leg.tokenAddress?.toLowerCase()] })));
   const totalChange24h = computePortfolioChange([
@@ -822,7 +821,19 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     {walletFilter === "all" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
                         {filteredWalletTotals.map((w) => {
-                          const walletChange = computePortfolioChange(w.changeParts);
+                          // Each row includes that wallet's own liquidity and staking/farm positions,
+                          // so the rows add up to the Total above (they used to be ETN + tokens only,
+                          // leaving the total larger than its own breakdown by exactly those positions).
+                          const walletDefi = defiPositions?.perWallet?.find((x) => x.walletAddress === w.address);
+                          const walletLp = lpPositions?.perWallet?.find((x) => x.walletAddress === w.address);
+                          const rowTotal = w.total + Number(walletDefi?.totalUsd ?? 0) + Number(walletLp?.totalUsd ?? 0);
+                          const rowHasUnpriced = w.hasUnpriced || Boolean(walletDefi?.hasUnpriced) || Boolean(walletLp?.hasUnpriced);
+                          const walletChange = computePortfolioChange([
+                            ...w.changeParts,
+                            ...legParts(walletDefi?.positions),
+                            ...legParts(walletLp?.v2Positions),
+                            ...legParts(walletLp?.v3Positions),
+                          ]);
                           return (
                             <div key={w.address}>
                               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
@@ -831,7 +842,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                   {resolveName(w.address)}
                                 </span>
                                 <span style={{ color: "#fff", fontWeight: 700 }}>
-                                  {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
+                                  {rowHasUnpriced ? "≈ " : ""}{formatUsdPrice(rowTotal)}
                                 </span>
                               </div>
                               {walletChange && (

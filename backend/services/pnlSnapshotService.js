@@ -21,6 +21,8 @@ import { getIngestionState } from "../db/walletIngestionState.js";
 import { upsertPnlSnapshot, getExistingSnapshotDates } from "../db/pnlSnapshots.js";
 import { ingestWalletHistory, backfillDeferredPrices, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
+import { getBatchPricesUsd } from "../utils/tokenChartRouter.js";
+import { getEtnPriceCache } from "../state/etnPriceState.js";
 import {
   transferToEvent,
   buildNftEvents,
@@ -28,6 +30,7 @@ import {
   buildDefiFarmEvents,
   computeGasFeesUsd,
   valueInventoryAtTimestamp,
+  NATIVE_SENTINEL,
   groupNftHoldingsByCollection,
   groupNftRealizedByCollection,
 } from "./pnlEventBuilder.js";
@@ -110,6 +113,29 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
  * selection can never quietly under-price a wallet's PnL forever; it only ever shortens the very
  * first computation.
  */
+/** Current spot USD prices for every still-held asset in `lots` — the same two sources the
+ * Portfolio panel prices with (native ETN from the published ETN/USD cache, tokens from the batched
+ * ElectroSwap/GeckoTerminal price lookup), so the live PnL "Current Value" and the Portfolio total
+ * can't disagree about what an asset is worth right now. Never throws: a failed lookup just returns
+ * fewer prices, and valueInventoryAtTimestamp falls back to the day-bucketed historical price for
+ * anything not covered. */
+async function fetchLivePricesUsd(lots) {
+  const addresses = [
+    ...new Set(
+      lots
+        .filter((l) => l.quantityRemaining.gt(0) && l.tokenAddress !== NATIVE_SENTINEL && !l.tokenAddress.includes(":"))
+        .map((l) => l.tokenAddress.toLowerCase())
+    ),
+  ];
+  const [etnCache, tokenPrices] = await Promise.all([
+    getEtnPriceCache().catch(() => null),
+    addresses.length > 0 ? getBatchPricesUsd(addresses).catch(() => ({})) : {},
+  ]);
+  const prices = { ...tokenPrices };
+  if (Number.isFinite(etnCache?.usd) && etnCache.usd > 0) prices[NATIVE_SENTINEL] = etnCache.usd;
+  return prices;
+}
+
 export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses = [], priorityTokens = null) {
   const now = new Date();
 
@@ -125,7 +151,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   const { closing } = replayFifo(events, now, now);
 
   const [valuation, gas] = await Promise.all([
-    valueInventoryAtTimestamp(closing.lots, now),
+    fetchLivePricesUsd(closing.lots).then((livePrices) => valueInventoryAtTimestamp(closing.lots, now, livePrices)),
     computeGasFeesUsd(transfers), // whole history — this view has no period to scope it to
   ]);
 
