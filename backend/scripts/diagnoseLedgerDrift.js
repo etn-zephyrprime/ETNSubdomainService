@@ -108,8 +108,7 @@ async function main() {
   if (rows.length === 0) console.log("(no drift — ledger matches on-chain for every asset)");
 
   // ---- 2. where did the native ETN go? ----
-  console.log("
-Building the native-ETN breakdown (walks the wallet's full transaction + internal-transaction history — can take a minute)...");
+  console.log("\nBuilding the native-ETN breakdown (walks the wallet's full transaction + internal-transaction history — can take a minute)...");
   const swapHashes = new Set((await getAllSwapTradesBefore(walletLc, now)).map((s) => String(s.tx_hash).toLowerCase()));
   const defiHashes = new Set(defiActivity.map((d) => String(d.tx_hash).toLowerCase()));
   const lpHashes = new Set();
