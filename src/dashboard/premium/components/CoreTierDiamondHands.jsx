@@ -74,12 +74,8 @@ function fmtScore(score) {
 // it reads as the "hero" of the card. The artwork is full-bleed square tiles (each with its own
 // background and the tier name/score range baked in), not transparent cut-outs — hence a real tile
 // treatment rather than a glow behind a floating subject, and a size big enough that the baked-in
-// text stays legible. Keyed by src so a tier change (switching wallet/asset) remounts and retries
-// rather than inheriting a previous image's failed-to-load state.
-function TierImage({ tier, tierColor, size = 176 }) {
-  const src = tier ? TIER_IMAGES[tier] : NO_DATA_IMAGE;
-  const [failedSrc, setFailedSrc] = useState(null);
-  if (!src || failedSrc === src) return <Gem size={size * 0.3} color={tierColor} style={{ flexShrink: 0, opacity: 0.8 }} />;
+// text stays legible. Purely presentational: ScoreCard owns whether it loaded (see there).
+function TierImage({ src, tier, tierColor, onError, size = 176 }) {
   return (
     <img
       key={src}
@@ -87,7 +83,7 @@ function TierImage({ tier, tierColor, size = 176 }) {
       alt={tier || "Not enough data"}
       width={size}
       height={size}
-      onError={() => setFailedSrc(src)}
+      onError={onError}
       style={{
         width: size,
         height: size,
@@ -173,8 +169,19 @@ function ComponentBar({ label, value, color }) {
  * isolation" requirement. */
 function ScoreCard({ label, result }) {
   if (!result) return null;
+  return <ScoreCardBody label={label} result={result} />;
+}
+
+function ScoreCardBody({ label, result }) {
   const { components, score, tier, subScores } = result;
   const tierColor = tier ? TIER_COLORS[tier] : mutedLight;
+  // Keyed by src, not a bare boolean, so switching to a different tier/asset retries rather than
+  // inheriting a previous image's failed-to-load state. With the image showing, it already carries
+  // the tier's name and score range, so the text pill below is dropped as a duplicate; if there's no
+  // image (none for this outcome, or it failed to load) the gem icon + pill take over.
+  const imageSrc = tier ? TIER_IMAGES[tier] : NO_DATA_IMAGE;
+  const [failedSrc, setFailedSrc] = useState(null);
+  const showImage = Boolean(imageSrc) && failedSrc !== imageSrc;
 
   return (
     <div
@@ -191,23 +198,29 @@ function ScoreCard({ label, result }) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "center" }}>
-        <TierImage tier={tier} tierColor={tierColor} />
+        {showImage && <TierImage src={imageSrc} tier={tier} tierColor={tierColor} onError={() => setFailedSrc(imageSrc)} />}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
           <ScoreGauge score={score} tierColor={tierColor} />
-          <div
-            style={{
-              padding: "4px 12px",
-              borderRadius: 999,
-              background: withAlpha(tierColor, 0.15),
-              border: `1px solid ${tierColor}`,
-              fontSize: 11,
-              fontWeight: 800,
-              color: tierColor,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {tier || "Not enough data"}
-          </div>
+          {!showImage && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 12px",
+                borderRadius: 999,
+                background: withAlpha(tierColor, 0.15),
+                border: `1px solid ${tierColor}`,
+                fontSize: 11,
+                fontWeight: 800,
+                color: tierColor,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Gem size={12} color={tierColor} />
+              {tier || "Not enough data"}
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 190, display: "flex", flexDirection: "column", gap: 13 }}>
