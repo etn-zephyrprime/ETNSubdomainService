@@ -5,6 +5,7 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
+import Change24hBadge from "./Change24hBadge.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
@@ -13,6 +14,7 @@ import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
+import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import { formatChartDate, formatUsdPrice, formatTokenAmount, isSpamTokenName } from "../../utils/format.js";
 import { green, mutedLight, orange, muted, border, panel2, error as errorColor } from "../../theme.js";
 
@@ -30,6 +32,8 @@ const DEMO_WALLET_ADDRESSES = [
   "0xc92e01d795313ad4f93c6d35ce764ce3dad6d0ee",
 ];
 const WALLET_LABELS = ["Wallet A", "Wallet B", "Wallet C"];
+// Wrapped ETN — native ETN's 24h change is read off WETN's; same address coreTierDemoRouter.js uses.
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const WINDOW_DAYS = 365; // matches CoreTierBalanceHistory.jsx's own rolling-12-months convention
 
 // UI-only display scale — every USD/quantity/balance figure the demo shows is multiplied by this
@@ -244,7 +248,7 @@ function DemoBalanceHistory({ walletFilter }) {
  * CoreTierPortfolio.jsx's own always-open panel exactly (same figures, same chart, same
  * section order), just built from `data` (coreTierDemoRouter.js's one response) instead of four
  * separate signed requests. */
-function DemoPortfolio({ data, walletFilter, onSelectToken }) {
+function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
   const walletCountLabel = walletFilter === "all" ? "3 demo wallets" : WALLET_LABELS[Number(walletFilter)];
   const trackedCountLabel = walletFilter === "all" ? "3 tracked wallets" : WALLET_LABELS[Number(walletFilter)];
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
@@ -304,6 +308,37 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
     Boolean(data.defiPositions.hasUnpriced) ||
     Boolean(data.liquidityPositions.hasUnpriced);
 
+  // 24h markers — same method/scope as CoreTierPortfolio.jsx (see portfolioChange.js): the total
+  // covers ETN + tokens + LP/V3 + farm/staking legs, each wallet row ETN + tokens only. The change
+  // map is frozen into the snapshot at generation time like every other demo figure; an older
+  // snapshot without it just shows no markers.
+  const legParts = (positions) =>
+    (positions || []).flatMap((p) => (p.legs || []).map((leg) => ({ value: Number(leg.usdValue), change: priceChanges[leg.tokenAddress?.toLowerCase()] })));
+  const holdingsParts = (etnUsd, tokens, lpAddresses) => [
+    { value: etnUsd, change: priceChanges[WETN_ADDRESS] },
+    ...(tokens || [])
+      .filter((t) => t.tokenAddress && !isSpamTokenName(t.name) && !lpAddresses.has(t.tokenAddress.toLowerCase()))
+      .map((t) => ({ value: t.usdValue, change: priceChanges[t.tokenAddress.toLowerCase()] })),
+  ];
+  const totalChange24h = computePortfolioChange([
+    ...holdingsParts(combinedEtnUsd, data.combinedHoldings.tokens, lpTokenAddressSet),
+    ...legParts(data.defiPositions.positions),
+    ...legParts(data.liquidityPositions.v2Positions),
+    ...legParts(data.liquidityPositions.v3Positions),
+  ]);
+  const walletRows =
+    walletFilter === "all"
+      ? (data.perWalletBreakdown || []).map((w) => {
+          const lpAddresses = new Set((w.liquidityPositions?.v2Positions || []).map((p) => p.tokenAddress));
+          const parts = holdingsParts(w.combinedHoldings.etnUsdValue ?? null, w.combinedHoldings.tokens, lpAddresses);
+          return {
+            walletIndex: w.walletIndex,
+            total: parts.reduce((sum, p) => sum + (p.value > 0 ? p.value : 0), 0),
+            change: computePortfolioChange(parts),
+          };
+        })
+      : [];
+
   const compositionSlices = [
     { key: "native", label: "Native ETN", value: combinedEtnUsd ?? 0 },
     { key: "tokens", label: "Tokens", value: tokensUsdTotal },
@@ -328,7 +363,29 @@ function DemoPortfolio({ data, walletFilter, onSelectToken }) {
         <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>
           {totalHasUnpriced ? "≈ " : ""}{formatUsdPrice(totalPortfolioUsd)}
         </div>
+        {totalChange24h && (
+          <div style={{ marginTop: 4 }}>
+            <Change24hBadge change={totalChange24h} fontSize={13} />
+          </div>
+        )}
         <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>ETN + all priced holdings, across {trackedCountLabel}</div>
+        {walletRows.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
+            {walletRows.map((w) => (
+              <div key={w.walletIndex}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                  <span style={{ color: mutedLight }}>{WALLET_LABELS[w.walletIndex]}</span>
+                  <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(w.total)}</span>
+                </div>
+                {w.change && (
+                  <div style={{ textAlign: "right", marginTop: 1 }}>
+                    <Change24hBadge change={w.change} fontSize={10} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
@@ -723,7 +780,7 @@ export default function CoreTierDemo({ onSelectToken }) {
           </div>
 
           <DashboardPanel>
-            <DemoPortfolio data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />
+            <DemoPortfolio data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} priceChanges={data.priceChanges24h || {}} />
           </DashboardPanel>
 
           <CollapsibleCoreTierPanel icon={LineChart} title="Core Tier — Balance History (Demo)">

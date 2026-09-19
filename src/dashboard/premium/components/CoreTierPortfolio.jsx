@@ -8,12 +8,15 @@ import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
 import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
+import { useTokenPriceChanges } from "../../hooks/useTokenPriceChanges.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
+import Change24hBadge from "./Change24hBadge.jsx";
+import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -34,6 +37,9 @@ const HOLDING_CATEGORIES = [
   { id: "nfts", label: "NFT's" },
 ];
 const HOLDINGS_PAGE_SIZE = 10;
+// Wrapped ETN — native ETN has no token contract of its own, so its 24h change is read off WETN's
+// (ElectroSwap's quote asset; same address tokenChartRouter.js's own WETN_ADDRESS uses).
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 // Same literal every Core tier endpoint signs — see e.g. CoreTierPnl.jsx's own copy of this
 // constant; a signature cached client-side (useWalletAuthSignature.js) covers all of them.
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -111,6 +117,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const { getDefiPositions } = useDefiPositions();
   const { getLiquidityPositions } = useLiquidityPositions();
   const { getBatchTokenPrices } = useBatchTokenPrices();
+  const { getTokenPriceChanges } = useTokenPriceChanges();
   const etnUsdPrice = useEtnPrice();
 
   const [managing, setManaging] = useState(false);
@@ -152,6 +159,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const [lpPositions, setLpPositions] = useState(null);
   const [lpPositionsError, setLpPositionsError] = useState(null);
   const [tokenPrices, setTokenPrices] = useState({}); // lowercased token address -> USD price
+  const [priceChanges, setPriceChanges] = useState({}); // lowercased token address -> fractional 24h price change (absent = unknown)
   // A token with no resolved USD value (price never found — no ElectroSwap pool, still pending, or
   // beyond MAX_PRICED_HOLDINGS) is hidden by default and only shown once the member clicks through
   // — same "hide zero-value holdings behind a click" convention as CoreTierPnl.jsx's own Current
@@ -295,6 +303,32 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     return () => { cancelled = true; };
   }, [portfolio, getBatchTokenPrices]);
 
+  // 24h price change for everything the 24h markers below cover — held tokens, WETN (stands in for
+  // native ETN), and every LP/farm/V3 leg's token. Re-runs as each of those parts finishes loading;
+  // the backend caches per token (see tokenChartRouter.js's getBatchChanges24h), so the repeat
+  // requests are cheap. Failure just leaves the markers hidden — never blocks the balances.
+  useEffect(() => {
+    if (!portfolio) return;
+    const addresses = new Set([WETN_ADDRESS]);
+    portfolio.tokens
+      .filter((t) => t.token?.address && !NFT_TOKEN_TYPES.has(t.token?.type) && !isSpamTokenName(t.token?.name))
+      .slice(0, MAX_PRICED_HOLDINGS)
+      .forEach((t) => addresses.add(t.token.address.toLowerCase()));
+    const positionLists = [
+      defiPositions?.combined?.positions,
+      lpPositions?.combined?.v2Positions,
+      lpPositions?.combined?.v3Positions,
+    ];
+    for (const list of positionLists) {
+      for (const p of list || []) for (const leg of p.legs || []) if (leg.tokenAddress) addresses.add(leg.tokenAddress.toLowerCase());
+    }
+    let cancelled = false;
+    getTokenPriceChanges([...addresses])
+      .then((changes) => { if (!cancelled) setPriceChanges((prev) => ({ ...prev, ...changes })); })
+      .catch((err) => console.error("Failed to load 24h price changes:", err.message));
+    return () => { cancelled = true; };
+  }, [portfolio, defiPositions, lpPositions, getTokenPriceChanges]);
+
   const requestAdd = (rawAddress) => {
     setAddInputError(null);
     const trimmed = rawAddress.trim();
@@ -433,17 +467,19 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         const etnUsd = etnUsdPrice != null ? etnAmount * etnUsdPrice : null;
         let tokensUsd = 0;
         let hasUnpriced = etnUsd == null && etnAmount > 0;
+        const changeParts = [{ value: etnUsd, change: priceChanges[WETN_ADDRESS] }];
         for (const tb of w.balances) {
           if (NFT_TOKEN_TYPES.has(tb.token?.type) || isSpamTokenName(tb.token?.name)) continue;
           if (lpTokenAddressSet.has(tb.token?.address?.toLowerCase())) continue; // valued separately — see lpTokenAddressSet's own comment
           const usd = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
           if (usd != null) {
             tokensUsd += usd;
+            changeParts.push({ value: usd, change: priceChanges[tb.token?.address?.toLowerCase()] });
           } else if (BigInt(tb.value || 0) > 0n) {
             hasUnpriced = true;
           }
         }
-        return { address: w.address, total: (etnUsd || 0) + tokensUsd, hasUnpriced };
+        return { address: w.address, total: (etnUsd || 0) + tokensUsd, hasUnpriced, changeParts };
       })
     : [];
   // Scoped to the filtered wallet when one's selected — same wallets perWalletTotals already
@@ -470,6 +506,17 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     filteredWalletTotals.length > 0 || defiUsd != null || lpUsd != null
       ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0) + (lpUsd ?? 0)
       : null;
+  // 24h markers. Per-wallet rows show ETN + tokens only (same scope as the figure beside them);
+  // the grand total additionally folds in LP/V3 and farm/staking legs, same scope as
+  // totalPortfolioUsd. See portfolioChange.js for the method (current holdings, price movement only).
+  const legParts = (positions) =>
+    (positions || []).flatMap((p) => (p.legs || []).map((leg) => ({ value: Number(leg.usdValue), change: priceChanges[leg.tokenAddress?.toLowerCase()] })));
+  const totalChange24h = computePortfolioChange([
+    ...filteredWalletTotals.flatMap((w) => w.changeParts),
+    ...legParts(defiEntry?.positions),
+    ...legParts(lpEntry?.v2Positions),
+    ...legParts(lpEntry?.v3Positions),
+  ]);
   const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced || lpHasUnpriced;
 
   // Composition pie chart's 4 slices — Native ETN, regular fungible Tokens, Liquidity Positions
@@ -753,6 +800,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
                       {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
                     </div>
+                    {totalChange24h && (
+                      <div style={{ marginTop: 4 }}>
+                        <Change24hBadge change={totalChange24h} fontSize={13} />
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>
                       {walletFilter === "all"
                         ? `ETN + all priced token holdings, across ${active.length} tracked wallet${active.length === 1 ? "" : "s"}`
@@ -769,17 +821,27 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
 
                     {walletFilter === "all" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
-                        {filteredWalletTotals.map((w) => (
-                          <div key={w.address} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                            <span style={{ color: mutedLight }}>
-                              {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
-                              {resolveName(w.address)}
-                            </span>
-                            <span style={{ color: "#fff", fontWeight: 700 }}>
-                              {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
-                            </span>
-                          </div>
-                        ))}
+                        {filteredWalletTotals.map((w) => {
+                          const walletChange = computePortfolioChange(w.changeParts);
+                          return (
+                            <div key={w.address}>
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                                <span style={{ color: mutedLight }}>
+                                  {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+                                  {resolveName(w.address)}
+                                </span>
+                                <span style={{ color: "#fff", fontWeight: 700 }}>
+                                  {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
+                                </span>
+                              </div>
+                              {walletChange && (
+                                <div style={{ textAlign: "right", marginTop: 1 }}>
+                                  <Change24hBadge change={walletChange} fontSize={10} />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

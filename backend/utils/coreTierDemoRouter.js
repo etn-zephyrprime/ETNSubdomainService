@@ -43,7 +43,10 @@ import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots, buildRollups } f
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getDemoSnapshot } from "../state/coreTierDemoState.js";
 import { getTokenMetadata } from "../services/pnlIngestion.js";
-import { getBatchPricesUsd } from "./tokenChartRouter.js";
+import { getBatchPricesUsd, getBatchChanges24h } from "./tokenChartRouter.js";
+
+// Wrapped ETN — native ETN's 24h change is read off WETN's (same as CoreTierPortfolio.jsx).
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -428,10 +431,26 @@ export async function computeDemoData() {
     }))
   );
 
+  // 24h price change per token (fractional, 0.2 = +20%) — frozen here alongside every other figure,
+  // per this demo's "static once generated" design (see the pricing comment above): CoreTierDemo.jsx
+  // turns it into the Total Portfolio Balance / per-wallet 24h markers without any live call. Covers
+  // held tokens, WETN (native ETN) and every LP/farm/V3 leg. A failed lookup just means no markers.
+  const changeAddresses = new Set([WETN_ADDRESS, ...combinedHoldings.tokens.map((t) => t.tokenAddress.toLowerCase())]);
+  for (const r of [...defiResults, ...lpResults]) {
+    for (const p of [...(r.positions || []), ...(r.v2Positions || []), ...(r.v3Positions || [])]) {
+      for (const leg of p.legs || []) if (leg.tokenAddress) changeAddresses.add(leg.tokenAddress.toLowerCase());
+    }
+  }
+  const priceChanges24h = await getBatchChanges24h([...changeAddresses]).catch((err) => {
+    console.warn("⚠️  Core Tier demo: 24h price change lookup failed:", err.message);
+    return {};
+  });
+
   return {
     snapshot: combined,
     perWallet,
     perWalletBreakdown,
+    priceChanges24h,
     history,
     categoryHistory,
     defiPositions,
