@@ -6,6 +6,7 @@ import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
+import RowLeader from "./RowLeader.jsx";
 import { DiamondHandsBody } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
@@ -374,8 +375,9 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
             {walletRows.map((w) => (
               <div key={w.walletIndex}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
                   <span style={{ color: mutedLight }}>{WALLET_LABELS[w.walletIndex]}</span>
+                  <RowLeader />
                   <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(w.total)}</span>
                 </div>
                 {w.change && (
