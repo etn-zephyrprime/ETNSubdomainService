@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { green, blue, orange, mutedLight, muted } from "../../theme.js";
 import { formatUsdPrice } from "../../utils/format.js";
+import RowLeader from "./RowLeader.jsx";
 
 // Fixed, category-identity palette (not a heat/intensity scale) — same "identity, not quantity"
 // reasoning as theme.js's own VALIDATOR_PALETTE. Green stays the brand-primary color (used
@@ -108,18 +109,19 @@ export default function PortfolioCompositionChart({ slices, hasUnpriced, size = 
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: "1 1 160px", minWidth: 140 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: "1 1 160px", minWidth: 140, maxWidth: 420 }}>
         {slices.map((s) => (
           <div
             key={s.key}
             onMouseEnter={() => setHoverKey(s.key)}
             onMouseLeave={() => setHoverKey(null)}
-            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, opacity: hoverKey && hoverKey !== s.key ? 0.5 : 1, transition: "opacity 0.15s", cursor: "default" }}
+            style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, opacity: hoverKey && hoverKey !== s.key ? 0.5 : 1, transition: "opacity 0.15s", cursor: "default" }}
           >
             <span style={{ display: "flex", alignItems: "center", gap: 6, color: mutedLight, minWidth: 0 }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: SLICE_COLORS[s.key] || mutedLight, flexShrink: 0 }} />
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
             </span>
+            <RowLeader />
             <span style={{ display: "flex", alignItems: "baseline", gap: 6, flexShrink: 0 }}>
               <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(s.value)}</span>
               <span style={{ color: muted, fontSize: 10 }}>{total > 0 ? `${Math.round((s.value / total) * 100)}%` : "—"}</span>

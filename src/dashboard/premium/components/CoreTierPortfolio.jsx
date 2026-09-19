@@ -16,6 +16,7 @@ import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCa
 import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
+import RowLeader from "./RowLeader.jsx";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 
@@ -825,11 +826,12 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           const walletChange = computePortfolioChange(w.changeParts);
                           return (
                             <div key={w.address}>
-                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
                                 <span style={{ color: mutedLight }}>
                                   {w.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
                                   {resolveName(w.address)}
                                 </span>
+                                <RowLeader />
                                 <span style={{ color: "#fff", fontWeight: 700 }}>
                                   {w.hasUnpriced ? "≈ " : ""}{formatUsdPrice(w.total)}
                                 </span>
