@@ -21,6 +21,17 @@ const TIER_COLORS = {
   "Paper Hands": mutedLight,
 };
 
+// One image per outcome, served from /public/diamond-hands/ (see that folder's README.md for the
+// exact filenames/specs). `null` tier ("Not enough data") uses no-data.png. Every image is optional:
+// a missing file just falls back to the plain gem icon, so the panel never shows a broken image.
+const TIER_IMAGES = {
+  "Titanium Hands": "/diamond-hands/titanium-hands.png",
+  "Diamond Hands": "/diamond-hands/diamond-hands.png",
+  "Steady Hands": "/diamond-hands/steady-hands.png",
+  "Paper Hands": "/diamond-hands/paper-hands.png",
+};
+const NO_DATA_IMAGE = "/diamond-hands/no-data.png";
+
 // Small helper since every color this component tints (TIER_COLORS, and green/blue/orange from
 // theme.js) is a plain 6-digit hex string, not one of theme.js's own separately-defined rgba
 // Glow constants (those only exist for green/orange/blue/gold/silver/error, not the tier palette
@@ -57,6 +68,34 @@ function fmtPct(rate) {
 }
 function fmtScore(score) {
   return score == null ? "—" : Math.round(score).toString();
+}
+
+// The outcome's artwork, shown as a rounded tile with a border and glow in the tier's own color so
+// it reads as the "hero" of the card. The artwork is full-bleed square tiles (each with its own
+// background and the tier name/score range baked in), not transparent cut-outs — hence a real tile
+// treatment rather than a glow behind a floating subject, and a size big enough that the baked-in
+// text stays legible. Purely presentational: ScoreCard owns whether it loaded (see there).
+function TierImage({ src, tier, tierColor, onError, size = 176 }) {
+  return (
+    <img
+      key={src}
+      src={src}
+      alt={tier || "Not enough data"}
+      width={size}
+      height={size}
+      onError={onError}
+      style={{
+        width: size,
+        height: size,
+        maxWidth: "100%",
+        flexShrink: 0,
+        objectFit: "cover",
+        borderRadius: 16,
+        border: `1px solid ${withAlpha(tierColor, 0.55)}`,
+        boxShadow: `0 0 26px ${withAlpha(tierColor, 0.28)}`,
+      }}
+    />
+  );
 }
 
 // Circular 0-100 progress ring for the combined score -- the one number this feature is actually
@@ -130,8 +169,19 @@ function ComponentBar({ label, value, color }) {
  * isolation" requirement. */
 function ScoreCard({ label, result }) {
   if (!result) return null;
+  return <ScoreCardBody label={label} result={result} />;
+}
+
+function ScoreCardBody({ label, result }) {
   const { components, score, tier, subScores } = result;
   const tierColor = tier ? TIER_COLORS[tier] : mutedLight;
+  // Keyed by src, not a bare boolean, so switching to a different tier/asset retries rather than
+  // inheriting a previous image's failed-to-load state. With the image showing, it already carries
+  // the tier's name and score range, so the text pill below is dropped as a duplicate; if there's no
+  // image (none for this outcome, or it failed to load) the gem icon + pill take over.
+  const imageSrc = tier ? TIER_IMAGES[tier] : NO_DATA_IMAGE;
+  const [failedSrc, setFailedSrc] = useState(null);
+  const showImage = Boolean(imageSrc) && failedSrc !== imageSrc;
 
   return (
     <div
@@ -147,23 +197,30 @@ function ScoreCard({ label, result }) {
         {label}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "center" }}>
+        {showImage && <TierImage src={imageSrc} tier={tier} tierColor={tierColor} onError={() => setFailedSrc(imageSrc)} />}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
           <ScoreGauge score={score} tierColor={tierColor} />
-          <div
-            style={{
-              padding: "4px 12px",
-              borderRadius: 999,
-              background: withAlpha(tierColor, 0.15),
-              border: `1px solid ${tierColor}`,
-              fontSize: 11,
-              fontWeight: 800,
-              color: tierColor,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {tier || "Not enough data"}
-          </div>
+          {!showImage && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 12px",
+                borderRadius: 999,
+                background: withAlpha(tierColor, 0.15),
+                border: `1px solid ${tierColor}`,
+                fontSize: 11,
+                fontWeight: 800,
+                color: tierColor,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Gem size={12} color={tierColor} />
+              {tier || "Not enough data"}
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 190, display: "flex", flexDirection: "column", gap: 13 }}>
