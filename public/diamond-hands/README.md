@@ -11,6 +11,6 @@ each By Asset drill-down). Drop the files in this folder with EXACTLY these name
 | `paper-hands.png`      | Paper Hands (0–39)               |
 | `no-data.png`          | Not enough data yet (optional)   |
 
-Specs: square (1:1), at least 512×512, PNG with a transparent background, ideally under 300 KB each.
-They're displayed at ~132px (crisp on retina) on a soft glow in the tier's colour, so keep the
-subject centred with a little padding. A missing file falls back to a small gem icon.
+Specs: square (1:1), at least 512×512, PNG, ideally under 300 KB each. They're shown as ~176px rounded
+tiles with a border/glow in the tier's colour, so full-bleed artwork (own background, tier name baked
+in) works as-is. A missing file falls back to a small gem icon.

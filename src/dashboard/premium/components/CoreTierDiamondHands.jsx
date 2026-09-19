@@ -70,36 +70,35 @@ function fmtScore(score) {
   return score == null ? "—" : Math.round(score).toString();
 }
 
-// The outcome's artwork on a soft radial glow in the tier's own color, so it reads as the "hero" of
-// the card. Keyed by src so a tier change (e.g. switching wallet/asset) remounts and retries rather
-// than inheriting a previous image's failed-to-load state.
-function TierImage({ tier, tierColor, size = 132 }) {
+// The outcome's artwork, shown as a rounded tile with a border and glow in the tier's own color so
+// it reads as the "hero" of the card. The artwork is full-bleed square tiles (each with its own
+// background and the tier name/score range baked in), not transparent cut-outs — hence a real tile
+// treatment rather than a glow behind a floating subject, and a size big enough that the baked-in
+// text stays legible. Keyed by src so a tier change (switching wallet/asset) remounts and retries
+// rather than inheriting a previous image's failed-to-load state.
+function TierImage({ tier, tierColor, size = 176 }) {
   const src = tier ? TIER_IMAGES[tier] : NO_DATA_IMAGE;
   const [failedSrc, setFailedSrc] = useState(null);
-  if (!src || failedSrc === src) return <Gem size={size * 0.4} color={tierColor} style={{ flexShrink: 0, opacity: 0.8 }} />;
+  if (!src || failedSrc === src) return <Gem size={size * 0.3} color={tierColor} style={{ flexShrink: 0, opacity: 0.8 }} />;
   return (
-    <div
+    <img
+      key={src}
+      src={src}
+      alt={tier || "Not enough data"}
+      width={size}
+      height={size}
+      onError={() => setFailedSrc(src)}
       style={{
-        position: "relative",
         width: size,
         height: size,
+        maxWidth: "100%",
         flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: `radial-gradient(circle at 50% 55%, ${withAlpha(tierColor, 0.28)} 0%, ${withAlpha(tierColor, 0.08)} 55%, transparent 72%)`,
+        objectFit: "cover",
+        borderRadius: 16,
+        border: `1px solid ${withAlpha(tierColor, 0.55)}`,
+        boxShadow: `0 0 26px ${withAlpha(tierColor, 0.28)}`,
       }}
-    >
-      <img
-        key={src}
-        src={src}
-        alt={tier || "Not enough data"}
-        width={size}
-        height={size}
-        onError={() => setFailedSrc(src)}
-        style={{ width: "100%", height: "100%", objectFit: "contain", filter: `drop-shadow(0 4px 14px ${withAlpha(tierColor, 0.45)})` }}
-      />
-    </div>
+    />
   );
 }
 
