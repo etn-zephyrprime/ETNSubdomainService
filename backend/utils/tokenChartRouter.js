@@ -16,7 +16,7 @@
 import express from "express";
 import { ethers } from "ethers";
 import { getPricePointsSince } from "../db/pricePoints.js";
-import { getCandles as getElectroSwapCandles, getBatchTokenPrices } from "./electroSwapApi.js";
+import { getCandles as getElectroSwapCandles, getBatchTokenPrices, isElectroSwapPaused } from "./electroSwapApi.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -457,7 +457,11 @@ export async function getBatchPricesUsd(addresses) {
 // re-requests as each part of a portfolio (tokens, LP, farms) finishes loading.
 const CHANGE_CACHE_TTL_MS = 15 * 60 * 1000;
 const CHANGE_CANDLE_LIMIT = 96; // 1h candles -> 4 days of reach, so a token that's merely quiet for a day still has a >24h-old close
-const CHANGE_CONCURRENCY = 3; // deliberately low — see electroSwapApi.js's rate-limit/suspension notes
+const CHANGE_CONCURRENCY = 2; // deliberately low — see electroSwapApi.js's rate-limit/suspension notes
+// A miss (no candles / no history that far back) is cached much shorter than a hit: getCandles
+// returns null for a real "no data" AND for a transient failure, and a failure must not stick for
+// the full hit TTL. Paused-breaker skips below aren't cached at all.
+const CHANGE_MISS_TTL_MS = 3 * 60 * 1000;
 const changeCache = new Map(); // address (lowercase) -> { expiresAt, change }
 
 async function fetchChange24h(address) {
@@ -490,12 +494,19 @@ export async function getBatchChanges24h(addresses) {
   }
 
   for (let i = 0; i < missing.length; i += CHANGE_CONCURRENCY) {
+    // ElectroSwap's shared circuit breaker is open (rate-limited/suspended) — every call would just
+    // return null. Stop here and cache nothing, so recovery isn't delayed by stale "unknown"s and we
+    // don't add a single request while it's asking for a pause.
+    if (isElectroSwapPaused()) break;
     const chunk = missing.slice(i, i + CHANGE_CONCURRENCY);
     await Promise.all(
       chunk.map(async (addr) => {
         try {
           const change = await fetchChange24h(addr);
-          changeCache.set(addr, { change, expiresAt: Date.now() + CHANGE_CACHE_TTL_MS });
+          // The call itself may have just tripped the breaker — a null then is a failure, not a miss.
+          if (change != null || !isElectroSwapPaused()) {
+            changeCache.set(addr, { change, expiresAt: Date.now() + (change != null ? CHANGE_CACHE_TTL_MS : CHANGE_MISS_TTL_MS) });
+          }
           if (change != null) changes[addr] = change;
         } catch (err) {
           console.warn(`⚠️  24h change lookup failed for ${addr}:`, err.message);

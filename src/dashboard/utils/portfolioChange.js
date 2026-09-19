@@ -6,8 +6,12 @@
 // `parts`: [{ value, change }] — `value` current USD value, `change` the token's fractional 24h
 // price change (0.2 = +20%) or null/undefined when unknown. A part with no known change is left out
 // of the ratio entirely (rather than assumed flat, which would dilute the figure toward 0%);
-// `coverage` reports how much of the total value the figure is actually based on, so a caller can
-// flag a partial figure. Returns null when nothing has a known change.
+// `coverage` reports how much of the total value the figure is actually based on. Below
+// MIN_COVERAGE the figure is withheld (null): with, say, 5% of a wallet covered, "its" 24h change
+// would really just be that one holding's — confirmed live, every wallet showed native ETN's change
+// while their token balances had no data. Also null when nothing has a known change.
+export const MIN_COVERAGE = 0.5;
+
 export function computePortfolioChange(parts) {
   let totalValue = 0;
   let coveredNow = 0;
@@ -20,5 +24,7 @@ export function computePortfolioChange(parts) {
     coveredThen += value / (1 + change);
   }
   if (coveredNow === 0 || coveredThen === 0) return null;
-  return { pct: coveredNow / coveredThen - 1, coverage: coveredNow / totalValue };
+  const coverage = coveredNow / totalValue;
+  if (coverage < MIN_COVERAGE) return null;
+  return { pct: coveredNow / coveredThen - 1, coverage };
 }
