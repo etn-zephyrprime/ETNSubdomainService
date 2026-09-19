@@ -87,6 +87,13 @@ function sleep(ms) {
 // request that would presumably just get rejected or truncated.
 const MAX_BATCH_ADDRESSES = 50;
 
+/** True while the shared circuit breaker (see callElectroSwapApi) is open — every call returns null
+ * until it closes. Lets a caller that caches results tell "ElectroSwap has no data for this" apart
+ * from "ElectroSwap is paused right now" and avoid caching the latter as if it were the former. */
+export function isElectroSwapPaused() {
+  return Date.now() < suspendedUntil;
+}
+
 export function isElectroSwapConfigured() {
   return Boolean(API_KEY);
 }
