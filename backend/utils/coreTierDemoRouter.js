@@ -44,6 +44,7 @@ import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getDemoSnapshot } from "../state/coreTierDemoState.js";
 import { getTokenMetadata } from "../services/pnlIngestion.js";
 import { getBatchPricesUsd, getBatchChanges24h } from "./tokenChartRouter.js";
+import { computeDiamondHandsScore } from "../services/diamondHandsService.js";
 
 // Wrapped ETN — native ETN's 24h change is read off WETN's (same as CoreTierPortfolio.jsx).
 const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
@@ -446,11 +447,29 @@ export async function computeDemoData() {
     return {};
   });
 
+  // Diamond Hands Score — same holding-behavior result a real member gets, frozen here with every
+  // other figure. Wallet addresses never leave this file (see DEMO_WALLET_ADDRESSES' own comment):
+  // per-wallet rows are re-keyed to walletIndex and `failed` to indexes. perAsset holds only token/
+  // collection addresses, which are public. Sequential ledger fetches to keep peak memory down (see
+  // computeDiamondHandsScore's own comment). A failure just means the demo omits the section.
+  const diamondHands = await computeDiamondHandsScore(DEMO_WALLET_ADDRESSES, { sequential: true })
+    .then((r) => ({
+      portfolio: r.portfolio,
+      perWallet: r.perWallet.map(({ walletAddress, ...rest }) => ({ walletIndex: DEMO_WALLET_ADDRESSES.indexOf(walletAddress), ...rest })),
+      perAsset: r.perAsset,
+      failedWalletIndexes: r.failed.map((a) => DEMO_WALLET_ADDRESSES.indexOf(a)),
+    }))
+    .catch((err) => {
+      console.warn("⚠️  Core Tier demo: Diamond Hands score failed:", err.message);
+      return null;
+    });
+
   return {
     snapshot: combined,
     perWallet,
     perWalletBreakdown,
     priceChanges24h,
+    diamondHands,
     history,
     categoryHistory,
     defiPositions,
