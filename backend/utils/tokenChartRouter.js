@@ -447,6 +447,82 @@ export async function getBatchPricesUsd(addresses) {
   return prices;
 }
 
+// 24h price change per token, backing the Core tier portfolio's "24h" markers. Computed from
+// ElectroSwap's own hourly candles (latest close vs. the last close at least 24h old) so both ends
+// of the ratio come from the same source — mixing /prices' spot value with a candle close would
+// bake any small source discrepancy into every token's reported change. A token with no candle
+// history that far back (too new, illiquid, or ElectroSwap simply not configured/indexing it) is
+// absent from the result, never reported as 0% — same "missing means unknown, not failed" contract
+// as getBatchPricesUsd. Hits and misses are both cached: candles cost credits, and the frontend
+// re-requests as each part of a portfolio (tokens, LP, farms) finishes loading.
+const CHANGE_CACHE_TTL_MS = 15 * 60 * 1000;
+const CHANGE_CANDLE_LIMIT = 96; // 1h candles -> 4 days of reach, so a token that's merely quiet for a day still has a >24h-old close
+const CHANGE_CONCURRENCY = 3; // deliberately low — see electroSwapApi.js's rate-limit/suspension notes
+const changeCache = new Map(); // address (lowercase) -> { expiresAt, change }
+
+async function fetchChange24h(address) {
+  const candles = await getElectroSwapCandles(address, "1h", CHANGE_CANDLE_LIMIT);
+  if (!candles || candles.length === 0) return null;
+  const sorted = [...candles].sort((a, b) => a.time - b.time); // never trust the source's own ordering
+  const latest = sorted[sorted.length - 1];
+  const cutoffSec = Date.now() / 1000 - 24 * 60 * 60;
+  // A candle's own `time` is its open, so it only counts as "24h ago" once its whole hour has closed.
+  let then = null;
+  for (const c of sorted) {
+    if (c.time + 3600 <= cutoffSec) then = c;
+  }
+  if (!then || !(then.close > 0) || !(latest.close > 0)) return null;
+  return latest.close / then.close - 1;
+}
+
+/** `{ [lowercased address]: fractional 24h change }` (0.2 = +20%) — see changeCache's comment. */
+export async function getBatchChanges24h(addresses) {
+  const now = Date.now();
+  const changes = {};
+  const missing = [];
+  for (const addr of addresses) {
+    const cached = changeCache.get(addr);
+    if (cached && cached.expiresAt > now) {
+      if (cached.change != null) changes[addr] = cached.change;
+    } else {
+      missing.push(addr);
+    }
+  }
+
+  for (let i = 0; i < missing.length; i += CHANGE_CONCURRENCY) {
+    const chunk = missing.slice(i, i + CHANGE_CONCURRENCY);
+    await Promise.all(
+      chunk.map(async (addr) => {
+        try {
+          const change = await fetchChange24h(addr);
+          changeCache.set(addr, { change, expiresAt: Date.now() + CHANGE_CACHE_TTL_MS });
+          if (change != null) changes[addr] = change;
+        } catch (err) {
+          console.warn(`⚠️  24h change lookup failed for ${addr}:`, err.message);
+        }
+      })
+    );
+  }
+  return changes;
+}
+
+router.get("/token-price-changes", async (req, res) => {
+  const raw = String(req.query.addresses || "");
+  const addresses = [...new Set(raw.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean))];
+
+  if (addresses.length === 0) {
+    return res.status(400).json({ error: "Provide at least one address via ?addresses=a,b,c" });
+  }
+  if (addresses.some((a) => !ethers.isAddress(a))) {
+    return res.status(400).json({ error: "One or more addresses is invalid" });
+  }
+  if (addresses.length > 100) {
+    return res.status(400).json({ error: "Too many addresses — 100 max per request" });
+  }
+
+  res.json({ changes: await getBatchChanges24h(addresses) });
+});
+
 // See getBatchPricesUsd's own comment — this route is now a thin HTTP wrapper around it.
 router.get("/token-prices", async (req, res) => {
   const raw = String(req.query.addresses || "");
