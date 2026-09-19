@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { LineChart, TrendingUp, Image as ImageIcon, Sparkles } from "lucide-react";
+import { LineChart, TrendingUp, Image as ImageIcon, Sparkles, Gem } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
+import { DiamondHandsBody } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
@@ -794,6 +795,20 @@ export default function CoreTierDemo({ onSelectToken }) {
           <CollapsibleCoreTierPanel icon={ImageIcon} title="Core Tier — NFT PnL (Demo)">
             <DemoNftPnl data={source} />
           </CollapsibleCoreTierPanel>
+
+          {/* Static snapshot of the real panel's own body (CoreTierDiamondHands.jsx's
+              DiamondHandsBody). Same "pooled perAsset regardless of wallet filter" behavior as the
+              real panel. Absent from snapshots generated before this shipped -- re-run
+              generateDemoSnapshot.js and it appears. */}
+          {data.diamondHands && (
+            <CollapsibleCoreTierPanel icon={Gem} title="Core Tier — Diamond Hands Score (Demo)">
+              <DiamondHandsBody
+                scopeResult={walletFilter === "all" ? data.diamondHands.portfolio : data.diamondHands.perWallet.find((w) => w.walletIndex === Number(walletFilter))}
+                perAsset={data.diamondHands.perAsset}
+                isPortfolio={walletFilter === "all"}
+              />
+            </CollapsibleCoreTierPanel>
+          )}
 
           <DashboardPanel>
             <div style={{ fontSize: 12, color: mutedLight, textAlign: "center", lineHeight: 1.6 }}>

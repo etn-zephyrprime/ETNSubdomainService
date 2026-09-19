@@ -304,20 +304,29 @@ async function getWalletLedgerState(trackedWallet, selfOwnedAddresses) {
  *   failed: [walletAddress, ...] -- any wallet whose ledger fetch itself failed, so the frontend
  *     can show which one(s) didn't load rather than silently under-reporting the combined totals
  */
-export async function computeDiamondHandsScore(trackedWallets) {
+// `sequential` (default false): fetch each wallet's ledger one at a time instead of all at once —
+// same memory-vs-wall-clock trade coreTierDemoRouter.js's computeDemoData makes for its own
+// per-wallet work (a full FIFO replay per wallet, all held concurrently, blew that process's heap).
+// Only the offline demo-snapshot generation opts in; the live member route keeps the parallel default.
+export async function computeDiamondHandsScore(trackedWallets, { sequential = false } = {}) {
   const failed = [];
-  const ledgerResults = await Promise.all(
-    trackedWallets.map(async (addr) => {
-      const selfOwned = trackedWallets.filter((a) => a !== addr);
-      try {
-        return { walletAddress: addr, ...(await getWalletLedgerState(addr, selfOwned)) };
-      } catch (err) {
-        console.error(`Diamond Hands ledger fetch failed for wallet ${addr}:`, err);
-        failed.push(addr);
-        return null;
-      }
-    })
-  );
+  const fetchLedger = async (addr) => {
+    const selfOwned = trackedWallets.filter((a) => a !== addr);
+    try {
+      return { walletAddress: addr, ...(await getWalletLedgerState(addr, selfOwned)) };
+    } catch (err) {
+      console.error(`Diamond Hands ledger fetch failed for wallet ${addr}:`, err);
+      failed.push(addr);
+      return null;
+    }
+  };
+  let ledgerResults;
+  if (sequential) {
+    ledgerResults = [];
+    for (const addr of trackedWallets) ledgerResults.push(await fetchLedger(addr));
+  } else {
+    ledgerResults = await Promise.all(trackedWallets.map(fetchLedger));
+  }
   const perWalletLedger = ledgerResults.filter(Boolean);
   const now = perWalletLedger[0]?.now ?? new Date();
 

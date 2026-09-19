@@ -267,6 +267,78 @@ function Methodology() {
   );
 }
 
+/** Everything below the notices: the score card for the current scope, the By Asset drill-down, and
+ * the methodology. Purely presentational (takes an already-fetched result), so the real panel above
+ * and CoreTierDemo.jsx's static snapshot render identically. `perAsset` is always the pooled
+ * portfolio-wide list, regardless of which single wallet `scopeResult` is scoped to. */
+export function DiamondHandsBody({ scopeResult, perAsset, isPortfolio }) {
+  // Split by the backend's own classification (diamondHandsService.js's classifyAssetKey) rather
+  // than re-detecting NFTs here from key shape -- native ETN, fungible tokens, and V3 liquidity
+  // positions all read as "Tokens" (none of them are collectibles), only type "nft" (a grouped
+  // collection, never a raw tokenId) reads as "NFTs".
+  const tokenAssets = perAsset.filter((a) => a.type !== "nft");
+  const nftAssets = perAsset.filter((a) => a.type === "nft");
+  const hasBothKinds = tokenAssets.length > 0 && nftAssets.length > 0;
+
+  const [assetTab, setAssetTab] = useState("tokens");
+  // A wallet with only one kind of asset never shows the tab toggle at all (see below) -- this
+  // makes sure the list actually shown always matches the kind that exists, regardless of which
+  // tab happens to be selected in state, rather than silently rendering empty.
+  const effectiveAssetTab = hasBothKinds ? assetTab : nftAssets.length > 0 ? "nfts" : "tokens";
+  const activeAssetList = effectiveAssetTab === "nfts" ? nftAssets : tokenAssets;
+
+  const { resolve: resolveTokenName } = useTokenNames(activeAssetList.map((a) => a.tokenAddress));
+
+  // Asset filter -- local to this panel, same "self-heals to none if it falls out of scope"
+  // reasoning as CoreTierNftPnl.jsx's own collection filter (a wallet-filter change, a tab switch,
+  // or a refresh with different results shouldn't leave this pointed at an asset no longer in scope).
+  const [assetFilterRaw, setAssetFilter] = useState("");
+  const assetFilter = activeAssetList.some((a) => a.tokenAddress === assetFilterRaw) ? assetFilterRaw : "";
+  const scopeAsset = assetFilter ? activeAssetList.find((a) => a.tokenAddress === assetFilter) : null;
+
+  return (
+    <>
+      {scopeResult && (
+        <>
+            <ScoreCard label={isPortfolio ? "Portfolio" : "This Wallet"} result={scopeResult} />
+
+            {perAsset.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ ...sectionHeaderStyle, display: "flex", alignItems: "center", gap: 6 }}>
+                  By Asset
+                  <InfoTooltip text="Drill into one token, NFT collection, or native ETN to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
+                </div>
+
+                {hasBothKinds && (
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                    <button type="button" onClick={() => setAssetTab("tokens")} style={tabButtonStyle(effectiveAssetTab === "tokens")}>
+                      Tokens ({tokenAssets.length})
+                    </button>
+                    <button type="button" onClick={() => setAssetTab("nfts")} style={tabButtonStyle(effectiveAssetTab === "nfts")}>
+                      NFTs ({nftAssets.length})
+                    </button>
+                  </div>
+                )}
+
+                <select value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)} style={{ ...selectStyle, width: "100%", marginBottom: 12 }}>
+                  <option value="">All {effectiveAssetTab === "nfts" ? "NFTs" : "Tokens"} (combined, above)</option>
+                  {activeAssetList.map((a) => (
+                    <option key={a.tokenAddress} value={a.tokenAddress}>
+                      {resolveTokenName(a.tokenAddress)} — {a.tier || "Not enough data"} ({fmtScore(a.score)})
+                    </option>
+                  ))}
+                </select>
+                {scopeAsset && <ScoreCard label={resolveTokenName(scopeAsset.tokenAddress)} result={scopeAsset} />}
+              </div>
+            )}
+        </>
+      )}
+
+      <Methodology />
+    </>
+  );
+}
+
 // Core tier's Diamond Hands Score — a gamified holding-BEHAVIOR score (not a PnL figure) at three
 // drill-down levels: portfolio (combined across covered wallets), per-wallet, and per-asset. Built
 // entirely from the exact same FIFO ledger the live PnL snapshot and PnL Statement already use
@@ -308,31 +380,6 @@ export default function CoreTierDiamondHands({ wallet, getAuthParams, coreTierAc
   const scopeResult = walletFilter === "all" ? result?.portfolio : result?.perWallet?.find((w) => w.walletAddress === walletFilter);
   const filteredWalletFailed = walletFilter !== "all" && (result?.failed || []).includes(walletFilter);
 
-  const perAsset = result?.perAsset || [];
-  // Split by the backend's own classification (diamondHandsService.js's classifyAssetKey) rather
-  // than re-detecting NFTs here from key shape -- native ETN, fungible tokens, and V3 liquidity
-  // positions all read as "Tokens" (none of them are collectibles), only type "nft" (a grouped
-  // collection, never a raw tokenId) reads as "NFTs".
-  const tokenAssets = perAsset.filter((a) => a.type !== "nft");
-  const nftAssets = perAsset.filter((a) => a.type === "nft");
-  const hasBothKinds = tokenAssets.length > 0 && nftAssets.length > 0;
-
-  const [assetTab, setAssetTab] = useState("tokens");
-  // A wallet with only one kind of asset never shows the tab toggle at all (see below) -- this
-  // makes sure the list actually shown always matches the kind that exists, regardless of which
-  // tab happens to be selected in state, rather than silently rendering empty.
-  const effectiveAssetTab = hasBothKinds ? assetTab : nftAssets.length > 0 ? "nfts" : "tokens";
-  const activeAssetList = effectiveAssetTab === "nfts" ? nftAssets : tokenAssets;
-
-  const { resolve: resolveTokenName } = useTokenNames(activeAssetList.map((a) => a.tokenAddress));
-
-  // Asset filter -- local to this panel, same "self-heals to none if it falls out of scope"
-  // reasoning as CoreTierNftPnl.jsx's own collection filter (a wallet-filter change, a tab switch,
-  // or a refresh with different results shouldn't leave this pointed at an asset no longer in scope).
-  const [assetFilterRaw, setAssetFilter] = useState("");
-  const assetFilter = activeAssetList.some((a) => a.tokenAddress === assetFilterRaw) ? assetFilterRaw : "";
-  const scopeAsset = assetFilter ? activeAssetList.find((a) => a.tokenAddress === assetFilter) : null;
-
   return (
     <CollapsibleCoreTierPanel icon={Gem} title="Diamond Hands Score">
       <CoreTierGate
@@ -357,43 +404,7 @@ export default function CoreTierDiamondHands({ wallet, getAuthParams, coreTierAc
           </div>
         )}
 
-        {scopeResult && (
-          <>
-            <ScoreCard label={walletFilter === "all" ? "Portfolio" : "This Wallet"} result={scopeResult} />
-
-            {perAsset.length > 0 && (
-              <div style={{ marginTop: 20 }}>
-                <div style={{ ...sectionHeaderStyle, display: "flex", alignItems: "center", gap: 6 }}>
-                  By Asset
-                  <InfoTooltip text="Drill into one token, NFT collection, or native ETN to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
-                </div>
-
-                {hasBothKinds && (
-                  <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-                    <button type="button" onClick={() => setAssetTab("tokens")} style={tabButtonStyle(effectiveAssetTab === "tokens")}>
-                      Tokens ({tokenAssets.length})
-                    </button>
-                    <button type="button" onClick={() => setAssetTab("nfts")} style={tabButtonStyle(effectiveAssetTab === "nfts")}>
-                      NFTs ({nftAssets.length})
-                    </button>
-                  </div>
-                )}
-
-                <select value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)} style={{ ...selectStyle, width: "100%", marginBottom: 12 }}>
-                  <option value="">All {effectiveAssetTab === "nfts" ? "NFTs" : "Tokens"} (combined, above)</option>
-                  {activeAssetList.map((a) => (
-                    <option key={a.tokenAddress} value={a.tokenAddress}>
-                      {resolveTokenName(a.tokenAddress)} — {a.tier || "Not enough data"} ({fmtScore(a.score)})
-                    </option>
-                  ))}
-                </select>
-                {scopeAsset && <ScoreCard label={resolveTokenName(scopeAsset.tokenAddress)} result={scopeAsset} />}
-              </div>
-            )}
-          </>
-        )}
-
-        <Methodology />
+        <DiamondHandsBody scopeResult={scopeResult} perAsset={result?.perAsset || []} isPortfolio={walletFilter === "all"} />
       </CoreTierGate>
     </CollapsibleCoreTierPanel>
   );
