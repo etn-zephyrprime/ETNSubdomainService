@@ -292,7 +292,14 @@ class FifoLedger {
    * used to make that function's memory footprint grow with checkpoints × realized-event-count
    * instead of just checkpoints + events — see that function's own comment. */
   snapshot() {
-    return { lots: this.openLotsSnapshot(), realizedEvents: [...this.realizedEvents] };
+    return {
+      lots: this.openLotsSnapshot(),
+      // Funds currently locked in a farm/stake — not in `lots` (they aren't freely held), but they're
+      // still owned and carry the original cost basis, which the live PnL snapshot needs to value
+      // them (see pnlPositionValuation.js).
+      lockedLots: [...this.lockedLotsByToken.values()].flat().filter((l) => l.quantityRemaining.gt(0)).map((l) => ({ ...l })),
+      realizedEvents: [...this.realizedEvents],
+    };
   }
 }
 
