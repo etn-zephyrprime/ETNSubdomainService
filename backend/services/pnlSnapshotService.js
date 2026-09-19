@@ -23,6 +23,7 @@ import { ingestWalletHistory, backfillDeferredPrices, POSITION_MANAGER_ADDRESS }
 import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
 import { getBatchPricesUsd } from "../utils/tokenChartRouter.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { computeLivePositionValuation, addLockedPositionsToValuation } from "./pnlPositionValuation.js";
 import {
   transferToEvent,
   buildNftEvents,
@@ -151,7 +152,17 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   const { closing } = replayFifo(events, now, now);
 
   const [valuation, gas] = await Promise.all([
-    fetchLivePricesUsd(closing.lots).then((livePrices) => valueInventoryAtTimestamp(closing.lots, now, livePrices)),
+    // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
+    // cost basis (see pnlPositionValuation.js) — so Current Value and Unrealized P&L include the
+    // positions the Portfolio panel already counts.
+    (async () => {
+      const [tokenPrices, positions] = await Promise.all([
+        fetchLivePricesUsd(closing.lots),
+        computeLivePositionValuation(trackedWallet, closing.lots, closing.lockedLots || []),
+      ]);
+      const valuation = await valueInventoryAtTimestamp(closing.lots, now, { ...tokenPrices, ...positions.livePricesUsd });
+      return addLockedPositionsToValuation(valuation, positions.lockedByToken);
+    })(),
     computeGasFeesUsd(transfers), // whole history — this view has no period to scope it to
   ]);
 
