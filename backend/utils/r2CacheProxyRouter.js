@@ -46,6 +46,7 @@ const ALLOWED_FILES = new Set([
   "validator-rewards.json",
   "team-wallets.json",
   "team-wallets-balance-history.json",
+  "etn-bridge.json",
 ]);
 
 // Short in-memory cache — these are the exact same objects R2 itself already serves with

@@ -13,6 +13,7 @@ const TABS = [
   { id: "address", label: "Address Lookup" },
   { id: "nameservice", label: "Name Service" },
   { id: "team", label: "Team Wallets" },
+  { id: "bridge", label: "ETN Bridge" },
   { id: "portfolio", label: "Premium - Core Tier", accent: "gold" },
   { id: "premium", label: "PnL Statement", accent: "silver" },
 ];
@@ -25,12 +26,16 @@ const ACCENTS = {
 export default function DashboardNav({ active, onChange }) {
   return (
     <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
-      {TABS.map((t) => {
+      {/* On desktop the two paid tabs (Core Tier, PnL Statement) get their own row beneath the free ones; on
+          narrow screens the tabs just wrap as before, so the break is only switched on from 720px up. */}
+      <style>{`.dash-nav-break{display:none}@media (min-width:720px){.dash-nav-break{display:block;flex-basis:100%;height:0;margin-top:-8px}}`}</style>
+      {TABS.map((t, i) => {
         const isActive = t.id === active;
         const special = t.accent ? ACCENTS[t.accent] : null;
         return (
+          <React.Fragment key={t.id}>
+          {t.accent && !TABS[i - 1]?.accent && <div className="dash-nav-break" />}
           <button
-            key={t.id}
             onClick={() => onChange(t.id)}
             style={{
               flex: "1 1 120px",
@@ -49,6 +54,7 @@ export default function DashboardNav({ active, onChange }) {
           >
             {t.label}
           </button>
+          </React.Fragment>
         );
       })}
     </div>
