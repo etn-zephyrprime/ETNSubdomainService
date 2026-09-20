@@ -94,6 +94,12 @@ export function isElectroSwapPaused() {
   return Date.now() < suspendedUntil;
 }
 
+/** Milliseconds until the shared circuit breaker closes (0 if it's closed). Lets a long-running batch
+ * job WAIT out a pause instead of treating every call made during it as a failure. */
+export function electroSwapPausedForMs() {
+  return Math.max(0, suspendedUntil - Date.now());
+}
+
 export function isElectroSwapConfigured() {
   return Boolean(API_KEY);
 }
