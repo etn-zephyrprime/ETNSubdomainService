@@ -14,6 +14,7 @@ const TABS = [
   { id: "nameservice", label: "Name Service" },
   { id: "team", label: "Team Wallets" },
   { id: "bridge", label: "ETN Bridge" },
+  { id: "hyperlane", label: "Hyperlane Bridge" },
   { id: "portfolio", label: "Premium - Core Tier", accent: "gold" },
   { id: "premium", label: "PnL Statement", accent: "silver" },
 ];

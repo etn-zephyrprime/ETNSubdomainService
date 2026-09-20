@@ -13,6 +13,7 @@ import AddressLookup from "./components/AddressLookup.jsx";
 import NameServiceStats from "./components/NameServiceStats.jsx";
 import TeamWalletsTab from "./components/TeamWalletsTab.jsx";
 import EtnBridgeTab from "./components/EtnBridgeTab.jsx";
+import HyperlaneBridgeTab from "./components/HyperlaneBridgeTab.jsx";
 import DashboardErrorBoundary from "./components/DashboardErrorBoundary.jsx";
 // Core Tier's public demo — imported DIRECTLY (not lazily), unlike PortfolioDashboardSection and
 // PremiumDashboardSection below: it has zero wallet-connection dependency (see CoreTierDemoPage.jsx's
@@ -189,6 +190,7 @@ export default function DashboardApp() {
           {tab === "nameservice" && <NameServiceStats />}
           {tab === "team" && <TeamWalletsTab onSelectAddress={handleSelectAddress} />}
           {tab === "bridge" && <EtnBridgeTab />}
+          {tab === "hyperlane" && <HyperlaneBridgeTab />}
           {tab === "portfolio" && (
             <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
               <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
