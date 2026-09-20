@@ -7,6 +7,7 @@ import { useNftPnlSnapshot } from "../../hooks/useNftPnlSnapshot.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice } from "../../utils/format.js";
+import TokenLogo from "../../components/TokenLogo.jsx";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -241,6 +242,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                               style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "10px 0", borderBottom: `1px solid ${border}`, background: "none", border: "none", borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: border, cursor: "pointer", textAlign: "left" }}
                             >
                               <span style={{ fontSize: 12, color: "#fff" }}>
+                                <TokenLogo address={c.collectionAddress} placeholder={false} />
                                 {resolveCollectionName(c.collectionAddress)}
                                 <span style={{ color: muted, marginLeft: 6 }}>
                                   ({c.heldTokenCount} held{c.soldTokenCount > 0 ? `, ${c.soldTokenCount} sold` : ""})
@@ -260,7 +262,10 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                       </div>
                     ) : (
                       <div>
-                        <div style={sectionHeaderStyle}>{resolveCollectionName(collectionFilter)} — By Token ID</div>
+                        <div style={sectionHeaderStyle}>
+                          <TokenLogo address={collectionFilter} placeholder={false} size={18} />
+                          {resolveCollectionName(collectionFilter)} — By Token ID
+                        </div>
                         {tokenRows.length === 0 ? (
                           <div style={{ fontSize: 12, color: muted }}>No tokens found for this collection.</div>
                         ) : (

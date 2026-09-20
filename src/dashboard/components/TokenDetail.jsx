@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useLiquidityLock } from "../hooks/useLiquidityLock.js";
@@ -153,6 +154,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
         <>
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
+              <TokenLogo address={token.address} label={token.symbol || token.name} size={30} spacing={10} placeholder={!/721|1155/.test(String(token.type || ""))} />
               {token.name || "Unnamed Token"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
             </div>
             <a

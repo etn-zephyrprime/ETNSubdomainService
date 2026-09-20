@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, AlertTriangle } from "lucide-react";
 import { green, orange, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useDashboardStats, reconstructCumulativeTransactions, mergeDailyTransactionCounts } from "../hooks/useDashboardStats.js";
 import { useDailyBlockStats } from "../hooks/useDailyBlockStats.js";
@@ -85,7 +86,7 @@ function TxRow({ tx, rank, cexMap }) {
         </div>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatEtnBalance(tx.value)} ETN</div>
+        <div style={{ fontSize: 12, color: green, fontWeight: 700 }}><TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(tx.value)} ETN</div>
         <div style={{ fontSize: 10, color: muted }}>{timeAgo(tx.timestamp)}</div>
       </div>
     </a>

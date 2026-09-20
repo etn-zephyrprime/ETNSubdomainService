@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
 import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
 import { useTokenLocks } from "../hooks/useTokenLocks.js";
@@ -157,6 +158,9 @@ export default function TokenLeaderboard({ onSelectToken }) {
           >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {/* A collection shows its logo if it has one, but never a letter placeholder — most have
+                    none, and a placeholder beside every one would just be noise. */}
+                <TokenLogo address={token.address} label={token.symbol || token.name} size={22} placeholder={category === "tokens"} />
                 {token.name || "Unnamed"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
               </div>
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(token.address)}</div>

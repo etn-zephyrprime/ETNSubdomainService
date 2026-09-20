@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { green, error as errorColor, mutedLight, muted, panel2, border } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useCoinGecko } from "../hooks/useCoinGecko.js";
 import { useEtnPriceHistory } from "../hooks/useEtnPriceHistory.js";
 import { formatUsdPrice, formatCompact, formatChartDate } from "../utils/format.js";
@@ -163,7 +164,7 @@ export default function EtnPriceChart() {
     <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted }}>
-          ETN {isLongRange || metric === "price" ? "Price" : "Market Cap"}
+          <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />ETN {isLongRange || metric === "price" ? "Price" : "Market Cap"}
         </div>
         <div style={{ display: "flex", gap: 12 }}>
           {!isLongRange && (

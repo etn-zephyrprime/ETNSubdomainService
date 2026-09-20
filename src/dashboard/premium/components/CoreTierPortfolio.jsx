@@ -17,6 +17,7 @@ import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, err
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
+import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 
@@ -873,6 +874,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       <InfoTooltip text="Native ETN sitting directly in your wallet(s) — the chain's own coin, not a token contract. Doesn't include ETN wrapped as WETN for trading, which shows up under Tokens instead." />
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      <TokenLogo address="NATIVE" label="ETN" size={24} spacing={0} style={{ alignSelf: "center" }} />
                       <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
                         {combinedEtnRaw != null ? formatEtnBalance(combinedEtnRaw) : "0.00"} ETN
                       </div>
@@ -902,7 +904,10 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}
                           >
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{p.label}</span>
+                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                <TokenPairLogo legs={p.legs} />
+                                {p.label}
+                              </span>
                               <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
                                 {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
                               </span>
@@ -929,6 +934,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                <TokenPairLogo legs={p.legs} />
                                 {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
                               </span>
                               <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
@@ -944,6 +950,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                                <TokenPairLogo legs={p.legs} />
                                 {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
                                 {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
                               </span>
@@ -1011,6 +1018,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             }}
                           >
                             <span style={{ fontSize: 12, color: "#fff" }}>
+                              <TokenLogo address={t.token?.address} label={t.token?.symbol || t.token?.name} placeholder={holdingsCategory === "tokens"} />
                               {onSelectToken && t.token?.address ? (
                                 <button
                                   type="button"
