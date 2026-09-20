@@ -28,7 +28,12 @@ const identity = (v) => String(v);
 // space between the two data points that straddle it, not just recolored at the nearest point —
 // so the color boundary lands where the line actually crosses zero. Built for a PnL chart, where
 // "am I currently up or down" is the whole point of the color.
-export default function SparklineChart({ data, height = 140, width = 280, formatValue = identity, formatLabel = identity, colorBySign = false }) {
+//
+// strokeWidth (default 2, so every existing caller is unchanged) sets the line's thickness. With
+// nonScalingStroke the width is in real screen pixels instead of viewBox units: this SVG is stretched
+// non-uniformly to fill its card (see above), so a viewBox-unit stroke gets visibly fatter wherever the
+// line runs steeply across a wide card — a fixed pixel width stays even. Opt-in for the same reason.
+export default function SparklineChart({ data, height = 140, width = 280, formatValue = identity, formatLabel = identity, colorBySign = false, strokeWidth = 2, nonScalingStroke = false }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -170,7 +175,8 @@ export default function SparklineChart({ data, height = 140, width = 280, format
                 points={segment.points.map((c) => c.join(",")).join(" ")}
                 fill="none"
                 stroke={segment.sign === "negative" ? error : green}
-                strokeWidth={2}
+                strokeWidth={strokeWidth}
+                vectorEffect={nonScalingStroke ? "non-scaling-stroke" : undefined}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
