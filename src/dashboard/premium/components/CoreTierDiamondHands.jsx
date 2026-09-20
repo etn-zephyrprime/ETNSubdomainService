@@ -390,8 +390,8 @@ export function DiamondHandsBody({ scopeResult, perAsset, isPortfolio }) {
                   <ScoreCard
                     label={
                       <>
-                        {/* An NFT collection has no logo — placeholder letters there would be noise. */}
-                        {scopeAsset.type !== "nft" && <TokenLogo address={scopeAsset.tokenAddress} label={resolveTokenName(scopeAsset.tokenAddress)} size={18} />}
+                        {/* An NFT collection shows its logo if it has one, never a letter placeholder. */}
+                        <TokenLogo address={scopeAsset.tokenAddress} label={resolveTokenName(scopeAsset.tokenAddress)} size={18} placeholder={scopeAsset.type !== "nft"} />
                         {resolveTokenName(scopeAsset.tokenAddress)}
                       </>
                     }

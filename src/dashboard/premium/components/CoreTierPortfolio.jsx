@@ -1018,7 +1018,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             }}
                           >
                             <span style={{ fontSize: 12, color: "#fff" }}>
-                              {holdingsCategory === "tokens" && <TokenLogo address={t.token?.address} label={t.token?.symbol || t.token?.name} />}
+                              <TokenLogo address={t.token?.address} label={t.token?.symbol || t.token?.name} placeholder={holdingsCategory === "tokens"} />
                               {onSelectToken && t.token?.address ? (
                                 <button
                                   type="button"

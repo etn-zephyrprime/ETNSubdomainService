@@ -592,7 +592,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   }}
                 >
                   <span style={{ fontSize: 12, color: "#fff" }}>
-                    {holdingsCategory === "tokens" && <TokenLogo address={tb.token?.address} label={tb.token?.symbol || tb.token?.name} />}
+                    <TokenLogo address={tb.token?.address} label={tb.token?.symbol || tb.token?.name} placeholder={holdingsCategory === "tokens"} />
                     {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
                   </span>
                   <span style={{ textAlign: "right" }}>

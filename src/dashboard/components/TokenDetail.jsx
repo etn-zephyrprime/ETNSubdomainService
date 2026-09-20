@@ -154,7 +154,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
         <>
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
-              {!/721|1155/.test(String(token.type || "")) && <TokenLogo address={token.address} label={token.symbol || token.name} size={30} spacing={10} />}
+              <TokenLogo address={token.address} label={token.symbol || token.name} size={30} spacing={10} placeholder={!/721|1155/.test(String(token.type || ""))} />
               {token.name || "Unnamed Token"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
             </div>
             <a

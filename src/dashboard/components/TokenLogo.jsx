@@ -10,7 +10,11 @@ import { border, mutedLight, panel2 } from "../theme.js";
 // rather than making a screen reader say the name twice.
 //
 // `label` (a symbol or name, optional) only feeds the placeholder's letter.
-export default function TokenLogo({ address, label, size = 20, spacing = 6, style }) {
+//
+// `placeholder={false}` renders nothing at all when there's no logo — for NFT collections, most of
+// which have none, where a letter-in-a-circle beside every row would just be noise. Fungible tokens
+// keep the placeholder (the default) so their rows stay aligned.
+export default function TokenLogo({ address, label, size = 20, spacing = 6, style, placeholder = true }) {
   const src = getTokenLogoUrl(address);
   // Keyed by src so a row that gets re-used for a different token retries instead of inheriting the
   // previous token's failed-to-load state.
@@ -50,6 +54,7 @@ export default function TokenLogo({ address, label, size = 20, spacing = 6, styl
     );
   }
 
+  if (!placeholder) return null;
   const letter = String(label || "").trim().charAt(0).toUpperCase() || "?";
   return (
     <span
