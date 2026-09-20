@@ -12,17 +12,22 @@ import { getTokenLocksCache, setTokenLocksCache } from "../state/tokenLocksState
 // how tightly the calls are paced: that endpoint is flagged `heavy: true` in ElectroSwap's own
 // OpenAPI spec (global concurrency limits, expect occasional 503 "server_busy" under load) and
 // costs a flat 2000 credits per call with no batching. A full sweep of ~100-200 tokens (the same
-// universe getPools already bounds liquidity to), one call at a time, once a DAY (not hourly like
-// tokenLiquidityCache.js — confirmed acceptable per explicit direction that lock terms essentially
-// never change on any shorter timescale), is a small, predictable, one-time-a-day cost rather than
-// something that could ever be triggered by visitor traffic.
+// universe getPools already bounds liquidity to), one call at a time, once a WEEK (not hourly like
+// tokenLiquidityCache.js — lock terms essentially never change on any shorter timescale; this was
+// daily until a full sweep was measured at ~189k credits, ~$0.19), is a small, predictable cost
+// rather than something that could ever be triggered by visitor traffic.
+//
+// A backend RESTART must not re-pay for that: the startup run only sweeps when the published cache is
+// older than the interval, or is missing tokens — and then only the missing ones when the cache is
+// otherwise fresh (see decideLockSweep). Without this, every deploy (and every spin-up on a host that
+// sleeps the service) would trigger a full paid sweep.
 //
 // Merges into the PREVIOUS cache rather than replacing it wholesale — a token that fails or gets
 // rate-limited this cycle keeps whatever was last known about it (still useful, since lock terms
 // don't change) instead of the whole cache regressing to missing entries for a transient hiccup.
 const CACHE_INTERVAL_MS = process.env.TOKEN_LOCKS_CACHE_INTERVAL_MS
   ? parseInt(process.env.TOKEN_LOCKS_CACHE_INTERVAL_MS, 10)
-  : 24 * 60 * 60 * 1000; // 24 hours
+  : 7 * 24 * 60 * 60 * 1000; // 7 days (604,800,000 ms — inside setInterval's 2^31 ms limit)
 
 // Calls are made ONE AT A TIME with a gap between them (was: 2 concurrent, no gap). ElectroSwap's
 // /liquidity-locks is a "heavy" route that rate-limits quickly, and the shared circuit breaker
@@ -99,9 +104,30 @@ export async function sweepTokenLocks({
 let isRunning = false;
 let followups = 0;
 
-// `isFollowup`: a retry scheduled after an incomplete sweep — checks only the tokens still missing
-// from the cache instead of paying (2000 credits each) to re-fetch ones it already has.
-async function refreshAndPublish(isFollowup = false) {
+/**
+ * Which tokens a run should actually pay to check. Every /liquidity-locks call is 2,000 credits, so
+ * this is where redundant spend is avoided. `mode`:
+ *  - "scheduled": the weekly refresh — every token.
+ *  - "followup":  a retry after an incomplete sweep — only tokens still missing from the cache.
+ *  - "startup":   the run at backend start. If the published cache is fresh (younger than the
+ *                 interval) it checks only what's missing — nothing at all if it's complete, so a
+ *                 redeploy costs no lock calls; if it's stale or absent, everything.
+ * Returns { toCheck, reason }. Pure, so it can be tested.
+ */
+export function decideLockSweep({ mode, previous, tokenAddresses, now = Date.now(), intervalMs = CACHE_INTERVAL_MS }) {
+  const known = previous?.locksByAddress || {};
+  const missing = tokenAddresses.filter((a) => !known[a]);
+
+  if (mode === "followup") return { toCheck: missing, reason: "retrying tokens still missing" };
+  if (mode === "scheduled") return { toCheck: tokenAddresses, reason: "scheduled full refresh" };
+
+  const updatedMs = Date.parse(previous?.updatedAt || "");
+  const fresh = Number.isFinite(updatedMs) && now - updatedMs < intervalMs;
+  if (!fresh) return { toCheck: tokenAddresses, reason: previous ? "cache is older than the refresh interval" : "no cache yet" };
+  return { toCheck: missing, reason: missing.length > 0 ? "cache is fresh but missing tokens" : "cache is fresh and complete" };
+}
+
+async function refreshAndPublish(mode = "scheduled") {
   if (isRunning) return; // previous refresh still in flight — skip this tick
   isRunning = true;
   let scheduleFollowup = false;
@@ -124,11 +150,13 @@ async function refreshAndPublish(isFollowup = false) {
     const previous = await getTokenLocksCache();
     const locksByAddress = { ...(previous?.locksByAddress || {}) };
 
-    const toCheck = isFollowup ? [...tokenAddresses].filter((a) => !locksByAddress[a]) : [...tokenAddresses];
+    const { toCheck, reason } = decideLockSweep({ mode, previous, tokenAddresses: [...tokenAddresses] });
     if (toCheck.length === 0) {
-      followups = 0; // everything known already — nothing left for a follow-up to do
+      followups = 0; // everything known already — nothing left to do
+      console.log(`🔒 Token locks cache: nothing to check (${reason}) — no lock calls made`);
       return;
     }
+    console.log(`🔒 Token locks cache: checking ${toCheck.length}/${tokenAddresses.size} token(s) (${reason})`);
 
     const { checked, failed } = await sweepTokenLocks({
       addresses: toCheck,
@@ -157,7 +185,7 @@ async function refreshAndPublish(isFollowup = false) {
     if (scheduleFollowup && followups < MAX_FOLLOWUPS) {
       followups++;
       console.log(`🔒 Token locks cache: incomplete — trying again in ${Math.round(FOLLOWUP_MS / 60000)} min (${followups}/${MAX_FOLLOWUPS})`);
-      setTimeout(() => refreshAndPublish(true), FOLLOWUP_MS).unref?.();
+      setTimeout(() => refreshAndPublish("followup"), FOLLOWUP_MS).unref?.();
     }
   }
 }
@@ -177,6 +205,6 @@ export function startTokenLocksCache() {
   }
 
   console.log(`🔒 Token locks cache started (refreshing every ${CACHE_INTERVAL_MS / 1000}s, one call per ${LOCK_CALL_SPACING_MS}ms)`);
-  refreshAndPublish();
-  setInterval(refreshAndPublish, CACHE_INTERVAL_MS);
+  refreshAndPublish("startup");
+  setInterval(() => refreshAndPublish("scheduled"), CACHE_INTERVAL_MS);
 }
