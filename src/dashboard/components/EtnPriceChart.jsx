@@ -7,14 +7,20 @@ import { formatUsdPrice, formatCompact, formatChartDate } from "../utils/format.
 import SparklineChart from "./SparklineChart.jsx";
 import CandlestickChart, { alignVolumeToCandles } from "./CandlestickChart.jsx";
 
-// 7D/30D/90D stay on live CoinGecko OHLC (real open/high/low/volume, comfortably within its free
-// 365-day cap). 1Y/All are backed by this app's own price_points cache instead (see
-// tokenChartRouter.js's /etn-price-history) — daily close only, no OHLC/volume, which is why
-// they're rendered as a line chart rather than candles, same as the Market Cap toggle already is.
+// Price candles come from three places, by range:
+//  - 7D / 90D: this app's own /etn-candles (KuCoin ETN-USDT) — 5-minute candles for 7D (2,016 points)
+//    and 12-hour for 90D (2 a day). CoinGecko's free OHLC can't do either: its candle size is fixed by
+//    range (4h up to 30 days, 4 DAYS beyond — 90D was 23 candles) and it has no 5-minute OHLC at all.
+//    A 5-minute series is far too dense for candlesticks (they'd be sub-pixel), so 7D is drawn as a
+//    line (`line: true`); 90D stays candles. If KuCoin is unavailable, both fall back to CoinGecko's.
+//  - 30D: live CoinGecko OHLC (4-hour candles, 6 a day — already what's wanted).
+//  - 1Y / All: this app's own price_points cache (tokenChartRouter.js's /etn-price-history) — daily
+//    close only, no OHLC/volume, which is why they're a line chart, same as Market Cap.
+// Market Cap (all non-long ranges) always comes from CoinGecko's market_chart.
 const RANGES = [
-  { id: "7", label: "7D", days: 7 },
+  { id: "7", label: "7D", days: 7, fine: true, line: true },
   { id: "30", label: "30D", days: 30 },
-  { id: "90", label: "90D", days: 90 },
+  { id: "90", label: "90D", days: 90, fine: true },
   { id: "1y", label: "1Y", longRange: true },
   { id: "all", label: "All", longRange: true },
 ];
@@ -53,12 +59,13 @@ function Pill({ active, onClick, children }) {
 // line/area chart.
 export default function EtnPriceChart() {
   const { getMarketChart, getOhlc } = useCoinGecko();
-  const { getEtnPriceHistory } = useEtnPriceHistory();
+  const { getEtnPriceHistory, getEtnCandles } = useEtnPriceHistory();
 
   const [range, setRange] = useState("30");
   const [metric, setMetric] = useState("price");
   const [chartData, setChartData] = useState(null);
   const [ohlc, setOhlc] = useState(null);
+  const [fineCandles, setFineCandles] = useState(null); // /etn-candles rows for a `fine` range, when available
   const [longRangePoints, setLongRangePoints] = useState(null);
   const [error, setError] = useState(null);
 
@@ -76,6 +83,7 @@ export default function EtnPriceChart() {
     let cancelled = false;
     setChartData(null);
     setOhlc(null);
+    setFineCandles(null);
     setLongRangePoints(null);
     setError(null);
 
@@ -93,20 +101,38 @@ export default function EtnPriceChart() {
     }
 
     const days = rangeConfig.days;
-    Promise.all([getMarketChart(days), getOhlc(days)])
-      .then(([marketRes, ohlcRes]) => {
+    // A `fine` range wants the KuCoin candles; if that fails it quietly falls back to CoinGecko's own
+    // (coarser) candles rather than showing nothing. A non-fine range just uses CoinGecko's, fetched
+    // in parallel with the market chart as before.
+    const finePromise = rangeConfig.fine
+      ? getEtnCandles(range).catch((err) => {
+          console.warn("ETN fine candles unavailable, falling back to CoinGecko:", err.message);
+          return null;
+        })
+      : Promise.resolve(null);
+    const ohlcPromise = rangeConfig.fine ? null : getOhlc(days);
+    Promise.all([getMarketChart(days), finePromise, ohlcPromise])
+      .then(async ([marketRes, fineRes, ohlcRes]) => {
+        const fallbackOhlc = rangeConfig.fine && !fineRes?.candles?.length ? await getOhlc(days) : null;
         if (cancelled) return;
         setChartData(marketRes);
-        setOhlc(ohlcRes);
+        if (fineRes?.candles?.length) {
+          setFineCandles(fineRes.candles);
+        } else {
+          setOhlc(ohlcRes ?? fallbackOhlc);
+        }
       })
       .catch((err) => {
         console.error("Failed to load ETN price history:", err);
         if (!cancelled) setError("Couldn't load ETN price history — try again shortly.");
       });
     return () => { cancelled = true; };
-  }, [range, isLongRange, rangeConfig, getMarketChart, getOhlc, getEtnPriceHistory]);
+  }, [range, isLongRange, rangeConfig, getMarketChart, getOhlc, getEtnPriceHistory, getEtnCandles]);
 
   const candles = useMemo(() => {
+    if (fineCandles) {
+      return fineCandles.map((c) => ({ label: new Date(c.time).toISOString(), timeMs: c.time, open: c.open, high: c.high, low: c.low, close: c.close }));
+    }
     if (!Array.isArray(ohlc)) return null;
     return ohlc.map(([ms, open, high, low, close]) => ({
       label: new Date(ms).toISOString(),
@@ -116,12 +142,18 @@ export default function EtnPriceChart() {
       low,
       close,
     }));
-  }, [ohlc]);
+  }, [ohlc, fineCandles]);
 
+  // KuCoin candles carry their own volume (KuCoin's ETN-USDT market only — smaller than the
+  // all-exchange volume CoinGecko reports for 30D); CoinGecko candles get CoinGecko's total_volumes.
   const volume = useMemo(() => {
+    if (fineCandles && candles) return fineCandles.map((c, i) => ({ label: candles[i].label, value: c.volume }));
     if (!candles || !chartData?.total_volumes) return null;
     return alignVolumeToCandles(candles, chartData.total_volumes);
-  }, [candles, chartData]);
+  }, [candles, chartData, fineCandles]);
+
+  // 7D's 5-minute candles as a plain close-price line (see RANGES for why not candlesticks).
+  const candleLineSeries = useMemo(() => (candles ? candles.map((c) => ({ label: c.label, value: c.close })) : []), [candles]);
 
   const marketCapSeries = useMemo(() => {
     if (!chartData?.market_caps) return [];
@@ -146,8 +178,11 @@ export default function EtnPriceChart() {
       if (!candles || candles.length === 0) return null;
       const current = candles[candles.length - 1].close;
       const first = candles[0].open;
-      const high = Math.max(...candles.map((c) => c.high));
-      const low = Math.min(...candles.map((c) => c.low));
+      // Drawn as a close-price line (7D): High/Low describe that line, not the candles' intraday wicks
+      // (a thin-market wick can sit ~10% beyond anything the line shows, which read as a wrong stat).
+      const drawnAsLine = rangeConfig.line && fineCandles;
+      const high = Math.max(...candles.map((c) => (drawnAsLine ? c.close : c.high)));
+      const low = Math.min(...candles.map((c) => (drawnAsLine ? c.close : c.low)));
       const changePct = first ? ((current - first) / first) * 100 : 0;
       return { current, high, low, changePct };
     }
@@ -156,7 +191,7 @@ export default function EtnPriceChart() {
     const current = values[values.length - 1];
     const first = values[0];
     return { current, high: Math.max(...values), low: Math.min(...values), changePct: first ? ((current - first) / first) * 100 : 0 };
-  }, [isLongRange, metric, candles, marketCapSeries, longRangeSeries]);
+  }, [isLongRange, metric, candles, marketCapSeries, longRangeSeries, rangeConfig, fineCandles]);
 
   const formatValue = isLongRange || metric === "price" ? formatUsdPrice : (v) => `$${formatCompact(v)}`;
 
@@ -212,9 +247,14 @@ export default function EtnPriceChart() {
           </div>
 
           {isLongRange ? (
-            <SparklineChart data={longRangeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            // Thinner than the default 2 — a fixed 1.25px (not viewBox units, which stretch with the card).
+            <SparklineChart data={longRangeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} strokeWidth={1.25} nonScalingStroke />
           ) : metric === "price" ? (
-            <CandlestickChart candles={candles} volume={volume} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            rangeConfig.line && fineCandles ? (
+              <SparklineChart data={candleLineSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} strokeWidth={1.25} nonScalingStroke />
+            ) : (
+              <CandlestickChart candles={candles} volume={volume} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            )
           ) : (
             <SparklineChart data={marketCapSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           )}

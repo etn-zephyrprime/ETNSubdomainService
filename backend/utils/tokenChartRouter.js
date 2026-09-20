@@ -17,6 +17,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { getPricePointsSince } from "../db/pricePoints.js";
 import { getCandles as getElectroSwapCandles, getBatchTokenPrices, isElectroSwapPaused } from "./electroSwapApi.js";
+import { ETN_CANDLE_RANGES, fetchEtnCandles } from "./etnCandles.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -347,6 +348,37 @@ router.get("/etn-price-history", async (req, res) => {
   } catch (err) {
     console.error("⚠️  ETN price history failed:", err.message);
     res.status(502).json({ error: "Couldn't load ETN price history" });
+  }
+});
+
+// Fine-grained ETN candles for the dashboard's 7D (5-minute) and 90D (12-hour) price charts — see
+// etnCandles.js for why these come from KuCoin instead of CoinGecko's fixed-granularity OHLC. Cached
+// per range; if KuCoin fails, the last good response (however old) is served in preference to an
+// error, since a slightly stale chart beats an empty one.
+const etnCandlesCache = new Map(); // range -> { payload, expiresAt }
+
+router.get("/etn-candles", async (req, res) => {
+  const range = String(req.query.range || "");
+  const cfg = ETN_CANDLE_RANGES[range];
+  if (!cfg) {
+    return res.status(400).json({ error: "Invalid range — use 7 or 90" });
+  }
+
+  const cached = etnCandlesCache.get(range);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json(cached.payload);
+  }
+
+  try {
+    const candles = await fetchEtnCandles(range);
+    if (candles.length === 0) throw new Error("no candles returned");
+    const payload = { source: "KuCoin ETN-USDT", stepSeconds: cfg.stepSec, candles };
+    etnCandlesCache.set(range, { payload, expiresAt: Date.now() + cfg.ttlMs });
+    res.json(payload);
+  } catch (err) {
+    console.error("⚠️  ETN candles failed:", err.message);
+    if (cached) return res.json(cached.payload); // stale beats empty
+    res.status(502).json({ error: "Couldn't load ETN candles" });
   }
 });
 

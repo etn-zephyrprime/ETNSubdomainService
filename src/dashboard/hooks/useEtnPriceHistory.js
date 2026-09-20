@@ -15,5 +15,17 @@ export function useEtnPriceHistory() {
     return res.json(); // { points: [{ timestamp, priceUsd }, ...] }
   }, []);
 
-  return { getEtnPriceHistory };
+  // Fine-grained candles for the 7D (5-minute) and 90D (12-hour) price charts — the backend's
+  // /etn-candles (KuCoin ETN-USDT; CoinGecko's free OHLC can't do either resolution). Evenly spaced,
+  // gap-filled: { candles: [{ time (ms), open, high, low, close, volume }, ...] }.
+  const getEtnCandles = useCallback(async (range) => {
+    const res = await fetch(`${BACKEND_IMAGE_URL}/api/etn-candles?range=${range}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || `ETN candles request failed (${res.status})`);
+    }
+    return res.json();
+  }, []);
+
+  return { getEtnPriceHistory, getEtnCandles };
 }
