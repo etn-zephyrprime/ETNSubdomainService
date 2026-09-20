@@ -127,7 +127,7 @@ export default function BridgeChart({ series, total, forecast, nowMs }) {
               Today
             </div>
           )}
-          <div style={{ position: "absolute", right: 4, top: 2, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: orange, pointerEvents: "none" }}>
+          <div style={{ position: "absolute", right: 4, top: 16, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: orange, pointerEvents: "none" }}>
             Deadline
           </div>
 
@@ -135,7 +135,7 @@ export default function BridgeChart({ series, total, forecast, nowMs }) {
             <div
               style={{
                 position: "absolute",
-                top: 20,
+                top: 34,
                 ...(x(hover.t) > 60 ? { right: `${100 - x(hover.t)}%`, marginRight: 10 } : { left: `${x(hover.t)}%`, marginLeft: 10 }),
                 background: "rgba(10,10,10,0.95)",
                 border: `1px solid ${border}`,
