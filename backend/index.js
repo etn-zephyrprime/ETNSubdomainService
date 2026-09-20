@@ -19,6 +19,7 @@ import { startEtnPriceCache } from "./utils/etnPriceCache.js";
 import { startTokenPriceCache } from "./utils/tokenPriceCache.js";
 import { startTokenLiquidityCache } from "./utils/tokenLiquidityCache.js";
 import { startTokenLocksCache } from "./utils/tokenLocksCache.js";
+import { startTvlHistory } from "./utils/tvlHistory.js";
 import { startTeamWalletsCache } from "./utils/teamWalletsCache.js";
 import { startTeamWalletsBalanceHistory } from "./utils/teamWalletsBalanceHistory.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
@@ -122,6 +123,7 @@ app.listen(PORT, () => {
   startTokenPriceCache();
   startTokenLiquidityCache();
   startTokenLocksCache();
+  startTvlHistory();
   startTeamWalletsCache();
   startTeamWalletsBalanceHistory();
   startExpiryAlertScheduler();

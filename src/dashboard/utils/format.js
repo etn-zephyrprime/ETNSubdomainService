@@ -31,6 +31,14 @@ export function formatTokenAmount(rawValue, decimals) {
   }
 }
 
+/** A USD figure in the viewer's chosen currency, abbreviated ("$217.7K") — for headline tiles where
+ * the full "$217,723.41" would be noise. Same USD-in / display-currency-out contract as formatUsdPrice. */
+export function formatUsdCompact(value) {
+  if (!Number.isFinite(value)) return "—";
+  const { symbol, rate } = getCurrentCurrencySnapshot();
+  return `${symbol}${formatCompact(value * rate)}`;
+}
+
 /** ETN trades at a fraction of a cent, so a flat 2-decimal format would round it to "$0.00" —
  * shows enough decimals to actually be meaningful below a cent, plain 2-decimal above it.
  *
