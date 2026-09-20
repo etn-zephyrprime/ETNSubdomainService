@@ -31,7 +31,7 @@ import { getTokenMetadata, EXPLORER_BASE_URL } from "../services/pnlIngestion.js
 
 const CHECK_INTERVAL_MS = process.env.TOKEN_PRICE_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.TOKEN_PRICE_ALERT_CHECK_INTERVAL_MS, 10)
-  : 3 * 60 * 1000; // cheap RPC reads, no shared external rate limit to protect — safe to poll fairly often
+  : 5 * 60 * 1000; // was 3 min — each cycle makes a metered ElectroSwap batch call (100 credits + 10/token), so 5 min cuts that spend ~40%
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 
 function fmtPrice(v) {

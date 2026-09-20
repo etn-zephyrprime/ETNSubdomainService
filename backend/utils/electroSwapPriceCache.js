@@ -7,12 +7,11 @@
 // the cache window share ONE real (credit-costing) call instead of each paying for their own.
 //
 // Currently read by: dexPriceQuote.js's getTokenEtnPrice (used by tokenPriceAlertScheduler.js,
-// defiPositionValuation.js, premiumAlertsRouter.js's new-alert baseline) and
-// coreClashSwapWatcher.js (refreshes CORE's price every 5 minutes, independent of swap activity —
-// see that file's own PRICE_REFRESH_MS).
+// defiPositionValuation.js, premiumAlertsRouter.js's new-alert baseline). (coreClashSwapWatcher.js no longer
+// calls ElectroSwap — it prices CORE from its own pool's reserves.)
 //
 // CACHE_TTL_MS is intentionally shorter than every current consumer's own poll/refresh interval
-// (tokenPriceAlertScheduler.js: 3 min, coreClashSwapWatcher.js: 5 min) — this never serves a
+// (tokenPriceAlertScheduler.js: 5 min) — this never serves a
 // consumer a price staler than what ITS OWN interval would have gotten by calling
 // electroSwapApi.js directly. It only ever saves a call when two lookups for the SAME token land
 // within the same short window — which happens whenever two consumers' schedules happen to
@@ -85,12 +84,44 @@ export async function getCachedBatchTokenPrices(tokenAddresses) {
   }
   if (toFetch.length === 0) return result;
 
-  const fetched = await getBatchTokenPrices(toFetch);
+  // A batch call costs 100 credits BASE plus 10 per token, so the base is what a second, separate call
+  // wastes. Any registered piggyback that is due right now adds its own addresses to THIS call (paying only
+  // the 10/token part) instead of making a call of its own — see registerPricePiggyback.
+  const due = piggybacks.filter((p) => p.isDue());
+  const requested = new Set(toFetch);
+  const riders = new Set();
+  for (const p of due) {
+    for (const raw of p.addresses) {
+      const address = raw.toLowerCase();
+      if (!requested.has(address)) riders.add(address);
+    }
+  }
+  const allAddresses = [...requested, ...riders];
+
+  const fetched = await getBatchTokenPrices(allAddresses);
   const expiresAt = Date.now() + CACHE_TTL_MS;
-  for (const address of toFetch) {
+  for (const address of allAddresses) {
     const price = fetched.get(address) ?? null;
     cache.set(address, { price, expiresAt });
-    if (price) result.set(address, price);
+    if (price && requested.has(address)) result.set(address, price);
+  }
+  for (const p of due) {
+    try {
+      p.onPrices(fetched);
+    } catch (err) {
+      console.warn("⚠️  ElectroSwap price piggyback handler failed:", err.message);
+    }
   }
   return result;
+}
+
+const piggybacks = [];
+
+/** Lets a slower, lower-priority price refresh ride along on another caller's batch call instead of paying
+ * the 100-credit base for a call of its own. `isDue()` says whether it wants prices right now;
+ * `addresses` are the tokens it wants; `onPrices(map)` receives the whole Map<lowercased address,
+ * {usd, etn}> that call returned (only invoked when a real call was made — the registrant still needs its
+ * own fallback for when nothing else happens to be calling). */
+export function registerPricePiggyback({ isDue, addresses, onPrices }) {
+  piggybacks.push({ isDue, addresses, onPrices });
 }
