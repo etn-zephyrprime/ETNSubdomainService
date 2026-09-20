@@ -19,7 +19,7 @@
 // LIVE. Once an hour a snapshot of the totals + the bridge's balance is appended, and the top migrations of
 // the rolling last 7 days are recomputed from the CrossChainTransfer events.
 import { ethers } from "ethers";
-import { createRpcProvider } from "./rpcProvider.js";
+import { createArchiveRpcProvider } from "./rpcProvider.js";
 import { getEtnBridgeData, setEtnBridgeData } from "../state/etnBridgeState.js";
 
 export const BRIDGE_PROXY_ADDRESS = "0xB7990022d3F22B6FB3afb626E05289ee3bf0AE62";
@@ -38,7 +38,10 @@ const RECENT_HOURLY_DAYS = 14;
 const TOP_WINDOW_DAYS = 7;
 const TOP_LIMIT = 5;
 const LOG_CHUNK_BLOCKS = 1000; // Ankr rejects getLogs ranges above 1,000 blocks ("Block range is too large")
-const BACKFILL_CONCURRENCY = 3;
+const BACKFILL_CONCURRENCY = 2;
+const BACKFILL_PAUSE_MS = 200; // breathing room between batches so the backfill doesn't hog the shared RPC key
+const BACKFILL_RETRY_MS = 5 * 60 * 1000;
+const BACKFILL_MAX_ATTEMPTS = 6;
 const SAVE_EVERY_DAYS = 30;
 
 const toEtn = (wei) => Number(ethers.formatEther(wei));
@@ -172,7 +175,7 @@ async function withRetry(fn, label, attempts = 4) {
       return await fn();
     } catch (err) {
       lastErr = err;
-      await sleep(400 * (i + 1));
+      await sleep(1000 * 2 ** i); // 1s, 2s, 4s, 8s — a slow archive node needs room, not a hammering
     }
   }
   throw new Error(`${label}: ${lastErr?.shortMessage || lastErr?.message || lastErr}`);
@@ -340,16 +343,26 @@ export async function backfillBridgeHistory({ provider, contract, store, startDa
     return { t: day, migratedEtn: toEtn(amount), count: Number(count), block };
   };
 
-  for (let i = 0; i < days.length; i += BACKFILL_CONCURRENCY) {
-    const batch = await Promise.all(days.slice(i, i + BACKFILL_CONCURRENCY).map(one));
-    results.push(...batch);
-    sinceSave += batch.length;
-    onProgress(results.length, days.length);
-    if (sinceSave >= SAVE_EVERY_DAYS && i + BACKFILL_CONCURRENCY < days.length) {
-      const snapshot = results.map(({ block, ...p }) => p);
-      await store.update((data) => ({ ...data, points: compactPoints(mergeDailyPoints(data.points, snapshot).points, now) }));
-      sinceSave = 0;
+  try {
+    for (let i = 0; i < days.length; i += BACKFILL_CONCURRENCY) {
+      const batch = await Promise.all(days.slice(i, i + BACKFILL_CONCURRENCY).map(one));
+      results.push(...batch);
+      sinceSave += batch.length;
+      onProgress(results.length, days.length);
+      if (sinceSave >= SAVE_EVERY_DAYS && i + BACKFILL_CONCURRENCY < days.length) {
+        const snapshot = results.map(({ block, ...p }) => p);
+        await store.update((data) => ({ ...data, points: compactPoints(mergeDailyPoints(data.points, snapshot).points, now) }));
+        sinceSave = 0;
+      }
+      await sleep(BACKFILL_PAUSE_MS);
     }
+  } catch (err) {
+    // Keep what was read before the failure — a later attempt (or restart) only redoes the missing days.
+    if (results.length > 0) {
+      const partial = results.map(({ block, ...p }) => p);
+      await store.update((data) => ({ ...data, points: compactPoints(mergeDailyPoints(data.points, partial).points, now) })).catch(() => {});
+    }
+    throw err;
   }
 
   const daily = results.map(({ block, ...p }) => p);
@@ -362,18 +375,22 @@ export async function backfillBridgeHistory({ provider, contract, store, startDa
 }
 
 async function ensureBackfilled({ provider, contract, store }) {
-  try {
-    const data = await store.get();
-    if (data.backfill) return;
-    const startDay = await getBridgeCreationDay();
-    console.log(`🌉 ETN bridge: backfilling daily history from ${startDay} (reads contract state at each day's last block — takes a few minutes)`);
-    const { added } = await backfillBridgeHistory({
-      provider, contract, store, startDay,
-      onProgress: (done, total) => { if (done % 100 < BACKFILL_CONCURRENCY || done === total) console.log(`🌉 ETN bridge backfill: ${done}/${total} day(s)`); },
-    });
-    console.log(`🌉 ETN bridge history backfilled — ${added} daily point(s)`);
-  } catch (err) {
-    console.error("⚠️  ETN bridge backfill failed (progress so far is kept; resumes at next start):", err.message);
+  for (let attempt = 1; attempt <= BACKFILL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const data = await store.get();
+      if (data.backfill) return;
+      const startDay = await getBridgeCreationDay();
+      console.log(`🌉 ETN bridge: backfilling daily history from ${startDay} (reads contract state at each day's last block — takes several minutes)`);
+      const { added } = await backfillBridgeHistory({
+        provider, contract, store, startDay,
+        onProgress: (done, total) => { if (done % 100 < BACKFILL_CONCURRENCY || done === total) console.log(`🌉 ETN bridge backfill: ${done}/${total} day(s)`); },
+      });
+      console.log(`🌉 ETN bridge history backfilled — ${added} daily point(s)`);
+      return;
+    } catch (err) {
+      console.error(`⚠️  ETN bridge backfill attempt ${attempt}/${BACKFILL_MAX_ATTEMPTS} failed (progress so far is kept): ${err.message}`);
+      if (attempt < BACKFILL_MAX_ATTEMPTS) await sleep(BACKFILL_RETRY_MS);
+    }
   }
 }
 
@@ -384,7 +401,7 @@ export function startEtnBridge() {
     console.log("ℹ️  R2 not configured — ETN bridge tracker disabled");
     return;
   }
-  const provider = createRpcProvider({ batchMaxCount: 1 });
+  const provider = createArchiveRpcProvider({ batchMaxCount: 1 });
   const contract = new ethers.Contract(BRIDGE_PROXY_ADDRESS, BRIDGE_ABI, provider);
   const store = makeStore();
   console.log(`🌉 ETN bridge tracker started (snapshot every ${SNAPSHOT_INTERVAL_MS / 1000}s; backfill runs once)`);

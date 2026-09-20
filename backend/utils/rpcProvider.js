@@ -124,3 +124,17 @@ class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
 export function createRpcProvider(options) {
   return new FailoverJsonRpcProvider(PRIMARY_RPC_URL, SECONDARY_RPC_URL, options);
 }
+
+/**
+ * A plain provider on the PRIMARY endpoint only — no failover, and a long request timeout. For heavy
+ * archive-state reads (etnBridge.js's backfill reads contract state at ~930 historical blocks): the public
+ * secondary node doesn't serve old state ("missing revert data") and rate-limits bursts (403), so failing
+ * over mid-backfill just turns one slow call into a failed backfill — and each failover also logs a
+ * "Primary RPC failed" line. A slow archive call should be retried against the same node instead.
+ */
+export function createArchiveRpcProvider(options) {
+  const request = new ethers.FetchRequest(PRIMARY_RPC_URL);
+  request.timeout = process.env.RPC_ARCHIVE_TIMEOUT_MS ? parseInt(process.env.RPC_ARCHIVE_TIMEOUT_MS, 10) : 60000;
+  return new ethers.JsonRpcProvider(request, network, { staticNetwork: network, ...options });
+}
+
