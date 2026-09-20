@@ -4,6 +4,7 @@ import { Bell, BellOff, Trash2 } from "lucide-react";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
+import TokenLogo from "../../components/TokenLogo.jsx";
 import { useNotisTelegramLink } from "../../hooks/useNotisTelegramLink.js";
 import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
@@ -649,6 +650,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
               {tokenAlerts.map((a) => (
                 <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                   <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
+                    <TokenLogo address={a.tokenAddress} label={resolveTokenName(a.tokenAddress)} size={18} />
                     {onSelectToken ? (
                       <button
                         type="button"

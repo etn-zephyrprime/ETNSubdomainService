@@ -7,6 +7,7 @@ import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPn
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
+import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { DiamondHandsBody } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
@@ -414,6 +415,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
           <InfoTooltip text="Native ETN sitting directly in the wallets — the chain's own coin, not a token contract." />
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <TokenLogo address="NATIVE" label="ETN" size={24} spacing={0} style={{ alignSelf: "center" }} />
           <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{fmtEtn(combinedEtnAmount)}</div>
           {combinedEtnUsd != null && <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedEtnUsd)}</div>}
         </div>
@@ -430,7 +432,10 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
             {data.defiPositions.positions.map((p, i) => (
               <div key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{p.label}</span>
+                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                    <TokenPairLogo legs={p.legs} />
+                    {p.label}
+                  </span>
                   <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
                     {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
                   </span>
@@ -454,7 +459,10 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
             {data.liquidityPositions.v2Positions.map((p) => (
               <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>{(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP</span>
+                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                    <TokenPairLogo legs={p.legs} />
+                    {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
+                  </span>
                   <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
                     {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
                   </span>
@@ -468,6 +476,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
               <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
+                    <TokenPairLogo legs={p.legs} />
                     {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
                     {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
                   </span>
@@ -496,6 +505,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
             {visibleTokens.slice(0, holdingsShown).map((t, i) => (
               <div key={`${t.tokenAddress}-${i}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
                 <span style={{ fontSize: 12, color: "#fff" }}>
+                  <TokenLogo address={t.tokenAddress} label={resolveTokenName(t.tokenAddress)} />
                   {onSelectToken ? (
                     <button
                       type="button"
@@ -601,6 +611,7 @@ function DemoPnl({ data, walletFilter, onSelectToken }) {
               return (
                 <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${border}` }}>
                   <span style={{ fontSize: 12, color: "#fff" }}>
+                    <TokenLogo address={h.tokenAddress} label={resolveTokenName(h.tokenAddress)} />
                     {onSelectToken ? (
                       <button
                         type="button"

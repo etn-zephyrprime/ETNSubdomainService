@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { green, blue, mutedLight, muted, panel2, border } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWallets } from "../hooks/useTeamWallets.js";
 import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
@@ -37,7 +38,7 @@ function WalletRow({ wallet, onSelectAddress }) {
         </div>
       </div>
       <div style={{ fontSize: 12, color: green, fontWeight: 700, flexShrink: 0 }}>
-        {formatEtnBalance(wallet.balance)} ETN
+        <TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(wallet.balance)} ETN
       </div>
     </button>
   );
@@ -62,7 +63,7 @@ function MovementRow({ movement }) {
         {movement.toIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatEtnBalance(movement.value)} ETN</div>
+        <div style={{ fontSize: 12, color: green, fontWeight: 700 }}><TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(movement.value)} ETN</div>
         <div style={{ fontSize: 10, color: muted }}>{timeAgo(movement.timestamp)}</div>
       </div>
     </a>
@@ -129,7 +130,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       <div style={{ marginBottom: 24 }}>
         <StatCard
           label="Combined Team ETN Balance"
-          value={wallets === null ? "Loading…" : `${formatEtnBalance(totalBalanceWei)} ETN`}
+          value={wallets === null ? "Loading…" : <><TokenLogo address="NATIVE" label="ETN" size={22} spacing={8} />{formatEtnBalance(totalBalanceWei)} ETN</>}
           sub={updatedAt ? `Updated ${timeAgo(updatedAt)}` : undefined}
         />
       </div>

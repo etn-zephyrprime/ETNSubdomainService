@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { ethers } from "ethers";
 import { green, blue, orange, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useNameServiceStats } from "../hooks/useNameServiceStats.js";
 import { bucketDailyCounts, bucketDailySums } from "../utils/history.js";
 import { formatCompact, formatInt, formatChartDate, formatEtnBalance, timeAgo } from "../utils/format.js";
@@ -151,7 +152,7 @@ export default function NameServiceStats() {
         <StatCard label="Active Listings" value={formatInt(stats?.activeListingsCount || 0)} />
         <StatCard
           label="Floor Price"
-          value={stats?.floorPriceWei ? `${formatEtnBalance(stats.floorPriceWei)} ETN` : "—"}
+          value={stats?.floorPriceWei ? <><TokenLogo address="NATIVE" label="ETN" size={22} spacing={8} />{formatEtnBalance(stats.floorPriceWei)} ETN</> : "—"}
           sub={!stats?.floorPriceWei ? "No active listings" : undefined}
         />
       </div>
@@ -192,7 +193,7 @@ export default function NameServiceStats() {
         {volume30dWei.count > 0 ? (
           <div>
             <div style={{ fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 12 }}>
-              {formatEtnBalance(volume30dWei.total)} ETN
+              <TokenLogo address="NATIVE" label="ETN" size={20} spacing={8} />{formatEtnBalance(volume30dWei.total)} ETN
               <span style={{ fontSize: 12, color: mutedLight, fontWeight: 400, marginLeft: 6 }}>
                 ({volume30dWei.count} name{volume30dWei.count === 1 ? "" : "s"} resold)
               </span>
@@ -207,7 +208,7 @@ export default function NameServiceStats() {
               >
                 <span style={{ fontSize: 12, color: mutedLight }}>{timeAgo(new Date(sale.timestampMs).toISOString())}</span>
                 <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                  {formatEtnBalance(sale.priceWei)} ETN <span style={{ color: mutedLight, fontWeight: 400 }}>↗</span>
+                  <TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(sale.priceWei)} ETN <span style={{ color: mutedLight, fontWeight: 400 }}>↗</span>
                 </span>
               </a>
             ))}

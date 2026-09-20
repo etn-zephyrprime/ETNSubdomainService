@@ -13,6 +13,7 @@ import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
 import TileChart from "./TileChart.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
+import TokenLogo from "./TokenLogo.jsx";
 
 const inputStyle = {
   width: "100%",
@@ -591,6 +592,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   }}
                 >
                   <span style={{ fontSize: 12, color: "#fff" }}>
+                    {holdingsCategory === "tokens" && <TokenLogo address={tb.token?.address} label={tb.token?.symbol || tb.token?.name} />}
                     {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
                   </span>
                   <span style={{ textAlign: "right" }}>

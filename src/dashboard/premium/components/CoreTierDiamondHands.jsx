@@ -5,6 +5,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useDiamondHandsScore } from "../../hooks/useDiamondHandsScore.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import TokenLogo from "../../components/TokenLogo.jsx";
 import { green, blue, orange, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -385,7 +386,18 @@ export function DiamondHandsBody({ scopeResult, perAsset, isPortfolio }) {
                     </option>
                   ))}
                 </select>
-                {scopeAsset && <ScoreCard label={resolveTokenName(scopeAsset.tokenAddress)} result={scopeAsset} />}
+                {scopeAsset && (
+                  <ScoreCard
+                    label={
+                      <>
+                        {/* An NFT collection has no logo — placeholder letters there would be noise. */}
+                        {scopeAsset.type !== "nft" && <TokenLogo address={scopeAsset.tokenAddress} label={resolveTokenName(scopeAsset.tokenAddress)} size={18} />}
+                        {resolveTokenName(scopeAsset.tokenAddress)}
+                      </>
+                    }
+                    result={scopeAsset}
+                  />
+                )}
               </div>
             )}
         </>

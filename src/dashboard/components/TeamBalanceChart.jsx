@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { green, error as errorColor, muted, panel2, border } from "../theme.js";
+import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWalletsBalanceHistory } from "../hooks/useTeamWalletsBalanceHistory.js";
 import { formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
@@ -61,7 +62,7 @@ export default function TeamBalanceChart() {
   return (
     <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
       <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 14 }}>
-        Combined ETN Balance — Rolling 12 Months
+        <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />Combined ETN Balance — Rolling 12 Months
       </div>
 
       {error ? (

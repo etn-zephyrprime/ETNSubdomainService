@@ -10,6 +10,7 @@ import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatChartDate } from "../../utils/format.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import TokenLogo from "../../components/TokenLogo.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 // Matches categoryPnlService.js's own CATEGORIES export (kept as a plain literal here rather than
@@ -384,6 +385,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                               style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 8, background: checked ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${checked ? green : border}`, cursor: "pointer", fontSize: 11 }}
                             >
                               <input type="checkbox" checked={checked} onChange={() => toggleTokenSelection(walletAddress, t.address)} style={{ accentColor: green }} />
+                              <TokenLogo address={t.address} label={t.symbol || t.name} size={16} spacing={0} />
                               <span style={{ color: checked ? "#fff" : mutedLight }}>{t.symbol || t.name || `${t.address.slice(0, 6)}...${t.address.slice(-4)}`}</span>
                             </label>
                           );
@@ -517,6 +519,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                           return (
                             <div key={h.tokenAddress} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}` }}>
                               <span style={{ fontSize: 12, color: "#fff" }}>
+                                <TokenLogo address={h.tokenAddress} label={resolveTokenName(h.tokenAddress)} />
                                 {onSelectToken ? (
                                   <button
                                     type="button"
