@@ -31,7 +31,7 @@ const WHITELISTED_TOKEN_ADDRESSES = [
 //     calls noteTokenPricesRequested on every request; "recent" = DEMAND_WINDOW_MS). Nobody looking, nothing
 //     spent. The FIRST request after an idle spell kicks an immediate refresh, so it's fresh for whoever
 //     asks next (that one visitor may see the last-published prices).
-//  3. PIGGYBACKING: tokenPriceAlertScheduler already makes a batch call every 3 minutes. When this cache is
+//  3. PIGGYBACKING: tokenPriceAlertScheduler already makes a batch call every 5 minutes. When this cache is
 //     due, its 9 tokens are added to that call (paying only the 10/token part) instead of a call of its
 //     own. Only if no other caller makes a call within PIGGYBACK_GRACE_MS does it fetch by itself.
 const CACHE_INTERVAL_MS = process.env.TOKEN_PRICE_CACHE_INTERVAL_MS
@@ -40,7 +40,7 @@ const CACHE_INTERVAL_MS = process.env.TOKEN_PRICE_CACHE_INTERVAL_MS
 const DEMAND_WINDOW_MS = process.env.TOKEN_PRICE_DEMAND_WINDOW_MS
   ? parseInt(process.env.TOKEN_PRICE_DEMAND_WINDOW_MS, 10)
   : 30 * 60 * 1000;
-const PIGGYBACK_GRACE_MS = process.env.TOKEN_PRICE_PIGGYBACK_GRACE_MS ? parseInt(process.env.TOKEN_PRICE_PIGGYBACK_GRACE_MS, 10) : 4 * 60 * 1000; // > the alert scheduler's 3-minute cycle, so it gets a chance to carry us
+const PIGGYBACK_GRACE_MS = process.env.TOKEN_PRICE_PIGGYBACK_GRACE_MS ? parseInt(process.env.TOKEN_PRICE_PIGGYBACK_GRACE_MS, 10) : 6 * 60 * 1000; // > the alert scheduler's 5-minute cycle, so it gets a chance to carry us
 const CHECK_TICK_MS = process.env.TOKEN_PRICE_CHECK_TICK_MS ? parseInt(process.env.TOKEN_PRICE_CHECK_TICK_MS, 10) : 60 * 1000;
 
 let isRunning = false;

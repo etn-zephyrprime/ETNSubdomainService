@@ -7,12 +7,11 @@
 // the cache window share ONE real (credit-costing) call instead of each paying for their own.
 //
 // Currently read by: dexPriceQuote.js's getTokenEtnPrice (used by tokenPriceAlertScheduler.js,
-// defiPositionValuation.js, premiumAlertsRouter.js's new-alert baseline) and
-// coreClashSwapWatcher.js (refreshes CORE's price every 5 minutes, independent of swap activity —
-// see that file's own PRICE_REFRESH_MS).
+// defiPositionValuation.js, premiumAlertsRouter.js's new-alert baseline). (coreClashSwapWatcher.js no longer
+// calls ElectroSwap — it prices CORE from its own pool's reserves.)
 //
 // CACHE_TTL_MS is intentionally shorter than every current consumer's own poll/refresh interval
-// (tokenPriceAlertScheduler.js: 3 min, coreClashSwapWatcher.js: 5 min) — this never serves a
+// (tokenPriceAlertScheduler.js: 5 min) — this never serves a
 // consumer a price staler than what ITS OWN interval would have gotten by calling
 // electroSwapApi.js directly. It only ever saves a call when two lookups for the SAME token land
 // within the same short window — which happens whenever two consumers' schedules happen to
