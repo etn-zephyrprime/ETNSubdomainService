@@ -19,19 +19,19 @@
 // receipt), the same USD-value thresholds gating which swaps get announced (BUY: $5-$50, SELL:
 // >$20), and the same message content/formatting posted to the Zephyros bot's general topic.
 //
-// SWAP DISCOVERY (added after the initial port): now tries ElectroSwap's own /trades endpoint
-// FIRST, polled much more frequently (SWAP_POLL_INTERVAL_MS, 15s by default) than this file's
-// original getLogs-based scan ever was — confirmed live that ElectroSwap has no way to expose
-// burns/NFT mints/NFT sales (no corresponding endpoint exists for any of those; only DEX trades),
-// so this is the one Core Clash watcher that could actually move. ElectroSwap is only ever used
-// for DISCOVERY (which tx hashes are recent CORE trades) — every actual amount/price/side in the
-// posted message still comes from parsing the pool's own on-chain Swap event out of that tx's
-// receipt, via the exact same processSwapLog() logic this file always used. That split matters
-// because ElectroSwap's own OpenAPI spec leaves a trade item's field names uncommitted/unconfirmed
-// (see electroSwapApi.js's own getRecentTrades comment) — the only thing this depends on
-// ElectroSwap getting right is a recognizable tx-hash field, never an amount or price. Falls back
-// to the original getLogs block-range scan (same on the new faster interval) whenever
-// ELECTROSWAP_API_KEY isn't set or a call fails, so this was never a new hard dependency.
+// SWAP DISCOVERY: purely on-chain. Each poll asks the RPC node for the watched pool's own `Swap`
+// events since the last block it processed (a few blocks' worth at the default 60s cadence) and
+// announces each one — see poll() below. This used to ask ElectroSwap's /trades endpoint first
+// ("which tx hashes are recent CORE trades?") and read the actual amounts from the receipt, but that
+// cost ~500 credits every poll (~720k credits/day) to learn about the ~3 swaps a day this pool sees:
+// ~99.8% of paid polls came back with nothing new. It was also redundant — the only thing ever done
+// with a discovered trade was to read THIS pool's Swap log out of its receipt, i.e. exactly what the
+// getLogs query returns directly. Polling cadence is unchanged. (Nothing else in the app stopped
+// using ElectroSwap: prices, charts, locks, liquidity etc. are untouched.)
+//
+// seenTradeHashes is still kept, now as a dedup on the on-chain path: it stops a trade that the
+// previous ElectroSwap-based version announced in the last couple of blocks (above the reorg buffer)
+// from being announced a second time when this version rescans that range, and guards a reorg replay.
 import { ethers } from "ethers";
 import { getState, setState } from "../state/coreClashState.js";
 import { sendZephyrosAnimation, sendZephyrosMessage, escapeHtml, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
@@ -48,7 +48,6 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getCachedTokenPrice } from "./electroSwapPriceCache.js";
-import { getRecentTrades, isElectroSwapConfigured } from "./electroSwapApi.js";
 
 const STATE_KEY = "swap-watcher";
 const MAX_BLOCK_RANGE = 500;
@@ -247,70 +246,11 @@ async function processSwapLog(ctx, log, wetnUsd) {
   console.log(`💱 Swap alert sent: ${isSell ? "SELL" : "BUY"} $${usdValue.toFixed(2)} (tx ${log.transactionHash})`);
 }
 
-// Kept across polls in persisted state (STATE_KEY's own seenTradeHashes), capped well past one
-// poll's worth (25) so a slow tick or a transient failure can't reintroduce an already-announced
-// trade as "new" the next time ElectroSwap serves it again in its most-recent-25 window.
+// Kept across polls in persisted state (STATE_KEY's own seenTradeHashes), capped well past any
+// realistic number of swaps in the reorg-buffer window, so a slow tick, a transient failure or a reorg
+// can't reintroduce an already-announced trade as "new".
 const MAX_SEEN_TRADE_HASHES = 200;
 
-// ElectroSwap's own trade-item field names aren't confirmed live (see electroSwapApi.js's own
-// getRecentTrades comment) — this only ever needs to recognize A transaction hash, nothing else.
-// Every other detail (side, amounts, price) is read straight from the pool's own on-chain Swap
-// event via that tx's receipt in pollViaElectroSwap below, exactly like the getLogs fallback path
-// always did — so a wrong guess here just means a trade gets missed this poll (the getLogs
-// fallback's own cursor is kept warm specifically so it can still catch it later), never a wrong
-// amount/price getting announced from a misread field.
-let loggedUnrecognizedTradeShapeOnce = false;
-function extractTxHash(rawTrade) {
-  const txHash = rawTrade?.txHash || rawTrade?.transactionHash || rawTrade?.hash || rawTrade?.tx;
-  if (!txHash && !loggedUnrecognizedTradeShapeOnce) {
-    loggedUnrecognizedTradeShapeOnce = true;
-    console.warn(
-      "⚠️  [SwapWatcher] ElectroSwap trade item didn't match any known tx-hash field name — falling back to on-chain discovery this tick. Raw item keys:",
-      Object.keys(rawTrade || {})
-    );
-  }
-  return txHash ? String(txHash) : null;
-}
-
-/** Tries ElectroSwap's /trades endpoint for fast swap discovery, mutating `seenTradeHashes` in
- * place with whatever it processed. Returns true if it successfully talked to ElectroSwap (even
- * with zero new trades this tick) — the caller should NOT also run the getLogs fallback in that
- * case, to avoid double-announcing. Returns false if ElectroSwap isn't configured or the call
- * itself failed, meaning the caller should fall back to getLogs for this tick. */
-async function pollViaElectroSwap(ctx, wetnUsd, seenTradeHashes) {
-  if (!isElectroSwapConfigured()) return false;
-
-  const rawTrades = await getRecentTrades(CORE_TOKEN_ADDRESS, 25);
-  if (rawTrades == null) return false; // unconfigured or the call itself failed — fall back on-chain
-
-  const seen = new Set(seenTradeHashes);
-  const newHashes = [];
-  // Newest-first per the API's own summary ("Recent trades, newest first") — reversed so multiple
-  // new trades in one poll get announced in chronological order, same as the getLogs path's own
-  // ascending-block order.
-  for (const raw of [...rawTrades].reverse()) {
-    const txHash = extractTxHash(raw);
-    if (!txHash || seen.has(txHash)) continue;
-    newHashes.push(txHash);
-
-    try {
-      const receipt = await ctx.provider.getTransactionReceipt(txHash);
-      if (!receipt) continue;
-      for (const log of receipt.logs || []) {
-        if (String(log.address).toLowerCase() !== CORE_WETN_POOL_ADDRESS.toLowerCase()) continue;
-        if (log.topics?.[0] !== SWAP_TOPIC) continue;
-        await processSwapLog(ctx, log, wetnUsd);
-      }
-    } catch (err) {
-      console.error(`⚠️  Failed to process ElectroSwap-discovered trade ${txHash}:`, err.message);
-    }
-  }
-
-  const updated = [...seenTradeHashes, ...newHashes].slice(-MAX_SEEN_TRADE_HASHES);
-  seenTradeHashes.length = 0;
-  seenTradeHashes.push(...updated);
-  return true;
-}
 
 async function poll(ctx) {
   if (isPolling) return;
@@ -333,22 +273,8 @@ async function poll(ctx) {
 
     const saved = await getState(STATE_KEY);
     const seenTradeHashes = saved?.seenTradeHashes ? [...saved.seenTradeHashes] : [];
-
-    let usedElectroSwap = false;
-    try {
-      usedElectroSwap = await pollViaElectroSwap(ctx, wetnUsd, seenTradeHashes);
-    } catch (err) {
-      console.error("⚠️  [SwapWatcher] ElectroSwap discovery failed, falling back on-chain:", err.message);
-    }
-
-    if (usedElectroSwap) {
-      // Keeps the getLogs fallback's own block cursor from going stale while ElectroSwap is doing
-      // the actual discovery — see this file's own header comment on why a brief gap on failover
-      // (picking back up from ~now, not replaying everything missed while ElectroSwap was primary)
-      // is an acceptable tradeoff for a Telegram alert, not a financial record.
-      await setState(STATE_KEY, { lastBlock: safeBlock, seenTradeHashes });
-      return;
-    }
+    const seen = new Set(seenTradeHashes.map((h) => String(h).toLowerCase()));
+    const announcedThisPoll = new Set();
 
     let fromBlock = saved?.lastBlock ?? null;
 
@@ -368,8 +294,15 @@ async function poll(ctx) {
       const logs = await provider.getLogs({ address: CORE_WETN_POOL_ADDRESS, topics: [SWAP_TOPIC], fromBlock: start, toBlock: end });
 
       for (const log of logs) {
+        const txKey = String(log.transactionHash).toLowerCase();
+        // Already announced by a PREVIOUS poll (the ElectroSwap-based version just before this shipped,
+        // or before a reorg replay). `seen` is the persisted set from before this poll started, so a
+        // tx holding more than one Swap log for this pool is still fully announced in the poll that
+        // first sees it.
+        if (seen.has(txKey)) continue;
         try {
           await processSwapLog(ctx, log, wetnUsd);
+          announcedThisPoll.add(txKey);
         } catch (err) {
           console.error("⚠️  Failed to process swap log:", err.message);
         }
@@ -378,7 +311,9 @@ async function poll(ctx) {
       start = end + 1;
     }
 
-    await setState(STATE_KEY, { lastBlock: safeBlock, seenTradeHashes });
+    // Remember what this poll announced (newest last), capped.
+    const updated = [...seenTradeHashes, ...[...announcedThisPoll].filter((h) => !seen.has(h))].slice(-MAX_SEEN_TRADE_HASHES);
+    await setState(STATE_KEY, { lastBlock: safeBlock, seenTradeHashes: updated });
   } catch (err) {
     console.error("⚠️  Swap watcher poll failed:", err.message);
   } finally {
@@ -428,8 +363,7 @@ export async function startCoreClashSwapWatcher() {
   const ctx = { provider, pair, coreIsToken0, coreDecimals, coreSymbol, resolveDisplayName };
 
   console.log(
-    `💱 Core Clash swap watcher started (polling every ${SWAP_POLL_INTERVAL_MS / 1000}s, ` +
-      `${isElectroSwapConfigured() ? "ElectroSwap-first" : "on-chain only — ELECTROSWAP_API_KEY not set"})`
+    `💱 Core Clash swap watcher started (polling every ${SWAP_POLL_INTERVAL_MS / 1000}s, on-chain discovery — no ElectroSwap calls)`
   );
   poll(ctx);
   setInterval(() => poll(ctx), SWAP_POLL_INTERVAL_MS);
