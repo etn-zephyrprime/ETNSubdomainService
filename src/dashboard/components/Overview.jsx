@@ -4,11 +4,13 @@ import { green, orange, mutedLight, muted, panel2, border, error as errorColor }
 import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useDashboardStats, reconstructCumulativeTransactions, mergeDailyTransactionCounts } from "../hooks/useDashboardStats.js";
+import { useTvlHistory } from "../hooks/useTvlHistory.js";
+import { toDailyTvlSeries, summarizeTvl } from "../utils/tvlSeries.js";
 import { useDailyBlockStats } from "../hooks/useDailyBlockStats.js";
 import { useHourlyActivity } from "../hooks/useHourlyActivity.js";
 import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
 import { useCexAddresses } from "../hooks/useCexAddresses.js";
-import { formatCompact, formatInt, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
+import { formatCompact, formatInt, formatUsdCompact, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import TileChart from "./TileChart.jsx";
@@ -186,6 +188,7 @@ const METRICS = [
   { id: "gasPrice", label: "Gas Price", formatValue: (v) => `${v.toFixed(2)} gwei` },
   { id: "txsToday", label: "Txs (Last 7 Days)", formatValue: formatInt },
   { id: "validators", label: "Validators", formatValue: formatInt },
+  { id: "tvl", label: "TVL", formatValue: formatUsdCompact },
 ];
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -205,6 +208,7 @@ const TOP_TX_STEP = 10;
 export default function Overview({ onSelectAddress }) {
   const { getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks } = useBlockscout();
   const { getSnapshots } = useDashboardStats();
+  const { getTvlHistory } = useTvlHistory();
   const { getDailyBlockStats } = useDailyBlockStats();
   const { getHourlyActivity } = useHourlyActivity();
   const { getValidatorRewards } = useValidatorRewards();
@@ -213,6 +217,7 @@ export default function Overview({ onSelectAddress }) {
   const [stats, setStats] = useState(null);
   const [txChart, setTxChart] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
+  const [tvlPoints, setTvlPoints] = useState([]);
   const [dailyBlockStats, setDailyBlockStats] = useState(null);
   const [hourlyActivity, setHourlyActivity] = useState(null);
   const [validatorRewards, setValidatorRewards] = useState(null);
@@ -247,7 +252,7 @@ export default function Overview({ onSelectAddress }) {
     let cancelled = false;
     (async () => {
       try {
-        const [statsRes, txChartRes, indexingRes, txRes, blocksRes, snapshotsRes, dailyBlockStatsRes, hourlyActivityRes, validatorRewardsRes] = await Promise.all([
+        const [statsRes, txChartRes, indexingRes, txRes, blocksRes, snapshotsRes, dailyBlockStatsRes, hourlyActivityRes, validatorRewardsRes, tvlRes] = await Promise.all([
           getStats(),
           getTransactionsChart(),
           getIndexingStatus(),
@@ -257,6 +262,7 @@ export default function Overview({ onSelectAddress }) {
           getDailyBlockStats(),
           getHourlyActivity(),
           getValidatorRewards(),
+          getTvlHistory(), // never rejects — a failed fetch is just an empty list
         ]);
         if (cancelled) return;
         setStats(statsRes);
@@ -272,13 +278,14 @@ export default function Overview({ onSelectAddress }) {
         setTopTxByVolume(Array.isArray(hourlyActivityRes?.topTransactions) ? hourlyActivityRes.topTransactions : []);
         setTopTxSinceMs(hourlyActivityRes?.topTransactionsSinceMs ?? null);
         setValidatorRewards(validatorRewardsRes?.days || {});
+        setTvlPoints(tvlRes || []);
       } catch (err) {
         console.error("Failed to load network overview:", err);
         if (!cancelled) setLoadError("Couldn't load network data — try refreshing shortly.");
       }
     })();
     return () => { cancelled = true; };
-  }, [getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity, getValidatorRewards]);
+  }, [getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks, getSnapshots, getDailyBlockStats, getHourlyActivity, getValidatorRewards, getTvlHistory]);
 
   // Fetches one more page into the shared transactions pool if `count` isn't already covered by
   // what's loaded — a single page (50 items) comfortably covers RECENT_TX_STEP/TOP_TX_STEP-sized
@@ -357,8 +364,14 @@ export default function Overview({ onSelectAddress }) {
     const avgBlockTime = snapshots.map((s) => ({ label: s.timestamp, value: s.averageBlockTimeMs / 1000 }));
     const gasPrice = snapshots.map((s) => ({ label: s.timestamp, value: s.gasPriceAverage }));
 
-    return { totalTx, totalAddresses, avgBlockTime, gasPrice };
-  }, [stats, txChart, snapshots, dailyBlockStats]);
+    // One point per UTC day, so the chart's evenly spaced x-axis is an honest time axis (see
+    // toDailyTvlSeries).
+    const tvl = toDailyTvlSeries(tvlPoints);
+
+    return { totalTx, totalAddresses, avgBlockTime, gasPrice, tvl };
+  }, [stats, txChart, snapshots, dailyBlockStats, tvlPoints]);
+
+  const tvlSummary = useMemo(() => summarizeTvl(tvlPoints), [tvlPoints]);
 
   // 7-day headline total for the Txs tile — sums hourlyActivityCache.js's real per-hour counts
   // across the trailing 168 hours. null (tile shows "…") until most of that window is actually
@@ -418,6 +431,7 @@ export default function Overview({ onSelectAddress }) {
         case "gasPrice": return `${stats.gas_prices?.average} gwei`;
         case "txsToday": return txsLast7d != null ? formatInt(txsLast7d) : "…";
         case "validators": return totalValidatorsCount > 0 ? formatInt(totalValidatorsCount) : "…";
+        case "tvl": return tvlSummary.latest != null ? formatUsdCompact(tvlSummary.latest) : "…";
         default: return "…";
       }
     })();
@@ -445,6 +459,14 @@ export default function Overview({ onSelectAddress }) {
       : `Average block time (seconds) — ${snapshots.length} hourly snapshot(s) collected so far`,
     gasPrice: snapshots.length > 0 ? `Average gas price (gwei) — ${snapshots.length} hourly snapshot(s) collected so far` : "Collecting hourly snapshots — check back soon",
     txsToday: `Transactions per hour, last 7 days (darker = fewer, brighter = more) — ${hourlyCoverageHours} hour(s) of real data so far. Hover a cell for ETN transferred.`,
+    // What TVL means, and where each part of the line comes from: a backfill from DefiLlama's
+    // ElectroSwap V2 + V3 series, then this dashboard's own hourly measurement (see backend
+    // tvlHistory.js). The two methodologies differ slightly, so the caption says where they meet.
+    tvl: series.tvl.length > 0
+      ? `Total value locked in ElectroSwap V2 + V3 pools, daily — ${series.tvl.length} day(s)` +
+        `${tvlSummary.change24hPct != null ? ` · ${tvlSummary.change24hPct >= 0 ? "+" : ""}${tvlSummary.change24hPct.toFixed(2)}% over 24h` : ""}` +
+        `${tvlSummary.liveSinceDay ? `. Measured hourly by this dashboard since ${tvlSummary.liveSinceDay}; earlier days are from DefiLlama.` : ". From DefiLlama; this dashboard's own hourly tracking is starting."}`
+      : "Collecting TVL data — check back soon",
     validators: `Blocks produced per day, last 90 days — one line per validator, top 4 by blocks shown by default (toggle more below) — ${validatorRewardDaysTracked} day(s) of real data so far.`,
   };
 
@@ -473,7 +495,11 @@ export default function Overview({ onSelectAddress }) {
         onSelect={setActiveMetric}
         data={series[activeMetric] || []}
         formatValue={activeFormatValue}
-        formatLabel={formatChartDate}
+        // The TVL series spans two years, so its axis/tooltip labels need the year ("Sep 14, 2024"); every
+        // other tile is at most ~90 days and reads fine without it. It's also ~740 points, so a thinner line.
+        formatLabel={activeMetric === "tvl" ? (label) => formatChartDate(label, true) : formatChartDate}
+        strokeWidth={activeMetric === "tvl" ? 1.25 : undefined}
+        nonScalingStroke={activeMetric === "tvl"}
         chartCaption={captions[activeMetric]}
         loading={!stats}
         renderChart={renderChart}

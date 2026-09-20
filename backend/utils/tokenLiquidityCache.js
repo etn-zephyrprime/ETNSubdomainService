@@ -3,6 +3,7 @@ import { getPools, getBatchTokenPrices, isElectroSwapConfigured } from "./electr
 import { getTokenLiquidityCache, setTokenLiquidityCache } from "../state/tokenLiquidityState.js";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { recordTvlPoint } from "./tvlHistory.js";
 
 // Keeps a public JSON cache of total liquidity (USD) per token — backs the free Tokens tab
 // (TokenLeaderboard.jsx) sorting/display. Confirmed live (2026-09-18, real funded key) that
@@ -88,6 +89,10 @@ async function refreshAndPublish() {
     const liquidityUsd = {};
     let readFailures = 0;
     let unpriced = 0;
+    // TVL = every valued pool counted ONCE (liquidityUsd below credits each pool to BOTH its tokens, so
+    // it can't be summed for this). See tvlHistory.js.
+    let tvlUsd = 0;
+    let valuedPools = 0;
 
     await mapWithConcurrency(pools, RESERVE_READ_CONCURRENCY, async (pool) => {
       const { address, token0, token1 } = pool || {};
@@ -115,6 +120,8 @@ async function refreshAndPublish() {
         // of them.
         const poolLiquidityUsd = amount0 * price0 + amount1 * price1;
         if (!Number.isFinite(poolLiquidityUsd) || poolLiquidityUsd < 0) return;
+        tvlUsd += poolLiquidityUsd;
+        valuedPools++;
 
         const t0Addr = token0.address.toLowerCase();
         const t1Addr = token1.address.toLowerCase();
@@ -137,6 +144,7 @@ async function refreshAndPublish() {
     }
 
     await setTokenLiquidityCache(liquidityUsd);
+    await recordTvlPoint({ tvlUsd, valuedPools, totalPools: pools.length }); // never throws; guards against a degraded run itself
     console.log(
       `💧 Token liquidity cache updated — ${Object.keys(liquidityUsd).length} token(s) across ${pools.length} pool(s)` +
         (unpriced > 0 || readFailures > 0 ? ` (${unpriced} unpriced, ${readFailures} read failure(s))` : "")

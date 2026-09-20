@@ -11,7 +11,7 @@ import SparklineChart from "./SparklineChart.jsx";
 // heatmap) both need an entirely different chart type, not just different data, when they're the
 // active tile. Omit it (or return a falsy value) to keep the default SparklineChart — every
 // existing caller (AddressLookup.jsx, Overview.jsx's other 4 metrics) is unaffected.
-export default function TileChart({ tiles, activeId, onSelect, data, formatValue, formatLabel, chartCaption, loading, renderChart }) {
+export default function TileChart({ tiles, activeId, onSelect, data, formatValue, formatLabel, chartCaption, loading, renderChart, strokeWidth, nonScalingStroke }) {
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -49,7 +49,7 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
         ) : renderChart ? (
           renderChart()
         ) : (
-          <SparklineChart data={data} height={140} formatValue={formatValue} formatLabel={formatLabel} />
+          <SparklineChart data={data} height={140} formatValue={formatValue} formatLabel={formatLabel} strokeWidth={strokeWidth} nonScalingStroke={nonScalingStroke} />
         )}
       </div>
     </div>
