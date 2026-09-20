@@ -51,6 +51,8 @@ const NFT_LOGOS_BY_ADDRESS = {
   "0x3fc7665b1f6033ff901405cddf31c2e04b8a2ab4": "VerdantKin_Logo2.webp", // Verdant Kin
   "0x077bdbd567f9e50f756fb72dce5a4abcaec4a17c": "clubCarsLogo.webp", // CLUB CARS
   "0x9d4e0280b3732fceaeeecd870613ab30bcda7a31": "planetEtnAePFP.gif", // Planet ETN AE
+  "0x1760321f42a9be39b39c779d92373769d829ef48": "crespiLogo.webp", // The Three Graces Of The Sea (SEAS)
+  "0x939548a645ad1c3164d82a168735db1558c9efdd": "ElectroneumLogo.webp", // Electroneum x Rarible
 };
 
 
