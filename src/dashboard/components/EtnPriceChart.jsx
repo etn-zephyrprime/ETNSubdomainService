@@ -201,7 +201,7 @@ export default function EtnPriceChart() {
         <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted }}>
           <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />ETN {isLongRange || metric === "price" ? "Price" : "Market Cap"}
         </div>
-        <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 12px", maxWidth: "100%" }}>
           {!isLongRange && (
             <div style={{ display: "flex", gap: 6 }}>
               {METRICS.map((m) => (
