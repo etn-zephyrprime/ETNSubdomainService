@@ -20,6 +20,7 @@
 // has no reason to ever proxy anything in the bucket outside its own published caches (NFT images
 // are served via <img src>, which never needed CORS at all, so those stay a direct R2 read).
 import express from "express";
+import { noteTokenPricesRequested } from "./tokenPriceCache.js";
 
 // Same env var R2Upload.js already reads (process.env, not the frontend's import.meta.env —
 // this is a plain Node backend module, not a Vite-processed one) — the bucket's public r2.dev
@@ -64,6 +65,9 @@ router.get("/r2/:filename", async (req, res) => {
   if (!ALLOWED_FILES.has(filename)) {
     return res.status(404).json({ error: "Unknown cache file" });
   }
+  // token-prices.json is refreshed on demand (only while someone is reading it) — tell its cache a
+  // reader showed up. Before the in-memory cache check below, so cached responses still count.
+  if (filename === "token-prices.json") noteTokenPricesRequested();
   if (!R2_PUBLIC_URL) {
     return res.status(503).json({ error: "R2 not configured" });
   }

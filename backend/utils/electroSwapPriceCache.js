@@ -85,12 +85,44 @@ export async function getCachedBatchTokenPrices(tokenAddresses) {
   }
   if (toFetch.length === 0) return result;
 
-  const fetched = await getBatchTokenPrices(toFetch);
+  // A batch call costs 100 credits BASE plus 10 per token, so the base is what a second, separate call
+  // wastes. Any registered piggyback that is due right now adds its own addresses to THIS call (paying only
+  // the 10/token part) instead of making a call of its own — see registerPricePiggyback.
+  const due = piggybacks.filter((p) => p.isDue());
+  const requested = new Set(toFetch);
+  const riders = new Set();
+  for (const p of due) {
+    for (const raw of p.addresses) {
+      const address = raw.toLowerCase();
+      if (!requested.has(address)) riders.add(address);
+    }
+  }
+  const allAddresses = [...requested, ...riders];
+
+  const fetched = await getBatchTokenPrices(allAddresses);
   const expiresAt = Date.now() + CACHE_TTL_MS;
-  for (const address of toFetch) {
+  for (const address of allAddresses) {
     const price = fetched.get(address) ?? null;
     cache.set(address, { price, expiresAt });
-    if (price) result.set(address, price);
+    if (price && requested.has(address)) result.set(address, price);
+  }
+  for (const p of due) {
+    try {
+      p.onPrices(fetched);
+    } catch (err) {
+      console.warn("⚠️  ElectroSwap price piggyback handler failed:", err.message);
+    }
   }
   return result;
+}
+
+const piggybacks = [];
+
+/** Lets a slower, lower-priority price refresh ride along on another caller's batch call instead of paying
+ * the 100-credit base for a call of its own. `isDue()` says whether it wants prices right now;
+ * `addresses` are the tokens it wants; `onPrices(map)` receives the whole Map<lowercased address,
+ * {usd, etn}> that call returned (only invoked when a real call was made — the registrant still needs its
+ * own fallback for when nothing else happens to be calling). */
+export function registerPricePiggyback({ isDue, addresses, onPrices }) {
+  piggybacks.push({ isDue, addresses, onPrices });
 }
