@@ -22,6 +22,7 @@ import { startTokenLocksCache } from "./utils/tokenLocksCache.js";
 import { startTvlHistory } from "./utils/tvlHistory.js";
 import { startEtnBridge } from "./utils/etnBridge.js";
 import { startHyperlaneBridge } from "./utils/hyperlaneBridge.js";
+import { startTeamWalletDestinations } from "./utils/teamWalletsDestinations.js";
 import { startTeamWalletsCache } from "./utils/teamWalletsCache.js";
 import { startTeamWalletsBalanceHistory } from "./utils/teamWalletsBalanceHistory.js";
 import { startExpiryAlertScheduler } from "./utils/expiryAlertScheduler.js";
@@ -130,6 +131,7 @@ app.listen(PORT, () => {
   startTeamWalletsBalanceHistory();
   startEtnBridge();
   startHyperlaneBridge();
+  startTeamWalletDestinations();
   startExpiryAlertScheduler();
   startDashboardStatsCache();
   startNftSalesCache();

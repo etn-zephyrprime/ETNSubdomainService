@@ -49,6 +49,7 @@ const ALLOWED_FILES = new Set([
   "team-wallets-balance-history.json",
   "etn-bridge.json",
   "hyperlane-bridge.json",
+  "team-wallet-destinations.json",
 ]);
 
 // Short in-memory cache — these are the exact same objects R2 itself already serves with

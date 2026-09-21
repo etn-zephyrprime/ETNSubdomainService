@@ -9,6 +9,7 @@ import { TEAM_WALLET_ADDRESSES } from "../utils/teamWallets.js";
 import StatCard from "./StatCard.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
 import TeamBalanceChart from "./TeamBalanceChart.jsx";
+import TeamDestinations from "./TeamDestinations.jsx";
 
 // Re-polls the published cache periodically — backend/utils/teamWalletsCache.js itself only
 // refreshes every 10 minutes by default, so this just needs to be frequent enough to pick up a
@@ -147,6 +148,19 @@ export default function TeamWalletsTab({ onSelectAddress }) {
   const smallWallets = sortedWallets.filter((w) => balanceOf(w) < MIN_LISTED_BALANCE_WEI);
   const listedWallets = showSmallWallets ? sortedWallets : bigWallets;
 
+  // Every wallet on the static team list (the list the "ETN Team" tag uses), joined with its live balance when the
+  // backend feed has one — so the list is complete even for a wallet the feed failed to fetch this cycle.
+  const balanceByAddress = new Map((wallets || []).map((w) => [w.address.toLowerCase(), w]));
+  const allTeamWallets = TEAM_WALLET_ADDRESSES.map((address) => {
+    const live = balanceByAddress.get(address.toLowerCase());
+    return { address, ensName: live?.ensName || null, balanceWei: live ? balanceOf(live) : null };
+  }).sort((a, b) => {
+    if (a.balanceWei === null && b.balanceWei === null) return 0;
+    if (a.balanceWei === null) return 1;
+    if (b.balanceWei === null) return -1;
+    return b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0;
+  });
+
   const movementCutoffMs = Date.now() - MOVEMENT_MAX_AGE_DAYS * 86400000;
   const recentMovements = movements.filter((m) => {
     const t = Date.parse(m.timestamp);
@@ -177,6 +191,8 @@ export default function TeamWalletsTab({ onSelectAddress }) {
 
       <TeamBalanceChart />
 
+      <TeamDestinations onSelectAddress={onSelectAddress} />
+
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
         Wallets
       </div>
@@ -200,6 +216,28 @@ export default function TeamWalletsTab({ onSelectAddress }) {
             </button>
           </div>
         )}
+      </div>
+
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
+        All Suspected Team Wallets ({TEAM_WALLET_ADDRESSES.length})
+      </div>
+      <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+        The complete list the dashboard treats as team wallets (anyone shown with an <TeamWalletTag style={{ fontSize: 8 }} /> tag) — full addresses, largest balance first.
+      </div>
+      <div style={{ padding: "0 14px 6px", background: panel2, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 24 }}>
+        {allTeamWallets.map((w) => (
+          <div key={w.address} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${border}`, flexWrap: "wrap" }}>
+            <div style={{ minWidth: 0 }}>
+              <a href={`${EXPLORER_BASE_URL}/address/${w.address}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#fff", fontFamily: "monospace", textDecoration: "none", wordBreak: "break-all" }}>
+                {w.address}
+              </a>
+              {w.ensName && <span style={{ fontSize: 10, color: muted, marginLeft: 8 }}>{w.ensName}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: w.balanceWei === null ? muted : green, fontWeight: 700, whiteSpace: "nowrap" }}>
+              {w.balanceWei === null ? "—" : `${formatEtnBalance(w.balanceWei)} ETN`}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
