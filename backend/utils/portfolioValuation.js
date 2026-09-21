@@ -24,6 +24,7 @@ import { getCachedBatchTokenPrices } from "./electroSwapPriceCache.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
+import { getLastKnownPrice, recordLastKnownPrice } from "./lastKnownPrices.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // MUST stay byte-for-byte in sync with src/dashboard/utils/format.js's SPAM_NAME_PATTERN — kept as
@@ -40,15 +41,16 @@ function isSpamTokenName(name) {
 // particular), not just the GeckoTerminal discovery burst dexPriceQuote.js already caches away.
 const MAX_PRICED_TOKENS_PER_WALLET = 50;
 
-// LAST-KNOWN-GOOD values. A price lookup can fail for a minute or ten (ElectroSwap's key gets rate-limited or
+// LAST-KNOWN PRICES. A price lookup can fail for a minute or ten (ElectroSwap's key gets rate-limited or
 // suspended and the shared breaker blanks every caller; the GeckoTerminal fallback is rate-limited too). Before
-// this, a token that couldn't be priced simply contributed $0 — and a staked position that couldn't be valued
-// vanished — so the daily summary's total could swing by thousands of dollars from one bad minute. Now a token
-// or DeFi position that can't be valued right now is carried at its last successfully-valued figure (up to
-// STALE_MAX_MS old) instead of dropping to zero. In memory only: a restart starts empty, and the digest
-// scheduler handles that case by waiting for a complete valuation rather than trusting a partial one.
+// this, a token that couldn't be priced simply contributed $0 — so the daily summary's total could swing by
+// thousands of dollars from one bad minute. Now a token that can't be priced live is valued at the last price it
+// WAS priced at (lastKnownPrices.js — persisted to R2, so a restart doesn't lose them) and the valuation is
+// flagged `usedStale`; only a token that has never been priced still counts as unpriced.
+//
+// A staked/farmed position that can't be valued at all (a failed read, not just a missing price — prices are
+// covered by the same store inside defiPositionValuation.js) is carried at its last successful figure, in memory.
 const STALE_MAX_MS = 48 * 60 * 60 * 1000;
-const lastGoodTokenUsd = new Map(); // lowercased token address -> { usd (per token), at }
 const lastGoodDefiUsd = new Map(); // lowercased wallet -> { usd, at }
 const fresh = (entry) => entry && Date.now() - entry.at <= STALE_MAX_MS;
 
@@ -58,7 +60,7 @@ const fresh = (entry) => entry && Date.now() - entry.at <= STALE_MAX_MS;
  * getCoveredWallets) — ETN + every priced fungible token holding, up to
  * MAX_PRICED_TOKENS_PER_WALLET per wallet, PLUS the live value of any currently-open yield-farm/
  * staking position (see defiPositionValuation.js) — funds moved into one of those contracts don't
- * show up as a wallet token balance at all otherwise. `usedStale` is true when some figure is a carried-forward last-known-good value (see lastGoodTokenUsd) rather than a live one. `hasUnpriced` mirrors CoreTierPortfolio.jsx's own
+ * show up as a wallet token balance at all otherwise. `usedStale` is true when some figure is a carried-forward last-known-good value (see lastKnownPrices.js) rather than a live one. `hasUnpriced` mirrors CoreTierPortfolio.jsx's own
  * convention: true when at least one non-zero holding couldn't be priced (ETN/USD cache not
  * ready, a token has no ElectroSwap pool, or the per-wallet cap was hit), meaning the real total
  * is AT LEAST this much, not exactly this much. The `{ totalUsd: 0, hasUnpriced: false }` empty
@@ -115,15 +117,15 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       const electroSwapPrice = electroSwapPrices.get(addressLc)?.usd;
       if (electroSwapPrice != null) {
         totalUsd += amount * electroSwapPrice;
-        lastGoodTokenUsd.set(addressLc, { usd: electroSwapPrice, at: Date.now() });
+        recordLastKnownPrice(addressLc, electroSwapPrice);
         continue;
       }
 
-      // Carries a token at its last known price when it can't be priced now (see lastGoodTokenUsd above).
-      const priceUnavailable = () => {
-        const last = lastGoodTokenUsd.get(addressLc);
-        if (fresh(last)) {
-          totalUsd += amount * last.usd;
+      // Values a token at its last known price when it can't be priced now (see lastKnownPrices.js).
+      const priceUnavailable = async () => {
+        const last = await getLastKnownPrice(addressLc);
+        if (last != null) {
+          totalUsd += amount * last;
           usedStale = true;
         } else {
           hasUnpriced = true;
@@ -133,7 +135,7 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       // Fall back to the on-chain read for anything ElectroSwap didn't price — same behavior this
       // app had before ElectroSwap's API existed.
       if (etnUsd == null) {
-        priceUnavailable();
+        await priceUnavailable();
         continue;
       }
       try {
@@ -143,14 +145,14 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
         // near-guaranteed miss. Falls straight to the on-chain path.
         const tokenEtnPrice = await getTokenEtnPrice(provider, tb.token.address, { skipElectroSwap: true });
         if (tokenEtnPrice == null) {
-          priceUnavailable();
+          await priceUnavailable();
           continue;
         }
         totalUsd += amount * tokenEtnPrice * etnUsd;
-        lastGoodTokenUsd.set(addressLc, { usd: tokenEtnPrice * etnUsd, at: Date.now() });
+        recordLastKnownPrice(addressLc, tokenEtnPrice * etnUsd);
       } catch (err) {
         console.warn(`⚠️  Portfolio valuation: price lookup failed for ${tb.token?.address}:`, err.message);
-        priceUnavailable();
+        await priceUnavailable();
       }
     }
 

@@ -46,6 +46,7 @@ import Decimal from "decimal.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { getLastKnownPrice, recordLastKnownPrice } from "../utils/lastKnownPrices.js";
 import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
 import { getDistinctFarmPositions, getDistinctStakingContracts } from "../db/defiActivity.js";
 
@@ -107,10 +108,21 @@ function isFullRangeFarm(meta) {
 // path — getTokenEtnPrice already does the pool-discovery/liquidity-ranking work, this only adds
 // the ETN->USD leg.
 async function getLiveTokenUsdPrice(tokenAddress) {
-  const [etnPrice, etnUsdCache] = await Promise.all([getTokenEtnPrice(getProvider(), tokenAddress), getEtnPriceCache()]);
-  const etnUsd = etnUsdCache?.usd;
-  if (etnPrice == null || !Number.isFinite(etnUsd) || etnUsd <= 0) return null;
-  return etnPrice * etnUsd;
+  // A live lookup that fails (rate-limited price sources) or comes back empty falls back to the last price this
+  // token was successfully priced at (lastKnownPrices.js), so a staked/farmed position isn't valued at nothing —
+  // and dropped from the portfolio total — for as long as the price sources are down.
+  try {
+    const [etnPrice, etnUsdCache] = await Promise.all([getTokenEtnPrice(getProvider(), tokenAddress), getEtnPriceCache()]);
+    const etnUsd = etnUsdCache?.usd;
+    if (etnPrice != null && Number.isFinite(etnUsd) && etnUsd > 0) {
+      const usd = etnPrice * etnUsd;
+      recordLastKnownPrice(tokenAddress, usd);
+      return usd;
+    }
+  } catch (err) {
+    console.warn(`⚠️  DeFi position valuation: live price lookup failed for ${tokenAddress}, trying last known:`, err.message);
+  }
+  return getLastKnownPrice(tokenAddress);
 }
 
 async function decimalsFor(tokenAddress) {
