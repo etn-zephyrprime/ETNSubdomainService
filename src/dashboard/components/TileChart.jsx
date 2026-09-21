@@ -1,5 +1,5 @@
 import React from "react";
-import { green, greenGlow, muted, mutedLight, panel2, border } from "../theme.js";
+import { green, greenGlow, muted, mutedLight, panel2, border, error as red } from "../theme.js";
 import SparklineChart from "./SparklineChart.jsx";
 
 // A row of clickable stat tiles sharing one chart underneath — clicking a tile swaps which
@@ -35,6 +35,13 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
                 {tile.label}
               </div>
               <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{tile.value}</div>
+              {/* Optional small 7-day change marker (Overview passes it; per-wallet tiles don't). `change7d` null =
+                  not enough history yet, shown as an em dash. */}
+              {tile.changeText !== undefined && (
+                <div style={{ fontSize: 10, fontWeight: 700, marginTop: 3, color: tile.change7d == null || tile.changeNeutral || Math.abs(tile.change7d) < 0.05 ? mutedLight : tile.change7d > 0 ? green : red }}>
+                  <span style={{ color: muted, fontWeight: 600 }}>7D</span> {tile.changeText}
+                </div>
+              )}
             </button>
           );
         })}
