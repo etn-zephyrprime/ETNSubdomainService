@@ -5,21 +5,10 @@ import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
 import { useTokenLocks } from "../hooks/useTokenLocks.js";
+import { lockBadgeText } from "../utils/lockStatus.js";
 import { formatCompact, formatUsdPrice, shortHash, isSpamTokenName } from "../utils/format.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import NeonButton from "../../components/NeonButton.jsx";
-
-// Same best-effort date formatting as TokenDetail.jsx's own formatLockStatus, kept short for the
-// list row's tight width (a full "Locked until <date>" line, like the detail page shows, doesn't
-// fit here alongside the token name/address).
-function lockBadgeText(lockInfo) {
-  if (!lockInfo || lockInfo.count === 0) return null;
-  if (lockInfo.latestUnlockAt) {
-    const d = new Date(lockInfo.latestUnlockAt);
-    return `Until ${d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
-  }
-  return `${lockInfo.count} lock${lockInfo.count === 1 ? "" : "s"}`;
-}
 
 const CATEGORIES = [
   { id: "tokens", label: "Tokens", type: "ERC-20" },
