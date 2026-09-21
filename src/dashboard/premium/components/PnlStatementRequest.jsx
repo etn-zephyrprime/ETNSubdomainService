@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
-import { FileText, ExternalLink, Plus, X } from "lucide-react";
+import { FileText, Sparkles, Plus, X } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import PnlStatementProgress from "./PnlStatementProgress.jsx";
@@ -9,7 +9,7 @@ import { useOwnedNames } from "../../../hooks/useOwnedNames.js";
 import { computeNodeForName } from "../../../utils/ens.js";
 import { PERIOD_TYPES, computePeriodBoundaries, isPeriodElapsed } from "../../../utils/periodTypes.js";
 import { PNL_BACKEND_URL } from "../../../config.js";
-import { green, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
+import { green, greenGlow, panel, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
 
 const inputStyle = {
   width: "100%",
@@ -227,13 +227,32 @@ export default function PnlStatementRequest({ wallet }) {
 
       <PnlStatementProgress wallet={wallet} refreshToken={progressRefreshToken} />
 
+      {/* Same pill button as the Core Tier tab's "View Demo" (CoreTierPortfolio.jsx) — an <a> rather than a
+          <button> only because the demo statement opens in its own tab. */}
       <a
         href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
         target="_blank"
         rel="noopener noreferrer"
-        style={{ color: green, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12, textDecoration: "none", marginBottom: 14 }}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "7px 14px",
+          borderRadius: 20,
+          border: `1px solid ${green}`,
+          background: green,
+          color: panel,
+          fontSize: 12,
+          fontWeight: 800,
+          letterSpacing: 0.2,
+          textDecoration: "none",
+          cursor: "pointer",
+          boxShadow: `0 0 16px ${greenGlow}`,
+          marginBottom: 14,
+        }}
       >
-        <ExternalLink size={12} /> View a demo statement
+        <Sparkles size={13} />
+        View Demo Statement
       </a>
 
       <div style={{ fontSize: 13, color: mutedLight, marginBottom: 6 }}>

@@ -52,6 +52,8 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
     setWalletFilter("all");
   }, [wallet.isConnected, wallet.account]);
 
+  const membershipPanel = <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />;
+
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
@@ -119,13 +121,16 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
           nothing to coordinate here) — having every section expanded on load turned this page
           into a wall of numbers before a member had even picked which one they cared about. */}
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {/* Someone who isn't (yet) a member — including a visitor with no wallet connected — sees the Premium
+            Membership panel FIRST, above the portfolio it unlocks; an active member gets it back at the bottom. */}
+        {!hasAccess && membershipPanel}
         <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onViewDemo={onViewDemo} />
         <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
-        <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />
+        {hasAccess && membershipPanel}
         <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
       </div>
     </div>

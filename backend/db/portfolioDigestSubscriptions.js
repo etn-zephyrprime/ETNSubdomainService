@@ -42,8 +42,9 @@ export async function getEnabledDigestSubscriptions() {
  * this value (see the migration's own header comment on why "since the last digest", not "since
  * midnight"). */
 export async function recordDigestSent(ownerWallet, totalUsd, sentDate) {
+  // `totalUsd` null = keep the existing baseline (used when today's valuation was incomplete).
   await query(
-    `UPDATE portfolio_digest_subscriptions SET last_sent_date = $2, last_sent_total_usd = $3, updated_at = now() WHERE owner_wallet = $1`,
+    `UPDATE portfolio_digest_subscriptions SET last_sent_date = $2, last_sent_total_usd = COALESCE($3, last_sent_total_usd), updated_at = now() WHERE owner_wallet = $1`,
     [ownerWallet.toLowerCase(), sentDate, totalUsd]
   );
 }
