@@ -76,27 +76,39 @@ export default function HyperlaneBridgeTab() {
     return [...set];
   }, [data, tokens, tokenFilter]);
 
+  // Every chain that is an ACTIVE ROUTE for the selected token(s) — plus any that has carried traffic in the past —
+  // whether or not it moved anything recently. (USDT is routed to Ethereum only; USDC to Ethereum, Base and
+  // Avalanche.) Read from the contracts' own enrolled-domain lists, so a new route appears by itself.
   const allChains = useMemo(() => {
-    const set = new Set();
-    for (const t of tokens) for (const d of data?.current?.[t.symbol]?.domains ?? []) set.add(d);
-    return chainOptions(events, [...set]);
-  }, [data, tokens, events]);
+    const forToken = selectedTokenIndex === null ? events : events.filter((e) => e[1] === selectedTokenIndex);
+    return chainOptions(forToken, enrolled);
+  }, [events, selectedTokenIndex, enrolled]);
+  // A chain picked for one token may not be a route for another: fall back to "all chains" rather than show nothing.
+  const activeChain = chainFilter !== null && allChains.some((c) => c.domain === chainFilter) ? chainFilter : null;
 
   // A chain that isn't active for the selected token still shows in the filter, just with no traffic.
   const rows = useMemo(
-    () => (events.length || tokens.length ? dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: chainFilter, nowMs }) : []),
-    [events, tokens, selectedTokenIndex, chainFilter, nowMs]
+    () => (events.length || tokens.length ? dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: activeChain, nowMs }) : []),
+    [events, tokens, selectedTokenIndex, activeChain, nowMs]
   );
   const sum = useMemo(() => totals(rows), [rows]);
   const breakdown = useMemo(
     () => chainSummary(events, { tokenIndex: selectedTokenIndex, nowMs, enrolledDomains: enrolled }),
     [events, selectedTokenIndex, nowMs, enrolled]
   );
-  const allTimeNet = useMemo(() => netAllTime(events, { tokenIndex: selectedTokenIndex, domain: chainFilter }), [events, selectedTokenIndex, chainFilter]);
+  const allTimeNet = useMemo(() => netAllTime(events, { tokenIndex: selectedTokenIndex, domain: activeChain }), [events, selectedTokenIndex, activeChain]);
 
-  const scopeLabel = `${tokenFilter ?? "USDT + USDC"}${chainFilter === null ? "" : ` via ${chainName(chainFilter)}`}`;
+  const panels = useMemo(
+    () => allChains.map((c) => {
+      const chainRows = dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: c.domain, nowMs });
+      return { ...c, rows: chainRows, sum: totals(chainRows) };
+    }),
+    [allChains, events, selectedTokenIndex, nowMs]
+  );
+
+  const scopeLabel = `${tokenFilter ?? "USDT + USDC"}${activeChain === null ? "" : ` via ${chainName(activeChain)}`}`;
   const hasData = data && events.length > 0;
-  const chainNote = chainFilter === null ? "across all chains" : `via ${chainName(chainFilter)}`;
+  const chainNote = activeChain === null ? "across all chains" : `via ${chainName(activeChain)}`;
 
   return (
     <div>
@@ -128,9 +140,9 @@ export default function HyperlaneBridgeTab() {
             <div>
               <div style={{ ...sectionLabel, marginBottom: 6 }}>Chain</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                <Pill active={chainFilter === null} onClick={() => setChainFilter(null)}>All chains</Pill>
+                <Pill active={activeChain === null} onClick={() => setChainFilter(null)}>All chains</Pill>
                 {allChains.map((c) => (
-                  <Pill key={c.domain} active={chainFilter === c.domain} onClick={() => setChainFilter(c.domain)}>{c.name}</Pill>
+                  <Pill key={c.domain} active={activeChain === c.domain} onClick={() => setChainFilter(c.domain)}>{c.name}</Pill>
                 ))}
               </div>
             </div>
@@ -145,9 +157,9 @@ export default function HyperlaneBridgeTab() {
             <StatCard label="Inflow · 12 Months" value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
             <StatCard label="Outflow · 12 Months" value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
             <StatCard
-              label={chainFilter === null ? "Bridged Supply" : "All-Time Net"}
+              label={activeChain === null ? "Bridged Supply" : "All-Time Net"}
               value={<span style={{ color: netColor(allTimeNet) }}>{signedUsd(allTimeNet)}</span>}
-              sub={chainFilter === null ? `${tokenFilter ?? "USDT + USDC"} currently on Electroneum` : `Since launch, ${scopeLabel}`}
+              sub={activeChain === null ? `${tokenFilter ?? "USDT + USDC"} currently on Electroneum` : `Since launch, ${scopeLabel}`}
             />
           </div>
 
@@ -158,6 +170,31 @@ export default function HyperlaneBridgeTab() {
               <LegendSwatch color={green} label="Net inflow (more bridged in)" />
               <LegendSwatch color={red} label="Net outflow (more bridged out)" />
             </div>
+          </div>
+
+          <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <div style={{ ...sectionLabel, marginBottom: 4 }}>Net Flow per Day, by Chain — {tokenFilter ?? "USDT + USDC"}</div>
+            <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+              Every chain {tokenFilter ?? "USDT and USDC"} can be bridged through on Hyperlane, including any with no activity. Each chart has its own scale. Click a chain to focus it above.
+            </div>
+            {panels.map((c, i) => (
+              <div key={c.domain} style={{ borderTop: i === 0 ? "none" : `1px solid ${border}`, paddingTop: i === 0 ? 0 : 10, marginTop: i === 0 ? 0 : 10 }}>
+                <button
+                  onClick={() => setChainFilter(activeChain === c.domain ? null : c.domain)}
+                  style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", gap: "2px 12px", width: "100%", background: "transparent", border: "none", padding: "0 0 6px", cursor: "pointer", textAlign: "left" }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 800, color: activeChain === c.domain ? green : "#fff" }}>{c.name}</span>
+                  <span style={{ fontSize: 11, color: mutedLight }}>
+                    {c.sum.count === 0 ? "No activity in the last 12 months" : (
+                      <>
+                        Net <span style={{ color: netColor(c.sum.net), fontWeight: 800 }}>{signedUsd(c.sum.net)}</span> · In {formatUsdCompact(c.sum.inflow)} · Out {formatUsdCompact(c.sum.outflow)} · {formatInt(c.sum.count)} transfers
+                      </>
+                    )}
+                  </span>
+                </button>
+                <HyperlaneChart rows={c.rows} height={80} compact showXAxis={i === panels.length - 1} />
+              </div>
+            ))}
           </div>
 
           <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
@@ -176,8 +213,8 @@ export default function HyperlaneBridgeTab() {
                   {breakdown.map((c) => (
                     <tr
                       key={c.domain}
-                      onClick={() => setChainFilter(chainFilter === c.domain ? null : c.domain)}
-                      style={{ borderTop: `1px solid ${border}`, cursor: "pointer", textAlign: "right", background: chainFilter === c.domain ? "rgba(24,187,26,0.08)" : undefined }}
+                      onClick={() => setChainFilter(activeChain === c.domain ? null : c.domain)}
+                      style={{ borderTop: `1px solid ${border}`, cursor: "pointer", textAlign: "right", background: activeChain === c.domain ? "rgba(24,187,26,0.08)" : undefined }}
                     >
                       <td style={{ textAlign: "left", padding: "9px 0", color: "#fff", fontWeight: 700 }}>{c.name}</td>
                       <td style={{ color: mutedLight }}>{formatUsdCompact(c.inflow)}</td>

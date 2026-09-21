@@ -8,7 +8,6 @@ import { monthTicks } from "../utils/bridgeSeries.js";
 // left, DOWN (red) for the opposite. Drawn in a 0-100 x 0-100 viewBox stretched to the container with every
 // label/marker as an HTML overlay positioned in % — same approach as BridgeChart.jsx/SparklineChart.jsx.
 const PAD = 6; // % kept clear above the tallest bar / below the lowest
-const HEIGHT = 240;
 const Y_AXIS_WIDTH = 50;
 
 export const signedUsd = (v) => (v < 0 ? "−" : v > 0 ? "+" : "") + formatUsdCompact(Math.abs(v));
@@ -16,7 +15,10 @@ const usdFull = (v) => formatUsdCompact(v);
 const dayLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const monthLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", year: "2-digit", timeZone: "UTC" });
 
-export default function HyperlaneChart({ rows }) {
+// `height` is the plot height in px; `compact` = a small per-chain panel (fewer y ticks); `showXAxis` = month labels
+// under the plot (only the bottom panel of a stack needs them).
+export default function HyperlaneChart({ rows, height = 240, compact = false, showXAxis = true }) {
+  const HEIGHT = height;
   const wrapRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -29,7 +31,8 @@ export default function HyperlaneChart({ rows }) {
   const xPct = (i) => (i / n) * 100;
   const barW = (100 / n) * 0.78;
 
-  const yTickValues = useMemo(() => niceTicks(lo, hi), [lo, hi]);
+  const quiet = useMemo(() => rows.every((r) => r.net === 0), [rows]); // nothing to scale: just the zero line
+  const yTickValues = useMemo(() => (quiet ? [0] : niceTicks(lo, hi, compact ? 2 : 5)), [lo, hi, quiet, compact]);
   const xTicks = useMemo(() => monthTicks(startMs, endMs, 2), [startMs, endMs]);
 
   const onMove = (clientX) => {
@@ -41,7 +44,7 @@ export default function HyperlaneChart({ rows }) {
   const hover = hoverIndex === null ? null : rows[hoverIndex];
 
   return (
-    <div style={{ position: "relative", height: HEIGHT + 22 }}>
+    <div style={{ position: "relative", height: HEIGHT + (showXAxis ? 22 : 0) }}>
       <div style={{ position: "absolute", left: 0, top: 0, width: Y_AXIS_WIDTH - 6, height: HEIGHT }}>
         {yTickValues.map((v) => (
           <div key={v} style={{ position: "absolute", right: 0, top: `${y(v)}%`, transform: "translateY(-50%)", fontSize: 10, color: v === 0 ? mutedLight : muted, fontWeight: v === 0 ? 700 : 400, whiteSpace: "nowrap" }}>
@@ -100,11 +103,13 @@ export default function HyperlaneChart({ rows }) {
         )}
       </div>
 
-      <div style={{ position: "absolute", left: Y_AXIS_WIDTH, right: 0, top: HEIGHT + 6, height: 14 }}>
-        {xTicks.map((t) => (
-          <div key={t} style={{ position: "absolute", left: `${((t - startMs) / (endMs - startMs)) * 100}%`, transform: "translateX(-50%)", fontSize: 10, color: muted, whiteSpace: "nowrap" }}>{monthLabel(t)}</div>
-        ))}
-      </div>
+      {showXAxis && (
+        <div style={{ position: "absolute", left: Y_AXIS_WIDTH, right: 0, top: HEIGHT + 6, height: 14 }}>
+          {xTicks.map((t) => (
+            <div key={t} style={{ position: "absolute", left: `${((t - startMs) / (endMs - startMs)) * 100}%`, transform: "translateX(-50%)", fontSize: 10, color: muted, whiteSpace: "nowrap" }}>{monthLabel(t)}</div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
