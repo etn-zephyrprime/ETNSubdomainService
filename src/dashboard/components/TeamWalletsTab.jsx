@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { green, blue, mutedLight, muted, panel2, border } from "../theme.js";
+import { green, blue, mutedLight, muted, panel2, border, error as red } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWallets } from "../hooks/useTeamWallets.js";
 import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
@@ -60,23 +60,35 @@ function WalletRow({ wallet, onSelectAddress }) {
 // One merged ETN movement — every row involves at least one team wallet by construction (see
 // teamWalletsCache.js), so each side gets its own tag only when THAT side is actually one, letting
 // a team-to-team transfer read differently at a glance from a team-to-outside one.
+//
+// Colour-coded by what it means for the TEAM's total: OUT (team -> outside, red, ETN leaving the team's hands),
+// IN (outside -> team, green) and INTERNAL (team -> team, blue: it only moves ETN between the team's own
+// wallets, so the combined balance doesn't change).
+function movementKind(movement) {
+  if (movement.fromIsTeam && !movement.toIsTeam) return { label: "OUT", sign: "−", color: red, bg: "rgba(255,107,107,0.06)" };
+  if (!movement.fromIsTeam && movement.toIsTeam) return { label: "IN", sign: "+", color: green, bg: "rgba(24,187,26,0.06)" };
+  return { label: "INTERNAL", sign: "", color: blue, bg: "rgba(62,166,255,0.05)" };
+}
+
 function MovementRow({ movement }) {
+  const kind = movementKind(movement);
   return (
     <a
       href={`${EXPLORER_BASE_URL}/tx/${movement.hash}`}
       target="_blank"
       rel="noreferrer"
-      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}`, textDecoration: "none", gap: 10 }}
+      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", margin: "0 -10px", borderBottom: `1px solid ${border}`, borderLeft: `3px solid ${kind.color}`, background: kind.bg, textDecoration: "none", gap: 10 }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: kind.color, border: `1px solid ${kind.color}`, borderRadius: 4, padding: "1px 5px" }}>{kind.label}</span>
         <span style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(movement.from)}</span>
         {movement.fromIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
-        <span style={{ fontSize: 11, color: muted }}>→</span>
+        <span style={{ fontSize: 11, color: kind.color }}>→</span>
         <span style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(movement.to)}</span>
         {movement.toIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 12, color: green, fontWeight: 700 }}><TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(movement.value)} ETN</div>
+        <div style={{ fontSize: 12, color: kind.color, fontWeight: 700 }}><TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{kind.sign}{formatEtnBalance(movement.value)} ETN</div>
         <div style={{ fontSize: 10, color: muted }}>{timeAgo(movement.timestamp)}</div>
       </div>
     </a>
@@ -191,16 +203,19 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-        Recent ETN Movements
+        Recent ETN Team Wallet Movements
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-        Transfers of 1,000,000 ETN or more from the last 12 months only.
+        Transfers of 1,000,000 ETN or more from the last 12 months only.{" "}
+        <span style={{ color: red, fontWeight: 700 }}>OUT</span> = leaving the team's wallets,{" "}
+        <span style={{ color: green, fontWeight: 700 }}>IN</span> = arriving,{" "}
+        <span style={{ color: blue, fontWeight: 700 }}>INTERNAL</span> = between team wallets (combined balance unchanged).
       </div>
       <div style={{ padding: "0 14px", background: panel2, border: `1px solid ${border}`, borderRadius: 12 }}>
         {wallets === null ? (
           <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>Loading…</div>
         ) : recentMovements.length === 0 ? (
-          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No movements of 1,000,000+ ETN found in the last 12 months.</div>
+          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No team wallet movements of 1,000,000+ ETN found in the last 12 months.</div>
         ) : (
           recentMovements.map((m) => <MovementRow key={m.hash} movement={m} />)
         )}

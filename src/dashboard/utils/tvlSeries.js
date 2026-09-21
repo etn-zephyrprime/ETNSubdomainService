@@ -34,6 +34,22 @@ export function toDailyTvlSeries(points) {
   return out;
 }
 
+/** Percent change in TVL over `days` days (e.g. 7), against the reading genuinely about that far back (within
+ * 12h); null when the history doesn't reach back that far. */
+export function tvlChangeOverDays(points, days) {
+  const sorted = valid(points);
+  if (sorted.length < 2) return null;
+  const latest = sorted[sorted.length - 1];
+  const target = timeOf(latest.t) - days * DAY_MS;
+  let best = null;
+  for (const p of sorted) {
+    if (p === latest) continue;
+    const gap = Math.abs(timeOf(p.t) - target);
+    if (gap <= 12 * 3600e3 && (best == null || gap < Math.abs(timeOf(best.t) - target))) best = p;
+  }
+  return best && best.tvlUsd > 0 ? ((latest.tvlUsd - best.tvlUsd) / best.tvlUsd) * 100 : null;
+}
+
 /** Headline figures from the raw points: the latest value, its change over ~24h, and the day this
  * dashboard's own live tracking began (everything before is the DefiLlama backfill). Null fields where
  * there isn't enough data to say. The 24h reference must be genuinely about a day back (within 6h of it)

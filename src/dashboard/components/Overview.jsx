@@ -5,7 +5,8 @@ import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useDashboardStats, reconstructCumulativeTransactions, mergeDailyTransactionCounts } from "../hooks/useDashboardStats.js";
 import { useTvlHistory } from "../hooks/useTvlHistory.js";
-import { toDailyTvlSeries, summarizeTvl } from "../utils/tvlSeries.js";
+import { toDailyTvlSeries, summarizeTvl, tvlChangeOverDays } from "../utils/tvlSeries.js";
+import { snapshotChanges, validatorCountChange, formatChange } from "../utils/overviewChanges.js";
 import { useDailyBlockStats } from "../hooks/useDailyBlockStats.js";
 import { useHourlyActivity } from "../hooks/useHourlyActivity.js";
 import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
@@ -420,6 +421,24 @@ export default function Overview({ onSelectAddress }) {
     ? new Set(Object.values(validatorRewards).flatMap((d) => Object.keys(d.validators || {}))).size
     : 0;
 
+  // The small "7D +5.2%" marker on each tile — real readings about a week apart, or null (shown as "7D —") while
+  // there isn't a genuine reading that far back yet. Network stats come from the hourly snapshots, TVL from its
+  // own history, validators from the per-day validator data.
+  const changes7d = {
+    ...snapshotChanges(snapshots, {
+      totalTransactions: Number(stats?.total_transactions),
+      totalAddresses: Number(stats?.total_addresses),
+      totalBlocks: Number(stats?.total_blocks),
+      averageBlockTimeMs: Number(stats?.average_block_time),
+      gasPriceAverage: Number(stats?.gas_prices?.average),
+    }),
+    validators: validatorCountChange(validatorRewards),
+    tvl: tvlChangeOverDays(tvlPoints, 7),
+  };
+  const CHANGE_KEYS = { totalTx: "totalTx", totalAddresses: "totalAddresses", totalBlocks: "totalBlocks", avgBlockTime: "avgBlockTime", gasPrice: "gasPrice", txsToday: "txsLast7d", validators: "validators", tvl: "tvl" };
+  // Block time and gas price moving up or down isn't inherently good or bad, so those two aren't coloured.
+  const NEUTRAL_CHANGES = new Set(["avgBlockTime", "gasPrice"]);
+
   const tiles = METRICS.map((m) => {
     const value = (() => {
       if (!stats) return "…";
@@ -435,7 +454,8 @@ export default function Overview({ onSelectAddress }) {
         default: return "…";
       }
     })();
-    return { id: m.id, label: m.label, value };
+    const change = changes7d[CHANGE_KEYS[m.id]] ?? null;
+    return { id: m.id, label: m.label, value, change7d: change, changeText: formatChange(change), changeNeutral: NEUTRAL_CHANGES.has(m.id) };
   });
 
   const dailyCoverageDays = series.totalTx.length;
