@@ -8,6 +8,7 @@ import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useLiquidityLock } from "../hooks/useLiquidityLock.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, shortHash } from "../utils/format.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
+import { lockStatusText } from "../utils/lockStatus.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import TokenPriceChart from "./TokenPriceChart.jsx";
@@ -53,22 +54,6 @@ function holderUsdValue(value, decimals, priceUsd) {
   } catch {
     return null;
   }
-}
-
-// Renders the liquidity-lock stat card's value — count/latestUnlockAt come from
-// backend/utils/tokenLiquidityLockRouter.js's own best-effort parse of an unconfirmed ElectroSwap
-// response shape (see that file's own comment), so this stays deliberately vague about anything
-// beyond "how many locks" and "the latest one's unlock date, if it could be determined" rather than
-// presenting details it can't be confident about.
-function formatLockStatus(lock) {
-  if (!lock) return "Checking…";
-  if (!lock.available) return "Unavailable";
-  if (lock.count === 0) return "No locks found";
-  if (lock.latestUnlockAt) {
-    const d = new Date(lock.latestUnlockAt);
-    return `Locked until ${d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
-  }
-  return `${lock.count} lock${lock.count === 1 ? "" : "s"} found`;
 }
 
 export default function TokenDetail({ address, onBack, onSelectAddress }) {
@@ -194,7 +179,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
             {token.type !== "ERC-721" && token.type !== "ERC-1155" && (
               <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
                 <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Liquidity Lock</div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatLockStatus(liquidityLock)}</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{lockStatusText(liquidityLock)}</div>
               </div>
             )}
           </div>

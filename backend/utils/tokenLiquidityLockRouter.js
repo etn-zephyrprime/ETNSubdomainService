@@ -34,22 +34,42 @@ const cache = new Map(); // lowercased address -> { expiresAt, result }
 // protecting anything, so including it would overstate how much liquidity is actually still locked
 // right now. Exported so tokenLocksCache.js's own bulk refresh shares this exact parsing logic
 // rather than a second, possibly-drifting copy.
+//
+// BURNED liquidity shows up here as a "lock" whose created + duration is nonsense rather than a real
+// date — a huge sentinel duration (rendered as e.g. 18 Dec 12019) or zeroed/missing fields (rendered
+// as 1 Jan 1970, DCNT). Those aren't unlock dates, they mean "never unlocks", so a lock whose
+// computed unlock falls outside a plausible window is counted as PERMANENT (`permanentCount`) and
+// kept out of `latestUnlockAt`, which only ever holds a real date. The chain launched in 2024, so
+// anything before 2020 can't be genuine; anything more than 100 years out is a "forever" sentinel.
+// src/dashboard/utils/lockStatus.js hand-mirrors these bounds for cache entries written before this
+// existed — keep the two in sync.
+const MIN_PLAUSIBLE_UNLOCK_MS = Date.UTC(2020, 0, 1);
+const MAX_PLAUSIBLE_UNLOCK_YEARS = 100;
+
 export function normalizeLocks(rawLocks) {
-  if (!Array.isArray(rawLocks)) return { count: 0, latestUnlockAt: null };
+  if (!Array.isArray(rawLocks)) return { count: 0, permanentCount: 0, latestUnlockAt: null };
 
   const activeLocks = rawLocks.filter((l) => l?.active !== false);
+  const maxUnlockMs = Date.now() + MAX_PLAUSIBLE_UNLOCK_YEARS * 365.25 * 24 * 60 * 60 * 1000;
 
   let latestUnlockMs = null;
+  let permanentCount = 0;
   for (const lock of activeLocks) {
     const created = Number(lock?.created);
     const duration = Number(lock?.duration);
-    if (!Number.isFinite(created) || !Number.isFinite(duration)) continue;
+    if (!Number.isFinite(created) || !Number.isFinite(duration)) continue; // unparseable = unknown, not burned
     const unlockMs = (created + duration) * 1000;
+    // Not finite covers a duration so large the sum overflows to Infinity.
+    if (!Number.isFinite(unlockMs) || unlockMs < MIN_PLAUSIBLE_UNLOCK_MS || unlockMs > maxUnlockMs) {
+      permanentCount++;
+      continue;
+    }
     if (latestUnlockMs == null || unlockMs > latestUnlockMs) latestUnlockMs = unlockMs;
   }
 
   return {
     count: activeLocks.length,
+    permanentCount,
     latestUnlockAt: latestUnlockMs != null ? new Date(latestUnlockMs).toISOString() : null,
   };
 }

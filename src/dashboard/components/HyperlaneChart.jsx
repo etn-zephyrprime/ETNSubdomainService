@@ -14,6 +14,20 @@ export const signedUsd = (v) => (v < 0 ? "−" : v > 0 ? "+" : "") + formatUsdCo
 const usdFull = (v) => formatUsdCompact(v);
 const dayLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const monthLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", year: "2-digit", timeZone: "UTC" });
+const shortDayLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+
+// The 12-month view labels months; the 7/30/90-day views label days instead (a month tick would leave a 7-day
+// chart with no labels at all). `step` keeps roughly 5-7 labels on the axis. Each day tick sits mid-bar.
+const DAY_MS = 86400000;
+const MONTH_VIEW_MIN_DAYS = 120;
+function axisTicks(rows, startMs, endMs) {
+  const n = rows.length;
+  if (n >= MONTH_VIEW_MIN_DAYS) return monthTicks(startMs, endMs, 2).map((t) => ({ t, label: monthLabel(t) }));
+  const step = n <= 7 ? 1 : n <= 31 ? 5 : 15;
+  const ticks = [];
+  for (let i = 0; i < n; i += step) ticks.push({ t: rows[i].t + DAY_MS / 2, label: shortDayLabel(rows[i].t) });
+  return ticks;
+}
 
 // `height` is the plot height in px; `compact` = a small per-chain panel (fewer y ticks); `showXAxis` = month labels
 // under the plot (only the bottom panel of a stack needs them).
@@ -33,7 +47,7 @@ export default function HyperlaneChart({ rows, height = 240, compact = false, sh
 
   const quiet = useMemo(() => rows.every((r) => r.net === 0), [rows]); // nothing to scale: just the zero line
   const yTickValues = useMemo(() => (quiet ? [0] : niceTicks(lo, hi, compact ? 2 : 5)), [lo, hi, quiet, compact]);
-  const xTicks = useMemo(() => monthTicks(startMs, endMs, 2), [startMs, endMs]);
+  const xTicks = useMemo(() => axisTicks(rows, startMs, endMs), [rows, startMs, endMs]);
 
   const onMove = (clientX) => {
     const rect = wrapRef.current?.getBoundingClientRect();
@@ -105,8 +119,8 @@ export default function HyperlaneChart({ rows, height = 240, compact = false, sh
 
       {showXAxis && (
         <div style={{ position: "absolute", left: Y_AXIS_WIDTH, right: 0, top: HEIGHT + 6, height: 14 }}>
-          {xTicks.map((t) => (
-            <div key={t} style={{ position: "absolute", left: `${((t - startMs) / (endMs - startMs)) * 100}%`, transform: "translateX(-50%)", fontSize: 10, color: muted, whiteSpace: "nowrap" }}>{monthLabel(t)}</div>
+          {xTicks.map((tick) => (
+            <div key={tick.t} style={{ position: "absolute", left: `${((tick.t - startMs) / (endMs - startMs)) * 100}%`, transform: "translateX(-50%)", fontSize: 10, color: muted, whiteSpace: "nowrap" }}>{tick.label}</div>
           ))}
         </div>
       )}

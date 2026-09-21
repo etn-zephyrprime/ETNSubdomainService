@@ -44,7 +44,7 @@ export async function getTokenLocksCache() {
   }
 }
 
-/** Publishes `{ locksByAddress: { [tokenAddress]: { count, latestUnlockAt } }, updatedAt }` —
+/** Publishes `{ locksByAddress: { [tokenAddress]: { count, permanentCount, latestUnlockAt } }, updatedAt }` —
  * keyed by lowercased token address, same convention as tokenLiquidityState.js's own map. A token
  * absent from `locksByAddress` simply hasn't been checked (or has zero locks) — see
  * tokenLocksCache.js's own comment on why every checked token is included even at count 0. */
