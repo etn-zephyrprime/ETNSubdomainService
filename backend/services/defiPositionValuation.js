@@ -46,6 +46,7 @@ import Decimal from "decimal.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { getLastKnownPrice, recordLastKnownPrice } from "../utils/lastKnownPrices.js";
 import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
 import { getDistinctFarmPositions, getDistinctStakingContracts } from "../db/defiActivity.js";
 
@@ -107,10 +108,21 @@ function isFullRangeFarm(meta) {
 // path — getTokenEtnPrice already does the pool-discovery/liquidity-ranking work, this only adds
 // the ETN->USD leg.
 async function getLiveTokenUsdPrice(tokenAddress) {
-  const [etnPrice, etnUsdCache] = await Promise.all([getTokenEtnPrice(getProvider(), tokenAddress), getEtnPriceCache()]);
-  const etnUsd = etnUsdCache?.usd;
-  if (etnPrice == null || !Number.isFinite(etnUsd) || etnUsd <= 0) return null;
-  return etnPrice * etnUsd;
+  // A live lookup that fails (rate-limited price sources) or comes back empty falls back to the last price this
+  // token was successfully priced at (lastKnownPrices.js), so a staked/farmed position isn't valued at nothing —
+  // and dropped from the portfolio total — for as long as the price sources are down.
+  try {
+    const [etnPrice, etnUsdCache] = await Promise.all([getTokenEtnPrice(getProvider(), tokenAddress), getEtnPriceCache()]);
+    const etnUsd = etnUsdCache?.usd;
+    if (etnPrice != null && Number.isFinite(etnUsd) && etnUsd > 0) {
+      const usd = etnPrice * etnUsd;
+      recordLastKnownPrice(tokenAddress, usd);
+      return usd;
+    }
+  } catch (err) {
+    console.warn(`⚠️  DeFi position valuation: live price lookup failed for ${tokenAddress}, trying last known:`, err.message);
+  }
+  return getLastKnownPrice(tokenAddress);
 }
 
 async function decimalsFor(tokenAddress) {
@@ -126,6 +138,13 @@ async function decimalsFor(tokenAddress) {
   }
 }
 
+// Returned by the per-position valuers when a position COULD NOT be valued (a failed read, a rate-limited
+// price lookup) — as opposed to null, which means "nothing open here" (withdrawn, zero staked). Kept apart so
+// getOpenDefiPositionsUsd can tell "no position" from "position we failed to look at": a failure used to
+// return null too, so a staked/farmed position silently VANISHED from the portfolio total whenever a price
+// lookup was rate-limited, and the daily summary swung by that position's whole value with no warning.
+const POSITION_FAILED = Symbol("position-failed");
+
 /** One open YieldFarm position's current value, or null if it's fully withdrawn (liquidity 0),
  * isn't full-range (see isFullRangeFarm — never guesses), or any read along the way fails. Never
  * throws — a single bad position shouldn't blank the rest of a wallet's DeFi valuation. */
@@ -136,7 +155,7 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     if (farmer.liquidity === 0n) return null; // fully withdrawn — nothing open here anymore
 
     const meta = await getFarmMeta(contractAddress, farmId);
-    if (!meta) return null;
+    if (!meta) return POSITION_FAILED; // metadata read failed (logged in getFarmMeta) — not the same as "nothing open"
     if (!isFullRangeFarm(meta)) {
       console.warn(
         `⚠️  DeFi position valuation: farm ${farmId}@${contractAddress} (${meta.name || "unnamed"}) isn't full-range ` +
@@ -176,7 +195,7 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     };
   } catch (err) {
     console.warn(`⚠️  DeFi position valuation: failed for farm ${farmId}@${contractAddress}:`, err.message);
-    return null;
+    return POSITION_FAILED;
   }
 }
 
@@ -207,7 +226,7 @@ async function valueStakingPosition(contractAddress, walletAddress) {
     };
   } catch (err) {
     console.warn(`⚠️  DeFi position valuation: failed for staking contract ${contractAddress}:`, err.message);
-    return null;
+    return POSITION_FAILED;
   }
 }
 
@@ -216,7 +235,7 @@ async function valueStakingPosition(contractAddress, walletAddress) {
  * missing piece behind Combined Holdings / Total Portfolio Balance not reflecting staked/farmed
  * funds (see this file's own header comment). Returns `{ positions, totalUsd, hasUnpriced }` —
  * `positions` is `[]` (not an error) for a wallet with no DeFi activity at all, or none still open.
- * `totalUsd` is a Decimal (or null if every open position is unpriced) — sum of only the priced
+ * `failedCount` is how many open-or-unknown positions couldn't be valued this call (already reflected in `hasUnpriced`). `totalUsd` is a Decimal (or null if every open position is unpriced) — sum of only the priced
  * positions/legs, following this app's own "omit rather than fake" convention throughout; a member
  * whose 3 farm legs are only 2/3 priced still sees SOMETHING here, flagged incomplete via
  * `hasUnpriced`, not a blank stretch.
@@ -246,10 +265,11 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
     ...farmCandidates.map((c) => valueYieldFarmPosition(c.contractAddress, c.farmId, trackedWallet)),
     ...stakingCandidates.map((c) => valueStakingPosition(c, trackedWallet)),
   ]);
-  const positions = results.filter((p) => p != null);
+  const failedCount = results.filter((p) => p === POSITION_FAILED).length;
+  const positions = results.filter((p) => p != null && p !== POSITION_FAILED);
 
   let totalUsd = null;
-  let hasUnpriced = false;
+  let hasUnpriced = failedCount > 0; // a position we couldn't value means the total is incomplete
   for (const p of positions) {
     if (p.hasUnpriced) hasUnpriced = true;
     if (p.totalUsd != null) totalUsd = (totalUsd ?? new Decimal(0)).plus(p.totalUsd);
@@ -259,5 +279,5 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
   // reads this directly (portfolioValuation.js, via Number()) or relays it through an HTTP JSON
   // response (premiumDashboardRouter.js) — sees the same plain, unambiguous type, matching this
   // codebase's own convention elsewhere (e.g. pnlSnapshotService.js's return shape).
-  return { positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced };
+  return { positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced, failedCount };
 }

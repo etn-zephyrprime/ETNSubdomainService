@@ -38,6 +38,11 @@ async function checkOneOwner(provider, ownerWallet, alerts) {
     return;
   }
 
+  // An incomplete valuation (some holdings couldn't be priced/read this tick) understates the total — comparing it
+  // to a baseline would fire false "down X%" alerts and then reset the baseline to the understated figure.
+  // Skip until a complete one comes back (checked again on the next tick).
+  if (hasUnpriced) return;
+
   for (const alert of alerts) {
     if (alert.baselineUsd <= 0) continue; // can't compute a % move off a zero baseline — avoid a divide-by-zero/Infinity
     const pctMove = ((totalUsd - alert.baselineUsd) / alert.baselineUsd) * 100;

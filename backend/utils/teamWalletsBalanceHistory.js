@@ -51,7 +51,7 @@ async function fetchJson(path) {
 // LATEST entry for that date, i.e. its real end-of-day balance) — sparse by design; the caller
 // forward-fills the gaps, since "no entry that day" means "balance unchanged from the day before",
 // not zero.
-async function fetchWalletBalanceEvents(address, cutoffDate) {
+export async function fetchWalletBalanceEvents(address, cutoffDate) {
   const perDate = new Map();
   let params = null;
 
@@ -79,20 +79,28 @@ async function fetchWalletBalanceEvents(address, cutoffDate) {
 
 // Forward-fills a sparse per-date balance map into one entry per day across [startDate, endDate]
 // inclusive — a day with no balance-changing event keeps the most recent known balance, not 0.
-// Days before the wallet's own earliest known entry (or if it has no entries at all) genuinely
-// get 0 — real, not assumed, since fetchWalletBalanceEvents walked all the way back to either the
-// wallet's genesis or the requested cutoff, whichever came first.
-function forwardFill(perDate, startDate, endDate) {
+//
+// The balance a wallet ALREADY HAD when the window opens matters as much as the events inside it:
+// fetchWalletBalanceEvents stops at the first page containing an entry older than the cutoff, so
+// `perDate` also holds the wallet's most recent pre-window entries — and the newest of those is its
+// real opening balance. Starting from 0 instead (as this once did) made every wallet that simply held
+// ETN through the cutoff "appear" on its first in-window event, so the chart's first day understated
+// the total by hundreds of millions of ETN and then jumped up as each wallet showed up. A wallet with
+// no entry at all on or before the start genuinely had 0 (fetchWalletBalanceEvents walked back to its
+// genesis or past the cutoff).
+export function forwardFill(perDate, startDate, endDate) {
   const filled = new Map();
+
   let current = 0n;
-  let started = false;
+  let openingDate = null;
+  for (const date of perDate.keys()) {
+    if (date <= startDate && (openingDate === null || date > openingDate)) openingDate = date;
+  }
+  if (openingDate !== null) current = BigInt(perDate.get(openingDate));
 
   for (let d = startDate; d <= endDate; d = addDays(d, 1)) {
-    if (perDate.has(d)) {
-      current = BigInt(perDate.get(d));
-      started = true;
-    }
-    filled.set(d, started ? current : 0n);
+    if (perDate.has(d)) current = BigInt(perDate.get(d));
+    filled.set(d, current);
   }
 
   return filled;

@@ -72,6 +72,27 @@ const RATE_LIMIT_COOLDOWN_MS = process.env.ELECTROSWAP_RATE_LIMIT_COOLDOWN_MS
 let suspendedUntil = 0;
 let loggedSuspensionOnce = false;
 
+// ElectroSwap has been answering "Too many requests in flight at once for this key" and "Too many requests.
+// Slow down." whenever several of this backend's callers (the price backfill's candle calls, valuations,
+// alert checks, the liquidity/locks caches) overlapped — and each refusal opens the shared breaker above,
+// blanking EVERY caller's prices for a minute (which is what made portfolio valuations drop tokens). So no
+// more than MAX_IN_FLIGHT requests are ever in flight together; the rest queue here instead of being refused.
+const MAX_IN_FLIGHT = process.env.ELECTROSWAP_MAX_IN_FLIGHT ? parseInt(process.env.ELECTROSWAP_MAX_IN_FLIGHT, 10) : 2;
+let inFlight = 0;
+const slotWaiters = [];
+async function acquireSlot() {
+  if (inFlight < MAX_IN_FLIGHT) {
+    inFlight++;
+    return;
+  }
+  await new Promise((resolve) => slotWaiters.push(resolve)); // the releasing call hands its slot straight to us
+}
+function releaseSlot() {
+  const next = slotWaiters.shift();
+  if (next) next();
+  else inFlight--;
+}
+
 function isSuspensionError(message) {
   return /suspend/i.test(message || "");
 }
@@ -145,7 +166,9 @@ async function callElectroSwapApi(path) {
 
   let lastErr;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    await acquireSlot();
     try {
+      if (Date.now() < suspendedUntil) return null; // the breaker opened while this call was queued — don't add to it
       return await callElectroSwapApiOnce(path);
     } catch (err) {
       lastErr = err;
@@ -162,6 +185,8 @@ async function callElectroSwapApi(path) {
         console.warn(`⚠️  ElectroSwap API call failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying:`, err.message);
         await sleep(RETRY_DELAY_MS);
       }
+    } finally {
+      releaseSlot();
     }
   }
   throw lastErr;

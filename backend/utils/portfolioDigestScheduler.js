@@ -26,6 +26,12 @@ const CHECK_INTERVAL_MS = process.env.PORTFOLIO_DIGEST_CHECK_INTERVAL_MS
 // being the middle of the night in Asia-Pacific timezones either — a reasonable global compromise,
 // not a precisely researched choice.
 const DIGEST_HOUR_UTC = process.env.PORTFOLIO_DIGEST_HOUR_UTC ? parseInt(process.env.PORTFOLIO_DIGEST_HOUR_UTC, 10) : 12;
+// A valuation that couldn't price/read everything is NOT a number worth reporting or comparing against: it
+// used to be sent (and stored as tomorrow's baseline) as-is, so one rate-limited price lookup made the "total"
+// drop by thousands and then jump back the next day. Now an incomplete valuation is retried on every tick
+// (every CHECK_INTERVAL_MS) until it comes back complete; only if it is STILL incomplete at this UTC hour is it
+// sent anyway — marked "≈", with no comparison line, and without touching the stored baseline.
+const GIVE_UP_HOUR_UTC = process.env.PORTFOLIO_DIGEST_GIVE_UP_HOUR_UTC ? parseInt(process.env.PORTFOLIO_DIGEST_GIVE_UP_HOUR_UTC, 10) : 20;
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 
 function todayUtcDateString() {
@@ -49,17 +55,24 @@ async function checkOneSubscription(provider, sub, today) {
   const chatId = await getNotisLinkedChatId(sub.ownerWallet);
   if (chatId == null) return; // not linked — retried every tick until they link, so nothing is lost by not recording a send
 
-  let totalUsd, hasUnpriced;
+  let totalUsd, hasUnpriced, usedStale;
   try {
-    ({ totalUsd, hasUnpriced } = await getPortfolioUsdValue(provider, sub.ownerWallet));
+    ({ totalUsd, hasUnpriced, usedStale } = await getPortfolioUsdValue(provider, sub.ownerWallet));
   } catch (err) {
     console.warn(`⚠️  Portfolio digest: valuation failed for ${sub.ownerWallet}:`, err.message);
     return;
   }
 
+  if (hasUnpriced && new Date().getUTCHours() < GIVE_UP_HOUR_UTC) {
+    console.warn(`⚠️  Portfolio digest: valuation for ${sub.ownerWallet} is incomplete (some holdings couldn't be priced) — holding the digest and retrying next check`);
+    return; // nothing recorded, so the next tick tries again
+  }
+
   const prefix = hasUnpriced ? "≈ " : "";
   let changeLine = "_First digest — no prior comparison yet._";
-  if (sub.lastSentTotalUsd != null) {
+  if (hasUnpriced) {
+    changeLine = "_No comparison today — some holdings couldn't be priced._";
+  } else if (sub.lastSentTotalUsd != null) {
     const changeUsd = totalUsd - sub.lastSentTotalUsd;
     const changePct = sub.lastSentTotalUsd > 0 ? (changeUsd / sub.lastSentTotalUsd) * 100 : null;
     const arrow = changeUsd >= 0 ? "📈" : "📉";
@@ -70,11 +83,13 @@ async function checkOneSubscription(provider, sub, today) {
   await sendNotisDirectMessage(
     chatId,
     `📊 *Daily Portfolio Summary*\n\n${prefix}${fmtUsd(totalUsd)}\n\n${changeLine}` +
-      `${hasUnpriced ? "\n\n_Some holdings couldn't be priced — real total may be higher._" : ""}\n\n` +
+      `${hasUnpriced ? "\n\n_Some holdings couldn't be priced — real total may be higher._" : ""}` +
+      `${usedStale ? "\n\n_A few prices are from a recent snapshot._" : ""}\n\n` +
       `[Dashboard](${DASHBOARD_URL}/premium)`
   );
 
-  await recordDigestSent(sub.ownerWallet, totalUsd, today);
+  // Only a COMPLETE total becomes tomorrow's comparison baseline; an incomplete one just marks today as sent.
+  await recordDigestSent(sub.ownerWallet, hasUnpriced ? null : totalUsd, today);
 }
 
 let isRunning = false;

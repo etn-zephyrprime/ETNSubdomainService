@@ -15,6 +15,19 @@ import TeamBalanceChart from "./TeamBalanceChart.jsx";
 // fresh publish shortly after it happens, not to poll Blockscout itself.
 const POLL_INTERVAL_MS = 60000;
 
+// Wallets holding less than this are tucked behind a "show more" button, and movements older than
+// MOVEMENT_MAX_AGE_DAYS aren't listed (a year is also the balance chart's window).
+const MIN_LISTED_BALANCE_WEI = 1000n * 10n ** 18n; // 1,000 ETN
+const MOVEMENT_MAX_AGE_DAYS = 365;
+
+function balanceOf(wallet) {
+  try {
+    return BigInt(wallet.balance || "0");
+  } catch {
+    return 0n;
+  }
+}
+
 function WalletRow({ wallet, onSelectAddress }) {
   return (
     <button
@@ -81,6 +94,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
   const [movements, setMovements] = useState([]);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const [showSmallWallets, setShowSmallWallets] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +126,20 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       return sum;
     }
   }, 0n);
+
+  const sortedWallets = [...(wallets || [])].sort((a, b) => {
+    const diff = balanceOf(b) - balanceOf(a);
+    return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+  });
+  const bigWallets = sortedWallets.filter((w) => balanceOf(w) >= MIN_LISTED_BALANCE_WEI);
+  const smallWallets = sortedWallets.filter((w) => balanceOf(w) < MIN_LISTED_BALANCE_WEI);
+  const listedWallets = showSmallWallets ? sortedWallets : bigWallets;
+
+  const movementCutoffMs = Date.now() - MOVEMENT_MAX_AGE_DAYS * 86400000;
+  const recentMovements = movements.filter((m) => {
+    const t = Date.parse(m.timestamp);
+    return !Number.isFinite(t) || t >= movementCutoffMs; // an unparseable date isn't evidence it's old
+  });
 
   return (
     <div>
@@ -147,33 +175,34 @@ export default function TeamWalletsTab({ onSelectAddress }) {
           ) : wallets.length === 0 ? (
             <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No wallet data available yet.</div>
           ) : (
-            [...wallets]
-              .sort((a, b) => {
-                try {
-                  const diff = BigInt(b.balance || "0") - BigInt(a.balance || "0");
-                  return diff > 0n ? 1 : diff < 0n ? -1 : 0;
-                } catch {
-                  return 0;
-                }
-              })
-              .map((w) => <WalletRow key={w.address} wallet={w} onSelectAddress={onSelectAddress} />)
+            listedWallets.map((w) => <WalletRow key={w.address} wallet={w} onSelectAddress={onSelectAddress} />)
           )}
         </div>
+        {wallets !== null && smallWallets.length > 0 && (
+          <div style={{ padding: "8px 14px 0", textAlign: "center" }}>
+            <button
+              onClick={() => setShowSmallWallets((v) => !v)}
+              style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 8, color: mutedLight, fontSize: 12, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+            >
+              {showSmallWallets ? "Show fewer" : `Show ${smallWallets.length} more (under 1,000 ETN)`}
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
         Recent ETN Movements
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
-        Transfers of 1,000,000 ETN or more only.
+        Transfers of 1,000,000 ETN or more from the last 12 months only.
       </div>
       <div style={{ padding: "0 14px", background: panel2, border: `1px solid ${border}`, borderRadius: 12 }}>
         {wallets === null ? (
           <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>Loading…</div>
-        ) : movements.length === 0 ? (
-          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No movements of 1,000,000+ ETN found recently.</div>
+        ) : recentMovements.length === 0 ? (
+          <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No movements of 1,000,000+ ETN found in the last 12 months.</div>
         ) : (
-          movements.map((m) => <MovementRow key={m.hash} movement={m} />)
+          recentMovements.map((m) => <MovementRow key={m.hash} movement={m} />)
         )}
       </div>
     </div>
