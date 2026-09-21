@@ -6,7 +6,16 @@ import HyperlaneChart, { signedUsd } from "./HyperlaneChart.jsx";
 import { useHyperlaneBridge } from "../hooks/useHyperlaneBridge.js";
 import { formatInt, formatUsdCompact, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
-import { chainName, chainOptions, chainSummary, dailyFlows, netAllTime, totals } from "../utils/hyperlaneSeries.js";
+import { WINDOW_DAYS, chainName, chainOptions, chainSummary, dailyFlows, netAllTime, totals } from "../utils/hyperlaneSeries.js";
+
+// Time-range filter. Everything on the tab (charts, stat cards, per-chain panels and table) follows it; the
+// default stays the full rolling 12 months. `label` is the pill, `long` reads in the section headings.
+const RANGES = [
+  { days: 7, label: "7D", long: "7 Days" },
+  { days: 30, label: "30D", long: "30 Days" },
+  { days: 90, label: "90D", long: "90 Days" },
+  { days: WINDOW_DAYS, label: "12M", long: "12 Months" },
+];
 
 // The published file refreshes every 10 minutes; this just needs to be frequent enough to pick that up.
 const POLL_INTERVAL_MS = 60000;
@@ -52,6 +61,8 @@ export default function HyperlaneBridgeTab() {
   const [data, setData] = useState(undefined); // undefined = loading, null = failed
   const [tokenFilter, setTokenFilter] = useState(null); // token symbol, null = all
   const [chainFilter, setChainFilter] = useState(null); // Hyperlane domain, null = all
+  const [rangeDays, setRangeDays] = useState(WINDOW_DAYS);
+  const range = RANGES.find((r) => r.days === rangeDays) ?? RANGES[RANGES.length - 1];
 
   useEffect(() => {
     let cancelled = false;
@@ -88,22 +99,22 @@ export default function HyperlaneBridgeTab() {
 
   // A chain that isn't active for the selected token still shows in the filter, just with no traffic.
   const rows = useMemo(
-    () => (events.length || tokens.length ? dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: activeChain, nowMs }) : []),
-    [events, tokens, selectedTokenIndex, activeChain, nowMs]
+    () => (events.length || tokens.length ? dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: activeChain, nowMs, days: range.days }) : []),
+    [events, tokens, selectedTokenIndex, activeChain, nowMs, range.days]
   );
   const sum = useMemo(() => totals(rows), [rows]);
   const breakdown = useMemo(
-    () => chainSummary(events, { tokenIndex: selectedTokenIndex, nowMs, enrolledDomains: enrolled }),
-    [events, selectedTokenIndex, nowMs, enrolled]
+    () => chainSummary(events, { tokenIndex: selectedTokenIndex, nowMs, days: range.days, enrolledDomains: enrolled }),
+    [events, selectedTokenIndex, nowMs, range.days, enrolled]
   );
   const allTimeNet = useMemo(() => netAllTime(events, { tokenIndex: selectedTokenIndex, domain: activeChain }), [events, selectedTokenIndex, activeChain]);
 
   const panels = useMemo(
     () => allChains.map((c) => {
-      const chainRows = dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: c.domain, nowMs });
+      const chainRows = dailyFlows(events, { tokenIndex: selectedTokenIndex, domain: c.domain, nowMs, days: range.days });
       return { ...c, rows: chainRows, sum: totals(chainRows) };
     }),
-    [allChains, events, selectedTokenIndex, nowMs]
+    [allChains, events, selectedTokenIndex, nowMs, range.days]
   );
 
   const scopeLabel = `${tokenFilter ?? "USDT + USDC"}${activeChain === null ? "" : ` via ${chainName(activeChain)}`}`;
@@ -138,6 +149,14 @@ export default function HyperlaneBridgeTab() {
               </div>
             </div>
             <div>
+              <div style={{ ...sectionLabel, marginBottom: 6 }}>Range</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {RANGES.map((r) => (
+                  <Pill key={r.days} active={range.days === r.days} onClick={() => setRangeDays(r.days)}>{r.label}</Pill>
+                ))}
+              </div>
+            </div>
+            <div>
               <div style={{ ...sectionLabel, marginBottom: 6 }}>Chain</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 <Pill active={activeChain === null} onClick={() => setChainFilter(null)}>All chains</Pill>
@@ -150,12 +169,12 @@ export default function HyperlaneBridgeTab() {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 }}>
             <StatCard
-              label="Net Flow · 12 Months"
+              label={`Net Flow · ${range.long}`}
               value={<span style={{ color: netColor(sum.net) }}>{signedUsd(sum.net)}</span>}
               sub={`${sum.net >= 0 ? "More came in than left" : "More left than came in"} ${chainNote} · ${formatInt(sum.count)} transfers`}
             />
-            <StatCard label="Inflow · 12 Months" value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
-            <StatCard label="Outflow · 12 Months" value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
+            <StatCard label={`Inflow · ${range.long}`}value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
+            <StatCard label={`Outflow · ${range.long}`}value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
             <StatCard
               label={activeChain === null ? "Bridged Supply" : "All-Time Net"}
               value={<span style={{ color: netColor(allTimeNet) }}>{signedUsd(allTimeNet)}</span>}
@@ -164,7 +183,7 @@ export default function HyperlaneBridgeTab() {
           </div>
 
           <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-            <div style={{ ...sectionLabel, marginBottom: 14 }}>Net Flow per Day — {scopeLabel} — Rolling 12 Months</div>
+            <div style={{ ...sectionLabel, marginBottom: 14 }}>Net Flow per Day — {scopeLabel} — {range.days === WINDOW_DAYS ? "Rolling 12 Months" : `Last ${range.long}`}</div>
             {rows.length > 0 && <HyperlaneChart rows={rows} />}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 12, fontSize: 11, color: mutedLight }}>
               <LegendSwatch color={green} label="Net inflow (more bridged in)" />
@@ -185,7 +204,7 @@ export default function HyperlaneBridgeTab() {
                 >
                   <span style={{ fontSize: 12, fontWeight: 800, color: activeChain === c.domain ? green : "#fff" }}>{c.name}</span>
                   <span style={{ fontSize: 11, color: mutedLight }}>
-                    {c.sum.count === 0 ? "No activity in the last 12 months" : (
+                    {c.sum.count === 0 ? `No activity in the last ${range.long.toLowerCase()}` : (
                       <>
                         Net <span style={{ color: netColor(c.sum.net), fontWeight: 800 }}>{signedUsd(c.sum.net)}</span> · In {formatUsdCompact(c.sum.inflow)} · Out {formatUsdCompact(c.sum.outflow)} · {formatInt(c.sum.count)} transfers
                       </>
@@ -198,7 +217,7 @@ export default function HyperlaneBridgeTab() {
           </div>
 
           <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-            <div style={{ ...sectionLabel, marginBottom: 10 }}>By Chain — {tokenFilter ?? "USDT + USDC"} — Last 12 Months</div>
+            <div style={{ ...sectionLabel, marginBottom: 10 }}>By Chain — {tokenFilter ?? "USDT + USDC"} — Last {range.long}</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 380 }}>
                 <thead>
