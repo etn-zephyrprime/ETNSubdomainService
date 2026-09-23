@@ -173,8 +173,8 @@ export default function HyperlaneBridgeTab() {
               value={<span style={{ color: netColor(sum.net) }}>{signedUsd(sum.net)}</span>}
               sub={`${sum.net >= 0 ? "More came in than left" : "More left than came in"} ${chainNote} · ${formatInt(sum.count)} transfers`}
             />
-            <StatCard label={`Inflow · ${range.long}`}value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
-            <StatCard label={`Outflow · ${range.long}`}value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
+            <StatCard label={`Inflow · ${range.long}`} value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
+            <StatCard label={`Outflow · ${range.long}`} value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
             <StatCard
               label={activeChain === null ? "Bridged Supply" : "All-Time Net"}
               value={<span style={{ color: netColor(allTimeNet) }}>{signedUsd(allTimeNet)}</span>}

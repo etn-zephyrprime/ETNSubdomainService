@@ -88,7 +88,7 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
   };
 
   return (
-    <DashboardPanel style={{ border: `1px solid ${orange}` }}>
+    <DashboardPanel accent={orange} style={{ border: `1px solid ${orange}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
         <Flame size={18} color={orange} />
         <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>

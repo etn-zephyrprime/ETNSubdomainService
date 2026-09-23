@@ -1,5 +1,5 @@
 import React from "react";
-import { green, gold, goldGlow, silver, silverGlow, mutedLight, panel2, border } from "../theme.js";
+import { green, gold, goldGlow, silver, silverGlow, mutedLight, panel2, border, monoFont } from "../theme.js";
 
 // `accent` marks a tab that gates on a paid feature, styled to read as such at a glance in both
 // its active and inactive states — not just a highlight when selected like every other tab's own
@@ -41,19 +41,22 @@ export default function DashboardNav({ active, onChange }) {
             style={{
               flex: "1 1 120px",
               padding: "10px 8px",
-              borderRadius: 10,
+              borderRadius: 6,
               border: `1px solid ${special || isActive ? special?.color ?? green : border}`,
               background: special
                 ? isActive ? special.bgActive : special.bgInactive
                 : isActive ? "rgba(18,86,131,0.12)" : panel2,
               color: special || isActive ? special?.color ?? green : mutedLight,
               boxShadow: special && isActive ? `0 0 10px ${special.glow}` : undefined,
-              fontSize: 13,
+              fontFamily: monoFont,
+              fontSize: 11,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
               fontWeight: special ? 800 : 700,
               cursor: "pointer",
             }}
           >
-            {t.label}
+            {isActive ? `[ ${t.label} ]` : t.label}
           </button>
           </React.Fragment>
         );

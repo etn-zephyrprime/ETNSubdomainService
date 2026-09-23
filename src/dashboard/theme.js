@@ -43,3 +43,11 @@ export const background = "radial-gradient(ellipse 1200px 800px at 50% -10%, #0d
 // color-code the same real validator addresses — kept here (not local to either) so the same
 // validator reads as the same color in both places rather than each picking independently.
 export const VALIDATOR_PALETTE = [blue, orange, "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8", "#90a4ae"];
+
+// "Neon Grid" chrome — the HUD/terminal visual language layered on top of the palette above. No
+// brand colors changed here, only how panels/borders/labels render: sharp corner brackets
+// (CornerBrackets.jsx), a monospace "data readout" font for labels/pills, and a faint scanline
+// texture behind panels and the page background. See DashboardApp.jsx's own header comment for
+// where this treatment is and isn't applied.
+export const monoFont = 'ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace';
+export const scanlineBg = "repeating-linear-gradient(0deg, rgba(24,187,26,0.05) 0px, rgba(24,187,26,0.05) 1px, transparent 1px, transparent 3px)";
