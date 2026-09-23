@@ -69,15 +69,18 @@ const INGEST_PROGRESS_CALLBACK_INTERVAL_MS = process.env.PNL_INGEST_PROGRESS_CAL
   ? parseInt(process.env.PNL_INGEST_PROGRESS_CALLBACK_INTERVAL_MS, 10)
   : 2000;
 
-// How long a wallet's last successful ingestion stays "fresh enough" that a reconnect skips
-// re-ingesting entirely (see checkAndStartIngestIfNeeded below) — per the explicit decision that
-// this doesn't need to happen on every single reconnect, just periodically. Checked against
-// wallet_ingestion_state.updated_at, which is already bumped on every successful ingestion run
-// (see doIngestWalletHistory's own upsertIngestionState call) — no separate "last checked" column
-// needed.
-const INGEST_THROTTLE_MS = process.env.PNL_INGEST_THROTTLE_MS
-  ? parseInt(process.env.PNL_INGEST_THROTTLE_MS, 10)
-  : 60 * 60 * 1000;
+// Every reconnect DOES attempt a fresh sync — no time-based staleness skip (explicit decision: a
+// paying member reconnecting wants to know their numbers are caught up, not a figure that could be
+// silently up to an hour stale). What this grace period buys instead: most reconnects have nothing
+// new since the wallet's last visit, and ingestWalletHistory's own incremental resume (stopAtBlock)
+// already makes that case fast — a couple of Blockscout page checks plus a small DeFi log range,
+// typically well under a second. checkAndStartIngestIfNeeded below gives the ingest this long to
+// finish outright before falling back to reporting progress instead — so the common "nothing
+// changed" reconnect still gets its data back on the SAME request, same as before this feature
+// existed, and only a genuinely-slow run (cold start, or real new activity) shows the progress bar.
+const INGEST_GRACE_PERIOD_MS = process.env.PNL_INGEST_GRACE_PERIOD_MS
+  ? parseInt(process.env.PNL_INGEST_GRACE_PERIOD_MS, 10)
+  : 2000;
 
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
@@ -1606,43 +1609,50 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
 }
 
 /**
- * The reconnect-time gate: decides whether `trackedWallet` actually needs ingesting right now, and
- * if so, kicks it off in the BACKGROUND (fire-and-forget — never awaited here) rather than blocking
- * the caller on a run that can take many minutes. Built for pnlSnapshotRouter.js's /pnl-snapshot
- * endpoint specifically, so a reconnect doesn't re-walk a wallet's history on every single call —
- * per the explicit decision that this should happen periodically (INGEST_THROTTLE_MS, default 1
- * hour), not on every reconnect — while still surfacing a REAL, live-updating progress readout
- * (via wallet_ingestion_jobs) whenever a run genuinely is due.
+ * The reconnect-time entry point: ALWAYS attempts a fresh sync for `trackedWallet` — deliberately
+ * no time-based staleness skip (a paying member reconnecting wants their real, caught-up numbers,
+ * not a figure that could be silently stale) — but gives it INGEST_GRACE_PERIOD_MS to finish
+ * outright before committing to reporting progress instead of blocking the caller on a run that
+ * can take many minutes. Built for pnlSnapshotRouter.js's /pnl-snapshot endpoint specifically.
  *
- * Returns `{ needed: false }` if the wallet's last successful ingestion is still fresh (checked
- * against wallet_ingestion_state.updated_at, already bumped on every successful run — no separate
- * "last checked" column needed) — the caller should proceed to compute a snapshot normally.
- * Returns `{ needed: true, job }` otherwise, where `job` is the current wallet_ingestion_jobs row
- * (RUNNING) for the caller to report back to a polling frontend instead of computing a snapshot
- * this round.
+ * Returns `{ needed: false }` if the ingest finished within the grace period — the common case,
+ * since ingestWalletHistory's own incremental resume (stopAtBlock) already makes a "nothing new
+ * since last visit" reconnect fast. The caller should proceed to compute a snapshot normally, same
+ * as it would have before this feature existed.
+ *
+ * Returns `{ needed: true, job }` if the grace period elapsed with the ingest still running (a
+ * genuine cold start, or real new activity since last visit) — `job` is the current
+ * wallet_ingestion_jobs row (RUNNING) for the caller to report back to a polling frontend instead
+ * of computing a snapshot this round. The ingest itself keeps running in the background regardless
+ * of which branch this returns; doIngestWalletHistory's own try/catch marks the job COMPLETE/FAILED
+ * whenever it actually finishes.
  *
  * Safe to call on every poll tick while a run is in progress: if a job is already RUNNING for this
- * wallet, this does NOT start a second one (or reset its progress) — it just re-reads and returns
- * the current row. `state` is the caller's own already-fetched getIngestionState(trackedWallet)
- * result, passed in to avoid a second identical read (the router already needs it for its own
- * needsSelection check).
+ * wallet (e.g. this is a poll re-check, not the call that originally started it), this does NOT
+ * start a second one (or race a fresh grace period) — it just re-reads and returns the current row
+ * immediately.
  */
-export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddresses, priorityAssets, state) {
-  if (state?.updated_at && Date.now() - new Date(state.updated_at).getTime() < INGEST_THROTTLE_MS) {
-    return { needed: false };
+export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddresses, priorityAssets) {
+  const existingJob = await getIngestJob(trackedWallet);
+  if (existingJob?.status === "RUNNING") {
+    return { needed: true, job: existingJob };
   }
 
-  const existingJob = await getIngestJob(trackedWallet);
-  if (!existingJob || existingJob.status !== "RUNNING") {
-    // Placeholder row FIRST (awaited), THEN kick off the real work unawaited — see startJob's own
-    // comment on why this ordering matters: without it, the very first poll straight after this
-    // call could race doIngestWalletHistory's own first write and find nothing (or a stale
-    // previous-run row) to report.
-    await startJob(trackedWallet, { progressTotal: 0, progressCurrent: 0, stage: "Starting…" });
-    ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets).catch((err) => {
-      console.error(`❌ Background ingest failed for ${trackedWallet}:`, err.message);
-    });
-  }
+  // Placeholder row FIRST (awaited), THEN kick off the real work unawaited — see startJob's own
+  // comment on why this ordering matters: without it, a poll landing before doIngestWalletHistory's
+  // own first write could find nothing (or a stale previous-run row) to report.
+  await startJob(trackedWallet, { progressTotal: 0, progressCurrent: 0, stage: "Checking for new activity…" });
+  const ingestPromise = ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
+  // Never let an ingest failure become an unhandled rejection just because this function stopped
+  // awaiting it after the grace period — doIngestWalletHistory's own try/catch already marks the
+  // job FAILED and logs the real error; nothing else needs this promise's outcome from here on.
+  ingestPromise.catch(() => {});
+
+  const winner = await Promise.race([
+    ingestPromise.then(() => "done").catch(() => "done"), // a failure also ends the wait — the job row's own FAILED status is what the caller sees next
+    sleep(INGEST_GRACE_PERIOD_MS).then(() => "still-running"),
+  ]);
+  if (winner === "done") return { needed: false };
 
   const job = await getIngestJob(trackedWallet);
   return { needed: true, job };

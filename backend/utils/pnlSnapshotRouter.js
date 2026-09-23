@@ -145,15 +145,17 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
         continue;
       }
 
-      // Reconnecting doesn't re-walk a wallet's whole history every time (see
-      // checkAndStartIngestIfNeeded's own header comment) — this either confirms the wallet is
-      // already fresh (falls through to computeLivePnlSnapshot below, same as before) or kicks off
-      // a background run and reports its live progress instead of blocking this response on it.
+      // Every reconnect attempts a fresh sync (see checkAndStartIngestIfNeeded's own header
+      // comment — deliberately no time-based staleness skip) but gives it a short grace period to
+      // finish outright first: a wallet with nothing new since last visit resumes almost instantly
+      // and falls through to computeLivePnlSnapshot below same as before this feature existed; only
+      // a genuinely slow run (cold start, real new activity) reports live progress instead of
+      // blocking this response on it.
       const priorityAssets =
         !state?.cold_start_completed_at && priorityTokens?.length > 0
           ? new Set(priorityTokens.map((a) => a.toLowerCase()))
           : null; // matches computeLivePnlSnapshot's own isColdStart-gated scoping exactly
-      const ingestCheck = await checkAndStartIngestIfNeeded(address, selfOwnedAddresses, priorityAssets, state);
+      const ingestCheck = await checkAndStartIngestIfNeeded(address, selfOwnedAddresses, priorityAssets);
       if (ingestCheck.needed) {
         jobs.push(serializeJob(address, ingestCheck.job));
         continue;

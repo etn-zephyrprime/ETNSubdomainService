@@ -130,12 +130,13 @@ function pickTokenFigures(snap, tokenFilter) {
 // write that hasn't landed yet.
 const INGEST_POLL_INTERVAL_MS = 3000;
 
-/** Shown in place of the normal PnL figures while a reconnect's ingest is actually running (see
- * pnlSnapshotRouter.js's own `ingesting`/`jobs` response fields) — this is NOT shown on every
- * reconnect, only when one is genuinely due (throttled to roughly hourly server-side), so a member
- * who reconnects moments after their last visit never sees this at all. `current`/`total` are real
- * block numbers reported by the backend, not a fabricated percentage — see
- * pnlIngestion.js's doIngestWalletHistory for exactly how they're derived. */
+/** Shown in place of the normal PnL figures while a reconnect's sync is still running past its
+ * initial grace period (see pnlSnapshotRouter.js's own `ingesting`/`jobs` response fields) — every
+ * reconnect attempts a fresh sync, but most resolve almost instantly (nothing new since last
+ * visit) and never show this at all; this only appears once a run has genuinely turned out to take
+ * a while (a cold start, or a lot of new activity). `current`/`total` are real block numbers
+ * reported by the backend, not a fabricated percentage — see pnlIngestion.js's
+ * doIngestWalletHistory for exactly how they're derived. */
 function IngestProgressBanner({ jobs, resolveWalletName }) {
   return (
     <div style={{ padding: "12px 14px", borderRadius: 4, background: "rgba(232,191,76,0.06)", border: `1px solid ${border}`, marginBottom: 16 }}>
@@ -143,8 +144,8 @@ function IngestProgressBanner({ jobs, resolveWalletName }) {
         Catching up on your wallet's on-chain activity
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12, lineHeight: 1.6 }}>
-        Reconnecting periodically re-syncs recent activity rather than on every single reconnect — this can take a
-        few minutes the first time, or after a lot of new activity. Your figures below will appear once it's done.
+        Syncing your latest on-chain activity — this can take a few minutes the first time, or after a lot of new
+        activity. Your figures below will appear once it's done.
       </div>
       {jobs.map((job) => {
         const pct = job.total > 0 ? Math.min(100, Math.max(0, (job.current / job.total) * 100)) : 0;
