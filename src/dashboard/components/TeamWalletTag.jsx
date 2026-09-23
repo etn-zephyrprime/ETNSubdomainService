@@ -1,5 +1,5 @@
 import React from "react";
-import { blue, blueGlow } from "../theme.js";
+import { blue, blueGlow, monoFont } from "../theme.js";
 
 // Small inline "ETN Team" badge — dropped next to a wallet address/name wherever this dashboard
 // shows one, so a known Electroneum team wallet (see utils/teamWallets.js) is recognizable at a
@@ -11,6 +11,7 @@ export default function TeamWalletTag({ style }) {
     <span
       style={{
         display: "inline-block",
+        fontFamily: monoFont,
         fontSize: 9,
         fontWeight: 800,
         letterSpacing: 0.4,

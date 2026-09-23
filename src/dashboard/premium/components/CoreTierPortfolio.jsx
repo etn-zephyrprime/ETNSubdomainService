@@ -13,7 +13,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor } from "../../theme.js";
+import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
@@ -66,7 +66,7 @@ function tokenUsdValue(rawValue, decimals, priceUsd) {
 const smallInputStyle = {
   flex: 1,
   padding: "10px 12px",
-  borderRadius: 10,
+  borderRadius: 6,
   border: `1px solid ${border}`,
   background: panel2,
   color: "#fff",
@@ -74,7 +74,7 @@ const smallInputStyle = {
   fontWeight: 600,
   boxSizing: "border-box",
   outline: "none",
-  fontFamily: "monospace",
+  fontFamily: monoFont,
 };
 
 // A standing, always-visible warning (not just something shown mid-action) — the cooldown is a
@@ -82,7 +82,7 @@ const smallInputStyle = {
 // see this before they ever reach the confirm step below.
 function CooldownNotice({ children }) {
   return (
-    <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, background: "rgba(255,138,61,0.08)", border: `1px solid ${border}`, marginBottom: 12 }}>
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 4, background: "rgba(255,138,61,0.08)", border: `1px solid ${border}`, marginBottom: 12 }}>
       <TriangleAlert size={14} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6 }}>{children}</div>
     </div>
@@ -538,7 +538,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     if (!pending) return null;
     const isAdd = pending.type === "add";
     return (
-      <div style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${isAdd ? orange : errorColor}`, background: isAdd ? "rgba(255,138,61,0.08)" : "rgba(255,107,107,0.08)", marginBottom: 12 }}>
+      <div style={{ padding: "10px 12px", borderRadius: 4, border: `1px solid ${isAdd ? orange : errorColor}`, background: isAdd ? "rgba(255,138,61,0.08)" : "rgba(255,107,107,0.08)", marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>
           <TriangleAlert size={15} color={isAdd ? orange : errorColor} style={{ flexShrink: 0, marginTop: 1 }} />
           <div style={{ fontSize: 12, color: "#fff", lineHeight: 1.6 }}>
@@ -564,7 +564,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
             type="button"
             onClick={cancelPending}
             disabled={pendingLoading}
-            style={{ flex: 1, padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: mutedLight, fontSize: 12, fontWeight: 700, cursor: pendingLoading ? "not-allowed" : "pointer" }}
+            style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: `1px solid ${border}`, background: panel2, color: mutedLight, fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.4, fontSize: 11, fontWeight: 700, cursor: pendingLoading ? "not-allowed" : "pointer" }}
           >
             Cancel
           </button>
@@ -578,8 +578,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <WalletIcon size={18} color={green} />
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-            Core Tier — Portfolio
+          <div style={{ fontFamily: monoFont, fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
+            [ Core Tier — Portfolio ]
           </div>
         </div>
         {/* Visible to literally anyone — including a visitor with no wallet connected at all —
@@ -601,9 +601,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
               border: `1px solid ${green}`,
               background: green,
               color: panel,
+              fontFamily: monoFont,
               fontSize: 12,
               fontWeight: 800,
-              letterSpacing: 0.2,
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
               cursor: "pointer",
               boxShadow: `0 0 16px ${greenGlow}`,
             }}
@@ -661,13 +663,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             justifyContent: "space-between",
                             gap: 8,
                             padding: "8px 10px",
-                            borderRadius: 8,
+                            borderRadius: 4,
                             border: `1px solid ${border}`,
                             background: panel2,
                           }}
                         >
                           <div>
-                            <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>You — {resolveName(w.address)}</div>
+                            <div style={{ fontSize: 12, fontFamily: monoFont, color: "#fff" }}>You — {resolveName(w.address)}</div>
                             <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>Always included</div>
                           </div>
                         </div>
@@ -683,13 +685,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           justifyContent: "space-between",
                           gap: 8,
                           padding: "8px 10px",
-                          borderRadius: 8,
+                          borderRadius: 4,
                           border: `1px solid ${border}`,
                           background: panel2,
                         }}
                       >
                         <div>
-                          <div style={{ fontSize: 12, fontFamily: "monospace", color: "#fff" }}>{resolveName(w.address)}</div>
+                          <div style={{ fontSize: 12, fontFamily: monoFont, color: "#fff" }}>{resolveName(w.address)}</div>
                           <div style={{ fontSize: 10, color: locked ? orange : mutedLight, marginTop: 2 }}>
                             {locked ? `Locked until ${fmtDate(w.removableAt)}` : "Eligible to untrack"}
                           </div>
@@ -701,9 +703,12 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           style={{
                             background: "none",
                             border: `1px solid ${locked ? border : errorColor}`,
-                            borderRadius: 8,
+                            borderRadius: 4,
                             padding: "5px 10px",
                             color: locked ? muted : errorColor,
+                            fontFamily: monoFont,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.4,
                             fontSize: 11,
                             fontWeight: 700,
                             cursor: locked ? "not-allowed" : "pointer",
@@ -719,12 +724,12 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
 
               {cooling.length > 0 && (
                 <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
-                    Recently Untracked
+                  <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
+                    [ Recently Untracked ]
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {cooling.map((w) => (
-                      <div key={w.address} style={{ fontSize: 10, color: muted, fontFamily: "monospace" }}>
+                      <div key={w.address} style={{ fontSize: 10, color: muted, fontFamily: monoFont }}>
                         {resolveName(w.address)} — re-trackable {fmtDate(w.retrackableAt)}
                       </div>
                     ))}
@@ -747,11 +752,14 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     onClick={() => requestAdd(addInput)}
                     style={{
                       padding: "10px 14px",
-                      borderRadius: 10,
+                      borderRadius: 6,
                       border: `1px solid ${green}`,
                       background: "rgba(24,187,26,0.12)",
                       color: green,
-                      fontSize: 13,
+                      fontFamily: monoFont,
+                      textTransform: "uppercase",
+                      letterSpacing: 0.4,
+                      fontSize: 12,
                       fontWeight: 700,
                       cursor: "pointer",
                     }}
@@ -770,12 +778,15 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   width: "100%",
                   marginTop: 10,
                   textAlign: "center",
-                  fontSize: 13,
+                  fontFamily: monoFont,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  fontSize: 12,
                   fontWeight: 700,
                   color: mutedLight,
                   background: panel2,
                   border: `1px solid ${border}`,
-                  borderRadius: 10,
+                  borderRadius: 6,
                   cursor: "pointer",
                   padding: "10px 0",
                 }}
@@ -794,8 +805,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
               ) : (
                 <>
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                      Total Portfolio Balance (USD)
+                    <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                      [ Total Portfolio Balance (USD) ]
                       <InfoTooltip text="Everything this dashboard can currently price for you: native ETN, regular token holdings, liquidity positions, and anything staked or farming — added together. A '≈' means at least one piece hasn't resolved a price yet, so the real total is at least this much." />
                     </div>
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
@@ -812,7 +823,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         : "ETN + all priced token holdings, this wallet only"}
                     </div>
                     {totalPortfolioHasUnpriced && (
-                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", borderRadius: 8, background: "rgba(255,138,61,0.12)", border: `1px solid ${orange}`, marginTop: 10 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", borderRadius: 4, background: "rgba(255,138,61,0.12)", border: `1px solid ${orange}`, marginTop: 10 }}>
                         <TriangleAlert size={14} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
                         <div style={{ fontSize: 11, color: orange, fontWeight: 700, lineHeight: 1.5 }}>
                           Lower bound — some holdings' prices haven't resolved yet. The real total is at least this much.
@@ -861,16 +872,16 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   </div>
 
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                      Portfolio Composition
+                    <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+                      [ Portfolio Composition ]
                       <InfoTooltip text="How your Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it. A $0 category means nothing's there yet, or it just hasn't priced — the total above tells you which." />
                     </div>
                     <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalPortfolioHasUnpriced} />
                   </div>
 
                   <div style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                      {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"}
+                    <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                      [ {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"} ]
                       <InfoTooltip text="Native ETN sitting directly in your wallet(s) — the chain's own coin, not a token contract. Doesn't include ETN wrapped as WETN for trading, which shows up under Tokens instead." />
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -893,15 +904,15 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{defiPositionsError}</div>
                   ) : defiEntry?.positions?.length > 0 ? (
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                        Staked / Farming Positions
+                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        [ Staked / Farming Positions ]
                         <InfoTooltip text="Funds currently locked in a yield farm or the Core Ascension staking contract — no longer a plain wallet balance, so Blockscout alone can't see them. Valued live from the contract's own state, including any real-time price movement (not the value it was worth when you deposited)." />
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {defiEntry.positions.map((p, i) => (
                           <div
                             key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`}
-                            style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}
+                            style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}
                           >
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
@@ -925,13 +936,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{lpPositionsError}</div>
                   ) : lpEntry && (lpEntry.v2Positions?.length > 0 || lpEntry.v3Positions?.length > 0) ? (
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                        Liquidity Positions
+                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        [ Liquidity Positions ]
                         <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions you hold directly — not deposited into a yield farm (those show under Staked / Farming Positions instead). Valued live from each pool's own current reserves/price, converted into the underlying tokens your share currently represents." />
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {(lpEntry.v2Positions || []).map((p) => (
-                          <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                          <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
                                 <TokenPairLogo legs={p.legs} />
@@ -947,7 +958,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           </div>
                         ))}
                         {(lpEntry.v3Positions || []).map((p) => (
-                          <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                          <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
                                 <TokenPairLogo legs={p.legs} />
@@ -967,30 +978,36 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     </div>
                   ) : null}
 
-                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                    Combined Holdings
+                  <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+                    [ Combined Holdings ]
                     <InfoTooltip text="Regular token and NFT balances sitting directly in your wallet(s) — the same thing a block explorer would show you. Tokens with no resolved value are hidden by default; liquidity/farming positions have their own dedicated sections above instead of showing up here unpriced." />
                   </div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                    {HOLDING_CATEGORIES.map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => { setHoldingsCategory(c.id); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
-                        style={{
-                          flex: "1 1 100px",
-                          padding: "8px 8px",
-                          borderRadius: 10,
-                          border: `1px solid ${c.id === holdingsCategory ? green : border}`,
-                          background: c.id === holdingsCategory ? "rgba(24,187,26,0.12)" : panel2,
-                          color: c.id === holdingsCategory ? green : mutedLight,
-                          fontSize: 12,
-                          fontWeight: 700,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {c.label}
-                      </button>
-                    ))}
+                    {HOLDING_CATEGORIES.map((c) => {
+                      const isActive = c.id === holdingsCategory;
+                      return (
+                        <button
+                          key={c.id}
+                          onClick={() => { setHoldingsCategory(c.id); setHoldingsShown(HOLDINGS_PAGE_SIZE); }}
+                          style={{
+                            flex: "1 1 100px",
+                            padding: "8px 8px",
+                            borderRadius: 6,
+                            border: `1px solid ${isActive ? green : border}`,
+                            background: isActive ? "rgba(24,187,26,0.12)" : panel2,
+                            color: isActive ? green : mutedLight,
+                            fontFamily: monoFont,
+                            fontSize: 11,
+                            letterSpacing: 0.6,
+                            textTransform: "uppercase",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {isActive ? `[ ${c.label} ]` : c.label}
+                        </button>
+                      );
+                    })}
                   </div>
                   {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
                     <div style={{ fontSize: 12, color: muted }}>
@@ -1057,11 +1074,14 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             width: "100%",
                             marginTop: 10,
                             padding: "8px 0",
-                            borderRadius: 8,
+                            borderRadius: 4,
                             border: `1px solid ${border}`,
                             background: panel2,
                             color: green,
-                            fontSize: 12,
+                            fontFamily: monoFont,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.4,
+                            fontSize: 11,
                             fontWeight: 700,
                             cursor: "pointer",
                           }}

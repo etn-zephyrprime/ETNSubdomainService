@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
 import { useReverseRecord } from "../../../hooks/useReverseRecord.js";
-import { green, greenGlow, border, panel, error as errorColor } from "../../theme.js";
+import { green, greenGlow, border, panel, error as errorColor, monoFont } from "../../theme.js";
 
 function shortAddress(address) {
   if (!address) return "";
@@ -44,13 +44,13 @@ export default function PremiumWalletChip({ wallet }) {
             gap: 8,
             background: panel,
             padding: "8px 14px",
-            borderRadius: 14,
+            borderRadius: 6,
             border: `1px solid ${border}`,
             boxShadow: "0 0 12px rgba(0,0,0,0.45)",
           }}
         >
           <Wallet size={16} color={green} />
-          <span style={{ fontSize: 14, fontWeight: 700, color: "#fff", letterSpacing: 0.4 }}>
+          <span style={{ fontFamily: monoFont, fontSize: 13, fontWeight: 700, color: "#fff", letterSpacing: 0.4 }}>
             {primaryName || shortAddress(wallet.account)}
           </span>
           <div style={{ width: 1, height: 16, background: border }} />
@@ -61,8 +61,11 @@ export default function PremiumWalletChip({ wallet }) {
               background: "transparent",
               border: "none",
               color: errorColor,
+              fontFamily: monoFont,
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
               fontWeight: 700,
-              fontSize: 13,
+              fontSize: 12,
               cursor: "pointer",
               padding: "2px 6px",
             }}
@@ -76,8 +79,11 @@ export default function PremiumWalletChip({ wallet }) {
           onClick={wallet.connectWallet}
           style={{
             padding: "12px 16px",
-            borderRadius: 12,
-            fontSize: 14,
+            borderRadius: 6,
+            fontFamily: monoFont,
+            textTransform: "uppercase",
+            letterSpacing: 0.6,
+            fontSize: 13,
             fontWeight: 800,
             cursor: "pointer",
             background: green,

@@ -1,6 +1,7 @@
 import React from "react";
-import { green, greenGlow, muted, mutedLight, panel2, border, error as red } from "../theme.js";
+import { green, greenGlow, muted, mutedLight, panel2, border, error as red, monoFont } from "../theme.js";
 import SparklineChart from "./SparklineChart.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 
 // A row of clickable stat tiles sharing one chart underneath — clicking a tile swaps which
 // series the chart shows, rather than one static chart per metric. Used by both Overview.jsx
@@ -22,17 +23,19 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
               key={tile.id}
               onClick={() => onSelect(tile.id)}
               style={{
+                position: "relative",
                 textAlign: "left",
                 padding: 14,
-                borderRadius: 12,
+                borderRadius: 4,
                 background: panel2,
                 border: `1px solid ${isActive ? green : border}`,
                 boxShadow: isActive ? `0 0 12px ${greenGlow}` : "none",
                 cursor: "pointer",
               }}
             >
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: isActive ? green : muted, marginBottom: 6 }}>
-                {tile.label}
+              <CornerBrackets color={isActive ? green : border} />
+              <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: isActive ? green : muted, marginBottom: 6 }}>
+                [ {tile.label} ]
               </div>
               <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{tile.value}</div>
               {/* Optional small 7-day change marker (Overview passes it; per-wallet tiles don't). `change7d` null =
@@ -47,7 +50,8 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
         })}
       </div>
 
-      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}` }}>
+      <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}` }}>
+        <CornerBrackets color={green} />
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>{chartCaption}</div>
         {loading ? (
           <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { green, orange, blue, muted, mutedLight, panel2, border } from "../theme.js";
+import { green, orange, blue, muted, mutedLight, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
 import BridgeChart from "./BridgeChart.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 import { useEtnBridge } from "../hooks/useEtnBridge.js";
 import { formatCompact, formatInt, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
@@ -12,18 +13,18 @@ import { DEADLINE_DAY, DEADLINE_MS, bridgeTotal, buildRemainingSeries, computeFo
 const POLL_INTERVAL_MS = 60000;
 const BRIDGE_ADDRESS = "0xB7990022d3F22B6FB3afb626E05289ee3bf0AE62";
 
-const sectionLabel = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
+const sectionLabel = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
 const etn = (n) => `${Math.round(n).toLocaleString()} ETN`;
 
 function TopMigrationRow({ m, rank }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) auto", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${border}` }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: muted }}>#{rank}</div>
+      <div style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, color: muted }}>#{rank}</div>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 11, color: mutedLight, display: "flex", flexWrap: "wrap", gap: "2px 6px", alignItems: "center" }}>
-          <span title={m.legacyAddress} style={{ fontFamily: "monospace" }}>{shortHash(m.legacyAddress, 8)}</span>
+          <span title={m.legacyAddress} style={{ fontFamily: monoFont }}>{shortHash(m.legacyAddress, 8)}</span>
           <span style={{ color: muted }}>→</span>
-          <a href={`${EXPLORER_BASE_URL}/address/${m.to}`} target="_blank" rel="noreferrer" style={{ fontFamily: "monospace", color: blue, textDecoration: "none" }}>{shortHash(m.to)}</a>
+          <a href={`${EXPLORER_BASE_URL}/address/${m.to}`} target="_blank" rel="noreferrer" style={{ fontFamily: monoFont, color: blue, textDecoration: "none" }}>{shortHash(m.to)}</a>
         </div>
         <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
           <a href={`${EXPLORER_BASE_URL}/tx/${m.txHash}`} target="_blank" rel="noreferrer" style={{ color: muted }}>{timeAgo(m.timestamp)}</a>
@@ -96,9 +97,10 @@ export default function EtnBridgeTab() {
             />
           </div>
 
-          <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+          <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <CornerBrackets color={green} />
             <div style={{ ...sectionLabel, marginBottom: 14 }}>
-              <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />ETN Remaining in the Bridge — Towards the Deadline
+              <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />[ ETN Remaining in the Bridge — Towards the Deadline ]
             </div>
             {series.length < 2 ? (
               <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted, textAlign: "center" }}>
@@ -141,8 +143,9 @@ export default function EtnBridgeTab() {
       )}
 
       {data && cur && (
-        <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-          <div style={{ ...sectionLabel, marginBottom: 4 }}>Top Migrations — Last 7 Days</div>
+        <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+          <CornerBrackets color={green} />
+          <div style={{ ...sectionLabel, marginBottom: 4 }}>[ Top Migrations — Last 7 Days ]</div>
           {top ? (
             <>
               <div style={{ fontSize: 11, color: mutedLight, marginBottom: 6 }}>

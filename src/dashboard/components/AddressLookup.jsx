@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
@@ -18,11 +18,12 @@ import TokenLogo from "./TokenLogo.jsx";
 const inputStyle = {
   width: "100%",
   padding: "12px 14px",
-  borderRadius: 10,
+  borderRadius: 6,
   border: `1px solid ${border}`,
   background: panel2,
   color: "#fff",
-  fontSize: 14,
+  fontFamily: monoFont,
+  fontSize: 13,
   fontWeight: 600,
   boxSizing: "border-box",
   outline: "none",
@@ -426,10 +427,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
 
   return (
     <div>
+      <style>{`.dash-addr-row{transition:border-color .15s ease;} .dash-addr-row:hover:not(:disabled),.dash-addr-row:focus-visible{border-bottom-color:${green};}`}</style>
+
       {validators && validators.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-            Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d)
+          <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+            [ Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d) ]
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {validators.map(({ address, blocks }) => (
@@ -441,12 +444,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   alignItems: "center",
                   gap: 6,
                   padding: "6px 10px",
-                  borderRadius: 8,
+                  borderRadius: 6,
                   border: `1px solid ${address === resolvedAddress ? green : border}`,
                   background: address === resolvedAddress ? "rgba(24,187,26,0.12)" : panel2,
                   color: address === resolvedAddress ? green : mutedLight,
                   fontSize: 11,
-                  fontFamily: "monospace",
+                  fontFamily: monoFont,
                   cursor: "pointer",
                 }}
               >
@@ -494,7 +497,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               href={`${EXPLORER_BASE_URL}/address/${resolvedAddress}`}
               target="_blank"
               rel="noreferrer"
-              style={{ fontSize: 12, color: mutedLight, fontFamily: "monospace", textDecoration: "none", borderBottom: `1px solid ${border}` }}
+              style={{ fontSize: 12, color: mutedLight, fontFamily: monoFont, textDecoration: "none", borderBottom: `1px solid ${border}` }}
             >
               {resolvedAddress}
             </a>
@@ -527,11 +530,14 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   display: "block",
                   margin: "10px auto 0",
                   padding: "6px 16px",
-                  borderRadius: 8,
+                  borderRadius: 6,
                   border: `1px solid ${border}`,
                   background: panel2,
                   color: showMoreLoading ? muted : green,
-                  fontSize: 12,
+                  fontFamily: monoFont,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.6,
+                  fontSize: 11,
                   fontWeight: 700,
                   cursor: showMoreLoading ? "default" : "pointer",
                 }}
@@ -546,25 +552,31 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
           )}
 
           <div style={{ display: "flex", gap: 8, margin: "24px 0 8px" }}>
-            {HOLDING_CATEGORIES.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setHoldingsCategory(c.id)}
-                style={{
-                  flex: "1 1 100px",
-                  padding: "8px 8px",
-                  borderRadius: 10,
-                  border: `1px solid ${c.id === holdingsCategory ? green : border}`,
-                  background: c.id === holdingsCategory ? "rgba(24,187,26,0.12)" : panel2,
-                  color: c.id === holdingsCategory ? green : mutedLight,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                {c.label}
-              </button>
-            ))}
+            {HOLDING_CATEGORIES.map((c) => {
+              const isActive = c.id === holdingsCategory;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setHoldingsCategory(c.id)}
+                  style={{
+                    flex: "1 1 100px",
+                    padding: "8px 8px",
+                    borderRadius: 6,
+                    border: `1px solid ${isActive ? green : border}`,
+                    background: isActive ? "rgba(24,187,26,0.12)" : panel2,
+                    color: isActive ? green : mutedLight,
+                    fontFamily: monoFont,
+                    fontSize: 11,
+                    letterSpacing: 0.6,
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {isActive ? `[ ${c.label} ]` : c.label}
+                </button>
+              );
+            })}
           </div>
           {visibleHoldings.length === 0 && !(holdingsCategory === "tokens" && hiddenNoLiquidityCount > 0) ? (
             <div style={{ fontSize: 12, color: muted }}>
@@ -576,6 +588,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               return (
                 <button
                   key={`${tb.token?.address}-${i}`}
+                  className="dash-addr-row"
                   onClick={() => onSelectToken?.(tb.token?.address)}
                   disabled={!onSelectToken || !tb.token?.address}
                   style={{
@@ -585,6 +598,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                     width: "100%",
                     padding: "8px 0",
                     borderBottom: `1px solid ${border}`,
+                    borderRadius: 2,
                     background: "transparent",
                     border: "none",
                     cursor: onSelectToken ? "pointer" : "default",

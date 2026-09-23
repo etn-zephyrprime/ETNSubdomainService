@@ -8,11 +8,11 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice } from "../../utils/format.js";
 import TokenLogo from "../../components/TokenLogo.jsx";
-import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
-const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
-const selectStyle = { padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: "#fff", fontSize: 12, fontWeight: 600, outline: "none" };
+const sectionHeaderStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const selectStyle = { padding: "8px 12px", borderRadius: 6, border: `1px solid ${border}`, background: panel2, color: "#fff", fontFamily: monoFont, fontSize: 12, fontWeight: 600, outline: "none" };
 
 function pnlColor(v) {
   return v > 0 ? green : v < 0 ? errorColor : mutedLight;
@@ -150,7 +150,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           </div>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
               <Info size={14} color={mutedLight} style={{ flexShrink: 0, marginTop: 1 }} />
               <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6 }}>
                 Cost basis and realized gains/losses only — there's no live market price for one specific NFT the
@@ -194,7 +194,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                   <>
                     {collectionOptions.length > 0 && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted }}>Collection</span>
+                        <span style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted }}>Collection</span>
                         <select value={collectionFilter} onChange={(e) => setCollectionFilter(e.target.value)} style={selectStyle}>
                           <option value="all">All collections</option>
                           {collectionOptions.map((c) => (
@@ -207,21 +207,21 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                     {figures && (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginBottom: 20 }}>
                         <div>
-                          <div style={sectionHeaderStyle}>Total Paid</div>
+                          <div style={sectionHeaderStyle}>[ Total Paid ]</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(figures.costBasisUsd))}</div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>Proceeds (Sold)</div>
+                          <div style={sectionHeaderStyle}>[ Proceeds (Sold) ]</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(figures.proceedsUsd))}</div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>Realized P&amp;L</div>
+                          <div style={sectionHeaderStyle}>[ Realized P&amp;L ]</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                             {fmtSigned(Number(figures.realizedPnlUsd))}
                           </div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>Held / Sold</div>
+                          <div style={sectionHeaderStyle}>[ Held / Sold ]</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
                             {figures.heldCount} <span style={{ color: mutedLight, fontSize: 14 }}>/</span> {figures.soldCount}
                           </div>
@@ -231,7 +231,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
 
                     {collectionFilter === "all" ? (
                       <div>
-                        <div style={sectionHeaderStyle}>By Collection</div>
+                        <div style={sectionHeaderStyle}>[ By Collection ]</div>
                         {collectionOptions.map((c) => {
                           const totalCost = Number(c.heldCostBasisUsd) + Number(c.soldCostBasisUsd);
                           return (
@@ -263,8 +263,8 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                     ) : (
                       <div>
                         <div style={sectionHeaderStyle}>
-                          <TokenLogo address={collectionFilter} placeholder={false} size={18} />
-                          {resolveCollectionName(collectionFilter)} — By Token ID
+                          [ <TokenLogo address={collectionFilter} placeholder={false} size={18} />
+                          {resolveCollectionName(collectionFilter)} — By Token ID ]
                         </div>
                         {tokenRows.length === 0 ? (
                           <div style={{ fontSize: 12, color: muted }}>No tokens found for this collection.</div>
@@ -272,7 +272,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                           <div style={{ overflowX: "auto" }}>
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                               <thead>
-                                <tr style={{ textAlign: "left", color: muted, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                                <tr style={{ textAlign: "left", color: muted, fontFamily: monoFont, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
                                   <th style={{ padding: "6px 8px 6px 0" }}>Token ID</th>
                                   <th style={{ padding: "6px 8px" }}>Status</th>
                                   <th style={{ padding: "6px 8px" }}>Paid</th>
@@ -290,7 +290,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                                     <tr key={`${t.collectionAddress}:${t.tokenId}`} style={{ borderTop: `1px solid ${border}` }}>
                                       <td style={{ padding: "8px 8px 8px 0", color: "#fff", fontWeight: 700 }}>#{t.tokenId}</td>
                                       <td style={{ padding: "8px" }}>
-                                        <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, textTransform: "uppercase", background: held ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.06)", color: held ? green : mutedLight }}>
+                                        <span style={{ padding: "2px 8px", borderRadius: 4, fontFamily: monoFont, fontSize: 10, fontWeight: 700, textTransform: "uppercase", background: held ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.06)", color: held ? green : mutedLight }}>
                                           {held ? "Held" : "Sold"}
                                         </span>
                                       </td>

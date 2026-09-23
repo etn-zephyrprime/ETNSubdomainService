@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { green, error as errorColor, muted, panel2, border } from "../theme.js";
+import { green, error as errorColor, muted, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWalletsBalanceHistory } from "../hooks/useTeamWalletsBalanceHistory.js";
 import { formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 
 // Rolling ~12-month chart of the combined ETN balance across every known Electroneum team wallet
 // — backed entirely by backend/utils/teamWalletsBalanceHistory.js's R2-published series (real
@@ -60,9 +61,10 @@ export default function TeamBalanceChart() {
   const formatValue = (v) => `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
 
   return (
-    <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 14 }}>
-        <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />Combined ETN Balance — Rolling 12 Months
+    <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
+      <CornerBrackets color={green} />
+      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 14 }}>
+        <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />[ Combined ETN Balance — Rolling 12 Months ]
       </div>
 
       {error ? (
@@ -75,19 +77,19 @@ export default function TeamBalanceChart() {
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 10, marginBottom: 14 }}>
             <div>
-              <div style={{ fontSize: 10, color: muted, textTransform: "uppercase" }}>Current</div>
+              <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase" }}>Current</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>{formatValue(stats.current)}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: muted, textTransform: "uppercase" }}>12M High</div>
+              <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase" }}>12M High</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>{formatValue(stats.high)}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: muted, textTransform: "uppercase" }}>12M Low</div>
+              <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase" }}>12M Low</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>{formatValue(stats.low)}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: muted, textTransform: "uppercase" }}>12M Change</div>
+              <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase" }}>12M Change</div>
               <div style={{ fontSize: 15, fontWeight: 800, color: stats.changePct >= 0 ? green : errorColor }}>
                 {stats.changePct >= 0 ? "+" : ""}{stats.changePct.toFixed(2)}%
               </div>

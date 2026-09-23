@@ -1,5 +1,5 @@
 import React from "react";
-import { green, error as errorColor, mutedLight } from "../../theme.js";
+import { green, error as errorColor, mutedLight, monoFont } from "../../theme.js";
 
 // "24h +20.00%" marker — green up, red down, muted when flat. `coverage` < 1 (some holdings had no
 // known 24h price change and are left out of the figure — see portfolioChange.js) is flagged with
@@ -14,7 +14,7 @@ export default function Change24hBadge({ change, fontSize = 11 }) {
   const partial = coverage < 0.999;
   return (
     <span
-      style={{ fontSize, fontWeight: 700, color, whiteSpace: "nowrap" }}
+      style={{ fontFamily: monoFont, fontSize, fontWeight: 700, color, whiteSpace: "nowrap" }}
       title={partial ? `Based on the ${Math.round(coverage * 100)}% of this value with a known 24h price change` : "Price change over the last 24 hours, at current holdings"}
     >
       {arrow} {partial ? "≈ " : ""}{rounded > 0 ? "+" : ""}{rounded.toFixed(2)}% <span style={{ color: mutedLight, fontWeight: 600 }}>24h</span>

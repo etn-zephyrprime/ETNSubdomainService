@@ -4,7 +4,7 @@ import { Crown } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import { usePremiumSubscription } from "../../../hooks/usePremiumSubscription.js";
-import { green, mutedLight, border, panel2, error as errorColor } from "../../theme.js";
+import { green, mutedLight, border, panel2, error as errorColor, monoFont } from "../../theme.js";
 
 const MONTH_OPTIONS = [1, 3, 6, 12];
 const YEAR_OPTIONS = [1, 2, 3];
@@ -111,11 +111,12 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
   const tabStyle = (active) => ({
     flex: 1,
     padding: "10px 0",
-    borderRadius: 10,
+    borderRadius: 6,
     border: `1px solid ${active ? green : border}`,
     background: active ? "rgba(24,187,26,0.15)" : panel2,
     color: active ? green : mutedLight,
-    fontSize: 13,
+    fontFamily: monoFont,
+    fontSize: 12,
     fontWeight: 800,
     cursor: "pointer",
     textTransform: "uppercase",
@@ -126,8 +127,8 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
     <DashboardPanel>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <Crown size={18} color={green} />
-        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          Premium Membership
+        <div style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
+          [ Premium Membership ]
         </div>
       </div>
 
@@ -175,10 +176,11 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
             style={{
               flex: 1,
               padding: "10px 0",
-              borderRadius: 10,
+              borderRadius: 6,
               border: `1px solid ${numUnits === n ? green : border}`,
               background: numUnits === n ? "rgba(24,187,26,0.15)" : panel2,
               color: numUnits === n ? green : mutedLight,
+              fontFamily: monoFont,
               fontSize: 13,
               fontWeight: 700,
               cursor: "pointer",
@@ -199,7 +201,7 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
       {txSuccess && (
         <div style={{ fontSize: 12, color: green, marginBottom: 12 }}>
           ✓ Membership updated
-          {txHash && <div style={{ color: mutedLight, marginTop: 2, wordBreak: "break-all" }}>{txHash}</div>}
+          {txHash && <div style={{ color: mutedLight, fontFamily: monoFont, fontSize: 11, marginTop: 2, wordBreak: "break-all" }}>{txHash}</div>}
         </div>
       )}
 

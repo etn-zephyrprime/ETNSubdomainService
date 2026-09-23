@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, mutedLight, muted, border, error as errorColor, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
+import StatCard from "./StatCard.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useLiquidityLock } from "../hooks/useLiquidityLock.js";
@@ -124,11 +125,13 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
 
   return (
     <div>
+      <style>{`.dash-holder-row:hover,.dash-holder-row:focus-visible{background:rgba(24,187,26,0.05);border-bottom-color:${green};}`}</style>
+
       <button
         onClick={onBack}
-        style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: green, background: "transparent", border: "none", cursor: "pointer", marginBottom: 16, padding: 0 }}
+        style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: monoFont, fontSize: 12, letterSpacing: 0.6, textTransform: "uppercase", fontWeight: 700, color: green, background: "transparent", border: "none", cursor: "pointer", marginBottom: 16, padding: 0 }}
       >
-        <ArrowLeft size={14} /> Back to Tokens
+        <ArrowLeft size={14} /> [ Back to Tokens ]
       </button>
 
       {error ? (
@@ -146,7 +149,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
               href={`${EXPLORER_BASE_URL}/token/${token.address}`}
               target="_blank"
               rel="noreferrer"
-              style={{ fontSize: 12, color: mutedLight, fontFamily: "monospace", textDecoration: "none", borderBottom: `1px solid ${border}` }}
+              style={{ fontSize: 12, color: mutedLight, fontFamily: monoFont, textDecoration: "none", borderBottom: `1px solid ${border}` }}
             >
               {token.address}
             </a>
@@ -164,23 +167,11 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 24 }}>
-            <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-              <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Holders</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatCompact(token.holders)}</div>
-            </div>
-            <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-              <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Total Supply</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatTokenAmount(token.total_supply, token.decimals)}</div>
-            </div>
-            <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-              <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Type</div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{token.type}</div>
-            </div>
+            <StatCard label="Holders" value={formatCompact(token.holders)} />
+            <StatCard label="Total Supply" value={formatTokenAmount(token.total_supply, token.decimals)} />
+            <StatCard label="Type" value={token.type} />
             {token.type !== "ERC-721" && token.type !== "ERC-1155" && (
-              <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-                <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>Liquidity Lock</div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{lockStatusText(liquidityLock)}</div>
-              </div>
+              <StatCard label="Liquidity Lock" value={lockStatusText(liquidityLock)} />
             )}
           </div>
 
@@ -190,8 +181,8 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
             <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
           )}
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
-            Top Holders
+          <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            [ Top Holders ]
           </div>
           {holders.length === 0 ? (
             <div style={{ fontSize: 12, color: muted }}>No holder data available.</div>
@@ -203,10 +194,11 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
                 return (
                   <button
                     key={h.address.hash}
+                    className="dash-holder-row"
                     onClick={() => onSelectAddress(h.address.hash)}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "8px 0", borderBottom: `1px solid ${border}`, background: "transparent", border: "none", cursor: "pointer", textAlign: "left" }}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "8px 0", borderBottom: `1px solid ${border}`, background: "transparent", border: "none", borderRadius: 2, cursor: "pointer", textAlign: "left" }}
                   >
-                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#fff", fontFamily: "monospace" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#fff", fontFamily: monoFont }}>
                       {h.address.ens_domain_name || shortHash(h.address.hash)}
                       {isTeamWallet(h.address.hash) && <TeamWalletTag style={{ fontSize: 8 }} />}
                     </span>

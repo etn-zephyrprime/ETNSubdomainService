@@ -1,7 +1,9 @@
 import React, { useMemo } from "react";
 import { ethers } from "ethers";
-import { green, blue, orange, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, blue, orange, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
+import StatCard from "./StatCard.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 import { useNameServiceStats } from "../hooks/useNameServiceStats.js";
 import { bucketDailyCounts, bucketDailySums } from "../utils/history.js";
 import { formatCompact, formatInt, formatChartDate, formatEtnBalance, timeAgo } from "../utils/format.js";
@@ -11,16 +13,7 @@ import ActivityComboChart from "./ActivityComboChart.jsx";
 import RevenueBarChart from "./RevenueBarChart.jsx";
 
 const TREND_WINDOW_DAYS = 30;
-
-function StatCard({ label, value, sub }) {
-  return (
-    <div style={{ padding: 14, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-      <div style={{ fontSize: 11, color: muted, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: mutedLight, marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
+const sectionLabel = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: mutedLight };
 
 // Proprietary .etn Name Service activity — Blockscout's own /stats page (and every generic chain
 // explorer) has no way to show any of this: it sees raw addresses and transactions, not this
@@ -120,14 +113,16 @@ export default function NameServiceStats() {
 
   return (
     <div>
+      <style>{`.dash-nsvc-row{transition:border-color .15s ease;} .dash-nsvc-row:hover,.dash-nsvc-row:focus-visible{border-color:${green};}`}</style>
+
       <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
         The .etn naming layer — a general block explorer has no concept of it at all. Split below
         into every domain registered anywhere on Electroneum, and this service's own activity
         specifically.
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
-        All of Electroneum
+      <div style={{ ...sectionLabel, marginBottom: 8 }}>
+        [ All of Electroneum ]
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 12 }}>
         <StatCard
@@ -136,15 +131,16 @@ export default function NameServiceStats() {
           sub="Registered on-chain, any app"
         />
       </div>
-      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
+      <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
+        <CornerBrackets color={green} />
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
           Domain registrations per day, last {TREND_WINDOW_DAYS} days
         </div>
         <SparklineChart data={networkTrendData} height={140} formatValue={formatInt} formatLabel={formatChartDate} />
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
-        Via ETN Subdomain Service
+      <div style={{ ...sectionLabel, marginBottom: 8 }}>
+        [ Via ETN Subdomain Service ]
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <StatCard label="Domains Activated" value={formatCompact(domains.length)} />
@@ -157,7 +153,8 @@ export default function NameServiceStats() {
         />
       </div>
 
-      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+      <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+        <CornerBrackets color={green} />
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
           Per day, last {TREND_WINDOW_DAYS} days
         </div>
@@ -172,7 +169,8 @@ export default function NameServiceStats() {
         />
       </div>
 
-      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+      <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+        <CornerBrackets color={green} />
         <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8 }}>
           Seller revenue per day, last {TREND_WINDOW_DAYS} days — the 80% seller cut from subname
           sales and marketplace resales combined
@@ -186,9 +184,10 @@ export default function NameServiceStats() {
         />
       </div>
 
-      <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
-        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
-          Marketplace Volume ({TREND_WINDOW_DAYS}D)
+      <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
+        <CornerBrackets color={green} />
+        <div style={{ ...sectionLabel, marginBottom: 8 }}>
+          [ Marketplace Volume ({TREND_WINDOW_DAYS}D) ]
         </div>
         {volume30dWei.count > 0 ? (
           <div>
@@ -201,6 +200,7 @@ export default function NameServiceStats() {
             {recentSales.map((sale) => (
               <a
                 key={sale.txHash}
+                className="dash-nsvc-row"
                 href={`${EXPLORER_BASE_URL}/tx/${sale.txHash}`}
                 target="_blank"
                 rel="noreferrer"
@@ -221,8 +221,8 @@ export default function NameServiceStats() {
         )}
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>
-        Top Domains by Subnames
+      <div style={{ ...sectionLabel, marginBottom: 8 }}>
+        [ Top Domains by Subnames ]
       </div>
       {sortedDomains.length === 0 ? (
         <div style={{ fontSize: 12, color: muted }}>No activated domains yet.</div>
@@ -230,6 +230,7 @@ export default function NameServiceStats() {
         sortedDomains.slice(0, 10).map((d) => (
           <a
             key={d.node}
+            className="dash-nsvc-row"
             href={`${SITE_URL}/subnames/${d.label}.etn`}
             target="_blank"
             rel="noreferrer"

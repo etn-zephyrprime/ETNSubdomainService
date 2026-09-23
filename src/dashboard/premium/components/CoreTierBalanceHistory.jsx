@@ -10,7 +10,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDailySeries } from "../../utils/balanceHistory.js";
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
 import { formatChartDate, formatUsdPrice } from "../../utils/format.js";
-import { green, muted, mutedLight, border, panel2 } from "../../theme.js";
+import { green, muted, mutedLight, border, panel2, monoFont } from "../../theme.js";
 
 function fmtEtn(v) {
   return `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
@@ -194,10 +194,11 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
                 title={m.id === "usd" && !usdReady ? "Loading price history…" : undefined}
                 style={{
                   padding: "5px 12px",
-                  borderRadius: 8,
+                  borderRadius: 6,
                   border: `1px solid ${m.id === valueMode ? green : border}`,
                   background: m.id === valueMode ? "rgba(24,187,26,0.12)" : panel2,
                   color: m.id === "usd" && !usdReady ? muted : m.id === valueMode ? green : mutedLight,
+                  fontFamily: monoFont,
                   fontSize: 11,
                   fontWeight: 700,
                   cursor: m.id === "usd" && !usdReady ? "not-allowed" : "pointer",
@@ -232,8 +233,8 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
           <div>
             {effectiveSelectedWallet === "combined" ? (
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-                  {active.length > 1 ? "Combined Balance History" : "Balance History"}
+                <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
+                  [ {active.length > 1 ? "Combined Balance History" : "Balance History"} ]
                 </div>
                 <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
                 {!hasCombinedHistory ? (
@@ -248,9 +249,9 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
                 const { series, hasHistory } = buildWalletSeries(effectiveSelectedWallet);
                 return (
                   <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-                      {w?.isOwnWallet ? "You — " : ""}
-                      {resolveName(effectiveSelectedWallet)}
+                    <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
+                      [ {w?.isOwnWallet ? "You — " : ""}
+                      {resolveName(effectiveSelectedWallet)} ]
                     </div>
                     <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
                     {!hasHistory ? (

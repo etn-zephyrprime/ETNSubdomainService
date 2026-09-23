@@ -3,7 +3,7 @@ import DashboardHeader from "./components/DashboardHeader.jsx";
 import CurrencySelector from "./components/CurrencySelector.jsx";
 import { useCurrency } from "./hooks/useCurrency.js";
 import { Eye } from "lucide-react";
-import { green, greenGlow, mutedLight, background } from "./theme.js";
+import { green, greenGlow, mutedLight, background, scanlineBg } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
 import Overview from "./components/Overview.jsx";
@@ -101,6 +101,7 @@ export default function DashboardApp() {
   return (
     <div style={{
       minHeight: "100vh",
+      position: "relative",
       background,
       display: "flex",
       flexDirection: "column",
@@ -108,7 +109,11 @@ export default function DashboardApp() {
       padding: "40px 16px",
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }}>
-      <div style={{ width: "100%", maxWidth: 900, display: "flex", justifyContent: "flex-end" }}>
+      {/* Faint Neon Grid scanline texture over the whole page — fixed so it doesn't scroll with the
+          content underneath, low-opacity enough to read as "terminal glass" rather than noise. */}
+      <div style={{ position: "fixed", inset: 0, background: scanlineBg, pointerEvents: "none", zIndex: 0 }} aria-hidden="true" />
+
+      <div style={{ width: "100%", maxWidth: 900, display: "flex", justifyContent: "flex-end", position: "relative" }}>
         <CurrencySelector />
       </div>
 
