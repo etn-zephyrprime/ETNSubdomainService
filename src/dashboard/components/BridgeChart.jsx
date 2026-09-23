@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
-import { green, orange, blue, muted, mutedLight, border } from "../theme.js";
+import { green, orange, blue, muted, mutedLight, border, monoFont } from "../theme.js";
 import { formatCompact } from "../utils/format.js";
 import { DEADLINE_MS, FALLBACK_START_DAY, monthTicks, valueAt, yTicks } from "../utils/bridgeSeries.js";
 
@@ -123,11 +123,11 @@ export default function BridgeChart({ series, total, forecast, nowMs }) {
             <div style={{ position: "absolute", left: `${x(hover.t)}%`, top: `${y(hover.value)}%`, width: 8, height: 8, borderRadius: "50%", background: orange, transform: "translate(-50%, -50%)", pointerEvents: "none" }} />
           )}
           {last && (
-            <div style={{ position: "absolute", left: `${x(last.t)}%`, top: 2, transform: "translateX(-50%)", fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: mutedLight, pointerEvents: "none", background: "rgba(15,15,15,0.7)", padding: "0 3px" }}>
+            <div style={{ position: "absolute", left: `${x(last.t)}%`, top: 2, transform: "translateX(-50%)", fontFamily: monoFont, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: mutedLight, pointerEvents: "none", background: "rgba(15,15,15,0.7)", padding: "0 3px" }}>
               Today
             </div>
           )}
-          <div style={{ position: "absolute", right: 4, top: 16, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: orange, pointerEvents: "none" }}>
+          <div style={{ position: "absolute", right: 4, top: 16, fontFamily: monoFont, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: orange, pointerEvents: "none" }}>
             Deadline
           </div>
 
@@ -139,7 +139,7 @@ export default function BridgeChart({ series, total, forecast, nowMs }) {
                 ...(x(hover.t) > 60 ? { right: `${100 - x(hover.t)}%`, marginRight: 10 } : { left: `${x(hover.t)}%`, marginLeft: 10 }),
                 background: "rgba(10,10,10,0.95)",
                 border: `1px solid ${border}`,
-                borderRadius: 8,
+                borderRadius: 4,
                 padding: "6px 9px",
                 fontSize: 11,
                 color: "#fff",
