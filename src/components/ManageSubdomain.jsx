@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft, Copy, Check, QrCode, ChevronDown, ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border } from "../styles/theme.js";
 import { useRenewal } from "../hooks/useRenewal.js";
 import { useSubnamePricing } from "../hooks/useSubnamePricing.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
@@ -46,8 +46,10 @@ function OwnedNameRow({ name, depth = 0, expandable = false, expanded = false, o
         padding: "10px 12px",
         paddingLeft: 12 + depth * 20,
         borderRadius: depth === 0 ? 10 : 0,
-        background: depth === 0 ? panel2 : "transparent",
-        border: depth === 0 ? `1px solid ${border}` : "none",
+        background: depth === 0 ? "rgba(255,255,255,0.05)" : "transparent",
+        backdropFilter: depth === 0 ? "blur(14px)" : undefined,
+        WebkitBackdropFilter: depth === 0 ? "blur(14px)" : undefined,
+        border: depth === 0 ? `1px solid rgba(62,166,255,0.2)` : "none",
         borderBottom: depth > 0 ? `1px solid ${border}` : undefined,
         cursor: "pointer",
       }}
@@ -925,7 +927,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
             fontWeight: 600,
             color: green,
             background: "rgba(18,86,131,0.06)",
-            border: `1px solid ${border}`,
+            border: `1px solid rgba(62,166,255,0.2)`,
             borderRadius: 10,
             cursor: "pointer",
             padding: "8px 14px",
@@ -1039,7 +1041,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                           onSelect={() => selectOwnedName(domain.name)}
                         />
                         {expandable && expanded && (
-                          <div style={{ background: panel2, border: `1px solid ${border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+                          <div style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", border: `1px solid rgba(62,166,255,0.2)`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
                             {subnames.map((sub) => (
                               <OwnedNameRow key={sub.node} name={sub} depth={1} onSelect={() => selectOwnedName(sub.name)} />
                             ))}
@@ -1091,8 +1093,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                 width: "100%",
                 padding: "14px 16px",
                 borderRadius: 12,
-                border: `1px solid ${border}`,
-                background: panel2,
+                border: `1px solid rgba(62,166,255,0.2)`,
+                background: "rgba(255,255,255,0.05)",
+                backdropFilter: "blur(14px)",
+                WebkitBackdropFilter: "blur(14px)",
                 color: "#fff",
                 fontSize: 16,
                 fontWeight: 600,
@@ -1151,8 +1155,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
         <div style={{
           padding: 16,
           borderRadius: 12,
-          background: panel2,
-          border: `1px solid ${border}`,
+          background: "rgba(255,255,255,0.05)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          border: `1px solid rgba(62,166,255,0.2)`,
         }}>
           {sendSuccess ? (
             <div style={{ textAlign: "center", padding: "24px 0" }}>
@@ -1490,8 +1496,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     width: "100%",
                     padding: "12px 14px",
                     borderRadius: 10,
-                    border: `1px solid ${border}`,
-                    background: panel2,
+                    border: `1px solid rgba(62,166,255,0.2)`,
+                    background: "rgba(255,255,255,0.05)",
+                    backdropFilter: "blur(14px)",
+                    WebkitBackdropFilter: "blur(14px)",
                     color: "#fff",
                     fontSize: 14,
                     fontWeight: 600,
@@ -1631,7 +1639,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     padding: 14,
                     borderRadius: 10,
                     background: "rgba(0,0,0,0.2)",
-                    border: `1px solid ${border}`,
+                    border: `1px solid rgba(62,166,255,0.2)`,
                     marginBottom: 14,
                   }}>
                     {renewQuoteLoading ? (
@@ -1728,7 +1736,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                     padding: 10,
                     borderRadius: 8,
                     background: "rgba(0,0,0,0.2)",
-                    border: `1px solid ${border}`,
+                    border: `1px solid rgba(62,166,255,0.2)`,
                     marginBottom: 10,
                     fontSize: 12,
                   }}>
@@ -1794,8 +1802,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                       width: "100%",
                       padding: "12px 14px",
                       borderRadius: 10,
-                      border: `1px solid ${border}`,
-                      background: panel2,
+                      border: `1px solid rgba(62,166,255,0.2)`,
+                      background: "rgba(255,255,255,0.05)",
+                      backdropFilter: "blur(14px)",
+                      WebkitBackdropFilter: "blur(14px)",
                       color: "#fff",
                       fontSize: 14,
                       fontWeight: 600,
@@ -1809,7 +1819,7 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                       padding: 10,
                       borderRadius: 8,
                       background: "rgba(0,0,0,0.2)",
-                      border: `1px solid ${border}`,
+                      border: `1px solid rgba(62,166,255,0.2)`,
                       marginBottom: 10,
                       fontSize: 12,
                     }}>
@@ -1868,8 +1878,10 @@ export default function ManageSubdomain({ wallet, onBack = null, intent = "manag
                   width: "100%",
                   padding: "12px 14px",
                   borderRadius: 10,
-                  border: `1px solid ${border}`,
-                  background: panel2,
+                  border: `1px solid rgba(62,166,255,0.2)`,
+                  background: "rgba(255,255,255,0.05)",
+                  backdropFilter: "blur(14px)",
+                  WebkitBackdropFilter: "blur(14px)",
                   color: "#fff",
                   fontSize: 14,
                   fontWeight: 600,

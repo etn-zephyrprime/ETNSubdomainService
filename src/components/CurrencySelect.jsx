@@ -1,6 +1,5 @@
 import React from "react";
 import { ethers } from "ethers";
-import { panel2, border } from "../styles/theme.js";
 
 // ETN is always implicitly payable for PRICING/ACTIVATION on V5 (it never appears in
 // whitelistedPaymentTokens — see PlanetZephyrosSubdomainServiceV5.sol's own comment on that
@@ -31,9 +30,11 @@ export default function CurrencySelect({ tokens, value, onChange, disabled = fal
       style={{
         width: "100%",
         padding: "12px 14px",
-        borderRadius: 10,
-        border: `1px solid ${border}`,
-        background: panel2,
+        borderRadius: 999,
+        border: `1px solid rgba(62,166,255,0.25)`,
+        background: "rgba(255,255,255,0.05)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
         color: "#fff",
         fontSize: 14,
         fontWeight: 600,

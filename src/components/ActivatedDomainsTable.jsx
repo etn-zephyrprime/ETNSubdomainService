@@ -3,7 +3,7 @@ import { Globe, ChevronDown, ChevronRight } from "lucide-react";
 import Panel from "./Panel.jsx";
 import { useActivatedDomains } from "../hooks/useActivatedDomains.js";
 import { formatTimeLeft, isExpired, shortAddress } from "../utils/format.js";
-import { green, mutedLight, muted, error as errorColor, panel2, border } from "../styles/theme.js";
+import { green, mutedLight, muted, error as errorColor, border } from "../styles/theme.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 
 function nameExplorerUrl(fullName) {
@@ -52,7 +52,7 @@ function VersionTag({ activatedOn }) {
         letterSpacing: 0.4,
         textTransform: "uppercase",
         color: muted,
-        border: `1px solid ${border}`,
+        border: `1px solid rgba(62,166,255,0.2)`,
         borderRadius: 4,
         padding: "2px 5px",
       }}
@@ -74,8 +74,10 @@ function Row({ label, ownerAddress, ownerText, timeLeft, expired, depth, expanda
         padding: "10px 12px",
         paddingLeft: 12 + depth * 20,
         borderRadius: depth === 0 ? 10 : 0,
-        background: depth === 0 ? panel2 : "transparent",
-        border: depth === 0 ? `1px solid ${border}` : "none",
+        background: depth === 0 ? "rgba(255,255,255,0.05)" : "transparent",
+        backdropFilter: depth === 0 ? "blur(14px)" : undefined,
+        WebkitBackdropFilter: depth === 0 ? "blur(14px)" : undefined,
+        border: depth === 0 ? `1px solid rgba(62,166,255,0.2)` : "none",
         borderBottom: depth > 0 ? `1px solid ${border}` : undefined,
         cursor: expandable ? "pointer" : "default",
         opacity: expired ? 0.55 : 1,
@@ -214,7 +216,7 @@ export default function ActivatedDomainsTable() {
                   activatedOn={domain.activatedOn}
                 />
                 {expanded && (
-                  <div style={{ background: panel2, border: `1px solid ${border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+                  <div style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", border: `1px solid rgba(62,166,255,0.2)`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
                     <div style={{ fontSize: 10, color: muted, padding: "8px 12px", paddingLeft: 32, borderBottom: `1px solid ${border}` }}>
                       Showing subnames rented via ETN Subdomain Service
                     </div>

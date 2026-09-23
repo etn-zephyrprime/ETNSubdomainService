@@ -1,18 +1,21 @@
 import React from "react";
-import { green, greenGlow } from "../styles/theme.js";
+import { green, greenGlow, blue } from "../styles/theme.js";
 
-export default function NeonButton({ 
-  children, 
-  onClick, 
-  variant = "green", 
-  disabled = false, 
+// "Glass & Gradient" buttons — fully-rounded (pill) shape, gradient fills on every colored
+// variant (matching Panel.jsx's own gradient-ring treatment) instead of a flat color, "dark" as a
+// frosted glass secondary action rather than a plain dark box.
+export default function NeonButton({
+  children,
+  onClick,
+  variant = "green",
+  disabled = false,
   style = {},
-  loading = false 
+  loading = false
 }) {
   const styles = {
     green: {
-      background: green,
-      color: "#000",
+      background: `linear-gradient(90deg, ${blue}, ${green})`,
+      color: "#04101c",
       boxShadow: `0 0 12px ${greenGlow}`,
       border: "none",
     },
@@ -29,10 +32,12 @@ export default function NeonButton({
       border: "none",
     },
     dark: {
-      background: "#151515",
-      color: green,
+      background: "rgba(255,255,255,0.05)",
+      backdropFilter: "blur(12px)",
+      WebkitBackdropFilter: "blur(12px)",
+      color: blue,
       boxShadow: "0 0 8px rgba(0,0,0,0.35)",
-      border: "1px solid #2f2f2f",
+      border: "1px solid rgba(62,166,255,0.35)",
     },
     danger: {
       background: "rgba(255,77,77,0.14)",
@@ -48,8 +53,8 @@ export default function NeonButton({
       onClick={onClick}
       disabled={disabled || loading}
       style={{
-        padding: "12px 16px",
-        borderRadius: 12,
+        padding: "12px 20px",
+        borderRadius: 999,
         fontSize: 14,
         fontWeight: 800,
         cursor: disabled || loading ? "not-allowed" : "pointer",
@@ -61,13 +66,13 @@ export default function NeonButton({
       }}
       onMouseEnter={(e) => {
         if (!disabled && !loading && variant === "dark") {
-          e.currentTarget.style.borderColor = green;
+          e.currentTarget.style.borderColor = blue;
           e.currentTarget.style.boxShadow = `0 0 12px ${greenGlow}`;
         }
       }}
       onMouseLeave={(e) => {
         if (!disabled && !loading && variant === "dark") {
-          e.currentTarget.style.borderColor = "#2f2f2f";
+          e.currentTarget.style.borderColor = "rgba(62,166,255,0.35)";
           e.currentTarget.style.boxShadow = "0 0 8px rgba(0,0,0,0.35)";
         }
       }}

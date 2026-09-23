@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ArrowLeft } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border } from "../styles/theme.js";
 import { useMarketplaceListings } from "../hooks/useMarketplaceListings.js";
 import { formatEth } from "../utils/format.js";
 import NeonButton from "./NeonButton.jsx";
@@ -132,7 +132,7 @@ export default function Marketplace({ wallet, onBack = null }) {
             fontWeight: 600,
             color: green,
             background: "rgba(18,86,131,0.06)",
-            border: `1px solid ${border}`,
+            border: `1px solid rgba(62,166,255,0.2)`,
             borderRadius: 10,
             cursor: "pointer",
             padding: "8px 14px",
@@ -191,8 +191,10 @@ export default function Marketplace({ wallet, onBack = null }) {
                   gap: 12,
                   padding: 14,
                   borderRadius: 12,
-                  background: panel2,
-                  border: `1px solid ${border}`,
+                  background: "rgba(255,255,255,0.05)",
+                  backdropFilter: "blur(14px)",
+                  WebkitBackdropFilter: "blur(14px)",
+                  border: `1px solid rgba(62,166,255,0.2)`,
                 }}
               >
                 <div style={{ minWidth: 0 }}>
@@ -210,7 +212,7 @@ export default function Marketplace({ wallet, onBack = null }) {
                           letterSpacing: 0.4,
                           textTransform: "uppercase",
                           color: muted,
-                          border: `1px solid ${border}`,
+                          border: `1px solid rgba(62,166,255,0.2)`,
                           borderRadius: 4,
                           padding: "2px 5px",
                         }}
@@ -228,7 +230,7 @@ export default function Marketplace({ wallet, onBack = null }) {
                           letterSpacing: 0.4,
                           textTransform: "uppercase",
                           color: muted,
-                          border: `1px solid ${border}`,
+                          border: `1px solid rgba(62,166,255,0.2)`,
                           borderRadius: 4,
                           padding: "2px 5px",
                         }}

@@ -24,9 +24,11 @@ export default function EcosystemBanner({
     >
       <div
         style={{
-          background: "#0f0f0f",
-          border: "1px solid #333",
-          borderRadius: 12,
+          background: "rgba(255,255,255,0.04)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          border: "1px solid rgba(62,166,255,0.22)",
+          borderRadius: 16,
           width: "100%",
           height: isMobile ? 60 : desktopHeight,
           display: "flex",

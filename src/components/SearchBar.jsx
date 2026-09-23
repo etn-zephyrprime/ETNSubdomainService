@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ArrowLeft } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error } from "../styles/theme.js";
 import { useCheckAvailability } from "../hooks/useCheckAvailability.js";
 import NeonButton from "./NeonButton.jsx";
+import Panel from "./Panel.jsx";
 import { containsBlockedWord } from "../utils/obscenity.js";
 
 export default function SearchBar({ wallet, onNameSelected = null }) {
@@ -90,9 +91,11 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
                 fontSize: 13,
                 fontWeight: 600,
                 color: green,
-                background: "rgba(18,86,131,0.06)",
-                border: `1px solid ${border}`,
-                borderRadius: 10,
+                background: "rgba(255,255,255,0.05)",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
+                border: `1px solid rgba(62,166,255,0.25)`,
+                borderRadius: 999,
                 cursor: "pointer",
                 padding: "8px 14px",
               }}
@@ -110,10 +113,12 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
               onChange={(e) => setNameInput(e.target.value.toLowerCase().trim())}
               style={{
                 width: "100%",
-                padding: "14px 16px",
-                borderRadius: 12,
-                border: `1px solid ${availability === null ? border : availability ? green : error}`,
-                background: panel2,
+                padding: "14px 20px",
+                borderRadius: 999,
+                border: `1px solid ${availability === null ? "rgba(62,166,255,0.25)" : availability ? green : error}`,
+                background: "rgba(255,255,255,0.05)",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
                 color: "#fff",
                 fontSize: 16,
                 fontWeight: 600,
@@ -127,7 +132,7 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
               }}
               onBlur={(e) => {
                 if (availability === null) {
-                  e.currentTarget.style.borderColor = border;
+                  e.currentTarget.style.borderColor = "rgba(62,166,255,0.25)";
                   e.currentTarget.style.boxShadow = "none";
                 }
               }}
@@ -135,16 +140,7 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
           </div>
 
           {nameInput && (
-            <div style={{
-              padding: 14,
-              borderRadius: 10,
-              background: panel2,
-              border: `1px solid ${border}`,
-              marginBottom: 16,
-              fontSize: 12,
-              color: mutedLight,
-              textAlign: "center",
-            }}>
+            <Panel style={{ marginBottom: 16 }} innerStyle={{ padding: 14, fontSize: 12, color: mutedLight, textAlign: "center" }}>
               {checkingDebounce && "Checking..."}
               <div style={{
                 fontSize: 18,
@@ -155,14 +151,16 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
               }}>
                 {displayName}
               </div>
-            </div>
+            </Panel>
           )}
 
           {availability !== null && !checkingDebounce && (
             <div style={{
               padding: 14,
-              borderRadius: 10,
+              borderRadius: 14,
               background: blockedWord ? `rgba(255,107,107,0.1)` : availability ? `rgba(18,86,131,0.1)` : `rgba(255,107,107,0.1)`,
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
               border: `1px solid ${blockedWord ? error : availability ? green : error}`,
               marginBottom: 16,
               fontSize: 13,
@@ -181,8 +179,10 @@ export default function SearchBar({ wallet, onNameSelected = null }) {
           {!wallet?.isConnected && (
             <div style={{
               padding: 12,
-              borderRadius: 10,
+              borderRadius: 14,
               background: `rgba(62,166,255,0.1)`,
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
               border: `1px solid ${green}`,
               marginBottom: 16,
               fontSize: 12,

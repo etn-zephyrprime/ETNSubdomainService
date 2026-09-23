@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Bell, BellOff } from "lucide-react";
-import { green, muted, mutedLight, error, panel2, border } from "../styles/theme.js";
+import { green, muted, mutedLight, error, border } from "../styles/theme.js";
 import { useTelegramLink } from "../hooks/useTelegramLink.js";
 import NeonButton from "./NeonButton.jsx";
 
@@ -100,7 +100,9 @@ export default function TelegramAlertsCard({ wallet }) {
       gap: 12,
       padding: "14px 16px",
       borderRadius: 12,
-      background: panel2,
+      background: "rgba(255,255,255,0.05)",
+      backdropFilter: "blur(14px)",
+      WebkitBackdropFilter: "blur(14px)",
       border: `1px solid ${linked ? green : border}`,
       marginBottom: 20,
     }}>
