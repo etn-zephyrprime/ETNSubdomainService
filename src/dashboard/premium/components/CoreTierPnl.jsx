@@ -124,6 +124,56 @@ function pickTokenFigures(snap, tokenFilter) {
   return { currentValueUsd, unrealizedPnlUsd, realizedPnlUsd };
 }
 
+// How often to re-poll /pnl-snapshot while a background ingest is in progress (see loadSnapshot's
+// own polling useEffect below) — separate from, and a bit slower than, the backend's own
+// INGEST_PROGRESS_CALLBACK_INTERVAL_MS write cadence (2s default), so a poll is never racing a
+// write that hasn't landed yet.
+const INGEST_POLL_INTERVAL_MS = 3000;
+
+/** Shown in place of the normal PnL figures while a reconnect's ingest is actually running (see
+ * pnlSnapshotRouter.js's own `ingesting`/`jobs` response fields) — this is NOT shown on every
+ * reconnect, only when one is genuinely due (throttled to roughly hourly server-side), so a member
+ * who reconnects moments after their last visit never sees this at all. `current`/`total` are real
+ * block numbers reported by the backend, not a fabricated percentage — see
+ * pnlIngestion.js's doIngestWalletHistory for exactly how they're derived. */
+function IngestProgressBanner({ jobs, resolveWalletName }) {
+  return (
+    <div style={{ padding: "12px 14px", borderRadius: 4, background: "rgba(232,191,76,0.06)", border: `1px solid ${border}`, marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 4 }}>
+        Catching up on your wallet's on-chain activity
+      </div>
+      <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12, lineHeight: 1.6 }}>
+        Reconnecting periodically re-syncs recent activity rather than on every single reconnect — this can take a
+        few minutes the first time, or after a lot of new activity. Your figures below will appear once it's done.
+      </div>
+      {jobs.map((job) => {
+        const pct = job.total > 0 ? Math.min(100, Math.max(0, (job.current / job.total) * 100)) : 0;
+        return (
+          <div key={job.walletAddress} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: muted, marginBottom: 4, fontFamily: monoFont }}>
+              <span>{resolveWalletName(job.walletAddress)} — {job.stage}</span>
+              <span>{job.total > 0 ? `block ${job.current.toLocaleString()} of ${job.total.toLocaleString()}` : "starting…"}</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: panel2, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${pct}%`,
+                background: job.status === "FAILED" ? errorColor : green,
+                transition: "width 0.4s ease",
+              }} />
+            </div>
+            {job.status === "FAILED" && (
+              <div style={{ fontSize: 11, color: errorColor, marginTop: 4 }}>
+                Sync hit an error ({job.errorMessage || "unknown error"}) — it'll retry automatically next time you reconnect or refresh.
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const selectStyle = {
   padding: "8px 12px",
   borderRadius: 6,
@@ -185,9 +235,16 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   const [pickerSelections, setPickerSelections] = useState({});
 
   const loadSnapshot = useCallback(
-    async (priorityTokens) => {
-      setSnapshotLoading(true);
-      setSnapshotError(null);
+    // `silent` is set by the ingest-progress poller below — a background poll updates the progress
+    // bar's numbers without flipping snapshotLoading (which drives the Refresh button's own label
+    // and the cold-start picker's Continue button) on and off every few seconds, and swallows its
+    // own transient failures instead of replacing the progress UI with an error banner — it'll just
+    // retry on the next tick.
+    async (priorityTokens, { silent = false } = {}) => {
+      if (!silent) {
+        setSnapshotLoading(true);
+        setSnapshotError(null);
+      }
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
         const res = await getLiveSnapshot(wallet.account, signature, timestamp, priorityTokens);
@@ -203,13 +260,24 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
           return next;
         });
       } catch (err) {
-        setSnapshotError(err.message || "Couldn't compute your live PnL");
+        if (!silent) setSnapshotError(err.message || "Couldn't compute your live PnL");
       } finally {
-        setSnapshotLoading(false);
+        if (!silent) setSnapshotLoading(false);
       }
     },
     [getAuthParams, getLiveSnapshot, wallet.account]
   );
+
+  // While a reconnect's ingest is actually running (snapshot.ingesting — see
+  // pnlSnapshotRouter.js's own response shape), re-poll for fresh progress numbers until it's
+  // done. Stops itself (clears the interval) the moment a poll comes back with ingesting:false —
+  // at that point `snapshot` already holds the real, freshly-computed figures from that same
+  // response, no extra fetch needed.
+  useEffect(() => {
+    if (!snapshot?.ingesting) return;
+    const id = setInterval(() => loadSnapshot(undefined, { silent: true }), INGEST_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [snapshot?.ingesting, loadSnapshot]);
 
   const toggleTokenSelection = (walletAddress, tokenAddress) => {
     setPickerSelections((prev) => {
@@ -411,7 +479,9 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
               </div>
             )}
 
-            {!snapshot && !snapshotError ? (
+            {snapshot?.ingesting ? (
+              <IngestProgressBanner jobs={snapshot.jobs} resolveWalletName={resolveWalletName} />
+            ) : !snapshot && !snapshotError ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>Computing your live PnL — this can take a moment…</div>
             ) : filteredWalletFailed ? (
               <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>
