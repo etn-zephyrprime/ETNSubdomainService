@@ -8,7 +8,7 @@ import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatChartDate } from "../../utils/format.js";
-import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import TokenLogo from "../../components/TokenLogo.jsx";
 
@@ -20,7 +20,7 @@ const CATEGORY_OPTIONS = [
   { key: "liquidity", label: "Liquidity Positions" },
   { key: "farm_staking", label: "Staking / Yield Farms" },
 ];
-const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const sectionHeaderStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
 function pnlColor(v) {
   return v > 0 ? green : v < 0 ? errorColor : mutedLight;
@@ -56,7 +56,8 @@ export function PnlValueToggle({ chartMode, setChartMode }) {
           onClick={() => setChartMode(opt.key)}
           style={{
             padding: "4px 10px",
-            borderRadius: 8,
+            borderRadius: 6,
+            fontFamily: monoFont,
             fontSize: 11,
             fontWeight: 700,
             cursor: "pointer",
@@ -86,7 +87,8 @@ export function PnlSubModeToggle({ pnlSubMode, setPnlSubMode }) {
           onClick={() => setPnlSubMode(opt.key)}
           style={{
             padding: "3px 9px",
-            borderRadius: 6,
+            borderRadius: 4,
+            fontFamily: monoFont,
             fontSize: 10,
             fontWeight: 700,
             cursor: "pointer",
@@ -124,10 +126,11 @@ function pickTokenFigures(snap, tokenFilter) {
 
 const selectStyle = {
   padding: "8px 12px",
-  borderRadius: 10,
+  borderRadius: 6,
   border: `1px solid ${border}`,
   background: panel2,
   color: "#fff",
+  fontFamily: monoFont,
   fontSize: 12,
   fontWeight: 600,
   outline: "none",
@@ -344,7 +347,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
         ) : (
           <>
             {/* Required disclaimer + upsell — this view is never a record, the Statement is */}
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
               <Info size={14} color={mutedLight} style={{ flexShrink: 0, marginTop: 1 }} />
               <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6 }}>
                 This is a live estimate for your own reference and updates continuously — it's not a formal record.
@@ -358,7 +361,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 that FIRST computation a lot; everything else still gets priced automatically in
                 the background afterward, so this is purely a speed choice, never a permanent one. */}
             {snapshot?.needsSelection?.length > 0 && (
-              <div style={{ padding: "12px 14px", borderRadius: 10, background: panel2, border: `1px solid ${green}`, marginBottom: 16 }}>
+              <div style={{ padding: "12px 14px", borderRadius: 4, background: panel2, border: `1px solid ${green}`, marginBottom: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 4 }}>
                   Speed up your first PnL calculation
                 </div>
@@ -382,7 +385,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                           return (
                             <label
                               key={t.address}
-                              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 8, background: checked ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${checked ? green : border}`, cursor: "pointer", fontSize: 11 }}
+                              style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 6, background: checked ? "rgba(24,187,26,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${checked ? green : border}`, cursor: "pointer", fontSize: 11 }}
                             >
                               <input type="checkbox" checked={checked} onChange={() => toggleTokenSelection(walletAddress, t.address)} style={{ accentColor: green }} />
                               <TokenLogo address={t.address} label={t.symbol || t.name} size={16} spacing={0} />
@@ -429,7 +432,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
 
                 {tokenOptions.length > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted }}>Token</span>
+                    <span style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted }}>Token</span>
                     <select value={tokenFilter} onChange={(e) => setTokenFilter(e.target.value)} style={selectStyle}>
                       <option value="all">All tokens</option>
                       {tokenOptions.map((h) => (
@@ -441,19 +444,19 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
                   <div>
-                    <div style={sectionHeaderStyle}>Current Value</div>
+                    <div style={sectionHeaderStyle}>[ Current Value ]</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>
                       {figures.currentValueUsd != null ? formatUsdPrice(Number(figures.currentValueUsd)) : "price unavailable"}
                     </div>
                   </div>
                   <div>
-                    <div style={sectionHeaderStyle}>Unrealized P&amp;L</div>
+                    <div style={sectionHeaderStyle}>[ Unrealized P&amp;L ]</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: figures.unrealizedPnlUsd != null ? pnlColor(Number(figures.unrealizedPnlUsd)) : mutedLight }}>
                       {figures.unrealizedPnlUsd != null ? fmtSigned(Number(figures.unrealizedPnlUsd)) : "—"}
                     </div>
                   </div>
                   <div>
-                    <div style={sectionHeaderStyle}>Realized P&amp;L (running total)</div>
+                    <div style={sectionHeaderStyle}>[ Realized P&amp;L (running total) ]</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                       {fmtSigned(Number(figures.realizedPnlUsd))}
                     </div>
@@ -490,7 +493,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 )}
 
                 <div style={{ marginBottom: 20 }}>
-                  <div style={sectionHeaderStyle}>Current Holdings</div>
+                  <div style={sectionHeaderStyle}>[ Current Holdings ]</div>
                   {(() => {
                     // isSpam(address) checks the token's actual resolved name (never a hex
                     // fallback — see useTokenNames.js's own comment on why). marketValueUsd null
@@ -564,7 +567,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
-                  {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
+                  [ {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"} ]
                   <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began. PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value." />
                 </div>
                 <PnlValueToggle chartMode={chartMode} setChartMode={setChartMode} />
@@ -598,7 +601,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
-                  {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
+                  [ {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"} ]
                   <InfoTooltip text="Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that." />
                 </div>
                 <PnlValueToggle chartMode={categoryChartMode} setChartMode={setCategoryChartMode} />

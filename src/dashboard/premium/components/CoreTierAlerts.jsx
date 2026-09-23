@@ -13,7 +13,7 @@ import { usePortfolioDigest } from "../../hooks/usePortfolioDigest.js";
 import { useSubscriptionReminders } from "../../hooks/useSubscriptionReminders.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
-import { green, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoint signs — one cached signature covers all of them
 const STATUS_POLL_MS = 3000;
@@ -21,17 +21,18 @@ const STATUS_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 const inputStyle = {
   padding: "10px 12px",
-  borderRadius: 10,
+  borderRadius: 6,
   border: `1px solid ${border}`,
   background: panel2,
   color: "#fff",
+  fontFamily: monoFont,
   fontSize: 13,
   fontWeight: 600,
   boxSizing: "border-box",
   outline: "none",
 };
-const labelStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 4, display: "block" };
-const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const labelStyle = { fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 4, display: "block" };
+const sectionHeaderStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
 // Core Tier's third feature: Telegram alerts, split into two independent kinds sharing one
 // delivery mechanism — the Planet Zephyros Notis bot (notisLinkRouter.js), a DELIBERATELY
@@ -415,7 +416,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
         <div
           style={{
             display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
-            padding: "14px 16px", borderRadius: 12, background: panel2, border: `1px solid ${linked ? green : border}`,
+            padding: "14px 16px", borderRadius: 4, background: panel2, border: `1px solid ${linked ? green : border}`,
             marginBottom: 20,
           }}
         >
@@ -458,7 +459,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
         <div
           style={{
             display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
-            padding: "14px 16px", borderRadius: 12, background: panel2, border: `1px solid ${border}`,
+            padding: "14px 16px", borderRadius: 4, background: panel2, border: `1px solid ${border}`,
             marginBottom: 20,
           }}
         >
@@ -486,7 +487,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
         <div
           style={{
             display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
-            padding: "14px 16px", borderRadius: 12, background: panel2, border: `1px solid ${border}`,
+            padding: "14px 16px", borderRadius: 4, background: panel2, border: `1px solid ${border}`,
             marginBottom: 20,
           }}
         >
@@ -512,7 +513,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
 
         {/* Wallet alerts */}
         <div style={{ marginBottom: 24 }}>
-          <div style={sectionHeaderStyle}>Wallet Alerts</div>
+          <div style={sectionHeaderStyle}>[ Wallet Alerts ]</div>
           {active.length === 0 ? (
             <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
               Track a wallet under Core Tier — Portfolio above to set alerts on it.
@@ -523,7 +524,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
               {walletAlerts && walletAlerts.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
                   {walletAlerts.map((a) => (
-                    <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 4, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                       <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
                         <span style={{ color: "#fff", fontWeight: 700 }}>{resolveWalletName(a.walletAddress)}</span>
                         {" — "}
@@ -539,7 +540,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
                 </div>
               )}
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 10, border: `1px dashed ${border}` }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 4, border: `1px dashed ${border}` }}>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 160px" }}>
                     <label style={labelStyle}>Wallet</label>
@@ -595,7 +596,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
         {/* Portfolio alerts — combined tracked-wallet USD %-move, distinct from a single wallet's
             balance threshold above */}
         <div style={{ marginBottom: 24 }}>
-          <div style={sectionHeaderStyle}>Portfolio Alerts</div>
+          <div style={sectionHeaderStyle}>[ Portfolio Alerts ]</div>
           {active.length === 0 ? (
             <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
               Track a wallet under Core Tier — Portfolio above to alert on your combined portfolio value.
@@ -606,7 +607,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
               {portfolioAlerts && portfolioAlerts.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
                   {portfolioAlerts.map((a) => (
-                    <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 4, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                       <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
                         Notify when your combined portfolio goes <span style={{ color: "#fff", fontWeight: 700 }}>{a.direction} {a.thresholdPct}%</span>
                       </div>
@@ -618,7 +619,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
                 </div>
               )}
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 10, border: `1px dashed ${border}` }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 4, border: `1px dashed ${border}` }}>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 120px" }}>
                     <label style={labelStyle}>Direction</label>
@@ -643,12 +644,12 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
 
         {/* Token price alerts */}
         <div>
-          <div style={sectionHeaderStyle}>Token Price Alerts</div>
+          <div style={sectionHeaderStyle}>[ Token Price Alerts ]</div>
           {tokenAlertsError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 8 }}>{tokenAlertsError}</div>}
           {tokenAlerts && tokenAlerts.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
               {tokenAlerts.map((a) => (
-                <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
+                <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderRadius: 4, background: "rgba(255,255,255,0.03)", border: `1px solid ${border}` }}>
                   <div style={{ fontSize: 12, color: mutedLight, minWidth: 0 }}>
                     <TokenLogo address={a.tokenAddress} label={resolveTokenName(a.tokenAddress)} size={18} />
                     {onSelectToken ? (
@@ -675,7 +676,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
             </div>
           )}
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 10, border: `1px dashed ${border}` }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: 4, border: `1px dashed ${border}` }}>
             <div>
               <label style={labelStyle}>Token address</label>
               <input type="text" placeholder="0x..." value={taToken} onChange={(e) => setTaToken(e.target.value)} style={{ ...inputStyle, width: "100%" }} />

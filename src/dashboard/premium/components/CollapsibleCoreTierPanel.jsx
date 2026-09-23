@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Plus, Minus } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
-import { green, mutedLight, border } from "../../theme.js";
+import { green, mutedLight, border, monoFont } from "../../theme.js";
 
 /** Shared collapse/expand shell for a Core Tier panel — Balance History, PnL, NFT PnL, and Alerts
  * all use this now, collapsed by default (see PortfolioDashboardSection.jsx's own comment on why:
@@ -34,13 +34,13 @@ export default function CollapsibleCoreTierPanel({ icon: Icon, title, headerRigh
           <span
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
-              width: 22, height: 22, borderRadius: 6, border: `1px solid ${border}`, color: mutedLight, flexShrink: 0,
+              width: 22, height: 22, borderRadius: 4, border: `1px solid ${border}`, color: mutedLight, flexShrink: 0,
             }}
           >
             {collapsed ? <Plus size={13} /> : <Minus size={13} />}
           </span>
           <Icon size={18} color={green} />
-          <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>{title}</span>
+          <span style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>[ {title} ]</span>
         </button>
         {!collapsed && headerRight}
       </div>

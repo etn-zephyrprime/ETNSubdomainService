@@ -6,11 +6,12 @@ import { useDiamondHandsScore } from "../../hooks/useDiamondHandsScore.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import TokenLogo from "../../components/TokenLogo.jsx";
-import { green, blue, orange, muted, mutedLight, error as errorColor, border, panel2 } from "../../theme.js";
+import { green, blue, orange, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
+import CornerBrackets from "../../components/CornerBrackets.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
-const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
-const selectStyle = { padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: "#fff", fontSize: 12, fontWeight: 600, outline: "none" };
+const sectionHeaderStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const selectStyle = { padding: "8px 12px", borderRadius: 6, border: `1px solid ${border}`, background: panel2, color: "#fff", fontFamily: monoFont, fontSize: 12, fontWeight: 600, outline: "none" };
 
 // Same weights/thresholds/cutoffs as backend/services/diamondHandsService.js -- kept here purely
 // for display/methodology text, never used to compute anything (the backend is the only source of
@@ -48,10 +49,11 @@ function withAlpha(hex, alpha) {
 function tabButtonStyle(active) {
   return {
     padding: "6px 14px",
-    borderRadius: 8,
+    borderRadius: 6,
     border: `1px solid ${active ? green : border}`,
     background: active ? withAlpha(green, 0.12) : panel2,
     color: active ? green : mutedLight,
+    fontFamily: monoFont,
     fontSize: 11,
     fontWeight: 700,
     cursor: "pointer",
@@ -127,10 +129,10 @@ function ScoreGauge({ score, tierColor, size = 92 }) {
           style={{ transition: "stroke-dashoffset 0.6s ease" }}
         />
       )}
-      <text x="50%" y="46%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.3} fontWeight={900} fill={score == null ? mutedLight : "#fff"}>
+      <text x="50%" y="46%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.3} fontWeight={900} fill={score == null ? mutedLight : "#fff"} style={{ fontFamily: monoFont }}>
         {fmtScore(score)}
       </text>
-      <text x="50%" y="68%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.1} fill={muted} style={{ textTransform: "uppercase", letterSpacing: 1 }}>
+      <text x="50%" y="68%" textAnchor="middle" dominantBaseline="middle" fontSize={size * 0.1} fill={muted} style={{ fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 1 }}>
         / 100
       </text>
     </svg>
@@ -187,15 +189,17 @@ function ScoreCardBody({ label, result }) {
   return (
     <div
       style={{
+        position: "relative",
         padding: 18,
-        borderRadius: 14,
+        borderRadius: 6,
         background: panel2,
         border: `1px solid ${tier ? withAlpha(tierColor, 0.5) : border}`,
         boxShadow: tier ? `0 0 24px ${withAlpha(tierColor, 0.12)}` : "none",
       }}
     >
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 16 }}>
-        {label}
+      <CornerBrackets color={tier ? tierColor : border} size={14} />
+      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 16 }}>
+        [ {label} ]
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "center" }}>
@@ -242,15 +246,15 @@ function ScoreCardBody({ label, result }) {
         }}
       >
         <div>
-          <div style={{ fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Avg. Holding Period</div>
+          <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Avg. Holding Period</div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{fmtDays(components.avgHoldingDays)}</div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Retention Rate</div>
+          <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Retention Rate</div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>{fmtPct(components.retentionRate)}</div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Panic-Sells</div>
+          <div style={{ fontFamily: monoFont, fontSize: 10, color: muted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Panic-Sells</div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>
             {components.totalSells === 0 ? "Never sold" : `${fmtPct(components.panicSellRate)} of sells`}
           </div>
@@ -267,7 +271,7 @@ function Methodology() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", padding: 0, cursor: "pointer", color: mutedLight, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6 }}
+        style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", padding: 0, cursor: "pointer", color: mutedLight, fontFamily: monoFont, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6 }}
       >
         {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         Understanding This Score
@@ -363,7 +367,7 @@ export function DiamondHandsBody({ scopeResult, perAsset, isPortfolio }) {
             {perAsset.length > 0 && (
               <div style={{ marginTop: 20 }}>
                 <div style={{ ...sectionHeaderStyle, display: "flex", alignItems: "center", gap: 6 }}>
-                  By Asset
+                  [ By Asset ]
                   <InfoTooltip text="Drill into one token, NFT collection, or native ETN to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
                 </div>
 

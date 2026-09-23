@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { green, blue, orange, mutedLight, muted } from "../../theme.js";
+import { green, blue, orange, mutedLight, muted, monoFont } from "../../theme.js";
 import { formatUsdPrice } from "../../utils/format.js";
 import RowLeader from "./RowLeader.jsx";
 
@@ -102,7 +102,7 @@ export default function PortfolioCompositionChart({ slices, hasUnpriced, size = 
           )}
         </svg>
         <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none", textAlign: "center" }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: muted }}>Total</div>
+          <div style={{ fontFamily: monoFont, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: muted }}>Total</div>
           <div style={{ fontSize: 13, fontWeight: 900, color: "#fff" }}>
             {hasUnpriced ? "≈ " : ""}{formatUsdPrice(total)}
           </div>

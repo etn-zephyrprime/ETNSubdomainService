@@ -4,7 +4,7 @@ import { Flame } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import { PNL_BACKEND_URL, EXPLORER_BASE_URL } from "../../../config.js";
-import { green, orange, muted, mutedLight, border, panel, error as errorColor } from "../../theme.js";
+import { green, orange, muted, mutedLight, border, panel, error as errorColor, monoFont } from "../../theme.js";
 
 // Admin-only "Split & Burn" for PremiumSubscription.executeSplitForPeriod — the manual version of
 // what subscriptionRevenueSweepScheduler.js does on a timer. Renders nothing for anyone but the
@@ -21,7 +21,7 @@ const AUTH_PURPOSE = "Premium Dashboard";
 const SPLIT_GAS_LIMIT = 500000;
 const ABI = ["function executeSplitForPeriod(uint256 amount, uint256 minCoreOut, uint256 deadline) external"];
 
-const rowStyle = { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, padding: "4px 0" };
+const rowStyle = { display: "flex", justifyContent: "space-between", gap: 12, fontFamily: monoFont, fontSize: 12, padding: "4px 0" };
 
 function fmtEtn(wei) {
   return Number(ethers.formatEther(wei)).toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -91,8 +91,8 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
     <DashboardPanel accent={orange} style={{ border: `1px solid ${orange}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
         <Flame size={18} color={orange} />
-        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          Admin — Split &amp; Burn
+        <div style={{ fontFamily: monoFont, fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
+          [ Admin — Split &amp; Burn ]
         </div>
       </div>
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6, marginBottom: 12 }}>
@@ -101,7 +101,7 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
       </div>
 
       {quote && (
-        <div style={{ padding: "8px 12px", borderRadius: 10, background: panel, border: `1px solid ${border}`, marginBottom: 12 }}>
+        <div style={{ padding: "8px 12px", borderRadius: 4, background: panel, border: `1px solid ${border}`, marginBottom: 12 }}>
           <div style={rowStyle}><span style={{ color: muted }}>Contract balance</span><span style={{ color: "#fff" }}>{fmtEtn(quote.balance)} ETN</span></div>
           <div style={rowStyle}><span style={{ color: muted }}>Owed to PnL requests</span><span style={{ color: "#fff" }}>{fmtEtn(quote.owed)} ETN</span></div>
           {BigInt(quote.owedUnrecorded) > 0n && (
@@ -130,7 +130,7 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
       {txHash && (
         <div style={{ fontSize: 12, color: green, marginBottom: 12, wordBreak: "break-all" }}>
           {sending ? "Submitted, waiting for confirmation… " : "Split executed. "}
-          <a href={`${EXPLORER_BASE_URL}/tx/${txHash}`} target="_blank" rel="noreferrer" style={{ color: green }}>{txHash}</a>
+          <a href={`${EXPLORER_BASE_URL}/tx/${txHash}`} target="_blank" rel="noreferrer" style={{ color: green, fontFamily: monoFont }}>{txHash}</a>
         </div>
       )}
 
