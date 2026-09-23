@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { green, error as red, blue, muted, mutedLight, panel2, border } from "../theme.js";
+import { green, error as red, blue, muted, mutedLight, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 import HyperlaneChart, { signedUsd } from "./HyperlaneChart.jsx";
 import { useHyperlaneBridge } from "../hooks/useHyperlaneBridge.js";
 import { formatInt, formatUsdCompact, timeAgo } from "../utils/format.js";
@@ -20,7 +21,7 @@ const RANGES = [
 // The published file refreshes every 10 minutes; this just needs to be frequent enough to pick that up.
 const POLL_INTERVAL_MS = 60000;
 
-const sectionLabel = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
+const sectionLabel = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
 const netColor = (v) => (v > 0 ? green : v < 0 ? red : "#fff");
 
 function Pill({ active, onClick, children }) {
@@ -29,11 +30,14 @@ function Pill({ active, onClick, children }) {
       onClick={onClick}
       style={{
         padding: "6px 12px",
-        borderRadius: 8,
+        borderRadius: 6,
         border: `1px solid ${active ? green : border}`,
         background: active ? "rgba(24,187,26,0.12)" : panel2,
         color: active ? green : mutedLight,
-        fontSize: 12,
+        fontFamily: monoFont,
+        fontSize: 11,
+        letterSpacing: 0.4,
+        textTransform: "uppercase",
         fontWeight: 700,
         cursor: "pointer",
       }}
@@ -138,7 +142,7 @@ export default function HyperlaneBridgeTab() {
         <>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 24px", marginBottom: 16 }}>
             <div>
-              <div style={{ ...sectionLabel, marginBottom: 6 }}>Token</div>
+              <div style={{ ...sectionLabel, marginBottom: 6 }}>[ Token ]</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 <Pill active={tokenFilter === null} onClick={() => setTokenFilter(null)}>All USD</Pill>
                 {tokens.map((t) => (
@@ -149,7 +153,7 @@ export default function HyperlaneBridgeTab() {
               </div>
             </div>
             <div>
-              <div style={{ ...sectionLabel, marginBottom: 6 }}>Range</div>
+              <div style={{ ...sectionLabel, marginBottom: 6 }}>[ Range ]</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {RANGES.map((r) => (
                   <Pill key={r.days} active={range.days === r.days} onClick={() => setRangeDays(r.days)}>{r.label}</Pill>
@@ -157,7 +161,7 @@ export default function HyperlaneBridgeTab() {
               </div>
             </div>
             <div>
-              <div style={{ ...sectionLabel, marginBottom: 6 }}>Chain</div>
+              <div style={{ ...sectionLabel, marginBottom: 6 }}>[ Chain ]</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 <Pill active={activeChain === null} onClick={() => setChainFilter(null)}>All chains</Pill>
                 {allChains.map((c) => (
@@ -182,8 +186,9 @@ export default function HyperlaneBridgeTab() {
             />
           </div>
 
-          <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-            <div style={{ ...sectionLabel, marginBottom: 14 }}>Net Flow per Day — {scopeLabel} — {range.days === WINDOW_DAYS ? "Rolling 12 Months" : `Last ${range.long}`}</div>
+          <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <CornerBrackets color={green} />
+            <div style={{ ...sectionLabel, marginBottom: 14 }}>[ Net Flow per Day — {scopeLabel} — {range.days === WINDOW_DAYS ? "Rolling 12 Months" : `Last ${range.long}`} ]</div>
             {rows.length > 0 && <HyperlaneChart rows={rows} />}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 12, fontSize: 11, color: mutedLight }}>
               <LegendSwatch color={green} label="Net inflow (more bridged in)" />
@@ -191,8 +196,9 @@ export default function HyperlaneBridgeTab() {
             </div>
           </div>
 
-          <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-            <div style={{ ...sectionLabel, marginBottom: 4 }}>Net Flow per Day, by Chain — {tokenFilter ?? "USDT + USDC"}</div>
+          <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <CornerBrackets color={green} />
+            <div style={{ ...sectionLabel, marginBottom: 4 }}>[ Net Flow per Day, by Chain — {tokenFilter ?? "USDT + USDC"} ]</div>
             <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
               Every chain {tokenFilter ?? "USDT and USDC"} can be bridged through on Hyperlane, including any with no activity. Each chart has its own scale. Click a chain to focus it above.
             </div>
@@ -202,7 +208,7 @@ export default function HyperlaneBridgeTab() {
                   onClick={() => setChainFilter(activeChain === c.domain ? null : c.domain)}
                   style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", gap: "2px 12px", width: "100%", background: "transparent", border: "none", padding: "0 0 6px", cursor: "pointer", textAlign: "left" }}
                 >
-                  <span style={{ fontSize: 12, fontWeight: 800, color: activeChain === c.domain ? green : "#fff" }}>{c.name}</span>
+                  <span style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, color: activeChain === c.domain ? green : "#fff" }}>{c.name}</span>
                   <span style={{ fontSize: 11, color: mutedLight }}>
                     {c.sum.count === 0 ? `No activity in the last ${range.long.toLowerCase()}` : (
                       <>
@@ -216,16 +222,17 @@ export default function HyperlaneBridgeTab() {
             ))}
           </div>
 
-          <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
-            <div style={{ ...sectionLabel, marginBottom: 10 }}>By Chain — {tokenFilter ?? "USDT + USDC"} — Last {range.long}</div>
+          <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+            <CornerBrackets color={green} />
+            <div style={{ ...sectionLabel, marginBottom: 10 }}>[ By Chain — {tokenFilter ?? "USDT + USDC"} — Last {range.long} ]</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 380 }}>
                 <thead>
-                  <tr style={{ color: muted, textAlign: "right" }}>
-                    <th style={{ textAlign: "left", fontWeight: 700, padding: "4px 0" }}>Chain</th>
-                    <th style={{ fontWeight: 700 }}>Inflow</th>
-                    <th style={{ fontWeight: 700 }}>Outflow</th>
-                    <th style={{ fontWeight: 700 }}>Net</th>
+                  <tr style={{ color: muted, textAlign: "right", fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6 }}>
+                    <th style={{ textAlign: "left", fontWeight: 700, padding: "4px 0", fontSize: 10 }}>Chain</th>
+                    <th style={{ fontWeight: 700, fontSize: 10 }}>Inflow</th>
+                    <th style={{ fontWeight: 700, fontSize: 10 }}>Outflow</th>
+                    <th style={{ fontWeight: 700, fontSize: 10 }}>Net</th>
                   </tr>
                 </thead>
                 <tbody>

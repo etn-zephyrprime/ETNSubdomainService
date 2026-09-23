@@ -100,7 +100,7 @@ export default function HyperlaneChart({ rows, height = 240, compact = false, sh
               ...(xPct(hoverIndex) > 55 ? { right: `${100 - xPct(hoverIndex)}%`, marginRight: 10 } : { left: `${xPct(hoverIndex)}%`, marginLeft: 10 }),
               background: "rgba(10,10,10,0.95)",
               border: `1px solid ${border}`,
-              borderRadius: 8,
+              borderRadius: 4,
               padding: "6px 9px",
               fontSize: 11,
               color: "#fff",
