@@ -10,6 +10,7 @@ import r2CacheProxyRouter from "./utils/r2CacheProxyRouter.js";
 import fxRateRouter from "./utils/fxRateRouter.js";
 import cexAddressesRouter from "./utils/cexAddressesRouter.js";
 import { startMarketplaceWatcher } from "./utils/marketplaceWatcher.js";
+import { startSubnamePriceChangeWatcher } from "./utils/subnamePriceChangeWatcher.js";
 import { startSubnameDomainsCache } from "./utils/subnameDomainsCache.js";
 import { startActivatedDomainsCache } from "./utils/activatedDomainsCache.js";
 import { startMarketplaceSellersCache } from "./utils/marketplaceSellersCache.js";
@@ -117,6 +118,7 @@ function safeStart(name, startFn) {
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   startMarketplaceWatcher();
+  startSubnamePriceChangeWatcher();
   startSubnameDomainsCache();
   startActivatedDomainsCache();
   startMarketplaceSellersCache();
