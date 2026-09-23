@@ -14,6 +14,7 @@ import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshots.js";
 import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
+import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
@@ -38,6 +39,20 @@ async function getSelectableTokens(walletAddress) {
     console.warn(`⚠️  PnL snapshot: couldn't fetch selectable tokens for ${walletAddress}:`, err.message);
     return [];
   }
+}
+
+/** wallet_ingestion_jobs row -> the shape the frontend polls (see CoreTierPnl.jsx). Camel-cased,
+ * and only the fields a progress UI actually needs — never the raw DB row (no started_at, no
+ * error detail beyond the message itself). */
+function serializeJob(walletAddress, job) {
+  return {
+    walletAddress,
+    status: job?.status || "RUNNING",
+    stage: job?.stage || "Starting…",
+    current: job?.progress_current != null ? Number(job.progress_current) : 0,
+    total: job?.progress_total != null ? Number(job.progress_total) : 0,
+    errorMessage: job?.error_message || null,
+  };
 }
 
 const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoint signs — one cached signature covers all of them
@@ -103,6 +118,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     const perWallet = [];
     const failed = [];
     const needsSelection = [];
+    const jobs = [];
     // Sequential, not Promise.all — same reasoning as pnlSnapshotScheduler.js's own poll loop: a
     // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 4
     // covered wallets (their own connected wallet + up to 3 explicitly tracked — see
@@ -116,16 +132,33 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     for (const address of addresses) {
       const selfOwnedAddresses = addresses.filter((a) => a !== address);
       const priorityTokens = priorityTokensByWallet[address];
+      const state = await getIngestionState(address);
 
-      if (!priorityTokens) {
-        // No selection given for this wallet on this call — check whether it actually needs one
-        // (cheap: just the stored ingestion cursor, no Blockscout/FIFO work) before deciding to
-        // skip computing it.
-        const state = await getIngestionState(address);
-        if (!state?.cold_start_completed_at) {
-          needsSelection.push({ walletAddress: address, availableTokens: await getSelectableTokens(address) });
-          continue;
-        }
+      if (!priorityTokens && !state?.cold_start_completed_at) {
+        // No selection given for this wallet on this call, and it's still cold-starting — check
+        // whether it actually needs one before deciding to skip computing it. Deliberately BEFORE
+        // the ingest-progress check below: a brand-new wallet must go through this prompt first,
+        // not have a full unscoped ingest silently kicked off underneath it before the member ever
+        // gets to choose which tokens to prioritize (see computeLivePnlSnapshot's own
+        // priorityAssets/SAFETY BOUNDARY comment for why that scoping only ever applies pre-cold-start).
+        needsSelection.push({ walletAddress: address, availableTokens: await getSelectableTokens(address) });
+        continue;
+      }
+
+      // Every reconnect attempts a fresh sync (see checkAndStartIngestIfNeeded's own header
+      // comment — deliberately no time-based staleness skip) but gives it a short grace period to
+      // finish outright first: a wallet with nothing new since last visit resumes almost instantly
+      // and falls through to computeLivePnlSnapshot below same as before this feature existed; only
+      // a genuinely slow run (cold start, real new activity) reports live progress instead of
+      // blocking this response on it.
+      const priorityAssets =
+        !state?.cold_start_completed_at && priorityTokens?.length > 0
+          ? new Set(priorityTokens.map((a) => a.toLowerCase()))
+          : null; // matches computeLivePnlSnapshot's own isColdStart-gated scoping exactly
+      const ingestCheck = await checkAndStartIngestIfNeeded(address, selfOwnedAddresses, priorityAssets);
+      if (ingestCheck.needed) {
+        jobs.push(serializeJob(address, ingestCheck.job));
+        continue;
       }
 
       try {
@@ -138,9 +171,12 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     }
     // combineLivePnlSnapshots handles a single wallet correctly too (sum of one is just that one),
     // and correctly reflects only the wallets that actually succeeded — `failed` tells the
-    // frontend which ones didn't, rather than silently under-reporting the combined total.
+    // frontend which ones didn't, rather than silently under-reporting the combined total. A
+    // wallet still ingesting (in `jobs`) simply doesn't contribute to `perWallet`/`combined` yet —
+    // whatever DID finish this round still shows, rather than blocking everything on the slowest
+    // wallet.
     const combined = perWallet.length > 0 ? combineLivePnlSnapshots(perWallet) : null;
-    res.json({ perWallet, combined, failed, needsSelection });
+    res.json({ perWallet, combined, failed, needsSelection, ingesting: jobs.length > 0, jobs });
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });

@@ -25,6 +25,7 @@
 // be spot-checked against real trade history before this goes live.
 import { ethers } from "ethers";
 import { getIngestionState, upsertIngestionState } from "../db/walletIngestionState.js";
+import { getIngestJob, startJob, updateJobProgress, completeJob, failJob } from "../db/walletIngestionJobs.js";
 import { insertTransfers, getUnpricedTransfers, setTransferPrice } from "../db/ingestedTransfers.js";
 import { insertSwapTrades, getSwapTradesWithUnpricedLegs, setSwapLegPrices } from "../db/swapTrades.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
@@ -57,6 +58,29 @@ const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env
 const PROGRESS_LOG_INTERVAL_MS = process.env.PNL_PROGRESS_LOG_INTERVAL_MS
   ? parseInt(process.env.PNL_PROGRESS_LOG_INTERVAL_MS, 10)
   : 15000;
+
+// How often an in-flight ingest writes its progress to wallet_ingestion_jobs for a polling
+// frontend to read (see doIngestWalletHistory's own onProgress plumbing) — deliberately much
+// shorter than PROGRESS_LOG_INTERVAL_MS above (that one's just for the console, where every-15s
+// is plenty): a live progress bar feels broken if it visibly stalls between updates, but writing
+// on literally every page/window (some wallets page every ~150ms) would hammer Postgres for no
+// real benefit to a UI a person is glancing at, not reading pixel-by-pixel.
+const INGEST_PROGRESS_CALLBACK_INTERVAL_MS = process.env.PNL_INGEST_PROGRESS_CALLBACK_INTERVAL_MS
+  ? parseInt(process.env.PNL_INGEST_PROGRESS_CALLBACK_INTERVAL_MS, 10)
+  : 2000;
+
+// Every reconnect DOES attempt a fresh sync — no time-based staleness skip (explicit decision: a
+// paying member reconnecting wants to know their numbers are caught up, not a figure that could be
+// silently up to an hour stale). What this grace period buys instead: most reconnects have nothing
+// new since the wallet's last visit, and ingestWalletHistory's own incremental resume (stopAtBlock)
+// already makes that case fast — a couple of Blockscout page checks plus a small DeFi log range,
+// typically well under a second. checkAndStartIngestIfNeeded below gives the ingest this long to
+// finish outright before falling back to reporting progress instead — so the common "nothing
+// changed" reconnect still gets its data back on the SAME request, same as before this feature
+// existed, and only a genuinely-slow run (cold start, or real new activity) shows the progress bar.
+const INGEST_GRACE_PERIOD_MS = process.env.PNL_INGEST_GRACE_PERIOD_MS
+  ? parseInt(process.env.PNL_INGEST_GRACE_PERIOD_MS, 10)
+  : 2000;
 
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
@@ -377,20 +401,26 @@ async function fetchPage(path, cursorParams, attempt = 0) {
  * confirmed live, so the LAST item on a page is always the furthest-back one seen so far) plus an
  * approximate % of the SCANNED BLOCK RANGE (latest chain block down to stopAtBlock, or down to
  * block 0 for a cold start) — not the wallet's own true history span, which isn't knowable up front
- * without an extra lookup, but a real, monotonically-increasing number regardless. Fetching
- * latestBlockAtStart is itself wrapped in try/catch — this is purely informational and must never
- * fail or slow down the actual walk. */
-async function walkAllPages(path, stopAtBlock, onPage, label) {
+ * without an extra lookup, but a real, monotonically-increasing number regardless.
+ *
+ * `latestBlockAtStart`, if given, is used as the "latest chain block" reference for both the
+ * console % above AND `onProgress` below — passed in by the caller (computed ONCE for the whole
+ * doIngestWalletHistory run) rather than fetched here per-walk, so all four sub-walks agree on the
+ * exact same "y" value a progress UI shows as "of Y", and so a wallet with real history doesn't
+ * pay for the same eth_blockNumber call four times over. Omit (or pass null) to skip both the
+ * console % and onProgress entirely — this walk still functions correctly either way, both are
+ * purely informational.
+ *
+ * `onProgress(blocksScanned)`, if given, is called at the same throttled cadence as the console
+ * log (its own separate, shorter interval — see INGEST_PROGRESS_CALLBACK_INTERVAL_MS) with an
+ * absolute "how many blocks of this walk's own span have been covered so far" count — the same
+ * real oldest-block-seen number the console % is built from, just expressed as a block count
+ * instead of a percentage so doIngestWalletHistory can sum it together with the other three
+ * walks' own counts into one combined total. */
+async function walkAllPages(path, stopAtBlock, onPage, label, latestBlockAtStart = null, onProgress = null) {
   const startedAt = Date.now();
   let lastLoggedAt = 0;
-  let latestBlockAtStart = null;
-  if (label) {
-    try {
-      latestBlockAtStart = await createRpcProvider().getBlockNumber();
-    } catch {
-      // Progress logging is informational only — an RPC hiccup here just means no % this run.
-    }
-  }
+  let lastProgressAt = 0;
 
   let cursor;
   let itemCount = 0;
@@ -403,12 +433,13 @@ async function walkAllPages(path, stopAtBlock, onPage, label) {
     if (relevant.length > 0) await onPage(relevant);
     itemCount += relevant.length;
 
-    if (label && relevant.length > 0) {
+    if (relevant.length > 0 && (label || onProgress)) {
       const now = Date.now();
-      if (now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
+      const oldest = relevant[relevant.length - 1];
+      const oldestBlock = Number(oldest.block_number);
+
+      if (label && now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
         lastLoggedAt = now;
-        const oldest = relevant[relevant.length - 1];
-        const oldestBlock = Number(oldest.block_number);
         const oldestDate = oldest.timestamp ? new Date(oldest.timestamp).toISOString().slice(0, 10) : "unknown date";
         const elapsedSec = Math.round((now - startedAt) / 1000);
         let pctText = "";
@@ -420,6 +451,11 @@ async function walkAllPages(path, stopAtBlock, onPage, label) {
           }
         }
         console.log(`📊 [${label}] reached ${oldestDate} (block ${oldestBlock}) — ${itemCount} item(s) so far, ${elapsedSec}s elapsed${pctText}`);
+      }
+
+      if (onProgress && latestBlockAtStart != null && now - lastProgressAt >= INGEST_PROGRESS_CALLBACK_INTERVAL_MS) {
+        lastProgressAt = now;
+        onProgress(Math.max(0, latestBlockAtStart - oldestBlock));
       }
     }
 
@@ -982,7 +1018,7 @@ export function isFailedTransaction(tx) {
   return tx.status === "error" || (typeof tx.result === "string" && tx.result !== "success");
 }
 
-async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets) {
+async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets, latestBlockAtStart = null, onProgress = null) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   const swapTxHashes = new Set();
@@ -1082,7 +1118,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
         });
       }
     }
-  }, "transactions");
+  }, "transactions", latestBlockAtStart, onProgress);
 
   if (rows.length > 0) await insertTransfers(rows);
   if (swapRows.length > 0) await insertSwapTrades(swapRows);
@@ -1097,7 +1133,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
  * `excludeTxHashes` — swap AND DeFi farm/staking transaction hashes (see ingestWalletHistory's own
  * comment on why both, not just swaps) — a tx already recorded via swap_trades/defi_activity must
  * never ALSO show up here as a plain transfer of the same underlying value. */
-async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes) {
+async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, latestBlockAtStart = null, onProgress = null) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -1139,7 +1175,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
         timestamp,
       });
     }
-  }, "internal-transactions");
+  }, "internal-transactions", latestBlockAtStart, onProgress);
 
   if (rows.length > 0) await insertTransfers(rows);
   return highestBlock;
@@ -1148,7 +1184,7 @@ async function ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddres
 /** Walks /addresses/{wallet}/token-transfers — ERC20/721/1155 in/out. Independent of
  * ingestInternalTransactions above, so the caller runs the two concurrently.
  * `excludeTxHashes` — see ingestInternalTransactions' own comment on this same parameter. */
-async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets) {
+async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets, latestBlockAtStart = null, onProgress = null) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   let highestBlock = stopAtBlock ?? -1;
@@ -1246,7 +1282,7 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
         timestamp,
       });
     }
-  }, "token-transfers");
+  }, "token-transfers", latestBlockAtStart, onProgress);
 
   if (rows.length > 0) await insertTransfers(rows);
   return highestBlock;
@@ -1312,7 +1348,11 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
  *      that's ~782 sequential round-trips per topic even at the current 20000-block chunk size.
  *      The worker pool below cuts that by roughly DEFI_LOG_CONCURRENCY.
  */
-async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt) {
+/** `onProgress(completedCount, windows.length)`, if given, is called at INGEST_PROGRESS_CALLBACK_INTERVAL_MS
+ * cadence (separately from the console log's own PROGRESS_LOG_INTERVAL_MS) plus once, unconditionally,
+ * right before returning — so the caller's aggregate always ends on the exact final count rather than
+ * whatever the last throttled tick happened to catch. */
+async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt, onProgress = null) {
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
@@ -1330,24 +1370,28 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   // fetch starts, so completedCount/windows.length is a real % of this topic's scan.
   let completedCount = 0;
   let lastLoggedAt = 0;
+  let lastProgressAt = 0;
   async function worker() {
     while (nextIndex < windows.length) {
       const myIndex = nextIndex++;
       const [start, end] = windows[myIndex];
       results[myIndex] = await fetchDefiLogWindow(provider, topics, start, end);
       completedCount++;
-      if (label) {
-        const now = Date.now();
-        if (now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
-          lastLoggedAt = now;
-          const pct = Math.round((completedCount / windows.length) * 100);
-          const elapsedSec = Math.round((now - startedAt) / 1000);
-          console.log(`📊 [DeFi:${label}] ${completedCount}/${windows.length} windows (~${pct}%) — ${elapsedSec}s elapsed`);
-        }
+      const now = Date.now();
+      if (label && now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
+        lastLoggedAt = now;
+        const pct = Math.round((completedCount / windows.length) * 100);
+        const elapsedSec = Math.round((now - startedAt) / 1000);
+        console.log(`📊 [DeFi:${label}] ${completedCount}/${windows.length} windows (~${pct}%) — ${elapsedSec}s elapsed`);
+      }
+      if (onProgress && now - lastProgressAt >= INGEST_PROGRESS_CALLBACK_INTERVAL_MS) {
+        lastProgressAt = now;
+        onProgress(completedCount, windows.length);
       }
     }
   }
   await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
+  if (onProgress) onProgress(completedCount, windows.length); // final, unthrottled — guarantees an exact 100% at the end
   return results.flat();
 }
 
@@ -1411,9 +1455,23 @@ async function enrichFarmRowsWithBolt(provider, rows) {
  * this exclusion was previously missing entirely: every farm deposit/withdrawal and staking
  * action was being counted twice in the FIFO ledger, once via buildDefiFarmEvents and once via the
  * generic transfer walk. */
-async function ingestDefiActivity(trackedWallet, stopAtBlock) {
+/** `onProgress(blocksScanned)`, if given, receives ONE combined number across all 6 concurrent
+ * per-topic scans below (each independently chunked/concurrent — see queryDefiLogsChunked's own
+ * comment), expressed as a block count within this call's own `fromBlock..latestBlock` span —
+ * same unit doIngestWalletHistory's other three walks report in, so they can all be summed into
+ * one overall total. Computed as the topics' AVERAGE fraction-complete (sum of each topic's own
+ * completedCount / sum of each topic's own windows.length) applied to the span — not a single
+ * well-ordered "current window", since 6 topics genuinely progress concurrently and independently.
+ *
+ * `latestBlockAtStart`, if given, is used as this scan's own upper bound instead of an independent
+ * eth_blockNumber call — same reasoning as walkAllPages' own identical parameter: doIngestWalletHistory
+ * passes its ONE shared value so this scan's "latest block" agrees exactly with the three REST
+ * walks' own, rather than each drifting by however many blocks land between their separate calls.
+ * ensureDefiActivityIngested (the lighter Portfolio-page caller, which has no such shared value)
+ * omits this and gets the previous behavior: a fresh, independent read. */
+async function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
   const provider = createRpcProvider();
-  const latestBlock = await provider.getBlockNumber();
+  const latestBlock = latestBlockAtStart ?? await provider.getBlockNumber();
   const fromBlock = (stopAtBlock ?? -1) + 1;
   if (fromBlock > latestBlock) return { highestBlock: stopAtBlock ?? -1, defiTxHashes: new Set() };
 
@@ -1422,14 +1480,29 @@ async function ingestDefiActivity(trackedWallet, stopAtBlock) {
     console.log(`📥 DeFi activity cold-start scan for ${trackedWallet}: blocks ${fromBlock}-${latestBlock} (${(latestBlock - fromBlock + 1).toLocaleString()} blocks) started at ${new Date(startedAt).toISOString()}`);
   }
 
+  const span = latestBlock - fromBlock + 1;
+  const topicProgress = new Map(); // label -> { completed, total }
+  function reportTopicProgress(label, completed, total) {
+    if (!onProgress) return;
+    topicProgress.set(label, { completed, total });
+    let sumCompleted = 0;
+    let sumTotal = 0;
+    for (const p of topicProgress.values()) {
+      sumCompleted += p.completed;
+      sumTotal += p.total;
+    }
+    const fraction = sumTotal > 0 ? sumCompleted / sumTotal : 1;
+    onProgress(Math.max(0, Math.round(fraction * span)));
+  }
+
   const walletTopic = ethers.zeroPadValue(trackedWallet, 32);
   const [farmDeposits, farmIncreases, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
-    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt),
-    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt),
-    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt),
-    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt),
-    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt),
-    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt),
+    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt, (c, t) => reportTopicProgress("FarmDeposit", c, t)),
+    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt, (c, t) => reportTopicProgress("FarmIncrease", c, t)),
+    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt, (c, t) => reportTopicProgress("FarmWithdrawl", c, t)),
+    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt, (c, t) => reportTopicProgress("CoreStaked", c, t)),
+    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt, (c, t) => reportTopicProgress("CoreWithdrawn", c, t)),
+    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt, (c, t) => reportTopicProgress("RewardPaid", c, t)),
   ]);
 
   const allLogs = [...farmDeposits, ...farmIncreases, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
@@ -1535,12 +1608,71 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
   return promise;
 }
 
+/**
+ * The reconnect-time entry point: ALWAYS attempts a fresh sync for `trackedWallet` — deliberately
+ * no time-based staleness skip (a paying member reconnecting wants their real, caught-up numbers,
+ * not a figure that could be silently stale) — but gives it INGEST_GRACE_PERIOD_MS to finish
+ * outright before committing to reporting progress instead of blocking the caller on a run that
+ * can take many minutes. Built for pnlSnapshotRouter.js's /pnl-snapshot endpoint specifically.
+ *
+ * Returns `{ needed: false }` if the ingest finished within the grace period — the common case,
+ * since ingestWalletHistory's own incremental resume (stopAtBlock) already makes a "nothing new
+ * since last visit" reconnect fast. The caller should proceed to compute a snapshot normally, same
+ * as it would have before this feature existed.
+ *
+ * Returns `{ needed: true, job }` if the grace period elapsed with the ingest still running (a
+ * genuine cold start, or real new activity since last visit) — `job` is the current
+ * wallet_ingestion_jobs row (RUNNING) for the caller to report back to a polling frontend instead
+ * of computing a snapshot this round. The ingest itself keeps running in the background regardless
+ * of which branch this returns; doIngestWalletHistory's own try/catch marks the job COMPLETE/FAILED
+ * whenever it actually finishes.
+ *
+ * Safe to call on every poll tick while a run is in progress: if a job is already RUNNING for this
+ * wallet (e.g. this is a poll re-check, not the call that originally started it), this does NOT
+ * start a second one (or race a fresh grace period) — it just re-reads and returns the current row
+ * immediately.
+ */
+export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddresses, priorityAssets) {
+  const existingJob = await getIngestJob(trackedWallet);
+  if (existingJob?.status === "RUNNING") {
+    return { needed: true, job: existingJob };
+  }
+
+  // Placeholder row FIRST (awaited), THEN kick off the real work unawaited — see startJob's own
+  // comment on why this ordering matters: without it, a poll landing before doIngestWalletHistory's
+  // own first write could find nothing (or a stale previous-run row) to report.
+  await startJob(trackedWallet, { progressTotal: 0, progressCurrent: 0, stage: "Checking for new activity…" });
+  const ingestPromise = ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
+  // Never let an ingest failure become an unhandled rejection just because this function stopped
+  // awaiting it after the grace period — doIngestWalletHistory's own try/catch already marks the
+  // job FAILED and logs the real error; nothing else needs this promise's outcome from here on.
+  ingestPromise.catch(() => {});
+
+  const winner = await Promise.race([
+    ingestPromise.then(() => "done").catch(() => "done"), // a failure also ends the wait — the job row's own FAILED status is what the caller sees next
+    sleep(INGEST_GRACE_PERIOD_MS).then(() => "still-running"),
+  ]);
+  if (winner === "done") return { needed: false };
+
+  const job = await getIngestJob(trackedWallet);
+  return { needed: true, job };
+}
+
 async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
   const selfOwnedSet = new Set([trackedWallet.toLowerCase(), ...selfOwnedAddresses.map((a) => a.toLowerCase())]);
   // Loaded once per ingestion run rather than queried per-row (see cexAddressSet's own comment
   // below at its call sites) — the list itself is small and manually-maintained (see
   // cexAddresses.js), so this is one query however many thousands of transfer rows follow.
-  const [state, cexAddressList] = await Promise.all([getIngestionState(trackedWallet), listCexAddresses()]);
+  // latestBlockAtStart is fetched here too (not separately inside each sub-walk, the way it used
+  // to be) so the ENTIRE run — all three REST walks plus the DeFi scan — agrees on one single "Y"
+  // (the chain's own latest block) for progress reporting, rather than four slightly-different
+  // reads taken moments apart. See walkAllPages'/ingestDefiActivity's own comments on how each
+  // uses this value.
+  const [state, cexAddressList, latestBlockAtStart] = await Promise.all([
+    getIngestionState(trackedWallet),
+    listCexAddresses(),
+    createRpcProvider().getBlockNumber(),
+  ]);
   const cexAddressSet = new Set(cexAddressList.map((r) => r.address.toLowerCase()));
   const stopAtBlock = state?.last_ingested_block > 0 ? state.last_ingested_block : null;
   // Deliberately a SEPARATE cursor from stopAtBlock (see migration 006's own comment) — DeFi
@@ -1551,42 +1683,106 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
   // cold-start DeFi scan here, regardless of how far its ordinary ingestion has already progressed.
   const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
 
-  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}${stopAtDefiBlock == null ? ", DeFi activity cold start" : ""}${priorityAssets ? `, priced fully for ${priorityAssets.size} priority asset(s) — others deferred` : ""}`);
+  // --- Progress-job setup (see wallet_ingestion_jobs / migration 015's own comment) ---
+  // progress_current/progress_total are real, absolute block numbers, not a percentage or item
+  // count — "Y" (progressTotal) is latestBlockAtStart, fixed for the life of this run; "X"
+  // (progressCurrent) starts at the OLDER of the two resume cursors and climbs toward Y as the
+  // four sub-scans below report in.
+  //
+  // The three REST walks (tx/internal/token-transfers) share stopAtBlock, so they cover the same
+  // span; the DeFi scan covers its own (stopAtDefiBlock) span independently. There's no single
+  // well-ordered "current block" across all four — they run concurrently, in two different walk
+  // directions (the REST walks page backward from latest toward stopAtBlock; the DeFi scan chunks
+  // forward from stopAtDefiBlock toward latest) — so "X" here is a WEIGHTED BLEND: each walk
+  // reports its own real "blocks of my own span covered so far" count (see walkAllPages'/
+  // ingestDefiActivity's own onProgress comments), those get summed into one fraction-complete
+  // across the whole job, and that fraction is applied to the real stopAtBlockMin..latestBlockAtStart
+  // range to produce one absolute block number. It's an honest derived number — real inputs, a
+  // documented (not hidden) blending rule — just not literally "the exact block every walk happens
+  // to be reading from at this instant," which isn't a meaningful single number to begin with once
+  // four independent scans are running at once.
+  const spanRest = Math.max(0, latestBlockAtStart - (stopAtBlock ?? 0));
+  const spanDefi = Math.max(0, latestBlockAtStart - (stopAtDefiBlock ?? 0));
+  const totalUnits = spanRest * 3 + spanDefi; // tx + internal + token-transfers each cover spanRest, DeFi covers spanDefi
+  const stopAtBlockMin = Math.min(stopAtBlock ?? 0, stopAtDefiBlock ?? 0);
+  const blockSpan = Math.max(0, latestBlockAtStart - stopAtBlockMin);
 
-  // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
-  // internal-transactions/token-transfers walks need to correctly skip a swap's legs. DeFi activity
-  // scanning has no such dependency (it's a separate topic-based getLogs scan, not a Blockscout
-  // REST walk at all — see ingestDefiActivity's own comment), so it runs alongside the
-  // /transactions walk from the start rather than waiting for it. Once swapTxHashes is known, the
-  // two swap-dependent walks run concurrently with each other too — see each function's own
-  // comment for why this whole restructure is deliberate: /transactions used to be walked twice
-  // and everything used to run fully sequentially.
-  const [{ swapTxHashes, highestBlock: highestFromTx }, { highestBlock: highestFromDefi, defiTxHashes }] = await Promise.all([
-    ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets),
-    ingestDefiActivity(trackedWallet, stopAtDefiBlock),
-  ]);
-  // A farm/stake deposit or withdrawal moves its own underlying tokens via ordinary ERC20
-  // transferFrom/transfer calls under the hood — without excluding defiTxHashes here too (same
-  // role swapTxHashes already plays for a swap's own legs), those same amounts would ALSO get
-  // ingested as plain transfers alongside buildDefiFarmEvents' own DeFi-specific event for the
-  // exact same tx, double-counting every farm/stake action in the FIFO ledger. Confirmed live this
-  // exclusion was missing entirely before now.
-  const excludeTxHashes = new Set([...swapTxHashes, ...defiTxHashes]);
-  const [highestFromInternal, highestFromTokens] = await Promise.all([
-    ingestInternalTransactions(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes),
-    ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets),
-  ]);
-  const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
+  await startJob(trackedWallet, {
+    progressTotal: latestBlockAtStart,
+    progressCurrent: stopAtBlockMin,
+    stage: "Scanning transaction history…",
+  });
 
-  if (highestBlock >= 0 || highestFromDefi >= 0) {
-    await upsertIngestionState(trackedWallet, {
-      lastIngestedBlock: highestBlock >= 0 ? highestBlock : stopAtBlock,
-      coldStartCompletedAt: state?.cold_start_completed_at || new Date(),
-      lastIngestedDefiBlock: highestFromDefi >= 0 ? highestFromDefi : null,
-    });
+  const contributions = { tx: 0, internal: 0, tokens: 0, defi: 0 };
+  let lastPersistedAt = 0;
+  function reportProgress(key, blocksScanned, stage) {
+    contributions[key] = blocksScanned;
+    const fraction = totalUnits > 0 ? Math.min(1, (contributions.tx + contributions.internal + contributions.tokens + contributions.defi) / totalUnits) : 1;
+    const now = Date.now();
+    if (now - lastPersistedAt < INGEST_PROGRESS_CALLBACK_INTERVAL_MS) return;
+    lastPersistedAt = now;
+    const currentBlock = Math.round(stopAtBlockMin + fraction * blockSpan);
+    updateJobProgress(trackedWallet, { current: currentBlock, stage }).catch((err) =>
+      console.warn(`⚠️  Couldn't persist ingest progress for ${trackedWallet}:`, err.message)
+    );
   }
 
-  console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap/liquidity event(s) detected`);
+  console.log(`📥 Ingesting history for ${trackedWallet}${stopAtBlock ? ` (resuming after block ${stopAtBlock})` : " (cold start — full history)"}${stopAtDefiBlock == null ? ", DeFi activity cold start" : ""}${priorityAssets ? `, priced fully for ${priorityAssets.size} priority asset(s) — others deferred` : ""}`);
+
+  try {
+    // /transactions must go first (and complete) — it's the only source of swapTxHashes, which the
+    // internal-transactions/token-transfers walks need to correctly skip a swap's legs. DeFi activity
+    // scanning has no such dependency (it's a separate topic-based getLogs scan, not a Blockscout
+    // REST walk at all — see ingestDefiActivity's own comment), so it runs alongside the
+    // /transactions walk from the start rather than waiting for it. Once swapTxHashes is known, the
+    // two swap-dependent walks run concurrently with each other too — see each function's own
+    // comment for why this whole restructure is deliberate: /transactions used to be walked twice
+    // and everything used to run fully sequentially.
+    const [{ swapTxHashes, highestBlock: highestFromTx }, { highestBlock: highestFromDefi, defiTxHashes }] = await Promise.all([
+      ingestTransactionsGasAndSwaps(
+        trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets,
+        latestBlockAtStart, (b) => reportProgress("tx", b, "Scanning transaction history…")
+      ),
+      ingestDefiActivity(
+        trackedWallet, stopAtDefiBlock,
+        (b) => reportProgress("defi", b, "Scanning DeFi activity…"), latestBlockAtStart
+      ),
+    ]);
+    // A farm/stake deposit or withdrawal moves its own underlying tokens via ordinary ERC20
+    // transferFrom/transfer calls under the hood — without excluding defiTxHashes here too (same
+    // role swapTxHashes already plays for a swap's own legs), those same amounts would ALSO get
+    // ingested as plain transfers alongside buildDefiFarmEvents' own DeFi-specific event for the
+    // exact same tx, double-counting every farm/stake action in the FIFO ledger. Confirmed live this
+    // exclusion was missing entirely before now.
+    const excludeTxHashes = new Set([...swapTxHashes, ...defiTxHashes]);
+    const [highestFromInternal, highestFromTokens] = await Promise.all([
+      ingestInternalTransactions(
+        trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes,
+        latestBlockAtStart, (b) => reportProgress("internal", b, "Scanning internal transfers…")
+      ),
+      ingestTokenTransfers(
+        trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, excludeTxHashes, priorityAssets,
+        latestBlockAtStart, (b) => reportProgress("tokens", b, "Scanning token transfers…")
+      ),
+    ]);
+    const highestBlock = Math.max(highestFromTx, highestFromInternal, highestFromTokens);
+
+    if (highestBlock >= 0 || highestFromDefi >= 0) {
+      await upsertIngestionState(trackedWallet, {
+        lastIngestedBlock: highestBlock >= 0 ? highestBlock : stopAtBlock,
+        coldStartCompletedAt: state?.cold_start_completed_at || new Date(),
+        lastIngestedDefiBlock: highestFromDefi >= 0 ? highestFromDefi : null,
+      });
+    }
+
+    await completeJob(trackedWallet);
+    console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap/liquidity event(s) detected`);
+  } catch (err) {
+    await failJob(trackedWallet, err.message).catch((failErr) =>
+      console.error(`⚠️  Couldn't mark ingest job FAILED for ${trackedWallet} (original error below):`, failErr.message)
+    );
+    throw err; // unchanged — every existing caller's own error handling (e.g. computeLivePnlSnapshot's try/catch) still applies
+  }
 }
 
 /**
