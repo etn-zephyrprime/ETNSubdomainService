@@ -42,6 +42,14 @@ export default function CurrencySelect({ tokens, value, onChange, disabled = fal
         outline: "none",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.6 : 1,
+        // The open dropdown list itself is native browser chrome, not this element's own CSS box
+        // — its background/text colors come from the OS's light/dark native-control theme, not
+        // from anything set above, which only styles the closed control. Without this, a
+        // light-mode OS renders that popup white-on-black-text regardless of how dark this page
+        // is, making the token list unreadable against everything else here. `color-scheme: dark`
+        // tells the browser to render this element's native chrome (the dropdown popup here) in
+        // its dark variant instead.
+        colorScheme: "dark",
         ...style,
       }}
     >

@@ -452,7 +452,11 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
                 <select
                   value={selectedReceiveName}
                   onChange={(e) => { setSelectedReceiveName(e.target.value); setCopyLinkStatus(null); }}
-                  style={{ ...inputStyle, marginBottom: 16, cursor: "pointer", textAlign: "center" }}
+                  // colorScheme: dark fixes the dropdown POPUP specifically — it's native browser
+                  // chrome, not covered by inputStyle's own CSS, and otherwise renders light/white
+                  // regardless of this page's own dark theme (see CurrencySelect.jsx's identical
+                  // fix for the same underlying issue).
+                  style={{ ...inputStyle, marginBottom: 16, cursor: "pointer", textAlign: "center", colorScheme: "dark" }}
                 >
                   {receiveNameOptions.map((opt) => (
                     <option key={opt.name} value={opt.name}>
