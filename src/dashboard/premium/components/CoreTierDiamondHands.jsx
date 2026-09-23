@@ -199,7 +199,7 @@ function ScoreCardBody({ label, result }) {
     >
       <CornerBrackets color={tier ? tierColor : border} size={14} />
       <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 16 }}>
-        [ {label} ]
+        {label}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap", justifyContent: "center" }}>
@@ -367,7 +367,7 @@ export function DiamondHandsBody({ scopeResult, perAsset, isPortfolio }) {
             {perAsset.length > 0 && (
               <div style={{ marginTop: 20 }}>
                 <div style={{ ...sectionHeaderStyle, display: "flex", alignItems: "center", gap: 6 }}>
-                  [ By Asset ]
+                  By Asset
                   <InfoTooltip text="Drill into one token, NFT collection, or native ETN to see its own holding-period, retention, and panic-sell numbers, rather than the portfolio-wide blend above." />
                 </div>
 

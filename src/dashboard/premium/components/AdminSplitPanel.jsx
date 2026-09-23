@@ -92,7 +92,7 @@ export default function AdminSplitPanel({ wallet, getAuthParams }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
         <Flame size={18} color={orange} />
         <div style={{ fontFamily: monoFont, fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          [ Admin — Split &amp; Burn ]
+          Admin — Split &amp; Burn
         </div>
       </div>
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.6, marginBottom: 12 }}>

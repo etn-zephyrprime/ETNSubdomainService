@@ -64,7 +64,7 @@ export default function TeamBalanceChart() {
     <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
       <CornerBrackets color={green} />
       <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 14 }}>
-        <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />[ Combined ETN Balance — Rolling 12 Months ]
+        <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />Combined ETN Balance — Rolling 12 Months
       </div>
 
       {error ? (

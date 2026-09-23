@@ -579,7 +579,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <WalletIcon size={18} color={green} />
           <div style={{ fontFamily: monoFont, fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-            [ Core Tier — Portfolio ]
+            Core Tier — Portfolio
           </div>
         </div>
         {/* Visible to literally anyone — including a visitor with no wallet connected at all —
@@ -725,7 +725,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
               {cooling.length > 0 && (
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
-                    [ Recently Untracked ]
+                    Recently Untracked
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {cooling.map((w) => (
@@ -806,7 +806,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                 <>
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
                     <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                      [ Total Portfolio Balance (USD) ]
+                      Total Portfolio Balance (USD)
                       <InfoTooltip text="Everything this dashboard can currently price for you: native ETN, regular token holdings, liquidity positions, and anything staked or farming — added together. A '≈' means at least one piece hasn't resolved a price yet, so the real total is at least this much." />
                     </div>
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
@@ -873,7 +873,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
 
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
                     <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                      [ Portfolio Composition ]
+                      Portfolio Composition
                       <InfoTooltip text="How your Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it. A $0 category means nothing's there yet, or it just hasn't priced — the total above tells you which." />
                     </div>
                     <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalPortfolioHasUnpriced} />
@@ -881,7 +881,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
 
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                      [ {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"} ]
+                      {walletFilter === "all" ? "Combined ETN Balance" : "ETN Balance"}
                       <InfoTooltip text="Native ETN sitting directly in your wallet(s) — the chain's own coin, not a token contract. Doesn't include ETN wrapped as WETN for trading, which shows up under Tokens instead." />
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -905,7 +905,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   ) : defiEntry?.positions?.length > 0 ? (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                        [ Staked / Farming Positions ]
+                        Staked / Farming Positions
                         <InfoTooltip text="Funds currently locked in a yield farm or the Core Ascension staking contract — no longer a plain wallet balance, so Blockscout alone can't see them. Valued live from the contract's own state, including any real-time price movement (not the value it was worth when you deposited)." />
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -937,7 +937,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   ) : lpEntry && (lpEntry.v2Positions?.length > 0 || lpEntry.v3Positions?.length > 0) ? (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-                        [ Liquidity Positions ]
+                        Liquidity Positions
                         <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions you hold directly — not deposited into a yield farm (those show under Staked / Farming Positions instead). Valued live from each pool's own current reserves/price, converted into the underlying tokens your share currently represents." />
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -979,7 +979,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   ) : null}
 
                   <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-                    [ Combined Holdings ]
+                    Combined Holdings
                     <InfoTooltip text="Regular token and NFT balances sitting directly in your wallet(s) — the same thing a block explorer would show you. Tokens with no resolved value are hidden by default; liquidity/farming positions have their own dedicated sections above instead of showing up here unpriced." />
                   </div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -1004,7 +1004,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             cursor: "pointer",
                           }}
                         >
-                          {isActive ? `[ ${c.label} ]` : c.label}
+                          {c.label}
                         </button>
                       );
                     })}

@@ -117,7 +117,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 cursor: "pointer",
               }}
             >
-              {isActive ? `[ ${c.label} ]` : c.label}
+              {c.label}
             </button>
           );
         })}

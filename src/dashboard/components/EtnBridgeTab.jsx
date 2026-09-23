@@ -100,7 +100,7 @@ export default function EtnBridgeTab() {
           <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
             <CornerBrackets color={green} />
             <div style={{ ...sectionLabel, marginBottom: 14 }}>
-              <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />[ ETN Remaining in the Bridge — Towards the Deadline ]
+              <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />ETN Remaining in the Bridge — Towards the Deadline
             </div>
             {series.length < 2 ? (
               <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted, textAlign: "center" }}>
@@ -145,7 +145,7 @@ export default function EtnBridgeTab() {
       {data && cur && (
         <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
           <CornerBrackets color={green} />
-          <div style={{ ...sectionLabel, marginBottom: 4 }}>[ Top Migrations — Last 7 Days ]</div>
+          <div style={{ ...sectionLabel, marginBottom: 4 }}>Top Migrations — Last 7 Days</div>
           {top ? (
             <>
               <div style={{ fontSize: 11, color: mutedLight, marginBottom: 6 }}>

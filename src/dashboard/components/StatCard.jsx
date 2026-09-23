@@ -14,7 +14,7 @@ export default function StatCard({ label, value, sub, children }) {
     }}>
       <CornerBrackets color={green} />
       <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-        [ {label} ]
+        {label}
       </div>
       <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
         {value}

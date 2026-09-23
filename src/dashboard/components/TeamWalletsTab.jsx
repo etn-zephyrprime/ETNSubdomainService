@@ -202,7 +202,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       <TeamDestinations onSelectAddress={onSelectAddress} />
 
       <div style={sectionLabelStyle}>
-        [ Wallets ]
+        Wallets
       </div>
       <div style={{ position: "relative", padding: "0 0 8px", background: panel2, border: `1px solid ${border}`, borderRadius: 4, marginBottom: 24 }}>
         <CornerBrackets color={green} />
@@ -228,7 +228,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       </div>
 
       <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
-        [ All Suspected Team Wallets ({TEAM_WALLET_ADDRESSES.length}) ]
+        All Suspected Team Wallets ({TEAM_WALLET_ADDRESSES.length})
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
         The complete list the dashboard treats as team wallets (anyone shown with an <TeamWalletTag style={{ fontSize: 8 }} /> tag) — full addresses, largest balance first.
@@ -251,7 +251,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       </div>
 
       <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
-        [ Recent ETN Team Wallet Movements ]
+        Recent ETN Team Wallet Movements
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
         Transfers of 1,000,000 ETN or more from the last 12 months only.{" "}

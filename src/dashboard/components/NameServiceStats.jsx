@@ -122,7 +122,7 @@ export default function NameServiceStats() {
       </div>
 
       <div style={{ ...sectionLabel, marginBottom: 8 }}>
-        [ All of Electroneum ]
+        All of Electroneum
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 12 }}>
         <StatCard
@@ -140,7 +140,7 @@ export default function NameServiceStats() {
       </div>
 
       <div style={{ ...sectionLabel, marginBottom: 8 }}>
-        [ Via ETN Subdomain Service ]
+        Via ETN Subdomain Service
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <StatCard label="Domains Activated" value={formatCompact(domains.length)} />
@@ -187,7 +187,7 @@ export default function NameServiceStats() {
       <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 20 }}>
         <CornerBrackets color={green} />
         <div style={{ ...sectionLabel, marginBottom: 8 }}>
-          [ Marketplace Volume ({TREND_WINDOW_DAYS}D) ]
+          Marketplace Volume ({TREND_WINDOW_DAYS}D)
         </div>
         {volume30dWei.count > 0 ? (
           <div>
@@ -222,7 +222,7 @@ export default function NameServiceStats() {
       </div>
 
       <div style={{ ...sectionLabel, marginBottom: 8 }}>
-        [ Top Domains by Subnames ]
+        Top Domains by Subnames
       </div>
       {sortedDomains.length === 0 ? (
         <div style={{ fontSize: 12, color: muted }}>No activated domains yet.</div>

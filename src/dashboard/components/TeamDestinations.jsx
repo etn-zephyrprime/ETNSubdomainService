@@ -106,7 +106,7 @@ export default function TeamDestinations({ onSelectAddress }) {
 
   return (
     <div style={{ marginBottom: 24 }}>
-      <div style={{ ...sectionLabel, marginBottom: 4 }}>[ Where Team ETN Went — Last 12 Months ]</div>
+      <div style={{ ...sectionLabel, marginBottom: 4 }}>Where Team ETN Went — Last 12 Months</div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>
         What the suspected team wallets sent to addresses outside the team, the biggest destinations, and — for receiving wallets — where they sent it next.
       </div>

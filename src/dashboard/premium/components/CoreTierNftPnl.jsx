@@ -207,21 +207,21 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                     {figures && (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginBottom: 20 }}>
                         <div>
-                          <div style={sectionHeaderStyle}>[ Total Paid ]</div>
+                          <div style={sectionHeaderStyle}>Total Paid</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(figures.costBasisUsd))}</div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>[ Proceeds (Sold) ]</div>
+                          <div style={sectionHeaderStyle}>Proceeds (Sold)</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(figures.proceedsUsd))}</div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>[ Realized P&amp;L ]</div>
+                          <div style={sectionHeaderStyle}>Realized P&amp;L</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                             {fmtSigned(Number(figures.realizedPnlUsd))}
                           </div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>[ Held / Sold ]</div>
+                          <div style={sectionHeaderStyle}>Held / Sold</div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>
                             {figures.heldCount} <span style={{ color: mutedLight, fontSize: 14 }}>/</span> {figures.soldCount}
                           </div>
@@ -231,7 +231,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
 
                     {collectionFilter === "all" ? (
                       <div>
-                        <div style={sectionHeaderStyle}>[ By Collection ]</div>
+                        <div style={sectionHeaderStyle}>By Collection</div>
                         {collectionOptions.map((c) => {
                           const totalCost = Number(c.heldCostBasisUsd) + Number(c.soldCostBasisUsd);
                           return (
@@ -263,8 +263,8 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                     ) : (
                       <div>
                         <div style={sectionHeaderStyle}>
-                          [ <TokenLogo address={collectionFilter} placeholder={false} size={18} />
-                          {resolveCollectionName(collectionFilter)} — By Token ID ]
+                          <TokenLogo address={collectionFilter} placeholder={false} size={18} />
+                          {resolveCollectionName(collectionFilter)} — By Token ID
                         </div>
                         {tokenRows.length === 0 ? (
                           <div style={{ fontSize: 12, color: muted }}>No tokens found for this collection.</div>

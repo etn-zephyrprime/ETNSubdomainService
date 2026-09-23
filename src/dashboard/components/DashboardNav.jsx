@@ -56,7 +56,7 @@ export default function DashboardNav({ active, onChange }) {
               cursor: "pointer",
             }}
           >
-            {isActive ? `[ ${t.label} ]` : t.label}
+            {t.label}
           </button>
           </React.Fragment>
         );
