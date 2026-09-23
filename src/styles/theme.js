@@ -10,13 +10,16 @@ export const blueGlow = "rgba(0,198,255,0.25)";
 // Soft brand-color glows over the old flat #011528 — same navy base, just less like a single
 // unbroken slab of color behind every page. Radial gradients only (no fixed attachment): this
 // container's own height grows with page content, and a fixed background looks static/detached
-// once a page scrolls past one viewport. The third (orange) pool ties this to the same
-// green/blue/orange trio Panel.jsx/NeonButton.jsx now use for their own gradient borders — one
-// consistent "Glass & Gradient" palette site-wide, not just an accent on the cards themselves.
+// once a page scrolls past one viewport. The orange pool ties this to the same green/blue/orange
+// trio Panel.jsx/NeonButton.jsx now use for their own gradient borders — one consistent
+// "Glass & Gradient" palette site-wide, not just an accent on the cards themselves.
+// A third, more central pool (at 50% 100%, dead-center horizontally) used to sit here too —
+// removed since, even at a moderate alpha, a pool that size sitting behind the main content
+// column read as a wash over the page rather than an edge accent. Same call made on Argus
+// dashboard's own central pool (see dashboard/DashboardApp.jsx).
 export const pageBackground = `
   radial-gradient(ellipse 900px 600px at 12% -10%, rgba(18,86,131,0.35), transparent 60%),
   radial-gradient(ellipse 700px 500px at 100% 15%, rgba(62,166,255,0.14), transparent 55%),
-  radial-gradient(ellipse 800px 550px at 50% 100%, rgba(18,86,131,0.28), transparent 60%),
   radial-gradient(ellipse 600px 500px at 85% 80%, rgba(255,138,61,0.10), transparent 55%),
   #011528
 `;

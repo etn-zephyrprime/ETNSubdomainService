@@ -109,21 +109,19 @@ export default function DashboardApp() {
       padding: "40px 16px",
       fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     }}>
-      {/* "Glass & Gradient" backdrop — three large, softly blurred color pools sitting behind the
-          content. Fixed to the viewport rather than the page, so they read as an ambient glow
-          around wherever you're currently looking rather than scrolling past after the first
-          screenful — the same reasoning the scanline overlay this replaces used. Panels stay
-          opaque (not glass/blurred themselves) so text contrast is unaffected; this only changes
-          what's visible in the gaps and margins around them.
-          Third pool is orange, not gold: gold/goldGlow stay reserved for the Premium tab badge
-          (see theme.js's own comment on that), and at this size a yellow/gold blur read as a
-          constant screen glare rather than an ambient color pool — same low-alpha orange tint the
-          ETN Subdomain Service main site already uses for its own third pool, which doesn't have
-          that problem. */}
+      {/* "Glass & Gradient" backdrop — two large, softly blurred color pools sitting behind the
+          content, tucked into the top corners. Fixed to the viewport rather than the page, so they
+          read as an ambient glow around wherever you're currently looking rather than scrolling
+          past after the first screenful — the same reasoning the scanline overlay this replaces
+          used. Panels stay opaque (not glass/blurred themselves) so text contrast is unaffected;
+          this only changes what's visible in the gaps and margins around them.
+          A third, more central pool (orange, bottom) used to sit here too — removed since, even
+          toned down from gold to orange, a pool that size sitting behind the main content column
+          read as a wash over the page rather than an edge accent. Same call made on the ETN
+          Subdomain Service main site's own central pool. */}
       <div style={{ position: "fixed", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }} aria-hidden="true">
         <div style={{ position: "absolute", width: 560, height: 560, left: "-12%", top: "-16%", borderRadius: "50%", background: `radial-gradient(circle, ${greenGlow}, transparent 70%)`, filter: "blur(20px)" }} />
         <div style={{ position: "absolute", width: 520, height: 520, right: "-10%", top: "8%", borderRadius: "50%", background: `radial-gradient(circle, ${blueGlow}, transparent 70%)`, filter: "blur(20px)" }} />
-        <div style={{ position: "absolute", width: 480, height: 480, left: "32%", bottom: "-18%", borderRadius: "50%", background: "radial-gradient(circle, rgba(255,138,61,0.14), transparent 70%)", filter: "blur(20px)" }} />
       </div>
 
       <div style={{ width: "100%", maxWidth: 900, display: "flex", justifyContent: "flex-end", position: "relative" }}>
