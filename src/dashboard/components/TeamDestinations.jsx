@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { green, orange, blue, error as red, muted, mutedLight, panel2, border } from "../theme.js";
+import { green, orange, blue, error as red, muted, mutedLight, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWalletDestinations } from "../hooks/useTeamWalletDestinations.js";
 import { formatCompact, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
+import StatCard from "./StatCard.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
 
-const sectionLabel = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
+const sectionLabel = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
 const etn = (n) => `${formatCompact(n)} ETN`;
 
 const KIND = {
@@ -16,20 +18,20 @@ const KIND = {
 
 function KindBadge({ kind }) {
   const k = KIND[kind] || KIND.wallet;
-  return <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: k.color, border: `1px solid ${k.color}`, borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>{k.label}</span>;
+  return <span style={{ fontFamily: monoFont, fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: k.color, border: `1px solid ${k.color}`, borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>{k.label}</span>;
 }
 
 function AddressLink({ address, label, onSelectAddress }) {
   const text = label || shortHash(address);
   if (onSelectAddress && !label) {
     return (
-      <button onClick={() => onSelectAddress(address)} style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "#fff", fontFamily: "monospace", fontSize: 12, fontWeight: 700 }}>
+      <button onClick={() => onSelectAddress(address)} style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "#fff", fontFamily: monoFont, fontSize: 12, fontWeight: 700 }}>
         {text}
       </button>
     );
   }
   return (
-    <a href={`${EXPLORER_BASE_URL}/address/${address}`} target="_blank" rel="noreferrer" title={address} style={{ color: "#fff", fontSize: 12, fontWeight: 700, textDecoration: "none", fontFamily: label ? undefined : "monospace" }}>
+    <a href={`${EXPLORER_BASE_URL}/address/${address}`} target="_blank" rel="noreferrer" title={address} style={{ color: "#fff", fontSize: 12, fontWeight: 700, textDecoration: "none", fontFamily: label ? undefined : monoFont }}>
       {text}
     </a>
   );
@@ -42,7 +44,7 @@ function DestinationRow({ d, onSelectAddress }) {
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flexWrap: "wrap" }}>
           <KindBadge kind={d.kind} />
           <AddressLink address={d.address} label={d.label} onSelectAddress={onSelectAddress} />
-          {d.label && <span style={{ fontSize: 10, color: muted, fontFamily: "monospace" }}>{shortHash(d.address)}</span>}
+          {d.label && <span style={{ fontSize: 10, color: muted, fontFamily: monoFont }}>{shortHash(d.address)}</span>}
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: red }}>
@@ -104,7 +106,7 @@ export default function TeamDestinations({ onSelectAddress }) {
 
   return (
     <div style={{ marginBottom: 24 }}>
-      <div style={{ ...sectionLabel, marginBottom: 4 }}>Where Team ETN Went — Last 12 Months</div>
+      <div style={{ ...sectionLabel, marginBottom: 4 }}>[ Where Team ETN Went — Last 12 Months ]</div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>
         What the suspected team wallets sent to addresses outside the team, the biggest destinations, and — for receiving wallets — where they sent it next.
       </div>
@@ -115,14 +117,12 @@ export default function TeamDestinations({ onSelectAddress }) {
           { label: "Came Back In", value: etn(totals.inEtn), color: green },
           { label: "Net Out", value: etn(totals.netOutEtn), color: "#fff" },
         ].map((c) => (
-          <div key={c.label} style={{ padding: 12, borderRadius: 10, background: panel2, border: `1px solid ${border}` }}>
-            <div style={{ ...sectionLabel, fontSize: 10, marginBottom: 4 }}>{c.label}</div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: c.color }}>{c.value}</div>
-          </div>
+          <StatCard key={c.label} label={c.label} value={<span style={{ color: c.color }}>{c.value}</span>} />
         ))}
       </div>
 
-      <div style={{ padding: "12px 14px", borderRadius: 12, background: panel2, border: `1px solid ${border}` }}>
+      <div style={{ position: "relative", padding: "12px 14px", borderRadius: 4, background: panel2, border: `1px solid ${border}` }}>
+        <CornerBrackets color={green} />
         {fateTotal > 0 && (
           <div style={{ fontSize: 12, color: mutedLight, marginBottom: 6, lineHeight: 1.6 }}>
             Of the {etn(fateTotal)} received by the top destinations below (net):{" "}

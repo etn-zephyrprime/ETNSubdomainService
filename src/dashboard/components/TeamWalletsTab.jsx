@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { green, blue, mutedLight, muted, panel2, border, error as red } from "../theme.js";
+import { green, blue, mutedLight, muted, panel2, border, error as red, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWallets } from "../hooks/useTeamWallets.js";
 import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
@@ -10,6 +10,9 @@ import StatCard from "./StatCard.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
 import TeamBalanceChart from "./TeamBalanceChart.jsx";
 import TeamDestinations from "./TeamDestinations.jsx";
+import CornerBrackets from "./CornerBrackets.jsx";
+
+const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
 // Re-polls the published cache periodically — backend/utils/teamWalletsCache.js itself only
 // refreshes every 10 minutes by default, so this just needs to be frequent enough to pick up a
@@ -32,6 +35,7 @@ function balanceOf(wallet) {
 function WalletRow({ wallet, onSelectAddress }) {
   return (
     <button
+      className="dash-team-row"
       onClick={() => onSelectAddress(wallet.address)}
       style={{
         display: "flex",
@@ -42,12 +46,13 @@ function WalletRow({ wallet, onSelectAddress }) {
         borderBottom: `1px solid ${border}`,
         background: "transparent",
         border: "none",
+        borderRadius: 2,
         cursor: "pointer",
         textAlign: "left",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ fontSize: 12, color: "#fff", fontWeight: 600, fontFamily: monoFont, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {wallet.ensName || shortHash(wallet.address)}
         </div>
       </div>
@@ -75,17 +80,18 @@ function MovementRow({ movement }) {
   const kind = movementKind(movement);
   return (
     <a
+      className="dash-team-row"
       href={`${EXPLORER_BASE_URL}/tx/${movement.hash}`}
       target="_blank"
       rel="noreferrer"
       style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", margin: "0 -10px", borderBottom: `1px solid ${border}`, borderLeft: `3px solid ${kind.color}`, background: kind.bg, textDecoration: "none", gap: 10 }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: kind.color, border: `1px solid ${kind.color}`, borderRadius: 4, padding: "1px 5px" }}>{kind.label}</span>
-        <span style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(movement.from)}</span>
+        <span style={{ fontFamily: monoFont, fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: kind.color, border: `1px solid ${kind.color}`, borderRadius: 4, padding: "1px 5px" }}>{kind.label}</span>
+        <span style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(movement.from)}</span>
         {movement.fromIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
         <span style={{ fontSize: 11, color: kind.color }}>→</span>
-        <span style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(movement.to)}</span>
+        <span style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(movement.to)}</span>
         {movement.toIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -169,6 +175,8 @@ export default function TeamWalletsTab({ onSelectAddress }) {
 
   return (
     <div>
+      <style>{`.dash-team-row{transition:border-color .15s ease,background .15s ease;} .dash-team-row:hover,.dash-team-row:focus-visible{border-bottom-color:${green};}`}</style>
+
       <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16, lineHeight: 1.5 }}>
         Suspected Electroneum team wallets — anyone holding more than 49 of{" "}
         <a href={`${EXPLORER_BASE_URL}/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders`} target="_blank" rel="noreferrer" style={{ color: blue }}>
@@ -193,10 +201,11 @@ export default function TeamWalletsTab({ onSelectAddress }) {
 
       <TeamDestinations onSelectAddress={onSelectAddress} />
 
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-        Wallets
+      <div style={sectionLabelStyle}>
+        [ Wallets ]
       </div>
-      <div style={{ padding: "0 0 8px", background: panel2, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 24 }}>
+      <div style={{ position: "relative", padding: "0 0 8px", background: panel2, border: `1px solid ${border}`, borderRadius: 4, marginBottom: 24 }}>
+        <CornerBrackets color={green} />
         <div style={{ padding: "0 14px" }}>
           {wallets === null ? (
             <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>Loading…</div>
@@ -210,7 +219,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
           <div style={{ padding: "8px 14px 0", textAlign: "center" }}>
             <button
               onClick={() => setShowSmallWallets((v) => !v)}
-              style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 8, color: mutedLight, fontSize: 12, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+              style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 6, color: mutedLight, fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6, fontSize: 11, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
             >
               {showSmallWallets ? "Show fewer" : `Show ${smallWallets.length} more (under 1,000 ETN)`}
             </button>
@@ -218,17 +227,18 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         )}
       </div>
 
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-        All Suspected Team Wallets ({TEAM_WALLET_ADDRESSES.length})
+      <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
+        [ All Suspected Team Wallets ({TEAM_WALLET_ADDRESSES.length}) ]
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
         The complete list the dashboard treats as team wallets (anyone shown with an <TeamWalletTag style={{ fontSize: 8 }} /> tag) — full addresses, largest balance first.
       </div>
-      <div style={{ padding: "0 14px 6px", background: panel2, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 24 }}>
+      <div style={{ position: "relative", padding: "0 14px 6px", background: panel2, border: `1px solid ${border}`, borderRadius: 4, marginBottom: 24 }}>
+        <CornerBrackets color={green} />
         {allTeamWallets.map((w) => (
           <div key={w.address} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${border}`, flexWrap: "wrap" }}>
             <div style={{ minWidth: 0 }}>
-              <a href={`${EXPLORER_BASE_URL}/address/${w.address}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#fff", fontFamily: "monospace", textDecoration: "none", wordBreak: "break-all" }}>
+              <a href={`${EXPLORER_BASE_URL}/address/${w.address}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#fff", fontFamily: monoFont, textDecoration: "none", wordBreak: "break-all" }}>
                 {w.address}
               </a>
               {w.ensName && <span style={{ fontSize: 10, color: muted, marginLeft: 8 }}>{w.ensName}</span>}
@@ -240,8 +250,8 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         ))}
       </div>
 
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-        Recent ETN Team Wallet Movements
+      <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
+        [ Recent ETN Team Wallet Movements ]
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
         Transfers of 1,000,000 ETN or more from the last 12 months only.{" "}
@@ -249,7 +259,8 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         <span style={{ color: green, fontWeight: 700 }}>IN</span> = arriving,{" "}
         <span style={{ color: blue, fontWeight: 700 }}>INTERNAL</span> = between team wallets (combined balance unchanged).
       </div>
-      <div style={{ padding: "0 14px", background: panel2, border: `1px solid ${border}`, borderRadius: 12 }}>
+      <div style={{ position: "relative", padding: "0 14px", background: panel2, border: `1px solid ${border}`, borderRadius: 4 }}>
+        <CornerBrackets color={green} />
         {wallets === null ? (
           <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>Loading…</div>
         ) : recentMovements.length === 0 ? (
