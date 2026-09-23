@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
@@ -93,29 +93,37 @@ export default function TokenLeaderboard({ onSelectToken }) {
 
   return (
     <div>
+      <style>{`.dash-token-row{transition:border-color .15s ease,box-shadow .15s ease;} .dash-token-row:hover,.dash-token-row:focus-visible{border-color:${green};box-shadow:0 0 10px rgba(24,187,26,0.18);}`}</style>
+
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {CATEGORIES.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setCategory(c.id)}
-            style={{
-              flex: "1 1 100px",
-              padding: "8px 8px",
-              borderRadius: 10,
-              border: `1px solid ${c.id === category ? green : border}`,
-              background: c.id === category ? "rgba(24,187,26,0.12)" : panel2,
-              color: c.id === category ? green : mutedLight,
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
-            {c.label}
-          </button>
-        ))}
+        {CATEGORIES.map((c) => {
+          const isActive = c.id === category;
+          return (
+            <button
+              key={c.id}
+              onClick={() => setCategory(c.id)}
+              style={{
+                flex: "1 1 100px",
+                padding: "8px 8px",
+                borderRadius: 6,
+                border: `1px solid ${isActive ? green : border}`,
+                background: isActive ? "rgba(24,187,26,0.12)" : panel2,
+                color: isActive ? green : mutedLight,
+                fontFamily: monoFont,
+                fontSize: 11,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              {isActive ? `[ ${c.label} ]` : c.label}
+            </button>
+          );
+        })}
       </div>
 
-      <div style={{ display: "flex", padding: "0 12px 8px", fontSize: 11, fontWeight: 700, color: muted, textTransform: "uppercase", letterSpacing: 0.6 }}>
+      <div style={{ display: "flex", padding: "0 12px 8px", fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: muted, textTransform: "uppercase", letterSpacing: 1 }}>
         <div style={{ flex: 1 }}>{category === "nfts" ? "Collection" : "Token"}</div>
         <div style={{ width: 100, textAlign: "right" }}>{category === "nfts" ? "Holders" : "Liquidity"}</div>
       </div>
@@ -130,6 +138,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
             key={token.address}
             role="button"
             tabIndex={0}
+            className="dash-token-row"
             onClick={() => onSelectToken(token.address)}
             onKeyDown={(e) => { if (e.key === "Enter") onSelectToken(token.address); }}
             style={{
@@ -138,7 +147,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
               width: "100%",
               padding: "12px",
               marginBottom: 6,
-              borderRadius: 10,
+              borderRadius: 4,
               background: panel2,
               border: `1px solid ${border}`,
               cursor: "pointer",
@@ -152,9 +161,9 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 <TokenLogo address={token.address} label={token.symbol || token.name} size={22} placeholder={category === "tokens"} />
                 {token.name || "Unnamed"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
               </div>
-              <div style={{ fontSize: 11, color: mutedLight, fontFamily: "monospace" }}>{shortHash(token.address)}</div>
+              <div style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(token.address)}</div>
               {category === "tokens" && lockBadgeText(token.lockInfo) && (
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 700, color: green, marginTop: 2 }}>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: green, marginTop: 2 }}>
                   <Lock size={10} />
                   {lockBadgeText(token.lockInfo)}
                 </div>
