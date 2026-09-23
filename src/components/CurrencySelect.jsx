@@ -1,5 +1,6 @@
 import React from "react";
 import { ethers } from "ethers";
+import { panel2 } from "../styles/theme.js";
 
 // ETN is always implicitly payable for PRICING/ACTIVATION on V5 (it never appears in
 // whitelistedPaymentTokens — see PlanetZephyrosSubdomainServiceV5.sol's own comment on that
@@ -44,17 +45,20 @@ export default function CurrencySelect({ tokens, value, onChange, disabled = fal
         opacity: disabled ? 0.6 : 1,
         // The open dropdown list itself is native browser chrome, not this element's own CSS box
         // — its background/text colors come from the OS's light/dark native-control theme, not
-        // from anything set above, which only styles the closed control. Without this, a
-        // light-mode OS renders that popup white-on-black-text regardless of how dark this page
-        // is, making the token list unreadable against everything else here. `color-scheme: dark`
-        // tells the browser to render this element's native chrome (the dropdown popup here) in
-        // its dark variant instead.
+        // from anything set above, which only styles the closed control. `color-scheme: dark`
+        // alone turned out NOT to be enough on its own (confirmed: still a white popup with white
+        // text — readable only on hover, where the browser's own highlight color happens to give
+        // enough contrast) — apparently this browser/OS combination doesn't flip the popup's own
+        // background via color-scheme, only its general native-chrome tone. The options' own
+        // explicit background/color below is the part that actually fixes it: unlike the select's
+        // own box, a native popup can't render backdrop-filter/translucency, so this needs a
+        // solid opaque color, not the glass treatment the closed control itself uses.
         colorScheme: "dark",
         ...style,
       }}
     >
       {tokens.map((t) => (
-        <option key={t.address} value={t.address}>
+        <option key={t.address} value={t.address} style={{ background: panel2, color: "#fff" }}>
           {t.symbol}
         </option>
       ))}

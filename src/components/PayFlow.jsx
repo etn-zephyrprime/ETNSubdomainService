@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { QRCodeSVG } from "qrcode.react";
 import { ArrowLeft, Copy, Check } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, border, orange } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border, orange, panel2 } from "../styles/theme.js";
 import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useOwnedNames } from "../hooks/useOwnedNames.js";
@@ -452,14 +452,15 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
                 <select
                   value={selectedReceiveName}
                   onChange={(e) => { setSelectedReceiveName(e.target.value); setCopyLinkStatus(null); }}
-                  // colorScheme: dark fixes the dropdown POPUP specifically — it's native browser
-                  // chrome, not covered by inputStyle's own CSS, and otherwise renders light/white
-                  // regardless of this page's own dark theme (see CurrencySelect.jsx's identical
-                  // fix for the same underlying issue).
+                  // colorScheme: dark alone wasn't enough to fix the dropdown POPUP (native
+                  // browser chrome, not covered by inputStyle's own CSS) on its own — the options'
+                  // own explicit background/color below is what actually does it, since a native
+                  // popup can't render backdrop-filter/translucency the way the closed control
+                  // itself does. See CurrencySelect.jsx's identical fix for the full explanation.
                   style={{ ...inputStyle, marginBottom: 16, cursor: "pointer", textAlign: "center", colorScheme: "dark" }}
                 >
                   {receiveNameOptions.map((opt) => (
-                    <option key={opt.name} value={opt.name}>
+                    <option key={opt.name} value={opt.name} style={{ background: panel2, color: "#fff" }}>
                       {opt.name}{opt.isPrimary ? " (Primary)" : ""}
                     </option>
                   ))}
