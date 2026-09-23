@@ -13,7 +13,7 @@ import { getPremiumSubscriptionWatcherState, setPremiumSubscriptionWatcherState 
 import { upsertMembership, getMembership } from "../db/premiumMemberships.js";
 import { createFromPurchase } from "../db/statementRequests.js";
 import { getPool } from "../db/pool.js";
-import { sendTelegramMessage, telegramConfigured } from "./telegramNotifier.js";
+import { sendZephyrosMessage, zephyrosBotConfigured, escapeHtml } from "./coreClashTelegram.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { EXPLORER_BASE_URL } from "../services/pnlIngestion.js";
 
@@ -70,12 +70,18 @@ function formatEtn(wei) {
   return parseFloat(ethers.formatEther(wei)).toFixed(2);
 }
 
-// Posted to the same fixed group channel every other public Telegram notification in this backend
-// uses (sendTelegramMessage's TELEGRAM_CHAT_ID) — best-effort: a failed post here must never undo
-// the membership write above (already committed by the time this runs) or stop the rest of this
-// poll's events from processing, see handleMembershipPurchased's own try/catch around this call.
+// Posted via the Zephyros/Notis bot (coreClashTelegram.js's sendZephyrosMessage) into the shared
+// Planet Zephyros community chat — the SAME bot identity Core tier's own personal alerts use
+// (notisLinkRouter.js/walletAlertScheduler.js etc.), not telegramNotifier.js's ETN Subdomain
+// Service bot, which is this repo's OTHER, unrelated bot for marketplace/subname activations. This
+// used to go out via sendTelegramMessage (the Subdomain Service bot) — a mismatch fixed after it
+// shipped every "New Core Tier Subscriber" post under the wrong bot's branding, same class of bug
+// notisLinkRouter.js's own header comment warns about for the personal-alert path. Best-effort: a
+// failed post here must never undo the membership write above (already committed by the time this
+// runs) or stop the rest of this poll's events from processing, see handleMembershipPurchased's
+// own try/catch around this call.
 async function notifyMembershipGroup({ subscriber, tier, paid, duration, expiryTimestamp, txHash, isRenewal, resolveDisplayName }) {
-  if (!telegramConfigured()) return;
+  if (!zephyrosBotConfigured()) return;
 
   const display = await resolveDisplayName(subscriber);
   const tierLabel = tier === "annual" ? "Annual" : "Monthly";
@@ -83,13 +89,13 @@ async function notifyMembershipGroup({ subscriber, tier, paid, duration, expiryT
   const durationLabel = `${durationNum} ${tier === "annual" ? "year" : "month"}${durationNum === 1 ? "" : "s"}`;
   const txUrl = `${EXPLORER_BASE_URL}/tx/${txHash}`;
 
-  await sendTelegramMessage(
-    `${isRenewal ? "🔁 *Core Tier Renewal*" : "💳 *New Core Tier Subscriber*"}\n` +
-    `Member: \`${display}\`\n` +
-    `Tier: \`${tierLabel} (${durationLabel})\`\n` +
-    `Paid: \`${formatEtn(paid)} ETN\`\n` +
-    `Now expires: \`${expiryTimestamp.toISOString().slice(0, 10)}\`\n` +
-    `[View Transaction](${txUrl})`
+  await sendZephyrosMessage(
+    `${isRenewal ? "🔁 <b>Core Tier Renewal</b>" : "💳 <b>New Core Tier Subscriber</b>"}\n` +
+    `Member: <code>${escapeHtml(display)}</code>\n` +
+    `Tier: <code>${escapeHtml(tierLabel)} (${escapeHtml(durationLabel)})</code>\n` +
+    `Paid: <code>${formatEtn(paid)} ETN</code>\n` +
+    `Now expires: <code>${expiryTimestamp.toISOString().slice(0, 10)}</code>\n` +
+    `<a href="${txUrl}">View Transaction</a>`
   );
 }
 
