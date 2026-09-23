@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border, orange } from "../styles/theme.js";
 import { useSubnameRegistration } from "../hooks/useSubnameRegistration.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { usePaymentTokens } from "../hooks/usePaymentTokens.js";
@@ -371,7 +371,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
                 width: "100%",
                 maxWidth: 280,
                 borderRadius: 14,
-                border: `1px solid ${border}`,
+                border: `1px solid rgba(62,166,255,0.2)`,
                 boxShadow: `0 0 20px ${greenGlow}`,
                 marginBottom: 20,
               }}
@@ -383,8 +383,10 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
               aspectRatio: "1 / 1",
               margin: "0 auto 20px",
               borderRadius: 14,
-              border: `1px solid ${border}`,
-              background: panel2,
+              border: `1px solid rgba(62,166,255,0.2)`,
+              background: "rgba(255,255,255,0.05)",
+              backdropFilter: "blur(14px)",
+              WebkitBackdropFilter: "blur(14px)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -474,7 +476,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             fontWeight: 600,
             color: green,
             background: "rgba(18,86,131,0.06)",
-            border: `1px solid ${border}`,
+            border: `1px solid rgba(62,166,255,0.2)`,
             borderRadius: 10,
             cursor: "pointer",
             padding: "8px 14px",
@@ -531,8 +533,10 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
             width: "100%",
             padding: "14px 16px",
             borderRadius: 12,
-            border: `1px solid ${border}`,
-            background: panel2,
+            border: `1px solid rgba(62,166,255,0.2)`,
+            background: "rgba(255,255,255,0.05)",
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
             color: "#fff",
             fontSize: 16,
             fontWeight: 600,
@@ -573,8 +577,10 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
                   gap: 6,
                   padding: "8px 12px",
                   borderRadius: 10,
-                  border: `1px solid ${border}`,
-                  background: panel2,
+                  border: `1px solid rgba(62,166,255,0.2)`,
+                  background: "rgba(255,255,255,0.05)",
+                  backdropFilter: "blur(14px)",
+                  WebkitBackdropFilter: "blur(14px)",
                   color: "#fff",
                   fontSize: 13,
                   fontWeight: 700,
@@ -621,8 +627,10 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
         <div style={{
           padding: 16,
           borderRadius: 12,
-          background: panel2,
-          border: `1px solid ${border}`,
+          background: "rgba(255,255,255,0.05)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          border: `1px solid rgba(62,166,255,0.2)`,
         }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 12 }}>
             {displayName}
@@ -648,7 +656,7 @@ export default function SubnameSearch({ wallet, onBack = null, initialParent = n
                   padding: "10px 8px",
                   borderRadius: 10,
                   border: `1px solid ${option.seconds === selectedDuration ? green : border}`,
-                  background: option.seconds === selectedDuration ? "rgba(18,86,131,0.12)" : panel2,
+                  background: option.seconds === selectedDuration ? "rgba(18,86,131,0.12)" : "rgba(255,255,255,0.04)",
                   color: option.seconds === selectedDuration ? green : mutedLight,
                   fontSize: 13,
                   fontWeight: 700,

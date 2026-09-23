@@ -513,7 +513,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
 
         {/* Wallet alerts */}
         <div style={{ marginBottom: 24 }}>
-          <div style={sectionHeaderStyle}>[ Wallet Alerts ]</div>
+          <div style={sectionHeaderStyle}>Wallet Alerts</div>
           {active.length === 0 ? (
             <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
               Track a wallet under Core Tier — Portfolio above to set alerts on it.
@@ -596,7 +596,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
         {/* Portfolio alerts — combined tracked-wallet USD %-move, distinct from a single wallet's
             balance threshold above */}
         <div style={{ marginBottom: 24 }}>
-          <div style={sectionHeaderStyle}>[ Portfolio Alerts ]</div>
+          <div style={sectionHeaderStyle}>Portfolio Alerts</div>
           {active.length === 0 ? (
             <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>
               Track a wallet under Core Tier — Portfolio above to alert on your combined portfolio value.
@@ -644,7 +644,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
 
         {/* Token price alerts */}
         <div>
-          <div style={sectionHeaderStyle}>[ Token Price Alerts ]</div>
+          <div style={sectionHeaderStyle}>Token Price Alerts</div>
           {tokenAlertsError && <div style={{ fontSize: 12, color: errorColor, marginBottom: 8 }}>{tokenAlertsError}</div>}
           {tokenAlerts && tokenAlerts.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>

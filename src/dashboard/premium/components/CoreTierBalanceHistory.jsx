@@ -234,7 +234,7 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
             {effectiveSelectedWallet === "combined" ? (
               <div>
                 <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-                  [ {active.length > 1 ? "Combined Balance History" : "Balance History"} ]
+                  {active.length > 1 ? "Combined Balance History" : "Balance History"}
                 </div>
                 <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
                 {!hasCombinedHistory ? (
@@ -250,8 +250,8 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
                 return (
                   <div>
                     <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 4 }}>
-                      [ {w?.isOwnWallet ? "You — " : ""}
-                      {resolveName(effectiveSelectedWallet)} ]
+                      {w?.isOwnWallet ? "You — " : ""}
+                      {resolveName(effectiveSelectedWallet)}
                     </div>
                     <div style={{ fontSize: 10, color: muted, marginBottom: 10 }}>Last 12 months</div>
                     {!hasHistory ? (

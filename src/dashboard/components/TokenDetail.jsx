@@ -131,7 +131,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
         onClick={onBack}
         style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: monoFont, fontSize: 12, letterSpacing: 0.6, textTransform: "uppercase", fontWeight: 700, color: green, background: "transparent", border: "none", cursor: "pointer", marginBottom: 16, padding: 0 }}
       >
-        <ArrowLeft size={14} /> [ Back to Tokens ]
+        <ArrowLeft size={14} /> Back to Tokens
       </button>
 
       {error ? (
@@ -182,7 +182,7 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
           )}
 
           <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
-            [ Top Holders ]
+            Top Holders
           </div>
           {holders.length === 0 ? (
             <div style={{ fontSize: 12, color: muted }}>No holder data available.</div>

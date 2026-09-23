@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Wallet } from "lucide-react";
 
 import NeonButton from "./NeonButton.jsx";
-import { green, panel, border } from "../styles/theme.js";
+import { green } from "../styles/theme.js";
 import { TransparentSubdomainLogo, SimplifyYourWallet } from "../../backend/assets/media.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 
@@ -74,10 +74,12 @@ export default function Header({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
-                background: panel,
+                background: "rgba(255,255,255,0.05)",
+                backdropFilter: "blur(14px)",
+                WebkitBackdropFilter: "blur(14px)",
                 padding: "8px 14px",
-                borderRadius: 14,
-                border: `1px solid ${border}`,
+                borderRadius: 999,
+                border: `1px solid rgba(62,166,255,0.3)`,
                 boxShadow: "0 0 12px rgba(0,0,0,0.45)",
               }}
             >

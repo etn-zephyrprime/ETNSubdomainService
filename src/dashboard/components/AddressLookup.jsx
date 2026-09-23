@@ -432,7 +432,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       {validators && validators.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-            [ Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d) ]
+            Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d)
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {validators.map(({ address, blocks }) => (
@@ -573,7 +573,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                     cursor: "pointer",
                   }}
                 >
-                  {isActive ? `[ ${c.label} ]` : c.label}
+                  {c.label}
                 </button>
               );
             })}

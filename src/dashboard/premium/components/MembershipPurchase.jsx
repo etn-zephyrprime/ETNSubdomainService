@@ -128,7 +128,7 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <Crown size={18} color={green} />
         <div style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          [ Premium Membership ]
+          Premium Membership
         </div>
       </div>
 

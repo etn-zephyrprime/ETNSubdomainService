@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { QRCodeSVG } from "qrcode.react";
 import { ArrowLeft, Copy, Check } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border, orange } from "../styles/theme.js";
 import { usePayment, calculateFeeDisplay } from "../hooks/usePayment.js";
 import { useReverseRecord } from "../hooks/useReverseRecord.js";
 import { useOwnedNames } from "../hooks/useOwnedNames.js";
@@ -31,8 +31,10 @@ const inputStyle = {
   width: "100%",
   padding: "14px 16px",
   borderRadius: 12,
-  border: `1px solid ${border}`,
-  background: panel2,
+  border: `1px solid rgba(62,166,255,0.2)`,
+  background: "rgba(255,255,255,0.05)",
+  backdropFilter: "blur(14px)",
+  WebkitBackdropFilter: "blur(14px)",
   color: "#fff",
   fontSize: 15,
   fontWeight: 600,
@@ -376,7 +378,7 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
             fontWeight: 600,
             color: green,
             background: "rgba(18,86,131,0.06)",
-            border: `1px solid ${border}`,
+            border: `1px solid rgba(62,166,255,0.2)`,
             borderRadius: 10,
             cursor: "pointer",
             padding: "8px 14px",
@@ -407,7 +409,7 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
               padding: "12px 8px",
               borderRadius: 10,
               border: `1px solid ${m.id === mode ? green : border}`,
-              background: m.id === mode ? "rgba(18,86,131,0.12)" : panel2,
+              background: m.id === mode ? "rgba(18,86,131,0.12)" : "rgba(255,255,255,0.04)",
               color: m.id === mode ? green : mutedLight,
               fontSize: 14,
               fontWeight: 800,
@@ -423,8 +425,10 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
         <div style={{
           padding: 20,
           borderRadius: 12,
-          background: panel2,
-          border: `1px solid ${border}`,
+          background: "rgba(255,255,255,0.05)",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+          border: `1px solid rgba(62,166,255,0.2)`,
           textAlign: "center",
         }}>
           {!wallet.isConnected ? (
@@ -533,7 +537,7 @@ export default function PayFlow({ wallet, onBack = null, initialRecipient = null
               padding: "10px 8px",
               borderRadius: 10,
               border: `1px solid ${t.id === tab ? green : border}`,
-              background: t.id === tab ? "rgba(18,86,131,0.12)" : panel2,
+              background: t.id === tab ? "rgba(18,86,131,0.12)" : "rgba(255,255,255,0.04)",
               color: t.id === tab ? green : mutedLight,
               fontSize: 13,
               fontWeight: 700,

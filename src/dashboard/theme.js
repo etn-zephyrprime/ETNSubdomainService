@@ -30,12 +30,11 @@ export const mutedLight = "#9a9a9a";
 export const error = "#ff6b6b";
 export const errorGlow = "rgba(255,107,107,0.35)"; // same alpha as greenGlow — SparklineChart's colorBySign mode
 
-// Page background — same dark, desaturated green hue as before (kept intentionally, so the bright
-// accent green above still reads as "on brand" instead of clashing), but as a subtle radial
-// gradient rather than one flat fill: a touch lighter behind the header, easing down to a near-black
-// green at the edges. Reads as a deliberately designed surface instead of a flat placeholder color,
-// without introducing a second hue.
-export const background = "radial-gradient(ellipse 1200px 800px at 50% -10%, #0d2b10 0%, #081c0a 45%, #05130a 100%)";
+// Page background — a near-neutral dark base (barely tinted, unlike the old green-heavy radial)
+// so the blurred color orbs DashboardApp.jsx draws over it (green/blue/gold, the same "Glass &
+// Gradient" treatment) read as distinct pools of color instead of blending into an already-green
+// backdrop.
+export const background = "radial-gradient(ellipse 1400px 900px at 50% -10%, #0c1512 0%, #070d0a 50%, #050908 100%)";
 
 // Fixed, validator-identity palette — deliberately distinct from any intensity/heat scale (which
 // encodes a quantity, not identity) so the two color dimensions never get visually confused.
@@ -44,10 +43,9 @@ export const background = "radial-gradient(ellipse 1200px 800px at 50% -10%, #0d
 // validator reads as the same color in both places rather than each picking independently.
 export const VALIDATOR_PALETTE = [blue, orange, "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8", "#90a4ae"];
 
-// "Neon Grid" chrome — the HUD/terminal visual language layered on top of the palette above. No
-// brand colors changed here, only how panels/borders/labels render: sharp corner brackets
-// (CornerBrackets.jsx), a monospace "data readout" font for labels/pills, and a faint scanline
-// texture behind panels and the page background. See DashboardApp.jsx's own header comment for
-// where this treatment is and isn't applied.
+// "Neon Grid" chrome — the HUD visual language layered on top of the palette above. No brand
+// colors changed here, only how panels/borders/labels render: sharp corner brackets
+// (CornerBrackets.jsx) and a monospace "data readout" font for labels/pills. The page background
+// itself (DashboardApp.jsx) uses the softer "Glass & Gradient" treatment instead — blurred color
+// orbs behind the content — rather than this direction's own scanline texture.
 export const monoFont = 'ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace';
-export const scanlineBg = "repeating-linear-gradient(0deg, rgba(24,187,26,0.05) 0px, rgba(24,187,26,0.05) 1px, transparent 1px, transparent 3px)";

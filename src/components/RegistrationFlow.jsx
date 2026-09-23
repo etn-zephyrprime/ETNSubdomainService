@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { ArrowLeft } from "lucide-react";
-import { green, greenGlow, muted, mutedLight, error, panel2, border, orange } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, error, border, orange } from "../styles/theme.js";
 import { useRegistration } from "../hooks/useRegistration.js";
 import { useAddressRecord } from "../hooks/useAddressRecord.js";
 import { formatEth } from "../utils/format.js";
 import { signNftGenerationRequest } from "../utils/backendAuth.js";
 import NeonButton from "./NeonButton.jsx";
+import Panel from "./Panel.jsx";
 import UsdEstimate from "./UsdEstimate.jsx";
 import { EXPLORER_BASE_URL, BACKEND_IMAGE_URL, DEFAULT_DURATION_SECONDS, DURATION_OPTIONS } from "../config.js";
 
@@ -378,9 +379,11 @@ export default function RegistrationFlow({
                 fontSize: 13,
                 fontWeight: 600,
                 color: green,
-                background: "rgba(18,86,131,0.06)",
-                border: `1px solid ${border}`,
-                borderRadius: 10,
+                background: "rgba(255,255,255,0.05)",
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
+                border: `1px solid rgba(62,166,255,0.25)`,
+                borderRadius: 999,
                 cursor: "pointer",
                 padding: "8px 14px",
               }}
@@ -445,9 +448,11 @@ export default function RegistrationFlow({
                     style={{
                       flex: 1,
                       padding: "10px 8px",
-                      borderRadius: 10,
-                      border: `1px solid ${option.seconds === duration ? green : border}`,
-                      background: option.seconds === duration ? "rgba(18,86,131,0.12)" : panel2,
+                      borderRadius: 999,
+                      border: `1px solid ${option.seconds === duration ? green : "rgba(62,166,255,0.2)"}`,
+                      background: option.seconds === duration ? "rgba(18,86,131,0.18)" : "rgba(255,255,255,0.04)",
+                      backdropFilter: "blur(12px)",
+                      WebkitBackdropFilter: "blur(12px)",
                       color: option.seconds === duration ? green : mutedLight,
                       fontSize: 13,
                       fontWeight: 700,
@@ -463,13 +468,7 @@ export default function RegistrationFlow({
           )}
 
           {/* Price breakdown */}
-          <div style={{
-            padding: 16,
-            borderRadius: 12,
-            background: panel2,
-            border: `1px solid ${border}`,
-            marginBottom: 24,
-          }}>
+          <Panel style={{ marginBottom: 24 }} innerStyle={{ padding: 16 }}>
             {quoteLoading ? (
               <div style={{ fontSize: 13, color: muted, textAlign: "center" }}>Loading price...</div>
             ) : (
@@ -491,15 +490,17 @@ export default function RegistrationFlow({
                 </div>
               </>
             )}
-          </div>
+          </Panel>
 
           {/* Step-specific content */}
           {step === "choose" && (
             <>
               <div style={{
                 padding: 12,
-                borderRadius: 10,
+                borderRadius: 14,
                 background: `rgba(255,122,0,0.1)`,
+                backdropFilter: "blur(12px)",
+                WebkitBackdropFilter: "blur(12px)",
                 border: `1px solid ${orange}`,
                 marginBottom: 24,
                 fontSize: 12,
@@ -615,8 +616,10 @@ export default function RegistrationFlow({
               aspectRatio: "1 / 1",
               margin: "0 auto 20px",
               borderRadius: 14,
-              border: `1px solid ${border}`,
-              background: panel2,
+              border: `1px solid rgba(62,166,255,0.2)`,
+              background: "rgba(255,255,255,0.04)",
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",

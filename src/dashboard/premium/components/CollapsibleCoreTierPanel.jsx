@@ -40,7 +40,7 @@ export default function CollapsibleCoreTierPanel({ icon: Icon, title, headerRigh
             {collapsed ? <Plus size={13} /> : <Minus size={13} />}
           </span>
           <Icon size={18} color={green} />
-          <span style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>[ {title} ]</span>
+          <span style={{ fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>{title}</span>
         </button>
         {!collapsed && headerRight}
       </div>

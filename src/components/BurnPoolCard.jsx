@@ -7,7 +7,7 @@ import UsdEstimate from "./UsdEstimate.jsx";
 import { useBurnPool } from "../hooks/useBurnPool.js";
 import { formatEth } from "../utils/format.js";
 import { MARKETPLACE_OWNER_ADDRESS } from "../config.js";
-import { green, greenGlow, muted, mutedLight, border, panel2, error as errorColor } from "../styles/theme.js";
+import { green, greenGlow, muted, mutedLight, border, error as errorColor } from "../styles/theme.js";
 
 // Re-polls the on-chain burn pool balances periodically so the card doesn't go stale while it's
 // sitting on screen — e.g. after someone else's marketplace sale tops one up, or after this
@@ -181,8 +181,10 @@ export default function BurnPoolCard({ wallet }) {
               width: "100%",
               padding: "10px 12px",
               borderRadius: 10,
-              border: `1px solid ${border}`,
-              background: panel2,
+              border: `1px solid rgba(62,166,255,0.2)`,
+              background: "rgba(255,255,255,0.05)",
+              backdropFilter: "blur(14px)",
+              WebkitBackdropFilter: "blur(14px)",
               color: "#fff",
               fontSize: 14,
               fontWeight: 600,

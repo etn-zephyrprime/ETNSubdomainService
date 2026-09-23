@@ -444,19 +444,19 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
                   <div>
-                    <div style={sectionHeaderStyle}>[ Current Value ]</div>
+                    <div style={sectionHeaderStyle}>Current Value</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>
                       {figures.currentValueUsd != null ? formatUsdPrice(Number(figures.currentValueUsd)) : "price unavailable"}
                     </div>
                   </div>
                   <div>
-                    <div style={sectionHeaderStyle}>[ Unrealized P&amp;L ]</div>
+                    <div style={sectionHeaderStyle}>Unrealized P&amp;L</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: figures.unrealizedPnlUsd != null ? pnlColor(Number(figures.unrealizedPnlUsd)) : mutedLight }}>
                       {figures.unrealizedPnlUsd != null ? fmtSigned(Number(figures.unrealizedPnlUsd)) : "—"}
                     </div>
                   </div>
                   <div>
-                    <div style={sectionHeaderStyle}>[ Realized P&amp;L (running total) ]</div>
+                    <div style={sectionHeaderStyle}>Realized P&amp;L (running total)</div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                       {fmtSigned(Number(figures.realizedPnlUsd))}
                     </div>
@@ -493,7 +493,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 )}
 
                 <div style={{ marginBottom: 20 }}>
-                  <div style={sectionHeaderStyle}>[ Current Holdings ]</div>
+                  <div style={sectionHeaderStyle}>Current Holdings</div>
                   {(() => {
                     // isSpam(address) checks the token's actual resolved name (never a hex
                     // fallback — see useTokenNames.js's own comment on why). marketValueUsd null
@@ -567,7 +567,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
-                  [ {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"} ]
+                  {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
                   <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began. PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value." />
                 </div>
                 <PnlValueToggle chartMode={chartMode} setChartMode={setChartMode} />
@@ -601,7 +601,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
-                  [ {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"} ]
+                  {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
                   <InfoTooltip text="Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that." />
                 </div>
                 <PnlValueToggle chartMode={categoryChartMode} setChartMode={setCategoryChartMode} />

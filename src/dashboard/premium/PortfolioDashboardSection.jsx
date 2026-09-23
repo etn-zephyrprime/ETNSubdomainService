@@ -58,7 +58,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
         <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
-          [ Premium — Core Tier ]
+          Premium — Core Tier
         </div>
         <h2 style={{ fontSize: 26, fontWeight: 900, margin: "0 0 12px 0", color: "#fff", textShadow: `0 0 16px ${greenGlow}` }}>
           Portfolio
@@ -73,7 +73,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
       {hasAccess && active.length > 1 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: muted, marginBottom: 6 }}>
-            [ Showing ]
+            Showing
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button

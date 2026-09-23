@@ -35,7 +35,7 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
             >
               <CornerBrackets color={isActive ? green : border} />
               <div style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: isActive ? green : muted, marginBottom: 6 }}>
-                [ {tile.label} ]
+                {tile.label}
               </div>
               <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{tile.value}</div>
               {/* Optional small 7-day change marker (Overview passes it; per-wallet tiles don't). `change7d` null =
