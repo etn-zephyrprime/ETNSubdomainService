@@ -1467,6 +1467,33 @@ async function enrichFarmRowsWithBolt(provider, rows) {
  * this exclusion was previously missing entirely: every farm deposit/withdrawal and staking
  * action was being counted twice in the FIFO ledger, once via buildDefiFarmEvents and once via the
  * generic transfer walk. */
+// Concurrent callers scanning the SAME wallet's DeFi activity at once — confirmed live as a real
+// gap, not just theoretical: doIngestWalletHistory's own DeFi scan (below) and
+// ensureDefiActivityIngested's lighter, INDEPENDENT call (the Portfolio panel's own entry point)
+// used to each run their own full ~16M-block, 6-topic scan in parallel with zero awareness of each
+// other, if a member had both the Portfolio and PnL panels loading around the same time — doubling
+// the RPC/memory cost of what should be one single cold-start scan, exactly the kind of pressure
+// behind a real production OOM. Same dedup shape as ingestWalletHistory's own inFlightIngestions
+// above: keyed by lowercased wallet address, whichever caller arrives first does the real scan,
+// every concurrent caller for that same wallet just awaits its result instead of starting a second
+// one. A caller that JOINS an already-running scan gets that scan's own onProgress/
+// latestBlockAtStart (or lack thereof), not its own, since there's only one real scan in flight —
+// this only affects how live the progress bar looks during a rare overlap, never correctness (the
+// resulting highestBlock/defiTxHashes are the same regardless of which caller's params "won").
+const inFlightDefiScans = new Map(); // walletLc -> Promise
+
+function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
+  const walletLc = trackedWallet.toLowerCase();
+  const existing = inFlightDefiScans.get(walletLc);
+  if (existing) return existing;
+
+  const promise = doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress, latestBlockAtStart).finally(() => {
+    if (inFlightDefiScans.get(walletLc) === promise) inFlightDefiScans.delete(walletLc);
+  });
+  inFlightDefiScans.set(walletLc, promise);
+  return promise;
+}
+
 /** `onProgress(blocksScanned)`, if given, receives ONE combined number across all 6 concurrent
  * per-topic scans below (each independently chunked/concurrent — see queryDefiLogsChunked's own
  * comment), expressed as a block count within this call's own `fromBlock..latestBlock` span —
@@ -1481,7 +1508,7 @@ async function enrichFarmRowsWithBolt(provider, rows) {
  * walks' own, rather than each drifting by however many blocks land between their separate calls.
  * ensureDefiActivityIngested (the lighter Portfolio-page caller, which has no such shared value)
  * omits this and gets the previous behavior: a fresh, independent read. */
-async function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
+async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
   const provider = createRpcProvider();
   const latestBlock = latestBlockAtStart ?? await provider.getBlockNumber();
   const fromBlock = (stopAtBlock ?? -1) + 1;
