@@ -23,7 +23,14 @@ import { ethers } from "ethers";
 // Signatures older than this are rejected — bounds how long a leaked/logged signature+timestamp
 // pair stays replayable. Frontend (useWalletAuthSignature.js) re-signs with a minute of buffer
 // left, so this is "how long a cached signature survives", not just a network-latency allowance.
-export const AUTH_MAX_SKEW_MS = 5 * 60 * 1000;
+// 30 minutes, not something tighter — per buildWalletAuthMessage's own text below, this signature
+// "does not grant any transaction permissions": it's a read-only proof of wallet ownership gating
+// view access to a member's OWN Core Tier data (and, for the tracked-wallets endpoints, backend-
+// only state — never an on-chain transaction), not an authorization to move funds. A wider replay
+// window here trades a low-severity exposure (a leaked signature reads that wallet's own dashboard
+// data for longer) for meaningfully fewer wallet-signature popups during a real session — confirmed
+// live that 5 minutes felt like "constant" re-prompting during ordinary active use.
+export const AUTH_MAX_SKEW_MS = 30 * 60 * 1000;
 
 export function buildWalletAuthMessage(address, timestamp, purpose) {
   return `Verify wallet ownership for Planet Zephyros ${purpose}.\n\nWallet: ${address}\nTimestamp: ${timestamp}\n\nThis signature does not grant any transaction permissions.`;

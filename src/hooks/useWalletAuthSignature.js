@@ -1,11 +1,13 @@
 import { useCallback, useRef } from "react";
 import { signWalletAuth } from "../utils/walletAuth.js";
 
-// A signed wallet-ownership proof (see src/utils/walletAuth.js) is only valid for a few minutes
-// (backend/utils/walletAuth.js's AUTH_MAX_SKEW_MS) -- caches the signature and only re-prompts
-// the wallet for a new one once it's genuinely close to expiring, so a component that polls an
-// auth-gated endpoint (PnlStatementProgress.jsx) doesn't trigger a new signature popup on every
-// single poll tick. Re-signs immediately if the connected account has changed since the last one.
+// A signed wallet-ownership proof (see src/utils/walletAuth.js) is only valid for 30 minutes
+// (backend/utils/walletAuth.js's AUTH_MAX_SKEW_MS — see that constant's own comment for why 30
+// minutes is a reasonable window for a read-only proof) -- caches the signature and only
+// re-prompts the wallet for a new one once it's genuinely close to expiring, so a component that
+// polls an auth-gated endpoint (PnlStatementProgress.jsx, or the Core Tier PnL/Portfolio tabs'
+// own ingest-progress polling) doesn't trigger a new signature popup on every single poll tick.
+// Re-signs immediately if the connected account has changed since the last one.
 //
 // `purpose` (see walletAuth.js) is part of what gets signed, so it's part of the cache key too —
 // one hook instance asked for two different purposes (unusual, but not prevented) must not hand
@@ -21,7 +23,7 @@ import { signWalletAuth } from "../utils/walletAuth.js";
 // signature prompts on one dashboard tab load, across several components that each — correctly, in
 // isolation — thought they were the first to need one. inFlightRef makes every concurrent caller
 // for the same (address, purpose) share the one real request instead.
-const AUTH_LIFETIME_MS = 5 * 60 * 1000; // must match the backend's AUTH_MAX_SKEW_MS
+const AUTH_LIFETIME_MS = 30 * 60 * 1000; // must match the backend's AUTH_MAX_SKEW_MS
 const REFRESH_BEFORE_EXPIRY_MS = 60 * 1000; // re-sign with a minute of buffer left
 
 export function useWalletAuthSignature(wallet) {
