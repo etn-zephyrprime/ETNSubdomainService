@@ -31,6 +31,7 @@ import {
 } from "../db/trackedWallets.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
+import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
 // so a signature cached client-side (see useWalletAuthSignature.js) works across all of them
@@ -45,6 +46,21 @@ function requireAuthAndAccess(req, res, wallet, signature, timestamp) {
     res.status(401).json({ error: err.message });
     return false;
   }
+}
+
+/** wallet_ingestion_jobs row -> the shape the frontend polls (see CoreTierPortfolio.jsx). Same
+ * shape as pnlSnapshotRouter.js's own identical helper — duplicated rather than shared across
+ * router files, same "small per-file helpers are fine to drift independently" convention this
+ * backend already uses elsewhere. */
+function serializeJob(walletAddress, job) {
+  return {
+    walletAddress,
+    status: job?.status || "RUNNING",
+    stage: job?.stage || "Starting…",
+    current: job?.progress_current != null ? Number(job.progress_current) : 0,
+    total: job?.progress_total != null ? Number(job.progress_total) : 0,
+    errorMessage: job?.error_message || null,
+  };
 }
 
 const router = express.Router();
@@ -136,7 +152,27 @@ router.get("/premium/defi-positions", async (req, res) => {
 
   const active = await getCoveredWallets(wallet);
   const perWallet = [];
+  const jobs = [];
   for (const w of active) {
+    // Every reconnect/load attempts a fresh DeFi sync (same "always sync, short grace period"
+    // design as pnlSnapshotRouter.js's own /pnl-snapshot — see checkAndStartDefiIngestIfNeeded's
+    // own header comment), reporting live progress instead of blocking this response on a
+    // genuinely slow cold-start scan. Wrapped in try/catch for the same reason as that file's own
+    // identical guard: this progress-reporting layer must never be able to take the whole endpoint
+    // down for every member over what's fundamentally a nice-to-have (a live progress readout) —
+    // a failure here falls back to computing normally, same as before this feature existed.
+    let ingestCheck;
+    try {
+      ingestCheck = await checkAndStartDefiIngestIfNeeded(w.address);
+    } catch (err) {
+      console.error(`⚠️  checkAndStartDefiIngestIfNeeded failed for wallet ${w.address} (falling back to computing normally):`, err.message);
+      ingestCheck = { needed: false };
+    }
+    if (ingestCheck.needed) {
+      jobs.push(serializeJob(w.address, ingestCheck.job));
+      continue;
+    }
+
     try {
       const result = await getOpenDefiPositionsUsd(w.address);
       perWallet.push({ walletAddress: w.address, ...result });
@@ -155,7 +191,10 @@ router.get("/premium/defi-positions", async (req, res) => {
     for (const p of w.positions) allPositions.push({ ...p, walletAddress: w.walletAddress });
   }
 
-  res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced } });
+  // A wallet still ingesting (in `jobs`) simply doesn't contribute to `perWallet`/`combined` yet —
+  // whatever DID finish this round still shows, same "partial results over blocking everything"
+  // reasoning as pnlSnapshotRouter.js's own identical shape.
+  res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced }, ingesting: jobs.length > 0, jobs });
 });
 
 // Live value of every LP/V3 position covered wallets DIRECTLY hold (not locked in a farm/staking

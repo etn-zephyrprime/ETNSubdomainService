@@ -137,7 +137,10 @@ const INGEST_POLL_INTERVAL_MS = 3000;
  * a while (a cold start, or a lot of new activity). `current`/`total` are real block numbers
  * reported by the backend, not a fabricated percentage — see pnlIngestion.js's
  * doIngestWalletHistory for exactly how they're derived. */
-function IngestProgressBanner({ jobs, resolveWalletName }) {
+// Exported so CoreTierPortfolio.jsx can reuse it for its own DeFi-ingest progress (a genuinely
+// identical UI need — same wallet_ingestion_jobs shape, same "block X of Y" real progress —
+// rather than duplicating this component for a second panel.
+export function IngestProgressBanner({ jobs, resolveWalletName }) {
   return (
     <div style={{ padding: "12px 14px", borderRadius: 4, background: "rgba(232,191,76,0.06)", border: `1px solid ${border}`, marginBottom: 16 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 4 }}>

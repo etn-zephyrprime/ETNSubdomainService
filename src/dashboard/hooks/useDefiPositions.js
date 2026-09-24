@@ -19,7 +19,7 @@ export function useDefiPositions() {
     const params = new URLSearchParams({ wallet, signature, timestamp });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/defi-positions?${params}`);
     await parseErrorOrThrow(res);
-    return res.json(); // { perWallet: [{walletAddress, positions, totalUsd, hasUnpriced}], combined: {positions, totalUsd, hasUnpriced} }
+    return res.json(); // { perWallet: [{walletAddress, positions, totalUsd, hasUnpriced}], combined: {positions, totalUsd, hasUnpriced}, ingesting, jobs }
   }, []);
 
   return { getDefiPositions };

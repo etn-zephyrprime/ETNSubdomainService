@@ -1891,6 +1891,97 @@ export async function ensureDefiActivityIngested(trackedWallet) {
 }
 
 /**
+ * The Portfolio-tab-specific check-and-start gate — same shape/purpose as
+ * checkAndStartIngestIfNeeded above, scoped to just the DeFi activity scan (not the full ingest),
+ * built for /api/premium/defi-positions specifically. A DEDICATED, ADDITIONAL entry point, not a
+ * replacement for ensureDefiActivityIngested — that function has several OTHER callers that rely
+ * on it staying a simple "block until it's ingested, or fall back to what's already there" function
+ * (pnlPositionValuation.js, already protected by computeLivePnlSnapshot's own grace-period gate one
+ * level up; portfolioValuation.js, a backend scheduled job where blocking is fine; coreTierDemoRouter.js,
+ * fire-and-forget) — changing its own blocking contract would ripple into all of them.
+ *
+ * Same claiming rule as checkAndStartIngestIfNeeded: if a job is already RUNNING for this wallet —
+ * from EITHER this function or a full doIngestWalletHistory run kicked off via the PnL tab — this
+ * does NOT start a second one. The underlying scan is already deduped via ingestDefiActivity's own
+ * inFlightDefiScans regardless of which caller reaches it first; this just reports whatever's
+ * already in progress rather than claiming/resetting a job row some other run already owns. Same
+ * FAILED-cooldown behavior too, for the same crash-loop reasoning.
+ *
+ * Returns `{ needed: false }` once the scan finishes within INGEST_GRACE_PERIOD_MS (the common
+ * case — nothing new since last visit). Returns `{ needed: true, job }` if it's still running past
+ * the grace period, for the caller to report back to a polling frontend instead of computing a
+ * valuation from possibly-incomplete data this round.
+ */
+export async function checkAndStartDefiIngestIfNeeded(trackedWallet) {
+  const existingJob = await getIngestJob(trackedWallet);
+  if (existingJob?.status === "RUNNING") {
+    return { needed: true, job: existingJob };
+  }
+  if (
+    existingJob?.status === "FAILED" &&
+    existingJob.updated_at &&
+    Date.now() - new Date(existingJob.updated_at).getTime() < INGEST_FAILURE_COOLDOWN_MS
+  ) {
+    return { needed: true, job: existingJob };
+  }
+
+  const state = await getIngestionState(trackedWallet);
+  const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
+  const latestBlockAtStart = await createRpcProvider().getBlockNumber();
+  const spanStart = stopAtDefiBlock ?? 0;
+
+  await startJob(trackedWallet, {
+    progressTotal: latestBlockAtStart,
+    progressCurrent: spanStart,
+    stage: "Scanning DeFi activity…",
+  });
+
+  let lastPersistedAt = 0;
+  function reportProgress(blocksScanned) {
+    const now = Date.now();
+    if (now - lastPersistedAt < INGEST_PROGRESS_CALLBACK_INTERVAL_MS) return;
+    lastPersistedAt = now;
+    const currentBlock = Math.min(latestBlockAtStart, spanStart + blocksScanned);
+    updateJobProgress(trackedWallet, { current: currentBlock, stage: "Scanning DeFi activity…" }).catch((err) =>
+      console.warn(`⚠️  Couldn't persist DeFi ingest progress for ${trackedWallet}:`, err.message)
+    );
+  }
+
+  const scanPromise = (async () => {
+    try {
+      const { highestBlock } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock, reportProgress, latestBlockAtStart);
+      if (highestBlock >= 0) {
+        // Same NOT-NULL-safe defaulting as ensureDefiActivityIngested's own upsert — see that
+        // function's own comment on why `?? 0`, not `?? null`, matters on a wallet's first-ever row.
+        await upsertIngestionState(trackedWallet, {
+          lastIngestedBlock: state?.last_ingested_block ?? 0,
+          coldStartCompletedAt: state?.cold_start_completed_at || null,
+          lastIngestedDefiBlock: highestBlock,
+        });
+      }
+      await completeJob(trackedWallet).catch((err) =>
+        console.warn(`⚠️  Couldn't mark DeFi ingest job COMPLETE for ${trackedWallet}:`, err.message)
+      );
+    } catch (err) {
+      await failJob(trackedWallet, err.message).catch((failErr) =>
+        console.error(`⚠️  Couldn't mark DeFi ingest job FAILED for ${trackedWallet} (original error below):`, failErr.message)
+      );
+      throw err;
+    }
+  })();
+  scanPromise.catch(() => {}); // see checkAndStartIngestIfNeeded's own identical comment on why
+
+  const winner = await Promise.race([
+    scanPromise.then(() => "done").catch(() => "done"),
+    sleep(INGEST_GRACE_PERIOD_MS).then(() => "still-running"),
+  ]);
+  if (winner === "done") return { needed: false };
+
+  const job = await getIngestJob(trackedWallet);
+  return { needed: true, job };
+}
+
+/**
  * Re-prices every row ingestWalletHistory left with a null price for `trackedWallet` — both
  * deliberately-deferred non-priority assets (see priorityAssets) and any genuine historical
  * lookup failure — using the FULL getHistoricalPriceUsd (bulk-backfilling a never-priced asset as
