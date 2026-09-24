@@ -1872,7 +1872,18 @@ export async function ensureDefiActivityIngested(trackedWallet) {
   const { highestBlock: highestFromDefi } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
   if (highestFromDefi >= 0) {
     await upsertIngestionState(trackedWallet, {
-      lastIngestedBlock: state?.last_ingested_block ?? null,
+      // `?? 0`, not `?? null` — this column is NOT NULL (see migration 001), and `state` is
+      // genuinely null the FIRST time any ingestion touches this wallet at all, which for a member
+      // who opens the Portfolio panel before ever opening PnL is exactly this call, not
+      // doIngestWalletHistory. Confirmed live: passing null through on that first-ever call
+      // violated the not-null constraint on INSERT, losing the DeFi cursor this same call just
+      // computed (highestFromDefi) even though the actual defi_activity rows were already safely
+      // inserted — the next attempt then had to rescan from block 0 all over again. 0 is the
+      // column's own DEFAULT and the truthful value here regardless: "the REST walks (tx/internal/
+      // token-transfers, which this function never touches) haven't made any progress yet" — a
+      // later real doIngestWalletHistory run for this wallet still correctly overwrites it once it
+      // actually processes that history.
+      lastIngestedBlock: state?.last_ingested_block ?? 0,
       coldStartCompletedAt: state?.cold_start_completed_at || null,
       lastIngestedDefiBlock: highestFromDefi,
     });
