@@ -9,10 +9,16 @@
 // wallet/token/timestamp — two independent implementations that could drift apart would undermine
 // trust in both products.
 //
-// Recomputed fresh on every call, never cached/frozen here (pnlSnapshotScheduler.js's daily
-// pnl_snapshots rows are a SEPARATE, deliberately lightweight rollup purely for the chart — see
-// that file's own header comment; the "right now" figures shown alongside the chart always come
-// from THIS function, live).
+// Recomputed fresh whenever the wallet's own data has actually changed since the last computation
+// — see the short in-memory cache below computeLivePnlSnapshot's own imports for why: this always
+// reads a wallet's ENTIRE transfer/swap/DeFi history out of Postgres for the FIFO replay, and
+// "always sync on reconnect" (see pnlIngestion.js's checkAndStartIngestIfNeeded) means that read
+// now happens on every single reconnect/page load, not just an occasional refresh. Confirmed live:
+// this was a real, measurable driver of Supabase egress on a small project. The cache is purely a
+// "don't redo identical work within a few seconds" guard, not a staleness compromise — it's
+// invalidated the moment wallet_ingestion_state.updated_at actually moves, so a member never sees
+// figures older than their own last real ingestion. Distinct from pnlSnapshotScheduler.js's daily
+// pnl_snapshots rows, which are a SEPARATE, deliberately lightweight rollup purely for the chart.
 import Decimal from "decimal.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
@@ -35,6 +41,33 @@ import {
   groupNftHoldingsByCollection,
   groupNftRealizedByCollection,
 } from "./pnlEventBuilder.js";
+
+// Short-lived cache for computeLivePnlSnapshot's own result — see this file's own header comment
+// for why. Keyed by (trackedWallet, selfOwnedAddresses) rather than trackedWallet alone: the same
+// address can be actively tracked by more than one Core tier member independently (see
+// pnl_snapshots.sql's own comment on this — the exact same reasoning applies here), each supplying
+// a DIFFERENT selfOwnedAddresses list (their own other tracked wallets), which changes which
+// transfers count as self-transfers and therefore the real computed figures. Cross-member cache
+// hits would be a correctness bug, not just a missed optimization, so the key must capture both.
+//
+// In-memory, single-process — fine for this backend's current single-instance deployment (same
+// scoping assumption pnlIngestion.js's own inFlightIngestions/inFlightDefiScans already make), and
+// bounded by the number of distinct (wallet, self-owned-set) combinations ever queried, not by
+// request volume — a cache entry is replaced in place on each fresh computation, never accumulated.
+const snapshotCache = new Map(); // cacheKey -> { snapshot, computedAt: ms, ingestionUpdatedAt: ms|null }
+// How long a cached result stays eligible to be reused at all, as a hard ceiling — in practice the
+// ingestionUpdatedAt check below invalidates far sooner than this whenever real new data lands;
+// this just bounds how stale LIVE PRICING (fetched fresh each real computation) is allowed to get
+// for a wallet that's genuinely had no new on-chain activity, since price staleness isn't otherwise
+// guarded by anything ingestion-related.
+const SNAPSHOT_CACHE_TTL_MS = process.env.PNL_SNAPSHOT_CACHE_TTL_MS
+  ? parseInt(process.env.PNL_SNAPSHOT_CACHE_TTL_MS, 10)
+  : 30000;
+
+function snapshotCacheKey(trackedWallet, selfOwnedAddresses) {
+  const selfOwnedKey = [...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",");
+  return `${trackedWallet.toLowerCase()}|${selfOwnedKey}`;
+}
 
 // V3 concentrated-liquidity positions use the exact same "address:tokenId" lot-key shape as an NFT
 // (see pnlIngestion.js's own V3 header comment) — excluded from groupNftHoldingsByCollection below
@@ -145,6 +178,34 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   const priorityAssets =
     isColdStart && priorityTokens && priorityTokens.length > 0 ? new Set(priorityTokens.map((a) => a.toLowerCase())) : null;
 
+  // Cache check — deliberately AFTER reading ingestionState above (cheap, a single indexed row)
+  // rather than before, since ingestionState.updated_at is exactly the freshness signal that tells
+  // us whether a cached result is still correct: unchanged since we cached it means no new ingested
+  // data could possibly have altered the FIFO replay. Never served during cold start — a cold-start
+  // computation's own priorityAssets scoping makes its result a deliberately partial view (see this
+  // function's own SAFETY BOUNDARY comment above), which must never be handed back as if it were a
+  // later, fully-scoped one.
+  // Captured BEFORE ingestWalletHistory runs below, deliberately — the cache entry this run
+  // eventually writes gets tagged with this PRE-ingestion timestamp even though the result it holds
+  // actually reflects whatever ingestWalletHistory just found (buildEventsForWallet reads after it
+  // completes). If ingestion found genuinely new data, the very next request's own fresh
+  // getIngestionState read will see a newer updated_at than what's cached here, correctly missing
+  // the cache and recomputing once more — one small redundant recompute in the (rare) "new data
+  // just landed" case, in exchange for never risking a stale hit. A wallet with nothing new keeps
+  // the exact same updated_at across requests, so the common case still hits the cache correctly.
+  const cacheKey = snapshotCacheKey(trackedWallet, selfOwnedAddresses);
+  const ingestionUpdatedAtMs = ingestionState?.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
+  if (!isColdStart) {
+    const cached = snapshotCache.get(cacheKey);
+    if (
+      cached &&
+      cached.ingestionUpdatedAt === ingestionUpdatedAtMs &&
+      Date.now() - cached.computedAt < SNAPSHOT_CACHE_TTL_MS
+    ) {
+      return cached.snapshot;
+    }
+  }
+
   await ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
 
   const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
@@ -191,7 +252,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     );
   }
 
-  return {
+  const result = {
     asOf: now,
     // [{ tokenAddress, quantity, costBasisUsd, marketValueUsd }] — marketValueUsd null for a token
     // whose price didn't resolve (same "omit rather than fake" convention valueInventoryAtTimestamp
@@ -219,6 +280,14 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     // (already kicked off) finishes filling in the deferred prices.
     pricingIncomplete: Boolean(priorityAssets),
   };
+
+  // Not cached during cold start — see the cache-read guard above for why (a priority-scoped
+  // result must never be handed back later as if it were a complete one).
+  if (!isColdStart) {
+    snapshotCache.set(cacheKey, { snapshot: result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+  }
+
+  return result;
 }
 
 /** Combines several wallets' own live snapshots (from computeLivePnlSnapshot) into one — holdings
