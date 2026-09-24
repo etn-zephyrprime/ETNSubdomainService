@@ -18,6 +18,7 @@ import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
+import { computeTokenPnlHistory, combineTokenPnlHistory } from "../services/tokenPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -315,6 +316,59 @@ router.get("/premium/pnl-category-history", async (req, res) => {
   }));
 
   res.json({ perWallet, combined });
+});
+
+// Per-token value-over-time chart data — the token-scoped counterpart to /premium/pnl-history
+// above, for a member filtering the main chart down to one specific held token (fungible tokens
+// only; NFTs have their own dedicated section, see CoreTierNftPnl.jsx). Unlike pnl-history/
+// pnl-category-history, this is NOT a stored rollup read — it's computed fresh on every call (see
+// tokenPnlService.js's own header comment for why a per-token precomputed table isn't used: an
+// open-ended number of distinct tokens across every tracked wallet makes that unboundedly larger
+// than the existing 2-category table). Comparable cost to /premium/pnl-snapshot's own live replay,
+// short-lived in-memory cached the same way — expect this to take real time, not be instant, the
+// first time a member selects a given token.
+router.get("/premium/pnl-token-history", async (req, res) => {
+  const { wallet, signature, timestamp, tokenAddress, days } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
+    return res.status(400).json({ error: "Query param tokenAddress must be a valid token address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  if (active.length === 0) {
+    return res.json({ perWallet: [], combined: [] });
+  }
+
+  // null here means "the wallet's entire history" — see computeTokenPnlHistory's own comment on why
+  // that's derived per-wallet from its own earliest event rather than a fixed lookback like the
+  // stored-rollup endpoints above use for `days=all`.
+  const windowDays =
+    days === "all" ? null : Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : DEFAULT_HISTORY_DAYS;
+
+  const addresses = active.map((w) => w.address);
+  const perWallet = [];
+  const failed = [];
+  // Sequential and independently try/caught — same reasoning as every other Core tier endpoint
+  // above: a full FIFO replay per wallet is real work, and one wallet's transient failure shouldn't
+  // blank out the others' already-computed results.
+  for (const address of addresses) {
+    const selfOwnedAddresses = addresses.filter((a) => a !== address);
+    try {
+      const points = await computeTokenPnlHistory(address, selfOwnedAddresses, tokenAddress, windowDays);
+      perWallet.push({ walletAddress: address, points });
+    } catch (err) {
+      console.error(`Token PnL history computation failed for wallet ${address}:`, err);
+      failed.push(address);
+    }
+  }
+  const combined = combineTokenPnlHistory(perWallet.map((w) => w.points));
+  res.json({ perWallet, combined, failed });
 });
 
 export default router;

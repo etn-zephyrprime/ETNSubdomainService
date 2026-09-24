@@ -28,6 +28,17 @@ export default function PortfolioCompositionChart({ slices, hasUnpriced, size = 
   const cx = radius;
   const cy = radius;
 
+  // Distinct from "priced at $0 total" below — this is the caller (CoreTierPortfolio.jsx's category
+  // filter) having passed an empty slices array because every category is currently unchecked, not
+  // this component's own doing.
+  if (slices.length === 0) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: size, fontSize: 11, color: muted, textAlign: "center", padding: "0 12px" }}>
+        No categories selected — check one above to see it here.
+      </div>
+    );
+  }
+
   if (total <= 0) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: size, fontSize: 11, color: muted, textAlign: "center", padding: "0 12px" }}>

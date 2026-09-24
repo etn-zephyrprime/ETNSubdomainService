@@ -49,5 +49,16 @@ export function usePnlSnapshot() {
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}] }
   }, []);
 
-  return { getLiveSnapshot, getHistory, getCategoryHistory };
+  // Same shape as getHistory above, scoped to one fungible token address — /premium/pnl-token-history.
+  // Computed on demand (not a stored rollup like getHistory/getCategoryHistory) — see
+  // tokenPnlService.js's own header comment for why. Expect a real wait the first time a given
+  // token is requested, same as getLiveSnapshot above.
+  const getTokenHistory = useCallback(async (wallet, signature, timestamp, tokenAddress, days) => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, tokenAddress, ...(days ? { days: String(days) } : {}) });
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-token-history?${params}`);
+    await parseErrorOrThrow(res);
+    return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}], failed: [address,...] }
+  }, []);
+
+  return { getLiveSnapshot, getHistory, getCategoryHistory, getTokenHistory };
 }
