@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { ethers } from "ethers";
 import { Wallet as WalletIcon, TriangleAlert, Sparkles } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
@@ -20,6 +20,11 @@ import RowLeader from "./RowLeader.jsx";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import { IngestProgressBanner } from "./CoreTierPnl.jsx";
+
+// Same poll cadence as CoreTierPnl.jsx's own identical constant — see that file's own comment for
+// why (separate from, and a bit slower than, the backend's own progress-write interval).
+const INGEST_POLL_INTERVAL_MS = 3000;
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // How many fungible tokens get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below
@@ -217,26 +222,47 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // Open DeFi positions load alongside the combined portfolio, independently — a slow/failed
   // lookup here never blocks Combined Holdings/Total Portfolio Balance from showing what they
   // already know from Blockscout.
+  //
+  // `silent`, set by the ingest-progress poller below (same shape as CoreTierPnl.jsx's own
+  // loadSnapshot): a background poll updates the progress bar's numbers without resetting
+  // defiPositions to null first (which would otherwise blank the whole section on every 3s tick)
+  // and swallows its own transient failures instead of replacing the progress UI with an error —
+  // it'll just retry on the next tick.
+  const loadDefiPositions = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!silent) {
+        setDefiPositions(null);
+        setDefiPositionsError(null);
+      }
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getDefiPositions(wallet.account, signature, timestamp);
+        setDefiPositions(res);
+      } catch (err) {
+        console.error("Failed to load DeFi positions:", err);
+        if (!silent) setDefiPositionsError("Couldn't load staked/farmed positions — try again shortly.");
+      }
+    },
+    [getAuthParams, getDefiPositions, wallet.account]
+  );
+
   useEffect(() => {
     if (!hasAccess || active.length === 0) {
       setDefiPositions(null);
       return;
     }
-    let cancelled = false;
-    setDefiPositions(null);
-    setDefiPositionsError(null);
-    (async () => {
-      try {
-        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        const res = await getDefiPositions(wallet.account, signature, timestamp);
-        if (!cancelled) setDefiPositions(res);
-      } catch (err) {
-        console.error("Failed to load DeFi positions:", err);
-        if (!cancelled) setDefiPositionsError("Couldn't load staked/farmed positions — try again shortly.");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [hasAccess, active, getAuthParams, getDefiPositions, wallet.account]);
+    loadDefiPositions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccess, active]);
+
+  // While a reconnect's DeFi ingest is actually running (defiPositions.ingesting — see
+  // premiumDashboardRouter.js's own /defi-positions response shape), re-poll for fresh progress
+  // until it's done. Same shape as CoreTierPnl.jsx's own identical polling effect.
+  useEffect(() => {
+    if (!defiPositions?.ingesting) return;
+    const id = setInterval(() => loadDefiPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [defiPositions?.ingesting, loadDefiPositions]);
 
   // Live LP/V3 position values load once `portfolio` has resolved — unlike defiPositions above,
   // this needs each wallet's own token-balance list as the V2 LP-pool candidate set (see
@@ -830,6 +856,17 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         </div>
                       </div>
                     )}
+                    {/* Distinct from the unpriced note above — this is "we don't have the position
+                        data at all yet" (still syncing), not "we have it but couldn't price it".
+                        See the Staked / Farming Positions section below for the actual progress bar. */}
+                    {defiPositions?.ingesting && (
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", borderRadius: 4, background: "rgba(255,138,61,0.12)", border: `1px solid ${orange}`, marginTop: 10 }}>
+                        <TriangleAlert size={14} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
+                        <div style={{ fontSize: 11, color: orange, fontWeight: 700, lineHeight: 1.5 }}>
+                          Still syncing your staked/farmed positions for the first time — this total doesn't include them yet. See below for progress.
+                        </div>
+                      </div>
+                    )}
 
                     {walletFilter === "all" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
@@ -900,7 +937,9 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     </div>
                   </div>
 
-                  {defiPositionsError ? (
+                  {defiPositions?.ingesting ? (
+                    <IngestProgressBanner jobs={defiPositions.jobs} resolveWalletName={resolveName} />
+                  ) : defiPositionsError ? (
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{defiPositionsError}</div>
                   ) : defiEntry?.positions?.length > 0 ? (
                     <div style={{ marginBottom: 16 }}>
