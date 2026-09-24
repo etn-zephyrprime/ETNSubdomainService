@@ -50,6 +50,7 @@ import { getLastKnownPrice, recordLastKnownPrice } from "../utils/lastKnownPrice
 import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
 import { getDistinctFarmPositions, getDistinctStakingContracts } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
+import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 
 const YIELD_FARM_ABI = [
   "function getFarmById(uint256 _farmId) view returns (tuple(uint256 id, uint8 version, string name, address poolAddr, uint256 liquidity, uint256 allocPoint, uint256 lastCalcBlock, uint256 accRewardsPerShare, uint256 accThirdPartyRewardsPerShare, address[] farmers, uint256 farmerCount, address token0, address token1, uint256 tokenId, int24 tickLower, int24 tickUpper, uint24 fee, uint256 accFees0PerShare, uint256 accFees1PerShare, bool active))",
@@ -68,23 +69,44 @@ const Q96 = 2n ** 96n;
 // narrow, concentrated range (where the simplified formula would be meaningfully wrong).
 const FULL_RANGE_TICK_ABS_MIN = 800000n;
 
-// Short-lived cache for getOpenDefiPositionsUsd's own result — same shape/reasoning as
-// pnlSnapshotService.js's own snapshotCache. Confirmed live: with nothing cached at all here, every
-// single Core Tier reconnect/page load paid the full cost of this function (a live
-// getFarmerByFarmIdAndAddress/getUser RPC read PLUS a live price lookup for every open position) —
-// on the order of a minute for a wallet holding a few positions — even when nothing about that
-// wallet's on-chain state had changed since the last load seconds earlier. Discovery (which
-// contracts/farms to even check) already comes from defi_activity, ingested into Postgres — but the
-// CURRENT VALUE of an open position was never cached anywhere, so "the data is in Supabase" didn't
-// actually make this fast. Invalidated the moment wallet_ingestion_state.updated_at moves — a farm/
+// Two-level cache for getOpenDefiPositionsUsd's own result, PLUS a persisted third level in
+// Supabase (wallet_position_cache — see that migration's own header comment for the full picture).
+// Confirmed live: with nothing cached at all, every single Core Tier reconnect/page load paid the
+// full cost of this function (a live getFarmerByFarmIdAndAddress/getUser RPC read PLUS a live price
+// lookup for every open position) — on the order of a minute for a wallet holding a few positions —
+// even when nothing about that wallet's on-chain state had changed since the last load seconds
+// earlier, and even on the very first load of a given day or right after a backend restart.
+// Discovery (which contracts/farms to even check) already comes from defi_activity, ingested into
+// Postgres — but the CURRENT VALUE of an open position was never cached anywhere, so "the data is
+// in Supabase" didn't actually make this fast.
+//
+// L1 (positionsCache, in-memory): near-zero-latency repeat hits within one backend process's
+// lifetime — resets on every restart/deploy.
+// L2 (wallet_position_cache, Supabase, see getOpenDefiPositionsUsd below): survives restarts —
+// this is what actually delivers "should appear immediately" even on the first request after a
+// deploy or the first visit of the day, at the cost of one indexed DB read instead of zero.
+// L3: the real live computation below, run only when nothing usable is cached at either level yet
+// (a wallet's genuinely first-ever computation), OR silently in the background (never blocking the
+// caller) to refresh an L2 row that's gone stale — see the `refreshing` flag on the returned result.
+//
+// Both levels are keyed off the SAME freshness signal: wallet_ingestion_state.updated_at. A farm/
 // stake position's own on-chain amount only ever changes via a deposit/withdraw tx, and any such tx
 // necessarily gets ingested into defi_activity first (bumping updated_at) before this function could
-// see it anyway, so this is a correctness-safe freshness signal, not just a time-based guess — same
-// reasoning as pnlSnapshotService.js's own identical cache-key comment.
+// see it anyway, so an unchanged updated_at means a cached row's quantities are still exactly
+// correct — not just "last known" — same reasoning as pnlSnapshotService.js's own identical
+// cache-key comment. Live PRICE movement is the only thing that can still have drifted, which is
+// why a stale-fingerprint hit is served immediately (still real, still close) while a background
+// refresh brings it fully current within moments.
 const positionsCache = new Map(); // walletAddress (lowercase) -> { result, computedAt: ms, ingestionUpdatedAt: ms|null }
 const POSITIONS_CACHE_TTL_MS = process.env.DEFI_POSITIONS_CACHE_TTL_MS
   ? parseInt(process.env.DEFI_POSITIONS_CACHE_TTL_MS, 10)
   : 30000;
+// Dedupes concurrent/rapid-fire background refreshes for the same wallet — same "in-flight promise
+// as the dedup boundary" pattern pnlIngestion.js's own inFlightIngestions/inFlightDefiScans use, for
+// the identical reason: several requests for the same stale wallet arriving close together (e.g. the
+// Portfolio and PnL tabs both loading around the same time) should share ONE background recompute,
+// not each kick off their own redundant one.
+const inFlightRefresh = new Map(); // walletAddress (lowercase) -> Promise
 
 let sharedProvider = null;
 function getProvider() {
@@ -250,36 +272,13 @@ async function valueStakingPosition(contractAddress, walletAddress) {
 }
 
 /**
- * Every currently-OPEN farm/staking position for `trackedWallet`, with a live USD value each — the
- * missing piece behind Combined Holdings / Total Portfolio Balance not reflecting staked/farmed
- * funds (see this file's own header comment). Returns `{ positions, totalUsd, hasUnpriced }` —
- * `positions` is `[]` (not an error) for a wallet with no DeFi activity at all, or none still open.
- * `failedCount` is how many open-or-unknown positions couldn't be valued this call (already reflected in `hasUnpriced`). `totalUsd` is a Decimal (or null if every open position is unpriced) — sum of only the priced
- * positions/legs, following this app's own "omit rather than fake" convention throughout; a member
- * whose 3 farm legs are only 2/3 priced still sees SOMETHING here, flagged incomplete via
- * `hasUnpriced`, not a blank stretch.
+ * The actual live computation — discovery + on-chain valuation + live pricing, no caching at all.
+ * Pure L3: called either synchronously (a wallet's genuinely first-ever computation, nothing cached
+ * anywhere yet) or in the background to refresh a stale cache entry (see getOpenDefiPositionsUsd
+ * below) — never blocks a caller that already has something usable to show. Returns
+ * `{ positions, totalUsd, hasUnpriced, failedCount }`, same shape this file always returned.
  */
-export async function getOpenDefiPositionsUsd(trackedWallet) {
-  // Cache check BEFORE the ingestion call below (which itself does a real, if usually cheap, DB
-  // round trip) — see positionsCache's own comment above for the invalidation reasoning. Read
-  // ingestion state up front, same as pnlSnapshotService.js's own cache does, so the cache entry
-  // this call eventually writes gets tagged with the PRE-ingestion-check timestamp: if
-  // ensureDefiActivityIngested below finds something genuinely new, the very next call's own fresh
-  // getIngestionState read sees a newer updated_at and correctly misses the cache instead of
-  // serving a result computed before that new data existed.
-  const cacheKey = trackedWallet.toLowerCase();
-  const ingestionState = await getIngestionState(trackedWallet).catch(() => null);
-  const ingestionUpdatedAtMs = ingestionState?.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
-  const cached = positionsCache.get(cacheKey);
-  if (cached && cached.ingestionUpdatedAt === ingestionUpdatedAtMs && Date.now() - cached.computedAt < POSITIONS_CACHE_TTL_MS) {
-    return cached.result;
-  }
-  // Both return points below go through this so neither can forget to populate the cache.
-  const cacheAndReturn = (result) => {
-    positionsCache.set(cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
-    return result;
-  };
-
+async function computeDefiPositionsLive(trackedWallet) {
   // Discovery comes from defi_activity, which nothing on the Portfolio page otherwise ever
   // populates (that only happens as a side effect of ingestWalletHistory, called from the PnL
   // Statement/Snapshot features) — without this, a member who only ever uses Portfolio would never
@@ -297,7 +296,7 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
     getDistinctStakingContracts(trackedWallet),
   ]);
   if (farmCandidates.length === 0 && stakingCandidates.length === 0) {
-    return cacheAndReturn({ positions: [], totalUsd: null, hasUnpriced: false });
+    return { positions: [], totalUsd: null, hasUnpriced: false };
   }
 
   const results = await Promise.all([
@@ -318,5 +317,98 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
   // reads this directly (portfolioValuation.js, via Number()) or relays it through an HTTP JSON
   // response (premiumDashboardRouter.js) — sees the same plain, unambiguous type, matching this
   // codebase's own convention elsewhere (e.g. pnlSnapshotService.js's return shape).
-  return cacheAndReturn({ positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced, failedCount });
+  return { positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced, failedCount };
+}
+
+/** Runs the live computation and writes the result to both cache levels, tagged with the
+ * ingestion-freshness signal captured by the CALLER before this ran (see getOpenDefiPositionsUsd's
+ * own comment on why the pre-computation timestamp is the correct one to tag with — same reasoning
+ * pnlSnapshotService.js's own cache uses). Never throws: a background caller fires this without
+ * awaiting it, so a failure here must not become an unhandled rejection. */
+async function recomputeAndPersistDefiPositions(trackedWallet, ingestionUpdatedAtMs) {
+  const cacheKey = trackedWallet.toLowerCase();
+  try {
+    const result = await computeDefiPositionsLive(trackedWallet);
+    positionsCache.set(cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+    await upsertCachedPosition(trackedWallet, "defi", result, String(ingestionUpdatedAtMs)).catch((err) =>
+      console.warn(`⚠️  DeFi position valuation: failed to persist cache for ${trackedWallet}:`, err.message)
+    );
+    return result;
+  } catch (err) {
+    console.error(`⚠️  DeFi position valuation: live recompute failed for ${trackedWallet}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Every currently-OPEN farm/staking position for `trackedWallet`, with a live USD value each — the
+ * missing piece behind Combined Holdings / Total Portfolio Balance not reflecting staked/farmed
+ * funds (see this file's own header comment). Returns `{ positions, totalUsd, hasUnpriced,
+ * failedCount, refreshing? }` — `positions` is `[]` (not an error) for a wallet with no DeFi
+ * activity at all, or none still open. `failedCount` is how many open-or-unknown positions couldn't
+ * be valued this call (already reflected in `hasUnpriced`). `totalUsd` is a Decimal (or null if
+ * every open position is unpriced) — sum of only the priced positions/legs, following this app's own
+ * "omit rather than fake" convention throughout; a member whose 3 farm legs are only 2/3 priced
+ * still sees SOMETHING here, flagged incomplete via `hasUnpriced`, not a blank stretch. `refreshing:
+ * true` means the returned figures are a real, cached value that's now known to be stale (something
+ * new was ingested since it was computed) — a background recompute is already in flight and the
+ * caller should poll again shortly for the fresh one, same "keep showing something real while it
+ * catches up" spirit as the ingest-job progress banner, just for a value that's already known rather
+ * than one that's never been computed at all.
+ */
+export async function getOpenDefiPositionsUsd(trackedWallet) {
+  const cacheKey = trackedWallet.toLowerCase();
+  // Read ingestion state up front, same as pnlSnapshotService.js's own cache does, so whichever
+  // cache level ends up writing a fresh entry tags it with this PRE-computation timestamp: if
+  // ensureDefiActivityIngested (inside computeDefiPositionsLive) finds something genuinely new, the
+  // very next call's own fresh getIngestionState read sees a newer updated_at and correctly misses
+  // both cache levels instead of serving a result computed before that new data existed.
+  const ingestionState = await getIngestionState(trackedWallet).catch(() => null);
+  const ingestionUpdatedAtMs = ingestionState?.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
+  const ingestionFingerprint = String(ingestionUpdatedAtMs);
+
+  // L1 — in-memory, exact freshness match required (no `refreshing` path here: within one backend
+  // process's own TTL window, just recompute synchronously same as always rather than adding
+  // background-refresh complexity for a cache level that resets every restart anyway).
+  const l1 = positionsCache.get(cacheKey);
+  if (l1 && l1.ingestionUpdatedAt === ingestionUpdatedAtMs && Date.now() - l1.computedAt < POSITIONS_CACHE_TTL_MS) {
+    return l1.result;
+  }
+
+  // L2 — persisted in Supabase, survives restarts. This is what makes the FIRST request after a
+  // deploy (or the first Core Tier load of the day) instant instead of paying the full live-compute
+  // cost, which L1 alone can never do.
+  const persisted = await getCachedPosition(trackedWallet, "defi").catch(() => null);
+  if (persisted) {
+    // Populate L1 either way — even a stale L2 row is worth remembering for THIS process's own
+    // in-memory hits until the background refresh below lands a fresher one.
+    positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now(), ingestionUpdatedAt: Number(persisted.fingerprint) || null });
+
+    if (persisted.fingerprint === ingestionFingerprint) {
+      // Nothing's been ingested since this was computed — the payload's quantities are still exactly
+      // correct, not just "last known". Serve it as a genuine hit, no refresh needed.
+      return persisted.payload;
+    }
+
+    // Stale: something real happened on-chain since this was computed. Still real numbers, still
+    // close (only the QUANTITIES could be wrong, and only for whatever specifically changed) — serve
+    // immediately, and kick exactly one background recompute per wallet (inFlightRefresh dedupes
+    // concurrent callers) so the next read gets the fresh figure.
+    if (!inFlightRefresh.has(cacheKey)) {
+      const promise = recomputeAndPersistDefiPositions(trackedWallet, ingestionUpdatedAtMs).finally(() => inFlightRefresh.delete(cacheKey));
+      inFlightRefresh.set(cacheKey, promise);
+    }
+    return { ...persisted.payload, refreshing: true };
+  }
+
+  // L3 — nothing cached anywhere for this wallet yet (genuinely first time). No shortcut available;
+  // this is the one case that's unavoidably as slow as it's always been, and the caller (see
+  // premiumDashboardRouter.js's checkAndStartDefiIngestIfNeeded) already has a progress banner for
+  // exactly this situation.
+  const result = await computeDefiPositionsLive(trackedWallet);
+  positionsCache.set(cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+  await upsertCachedPosition(trackedWallet, "defi", result, ingestionFingerprint).catch((err) =>
+    console.warn(`⚠️  DeFi position valuation: failed to persist cache for ${trackedWallet}:`, err.message)
+  );
+  return result;
 }

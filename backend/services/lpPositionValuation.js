@@ -39,6 +39,7 @@ import { fetchBlockscoutJson } from "../utils/blockscoutClient.js";
 import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getTokenMetadata, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
+import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 // Same wrapped-ETN address dexPriceQuote.js/pnlPricing.js both already use — ETN/WETN are 1:1
@@ -50,32 +51,44 @@ const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const Q96 = 2n ** 96n;
 const MAX_TICK = 887272n;
 
-// Short-lived cache for getLiquidityPositionsUsd's own result — same reasoning as
-// defiPositionValuation.js's own positionsCache (see that file's comment). Confirmed live: with
-// nothing cached here at all, EVERY Core Tier reconnect/page load paid the full cost of probing
+// Two-level cache for getLiquidityPositionsUsd's own result, PLUS a persisted third level in
+// Supabase (wallet_position_cache — see that migration's own header comment and
+// defiPositionValuation.js's own identical L1/L2/L3 comment for the full picture). Confirmed live:
+// with nothing cached at all, EVERY Core Tier reconnect/page load paid the full cost of probing
 // every held token as a candidate V2 pool, fetching V3 positions live from Blockscout, and live-
-// pricing every distinct underlying token via GeckoTerminal (rate-limited ~1.5s per new token) —
-// on the order of a minute, every single time, never just once.
+// pricing every distinct underlying token via GeckoTerminal (rate-limited ~1.5s per new token) — on
+// the order of a minute, every single time, including the first load of a given day or right after
+// a backend restart, which the in-memory level alone could never fix.
 //
 // No ingestion-state freshness signal exists for this one the way defiPositionValuation.js has
 // (there's no ingested ledger driving LP discovery — candidate tokens come straight from the
-// caller's own live Blockscout balances, see this function's own doc comment below), so the cache
-// key includes a fingerprint of `heldFungibleTokens` itself: a real balance change naturally
-// produces a different key and misses the cache, while an identical repeat call (a reconnect, or
-// the Portfolio and PnL tabs independently loading the same wallet moments apart) within the TTL
-// hits it. A V3 position minted/burned with no change to the wallet's FUNGIBLE balances could still
-// go up to POSITIONS_CACHE_TTL_MS stale — an accepted bound, same "TTL as staleness ceiling for an
-// otherwise-quiet wallet" reasoning pnlSnapshotService.js's own cache documents.
-const positionsCache = new Map(); // cacheKey -> { result, computedAt: ms }
+// caller's own live Blockscout balances, see this function's own doc comment below), so BOTH cache
+// levels use a fingerprint of `heldFungibleTokens` itself as the freshness signal instead: a real
+// balance change naturally produces a different fingerprint. L1's cache KEY includes it directly
+// (exact match required for a same-process hit); L2 is keyed by wallet alone and stores the
+// fingerprint it was computed against, so a fingerprint mismatch there means "serve this immediately
+// anyway (still real, still close), refresh in the background" rather than "miss entirely" — same
+// stale-while-revalidate shape as defiPositionValuation.js's own L2. A V3 position minted/burned
+// with no change to the wallet's FUNGIBLE balances won't itself invalidate either level — an
+// accepted bound, same "TTL as staleness ceiling for an otherwise-quiet wallet" reasoning
+// pnlSnapshotService.js's own cache documents, just resolved by a background refresh here instead of
+// a hard TTL wall alone.
+const positionsCache = new Map(); // cacheKey (wallet+fingerprint) -> { result, computedAt: ms }
 const POSITIONS_CACHE_TTL_MS = process.env.LP_POSITIONS_CACHE_TTL_MS
   ? parseInt(process.env.LP_POSITIONS_CACHE_TTL_MS, 10)
   : 30000;
+// Dedupes concurrent/rapid-fire background refreshes for the same wallet — same reasoning as
+// defiPositionValuation.js's own inFlightRefresh.
+const inFlightRefresh = new Map(); // walletAddress (lowercase) -> Promise
 
-function positionsCacheKey(walletAddress, heldFungibleTokens) {
-  const fingerprint = heldFungibleTokens
+function tokensFingerprint(heldFungibleTokens) {
+  return heldFungibleTokens
     .map((t) => `${t.address.toLowerCase()}:${t.rawBalance}`)
     .sort()
     .join(",");
+}
+
+function positionsCacheKey(walletAddress, fingerprint) {
   return `${walletAddress.toLowerCase()}|${fingerprint}`;
 }
 
@@ -391,36 +404,15 @@ async function finalizeV3Position(candidate, priceMap) {
   };
 }
 
-/**
- * Live USD value of every liquidity position `walletAddress` directly holds — V2 LP pool tokens
- * (checked against `heldFungibleTokens`, the wallet's own regular token-balance list, same shape
- * as portfolioValuation.js's own token list: `[{ address, decimals, rawBalance }]`) and V3
- * concentrated-liquidity positions (discovered live via Blockscout, see getHeldV3TokenIds).
- *
- * Every candidate's on-chain state is resolved FIRST, then every distinct underlying token across
- * ALL of them is priced exactly ONCE (see resolvePriceMap and this file's own header comment on
- * why that split exists), then results are assembled — so a wallet with many positions sharing the
- * same pool/tokens pays for that pricing once, not once per position.
- *
- * Returns `{ v2Positions, v3Positions, totalUsd, hasUnpriced, lpTokenAddresses }` —
- * `lpTokenAddresses` is the lowercased Set of `heldFungibleTokens` addresses CONFIRMED to be real
- * V2 pools, so a caller building a "regular tokens" list can exclude them (a pool token has no
- * price feed of its own — so leaving it in a generic token list would just show it unpriced, which
- * is worse than this dedicated valuation). Never throws — one bad position/probe is skipped, not
- * fatal to the rest.
- */
-export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens = []) {
-  const cacheKey = positionsCacheKey(walletAddress, heldFungibleTokens);
-  const cached = positionsCache.get(cacheKey);
-  if (cached && Date.now() - cached.computedAt < POSITIONS_CACHE_TTL_MS) {
-    return cached.result;
-  }
-  // Both return points below go through this so neither can forget to populate the cache.
-  const cacheAndReturn = (result) => {
-    positionsCache.set(cacheKey, { result, computedAt: Date.now() });
-    return result;
-  };
-
+/** The actual live computation — pure L3, no caching at all. See getLiquidityPositionsUsd below for
+ * the cache levels wrapping this. Returns `{ v2Positions, v3Positions, totalUsd, hasUnpriced,
+ * lpTokenAddresses }` — `lpTokenAddresses` is a plain array (lowercased) of `heldFungibleTokens`
+ * addresses CONFIRMED to be real V2 pools, so a caller building a "regular tokens" list can exclude
+ * them (a pool token has no price feed of its own — so leaving it in a generic token list would just
+ * show it unpriced, which is worse than this dedicated valuation). Plain array rather than a Set so
+ * this is directly JSON-persistable to wallet_position_cache with no reshaping either way. Never
+ * throws — one bad position/probe is skipped, not fatal to the rest. */
+async function computeLpPositionsLive(walletAddress, heldFungibleTokens) {
   const [v2Candidates, v3TokenIds] = await Promise.all([
     Promise.all(
       heldFungibleTokens.map((t) => {
@@ -453,7 +445,7 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
   const v3Candidates = (await Promise.all(v3TokenIds.map((id) => resolveV3Candidate(id)))).filter((c) => c != null);
 
   if (v2CandidatesResolved.length === 0 && v3Candidates.length === 0) {
-    return cacheAndReturn({ v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: false, lpTokenAddresses: new Set() });
+    return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: false, lpTokenAddresses: [] };
   }
 
   const priceMap = await resolvePriceMap([
@@ -471,11 +463,95 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
     if (p.totalUsd != null) totalUsd = (totalUsd ?? new Decimal(0)).plus(p.totalUsd);
   }
 
-  return cacheAndReturn({
+  return {
     v2Positions,
     v3Positions,
     totalUsd: totalUsd?.toString() ?? null,
     hasUnpriced,
-    lpTokenAddresses: new Set(v2Positions.map((p) => p.tokenAddress)),
-  });
+    lpTokenAddresses: v2Positions.map((p) => p.tokenAddress),
+  };
+}
+
+/** Runs the live computation and writes the result to both cache levels, tagged with the token
+ * fingerprint the CALLER captured before this ran — same reasoning as
+ * defiPositionValuation.js's own recomputeAndPersistDefiPositions. Never throws: a background
+ * caller fires this without awaiting it. */
+async function recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens, fingerprint) {
+  try {
+    const result = await computeLpPositionsLive(walletAddress, heldFungibleTokens);
+    positionsCache.set(positionsCacheKey(walletAddress, fingerprint), { result, computedAt: Date.now() });
+    await upsertCachedPosition(walletAddress, "lp", result, fingerprint).catch((err) =>
+      console.warn(`⚠️  LP position valuation: failed to persist cache for ${walletAddress}:`, err.message)
+    );
+    return result;
+  } catch (err) {
+    console.error(`⚠️  LP position valuation: live recompute failed for ${walletAddress}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Live USD value of every liquidity position `walletAddress` directly holds — V2 LP pool tokens
+ * (checked against `heldFungibleTokens`, the wallet's own regular token-balance list, same shape
+ * as portfolioValuation.js's own token list: `[{ address, decimals, rawBalance }]`) and V3
+ * concentrated-liquidity positions (discovered live via Blockscout, see getHeldV3TokenIds).
+ *
+ * Every candidate's on-chain state is resolved FIRST, then every distinct underlying token across
+ * ALL of them is priced exactly ONCE (see resolvePriceMap and this file's own header comment on
+ * why that split exists), then results are assembled — so a wallet with many positions sharing the
+ * same pool/tokens pays for that pricing once, not once per position.
+ *
+ * Returns `{ v2Positions, v3Positions, totalUsd, hasUnpriced, lpTokenAddresses, refreshing? }` —
+ * see computeLpPositionsLive's own comment for the base shape. `refreshing: true` means the returned
+ * figures are a real, persisted value that's now known to be stale (the wallet's held tokens have
+ * changed since it was computed) — a background recompute is already in flight; the caller should
+ * poll again shortly for the fresh one. Never throws — one bad position/probe is skipped, not fatal
+ * to the rest.
+ */
+export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens = []) {
+  const fingerprint = tokensFingerprint(heldFungibleTokens);
+  const cacheKey = positionsCacheKey(walletAddress, fingerprint);
+
+  // L1 — in-memory, exact fingerprint match (part of the key itself) required.
+  const l1 = positionsCache.get(cacheKey);
+  if (l1 && Date.now() - l1.computedAt < POSITIONS_CACHE_TTL_MS) {
+    return l1.result;
+  }
+
+  // L2 — persisted in Supabase, keyed by wallet alone (not the fingerprint) so a lookup here always
+  // finds the wallet's last-known value regardless of whether its balances have since changed —
+  // this is what makes the first request after a deploy, or the first Core Tier load of the day,
+  // instant instead of paying the full live-compute cost.
+  const persisted = await getCachedPosition(walletAddress, "lp").catch(() => null);
+  if (persisted) {
+    // Populate L1 under THIS fingerprint either way — even a stale L2 row is worth remembering for
+    // repeat calls with the same (unchanged) candidate list until the background refresh lands.
+    positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now() });
+
+    if (persisted.fingerprint === fingerprint) {
+      // The wallet's held tokens haven't changed since this was computed — still exactly correct.
+      return persisted.payload;
+    }
+
+    // Stale: the wallet's held tokens have changed since this was computed. Still real numbers for
+    // whatever hasn't changed — serve immediately, and kick exactly one background recompute per
+    // wallet (inFlightRefresh dedupes concurrent callers) using the CURRENT candidate list so the
+    // next read gets the fresh figure.
+    const walletKey = walletAddress.toLowerCase();
+    if (!inFlightRefresh.has(walletKey)) {
+      const promise = recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens, fingerprint).finally(() =>
+        inFlightRefresh.delete(walletKey)
+      );
+      inFlightRefresh.set(walletKey, promise);
+    }
+    return { ...persisted.payload, refreshing: true };
+  }
+
+  // L3 — nothing cached anywhere for this wallet yet (genuinely first time). No shortcut available.
+  const result = await computeLpPositionsLive(walletAddress, heldFungibleTokens);
+  positionsCache.set(cacheKey, { result, computedAt: Date.now() });
+  await upsertCachedPosition(walletAddress, "lp", result, fingerprint).catch((err) =>
+    console.warn(`⚠️  LP position valuation: failed to persist cache for ${walletAddress}:`, err.message)
+  );
+  return result;
 }
