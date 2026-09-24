@@ -1707,11 +1707,15 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
   const stopAtBlockMin = Math.min(stopAtBlock ?? 0, stopAtDefiBlock ?? 0);
   const blockSpan = Math.max(0, latestBlockAtStart - stopAtBlockMin);
 
+  // Best-effort — this is a progress-reporting side channel, not the real work. Confirmed live:
+  // wallet_ingestion_jobs missing entirely (an unrun migration) threw here and aborted the ENTIRE
+  // ingestion before a single real Blockscout call was even made, taking down the actual
+  // revenue-relevant work over what should only ever cost a missing progress bar.
   await startJob(trackedWallet, {
     progressTotal: latestBlockAtStart,
     progressCurrent: stopAtBlockMin,
     stage: "Scanning transaction history…",
-  });
+  }).catch((err) => console.warn(`⚠️  Couldn't start ingest progress tracking for ${trackedWallet} (ingestion continues regardless):`, err.message));
 
   const contributions = { tx: 0, internal: 0, tokens: 0, defi: 0 };
   let lastPersistedAt = 0;
@@ -1775,7 +1779,13 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
       });
     }
 
-    await completeJob(trackedWallet);
+    // Best-effort, same reasoning as startJob above — the real work (upsertIngestionState, right
+    // above) has already committed by this point, so a failure here must not fall into this
+    // function's own catch block below and get misreported as the whole ingestion having failed
+    // (it didn't — only its progress-job bookkeeping did).
+    await completeJob(trackedWallet).catch((err) =>
+      console.warn(`⚠️  Couldn't mark ingest job COMPLETE for ${trackedWallet} (ingestion itself succeeded regardless):`, err.message)
+    );
     console.log(`📥 Ingestion complete for ${trackedWallet} — caught up to block ${highestBlock}, ${swapTxHashes.size} swap/liquidity event(s) detected`);
   } catch (err) {
     await failJob(trackedWallet, err.message).catch((failErr) =>
