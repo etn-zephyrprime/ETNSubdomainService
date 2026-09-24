@@ -50,6 +50,35 @@ const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const Q96 = 2n ** 96n;
 const MAX_TICK = 887272n;
 
+// Short-lived cache for getLiquidityPositionsUsd's own result — same reasoning as
+// defiPositionValuation.js's own positionsCache (see that file's comment). Confirmed live: with
+// nothing cached here at all, EVERY Core Tier reconnect/page load paid the full cost of probing
+// every held token as a candidate V2 pool, fetching V3 positions live from Blockscout, and live-
+// pricing every distinct underlying token via GeckoTerminal (rate-limited ~1.5s per new token) —
+// on the order of a minute, every single time, never just once.
+//
+// No ingestion-state freshness signal exists for this one the way defiPositionValuation.js has
+// (there's no ingested ledger driving LP discovery — candidate tokens come straight from the
+// caller's own live Blockscout balances, see this function's own doc comment below), so the cache
+// key includes a fingerprint of `heldFungibleTokens` itself: a real balance change naturally
+// produces a different key and misses the cache, while an identical repeat call (a reconnect, or
+// the Portfolio and PnL tabs independently loading the same wallet moments apart) within the TTL
+// hits it. A V3 position minted/burned with no change to the wallet's FUNGIBLE balances could still
+// go up to POSITIONS_CACHE_TTL_MS stale — an accepted bound, same "TTL as staleness ceiling for an
+// otherwise-quiet wallet" reasoning pnlSnapshotService.js's own cache documents.
+const positionsCache = new Map(); // cacheKey -> { result, computedAt: ms }
+const POSITIONS_CACHE_TTL_MS = process.env.LP_POSITIONS_CACHE_TTL_MS
+  ? parseInt(process.env.LP_POSITIONS_CACHE_TTL_MS, 10)
+  : 30000;
+
+function positionsCacheKey(walletAddress, heldFungibleTokens) {
+  const fingerprint = heldFungibleTokens
+    .map((t) => `${t.address.toLowerCase()}:${t.rawBalance}`)
+    .sort()
+    .join(",");
+  return `${walletAddress.toLowerCase()}|${fingerprint}`;
+}
+
 let sharedProvider = null;
 function getProvider() {
   // batchMaxCount:1 — see this file's own header comment on the real "batch size too large" RPC
@@ -381,6 +410,17 @@ async function finalizeV3Position(candidate, priceMap) {
  * fatal to the rest.
  */
 export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens = []) {
+  const cacheKey = positionsCacheKey(walletAddress, heldFungibleTokens);
+  const cached = positionsCache.get(cacheKey);
+  if (cached && Date.now() - cached.computedAt < POSITIONS_CACHE_TTL_MS) {
+    return cached.result;
+  }
+  // Both return points below go through this so neither can forget to populate the cache.
+  const cacheAndReturn = (result) => {
+    positionsCache.set(cacheKey, { result, computedAt: Date.now() });
+    return result;
+  };
+
   const [v2Candidates, v3TokenIds] = await Promise.all([
     Promise.all(
       heldFungibleTokens.map((t) => {
@@ -413,7 +453,7 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
   const v3Candidates = (await Promise.all(v3TokenIds.map((id) => resolveV3Candidate(id)))).filter((c) => c != null);
 
   if (v2CandidatesResolved.length === 0 && v3Candidates.length === 0) {
-    return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: false, lpTokenAddresses: new Set() };
+    return cacheAndReturn({ v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: false, lpTokenAddresses: new Set() });
   }
 
   const priceMap = await resolvePriceMap([
@@ -431,11 +471,11 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
     if (p.totalUsd != null) totalUsd = (totalUsd ?? new Decimal(0)).plus(p.totalUsd);
   }
 
-  return {
+  return cacheAndReturn({
     v2Positions,
     v3Positions,
     totalUsd: totalUsd?.toString() ?? null,
     hasUnpriced,
     lpTokenAddresses: new Set(v2Positions.map((p) => p.tokenAddress)),
-  };
+  });
 }
