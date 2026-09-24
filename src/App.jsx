@@ -73,6 +73,13 @@ function AppContent() {
   const [showPay, setShowPay] = useState(false);
   const [payPrefillName, setPayPrefillName] = useState(null);
   const [showMarketplace, setShowMarketplace] = useState(false);
+  // Bumped by BurnPoolCard right after a successful buy-back-and-burn — CoreBurnedCard is a
+  // sibling with its own independent 30s poll and no other way to know a burn juster happened, so
+  // without this its "Total CORE Burned" figure can sit showing the pre-burn number for up to 30s
+  // after the admin action already confirmed on-chain (confirmed real: the contract's own
+  // totalCoreBurned() counter updates the instant the burn tx lands, this was purely a "which of
+  // two independent 30s polls happens to fire next" display lag, not a data bug).
+  const [burnRefreshSignal, setBurnRefreshSignal] = useState(0);
 
   // Deep link: /pay/alice.etn (or /pay/shop.alice.etn, /pay/alice with no suffix) opens straight
   // to the Pay screen with that name pre-filled — e.g. for a payment request shared in Telegram.
@@ -285,8 +292,8 @@ function AppContent() {
               </NeonButton>
             </div>
             <HowItWorks />
-            <BurnPoolCard wallet={wallet} />
-            <CoreBurnedCard />
+            <BurnPoolCard wallet={wallet} onBurned={() => setBurnRefreshSignal((n) => n + 1)} />
+            <CoreBurnedCard refreshSignal={burnRefreshSignal} />
             <DomainRevenueCard />
             <ActivatedDomainsTable />
           </>

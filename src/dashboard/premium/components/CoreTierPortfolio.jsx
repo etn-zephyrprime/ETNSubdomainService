@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, TriangleAlert, Sparkles } from "lucide-react";
+import { Wallet as WalletIcon, TriangleAlert, Sparkles, RefreshCw } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
@@ -278,29 +278,31 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
 
-  // While a reconnect's DeFi ingest is actually running (defiPositions.ingesting — see
-  // premiumDashboardRouter.js's own /defi-positions response shape), re-poll for fresh progress
-  // until it's done. Same shape as CoreTierPnl.jsx's own identical polling effect.
+  // Re-poll while either a reconnect's DeFi ingest is actually running (defiPositions.ingesting —
+  // genuinely nothing to show yet, see the IngestProgressBanner below) OR the figures already shown
+  // are a real-but-known-stale cache hit that's refreshing in the background (defiPositions.refreshing
+  // — see defiPositionValuation.js's own getOpenDefiPositionsUsd comment on that distinction). Same
+  // shape as CoreTierPnl.jsx's own identical polling effect.
   useEffect(() => {
-    if (!defiPositions?.ingesting) return;
+    if (!defiPositions?.ingesting && !defiPositions?.refreshing) return;
     const id = setInterval(() => loadDefiPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [defiPositions?.ingesting, loadDefiPositions]);
+  }, [defiPositions?.ingesting, defiPositions?.refreshing, loadDefiPositions]);
 
   // Live LP/V3 position values load once `portfolio` has resolved — unlike defiPositions above,
   // this needs each wallet's own token-balance list as the V2 LP-pool candidate set (see
   // useLiquidityPositions.js's own comment on why that's sent up rather than re-fetched
-  // server-side). Deliberately keyed on `portfolio` itself (not just `hasAccess`/`active`) so a
-  // reconnect/wallet-list change that reloads `portfolio` also refreshes this.
-  useEffect(() => {
-    if (!hasAccess || !portfolio) {
-      setLpPositions(null);
-      return;
-    }
-    let cancelled = false;
-    setLpPositions(null);
-    setLpPositionsError(null);
-    (async () => {
+  // server-side).
+  //
+  // `silent`, same meaning/shape as loadDefiPositions' own: set by the refreshing-poll effect below,
+  // updates the figures without blanking the section first and swallows its own transient failures.
+  const loadLpPositions = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!portfolio) return;
+      if (!silent) {
+        setLpPositions(null);
+        setLpPositionsError(null);
+      }
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
         // Same fungible/non-spam filter as allVisibleTokens below — an LP token's own address is a
@@ -318,14 +320,36 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
             .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
         }
         const res = await getLiquidityPositions(wallet.account, signature, timestamp, walletTokens);
-        if (!cancelled) setLpPositions(res);
+        setLpPositions(res);
       } catch (err) {
         console.error("Failed to load liquidity positions:", err);
-        if (!cancelled) setLpPositionsError("Couldn't load liquidity positions — try again shortly.");
+        if (!silent) setLpPositionsError("Couldn't load liquidity positions — try again shortly.");
       }
-    })();
-    return () => { cancelled = true; };
-  }, [hasAccess, portfolio, getAuthParams, getLiquidityPositions, wallet.account]);
+    },
+    [portfolio, getAuthParams, getLiquidityPositions, wallet.account]
+  );
+
+  // Deliberately keyed on `portfolio` itself (not just `hasAccess`/`active`) so a reconnect/wallet-
+  // list change that reloads `portfolio` also refreshes this.
+  useEffect(() => {
+    if (!hasAccess || !portfolio) {
+      setLpPositions(null);
+      return;
+    }
+    loadLpPositions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccess, portfolio]);
+
+  // Re-poll while lpPositions.refreshing is true — the figures already shown are a real, persisted
+  // cache hit that's known stale (the wallet's held tokens changed since it was computed; see
+  // lpPositionValuation.js's own getLiquidityPositionsUsd comment) and a background recompute is
+  // already running server-side. No `ingesting`-equivalent case here (unlike DeFi, LP has no
+  // discovery-ingestion step that can leave genuinely nothing to show).
+  useEffect(() => {
+    if (!lpPositions?.refreshing) return;
+    const id = setInterval(() => loadLpPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [lpPositions?.refreshing, loadLpPositions]);
 
   // USD price per merged token — one batched request for the whole holdings list (see
   // useBatchTokenPrices's own header comment for why: firing one small independent request per
@@ -1029,9 +1053,18 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{defiPositionsError}</div>
                   ) : defiEntry?.positions?.length > 0 ? (
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                         Staked / Farming Positions
                         <InfoTooltip text="Funds currently locked in a yield farm or the Core Ascension staking contract — no longer a plain wallet balance, so Blockscout alone can't see them. Valued live from the contract's own state, including any real-time price movement (not the value it was worth when you deposited)." />
+                        {/* refreshing (not ingesting): these figures are already real — a cached
+                            value known stale because something changed on-chain since it was
+                            computed — being quietly brought current in the background. See
+                            defiPositionValuation.js's own getOpenDefiPositionsUsd comment. */}
+                        {defiPositions?.refreshing && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 700, textTransform: "none", letterSpacing: 0, color: mutedLight }}>
+                            <RefreshCw size={10} /> Updating…
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {defiEntry.positions.map((p, i) => (
@@ -1061,9 +1094,17 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{lpPositionsError}</div>
                   ) : lpEntry && (lpEntry.v2Positions?.length > 0 || lpEntry.v3Positions?.length > 0) ? (
                     <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                         Liquidity Positions
                         <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions you hold directly — not deposited into a yield farm (those show under Staked / Farming Positions instead). Valued live from each pool's own current reserves/price, converted into the underlying tokens your share currently represents." />
+                        {/* refreshing: same meaning as the identical badge on Staked / Farming
+                            Positions above — see lpPositionValuation.js's own
+                            getLiquidityPositionsUsd comment. */}
+                        {lpPositions?.refreshing && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 700, textTransform: "none", letterSpacing: 0, color: mutedLight }}>
+                            <RefreshCw size={10} /> Updating…
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {(lpEntry.v2Positions || []).map((p) => (

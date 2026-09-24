@@ -194,7 +194,15 @@ router.get("/premium/defi-positions", async (req, res) => {
   // A wallet still ingesting (in `jobs`) simply doesn't contribute to `perWallet`/`combined` yet —
   // whatever DID finish this round still shows, same "partial results over blocking everything"
   // reasoning as pnlSnapshotRouter.js's own identical shape.
-  res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced }, ingesting: jobs.length > 0, jobs });
+  //
+  // `refreshing` (distinct from `ingesting`): true when at least one wallet's own result came from
+  // getOpenDefiPositionsUsd's persisted cache but is now known stale (see that function's own
+  // `refreshing` comment) — a background recompute is already running. Unlike `ingesting`, this
+  // wallet's real (if momentarily outdated) figures ARE already included above; the frontend should
+  // keep showing them as normal and just poll again shortly for the refreshed ones, not hide them
+  // behind a progress banner the way `ingesting` (genuinely nothing to show yet) does.
+  const refreshing = perWallet.some((w) => w.refreshing);
+  res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced }, ingesting: jobs.length > 0, jobs, refreshing });
 });
 
 // Live value of every LP/V3 position covered wallets DIRECTLY hold (not locked in a farm/staking
@@ -239,7 +247,12 @@ router.post("/premium/liquidity-positions", async (req, res) => {
     for (const addr of w.lpTokenAddresses) allLpTokenAddresses.add(addr);
   }
 
-  res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses] } });
+  // See the identical `refreshing` comment on /premium/defi-positions above — same meaning here:
+  // at least one wallet's figures came from a persisted-but-now-stale cache row, with a background
+  // recompute already running. The real (if momentarily outdated) figures are already in `perWallet`
+  // above; the frontend should keep showing them and just poll again shortly.
+  const refreshing = perWallet.some((w) => w.refreshing);
+  res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses] }, refreshing });
 });
 
 export default router;

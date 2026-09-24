@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ethers } from "ethers";
 import { Flame } from "lucide-react";
 import Panel from "./Panel.jsx";
@@ -18,7 +18,12 @@ const CORE_TOTAL_SUPPLY = 1_000_000;
 
 // Lifetime CORE burned via this app's own Marketplace contract specifically — not a network-wide
 // CORE burn statistic, just what ETN Subdomain Service (ENS) itself has bought back and burned.
-export default function CoreBurnedCard() {
+//
+// `refreshSignal` (optional): bumped by App.jsx right after BurnPoolCard's own admin burn action
+// confirms — see App.jsx's own comment on burnRefreshSignal for why this exists on top of the
+// interval poll below (both read the exact same live on-chain totalCoreBurned() counter; this only
+// changes how soon this specific card notices a burn THIS SAME PAGE just triggered).
+export default function CoreBurnedCard({ refreshSignal } = {}) {
   const { getTotalCoreBurned } = useBurnPool();
 
   const [totalBurned, setTotalBurned] = useState(null);
@@ -40,6 +45,19 @@ export default function CoreBurnedCard() {
     const id = setInterval(refresh, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Extra immediate refresh whenever refreshSignal changes — the interval above still runs
+  // regardless, this just also fires right away instead of waiting for it. Skips the very first
+  // render (refreshSignal starts at 0 in App.jsx and the effect above already covers the initial
+  // load) via the ref below, so mounting this card doesn't fetch twice back-to-back for no reason.
+  const isFirstSignal = useRef(true);
+  useEffect(() => {
+    if (isFirstSignal.current) {
+      isFirstSignal.current = false;
+      return;
+    }
+    refresh();
+  }, [refreshSignal, refresh]);
 
   // Full-precision float, not formatEth's pre-rounded 2-decimal display string — burned-so-far is
   // a tiny fraction of a million-token supply, so 2 decimals would just read as "0.00%" for a long
