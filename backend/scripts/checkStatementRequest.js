@@ -33,6 +33,12 @@ if (!getPool()) {
 
 const isTxHash = /^0x[0-9a-fA-F]{64}$/.test(input.trim());
 
+// Same default + override as pnlAutoFinalizeScheduler.js — must match exactly, or this script's
+// own countdown would quote a deadline the real scheduler isn't actually using.
+const AUTO_FINALIZE_THRESHOLD_MS = process.env.PNL_AUTO_FINALIZE_MS
+  ? parseInt(process.env.PNL_AUTO_FINALIZE_MS, 10)
+  : 14 * 24 * 60 * 60 * 1000;
+
 async function printRequest(r) {
   const burnLog = await query("SELECT * FROM buy_and_burn_log WHERE statement_request_id = $1", [r.id]);
   const burnRow = burnLog?.rows[0] || null;
@@ -43,6 +49,7 @@ async function printRequest(r) {
   console.log(`  period:             ${r.period_type} / ${r.year}`);
   console.log(`  amount_paid_wei:    ${r.amount_paid_wei}`);
   console.log(`  status:             ${r.status}`);
+  console.log(`  generated_at:       ${r.generated_at || "(not generated yet)"}`);
   console.log(`  first_viewed_at:    ${r.first_viewed_at || "(never — the /view beacon has not landed)"}`);
   console.log(`  finalized_at:       ${r.finalized_at || "(not finalized yet)"}`);
   console.log(`  refunded_at:        ${r.refunded_at || "—"}`);
@@ -52,6 +59,12 @@ async function printRequest(r) {
     console.log(`      either the /view beacon lands (customer opens "View / Download PDF" and the PDF`);
     console.log(`      fetch succeeds) or the 14-day auto-finalize job reaches it. This has nothing to do`);
     console.log(`      with Blockscout — markViewedAndFinalize is a pure DB write, no chain call at all.`);
+    if (r.generated_at) {
+      const deadline = new Date(new Date(r.generated_at).getTime() + AUTO_FINALIZE_THRESHOLD_MS);
+      const msLeft = deadline.getTime() - Date.now();
+      const daysLeft = (msLeft / (24 * 60 * 60 * 1000)).toFixed(1);
+      console.log(`  ⏰ Auto-finalize deadline: ${deadline.toISOString()} (${msLeft > 0 ? `${daysLeft} day(s) from now` : "already past — should finalize on the scheduler's next hourly tick"})`);
+    }
   } else if (r.status === "FINALIZED" && !burnRow) {
     console.log(`  ⏳ FINALIZED, no buy_and_burn_log row yet — should be picked up by`);
     console.log(`      pnlSplitExecutionScheduler.js on its next 5-minute tick. If diagnoseSplitExecution.js`);
