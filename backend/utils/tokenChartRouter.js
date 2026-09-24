@@ -18,6 +18,7 @@ import { ethers } from "ethers";
 import { getPricePointsSince } from "../db/pricePoints.js";
 import { getCandles as getElectroSwapCandles, getBatchTokenPrices, isElectroSwapPaused } from "./electroSwapApi.js";
 import { ETN_CANDLE_RANGES, fetchEtnCandles } from "./etnCandles.js";
+import { getTokenBurnHistory } from "../services/tokenBurnService.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -410,6 +411,26 @@ router.get("/token-chart", async (req, res) => {
     }
     console.error(`⚠️  Token chart failed for ${address}:`, err.message);
     res.status(502).json({ error: "Couldn't load chart data" });
+  }
+});
+
+// Cumulative burn-history chart — see tokenBurnService.js's own header comment for exactly what
+// counts as a burn for a given token (CORE's real burn() vs. every other token's dead-address
+// convention) and why this does a bounded incremental on-chain scan rather than a cache lookup the
+// way /token-chart above does (GeckoTerminal has no concept of "burns", this is pure on-chain log
+// scanning this backend does itself).
+router.get("/token-burns", async (req, res) => {
+  const address = String(req.query.address || "");
+  if (!ethers.isAddress(address)) {
+    return res.status(400).json({ error: "Invalid address" });
+  }
+
+  try {
+    const result = await getTokenBurnHistory(address);
+    res.json(result);
+  } catch (err) {
+    console.error(`⚠️  Token burns failed for ${address}:`, err.message);
+    res.status(502).json({ error: "Couldn't load burn history" });
   }
 });
 
