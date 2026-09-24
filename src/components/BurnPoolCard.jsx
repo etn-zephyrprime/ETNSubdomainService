@@ -18,7 +18,7 @@ function formatPoolAmount(amount, decimals) {
   return parseFloat(ethers.formatUnits(amount, decimals)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export default function BurnPoolCard({ wallet }) {
+export default function BurnPoolCard({ wallet, onBurned }) {
   const { getAllBurnPools, buyBackAndBurn, buyBackAndBurnToken, loading: burnLoading } = useBurnPool();
 
   // Array of { symbol, address, decimals, amount } — one entry per currency (ETN first, then
@@ -87,6 +87,7 @@ export default function BurnPoolCard({ wallet }) {
           ? await buyBackAndBurn(minCoreOutWei, signer)
           : await buyBackAndBurnToken(pool.address, minCoreOutWei, signer);
       logResult(pool.symbol, { status: "success", txHash: result.txHash });
+      onBurned?.(); // lets CoreBurnedCard (a sibling with its own independent poll) refresh right away instead of waiting up to its own 30s interval
       return true;
     } catch (err) {
       console.error(`Buy back and burn (${pool.symbol}) failed:`, err);
@@ -246,10 +247,18 @@ export default function BurnPoolCard({ wallet }) {
             <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
               {burnLog.map((entry, i) => (
                 <div key={i} style={{ fontSize: 11, color: entry.status === "success" ? green : errorColor }}>
+                  {/* entry.symbol is the currency that FUNDED this burn (the pool that was spent —
+                      ETN or an ERC20 like DCNT), never what actually got burned: buyBackAndBurn/
+                      buyBackAndBurnToken always swap that currency into CORE first and burn the
+                      CORE, never the funding currency itself. Confirmed live this previously read
+                      "✓ DCNT burned" for a DCNT-funded burn, which is wrong on exactly that point —
+                      the CORE Burned card right below is comparably confusing before verifying
+                      totalCoreBurned() on-chain, which showed the real burn WAS recorded, correctly,
+                      as CORE. */}
                   {entry.status === "success" ? (
-                    <>✓ {entry.symbol} burned — <span style={{ color: mutedLight, wordBreak: "break-all" }}>{entry.txHash}</span></>
+                    <>✓ Bought back &amp; burned CORE using {entry.symbol} — <span style={{ color: mutedLight, wordBreak: "break-all" }}>{entry.txHash}</span></>
                   ) : (
-                    <>✗ {entry.symbol} failed — {entry.message}</>
+                    <>✗ Burn using {entry.symbol} failed — {entry.message}</>
                   )}
                 </div>
               ))}
