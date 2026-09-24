@@ -13,6 +13,7 @@ import { lockStatusText } from "../utils/lockStatus.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import TokenPriceChart from "./TokenPriceChart.jsx";
+import TokenBurnChart from "./TokenBurnChart.jsx";
 import NftSalesChart from "./NftSalesChart.jsx";
 import NeonButton from "../../components/NeonButton.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
@@ -178,7 +179,10 @@ export default function TokenDetail({ address, onBack, onSelectAddress }) {
           {token.type === "ERC-721" || token.type === "ERC-1155" ? (
             <NftSalesChart address={token.address} />
           ) : (
-            <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
+            <>
+              <TokenPriceChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
+              <TokenBurnChart address={token.address} decimals={token.decimals} totalSupply={token.total_supply} />
+            </>
           )}
 
           <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, color: mutedLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
