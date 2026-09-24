@@ -155,7 +155,20 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
         !state?.cold_start_completed_at && priorityTokens?.length > 0
           ? new Set(priorityTokens.map((a) => a.toLowerCase()))
           : null; // matches computeLivePnlSnapshot's own isColdStart-gated scoping exactly
-      const ingestCheck = await checkAndStartIngestIfNeeded(address, selfOwnedAddresses, priorityAssets);
+      // This progress-reporting layer must never be able to take the whole panel down for every
+      // member over what's fundamentally a nice-to-have (a live progress readout) — confirmed live:
+      // wallet_ingestion_jobs missing entirely (an unrun migration) threw straight out of this loop,
+      // past every other wallet's own try/catch below, and 502'd the entire response for every Core
+      // Tier member simultaneously. A failure here now just falls back to the exact pre-this-feature
+      // behavior: proceed to computeLivePnlSnapshot, which still calls ingestWalletHistory itself
+      // regardless — ingestion isn't skipped, only its live progress readout is unavailable this call.
+      let ingestCheck;
+      try {
+        ingestCheck = await checkAndStartIngestIfNeeded(address, selfOwnedAddresses, priorityAssets);
+      } catch (err) {
+        console.error(`⚠️  checkAndStartIngestIfNeeded failed for wallet ${address} (falling back to computing normally):`, err.message);
+        ingestCheck = { needed: false };
+      }
       if (ingestCheck.needed) {
         jobs.push(serializeJob(address, ingestCheck.job));
         continue;
