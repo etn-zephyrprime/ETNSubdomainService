@@ -82,6 +82,18 @@ const INGEST_GRACE_PERIOD_MS = process.env.PNL_INGEST_GRACE_PERIOD_MS
   ? parseInt(process.env.PNL_INGEST_GRACE_PERIOD_MS, 10)
   : 2000;
 
+// Confirmed live: a brand-new member's FIRST-EVER ingest is genuinely heavy (a full cold-start
+// walk of the wallet's entire history plus a full-chain DeFi log scan back to block 0 — real
+// memory pressure on a small instance) and "always sync on reconnect" above means a failed attempt
+// gets retried on the very next request with no throttle to space attempts out anymore. Without
+// this cooldown, a member repeatedly refreshing during a slow/failing cold start would retrigger
+// that same expensive scan back to back with zero delay — a crash-loop, not a retry. This does NOT
+// apply to a wallet that's simply RUNNING (that's the existing job-status check above) or that
+// finished successfully — only to one whose MOST RECENT attempt actually failed.
+const INGEST_FAILURE_COOLDOWN_MS = process.env.PNL_INGEST_FAILURE_COOLDOWN_MS
+  ? parseInt(process.env.PNL_INGEST_FAILURE_COOLDOWN_MS, 10)
+  : 60000;
+
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
@@ -1631,10 +1643,27 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
  * wallet (e.g. this is a poll re-check, not the call that originally started it), this does NOT
  * start a second one (or race a fresh grace period) — it just re-reads and returns the current row
  * immediately.
+ *
+ * Also returns `{ needed: true, job }` (without starting anything new) for a wallet whose most
+ * recent attempt FAILED within the last INGEST_FAILURE_COOLDOWN_MS — see that constant's own
+ * comment for the crash-loop this guards against. A wallet whose last attempt succeeded doesn't
+ * hit this path at all (a COMPLETE/no job falls through to a fresh attempt as normal).
  */
 export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddresses, priorityAssets) {
   const existingJob = await getIngestJob(trackedWallet);
   if (existingJob?.status === "RUNNING") {
+    return { needed: true, job: existingJob };
+  }
+  if (
+    existingJob?.status === "FAILED" &&
+    existingJob.updated_at &&
+    Date.now() - new Date(existingJob.updated_at).getTime() < INGEST_FAILURE_COOLDOWN_MS
+  ) {
+    // Recently failed — don't immediately retry (see INGEST_FAILURE_COOLDOWN_MS's own comment on
+    // the crash-loop this guards against). Report the existing FAILED job as-is rather than
+    // starting a new attempt; the frontend already has dedicated UI for this status (see
+    // CoreTierPnl.jsx's IngestProgressBanner) telling the member it'll retry automatically — which
+    // it genuinely will, on whatever reconnect happens once this cooldown elapses.
     return { needed: true, job: existingJob };
   }
 
