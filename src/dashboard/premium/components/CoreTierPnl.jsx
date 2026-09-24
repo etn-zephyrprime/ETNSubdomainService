@@ -209,7 +209,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // PortfolioDashboardSection.jsx now — see that file's own comment on why (one shared fetch for
   // all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
-  const { getLiveSnapshot, getHistory, getCategoryHistory } = usePnlSnapshot();
+  const { getLiveSnapshot, getHistory, getCategoryHistory, getTokenHistory } = usePnlSnapshot();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
   const [snapshot, setSnapshot] = useState(null); // { perWallet, combined } | null
@@ -374,6 +374,50 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     .slice()
     .sort((a, b) => (Number(b.marketValueUsd) || 0) - (Number(a.marketValueUsd) || 0));
   const figures = pickTokenFigures(combined, tokenFilter);
+
+  // Per-token Value Over Time history — a separate fetch from the whole-portfolio one above,
+  // computed fresh on demand rather than read from a stored rollup (see tokenPnlService.js's own
+  // header comment for why: an open-ended number of distinct tokens across every tracked wallet
+  // makes pre-storing this unboundedly larger than the fixed-2-category table the chart below this
+  // one reads from). Only fires once a specific token is selected — "All tokens" keeps using the
+  // existing whole-portfolio `history` fetched above, no extra request. Fungible tokens only, same
+  // scope as the dropdown itself (tokenOptions never lists NFTs — see CoreTierNftPnl.jsx for those).
+  const [tokenHistory, setTokenHistory] = useState(null); // { perWallet, combined } | null
+  const [tokenHistoryError, setTokenHistoryError] = useState(null);
+  const [tokenHistoryLoading, setTokenHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    if (!hasAccess || active.length === 0 || tokenFilter === "all") {
+      setTokenHistory(null);
+      setTokenHistoryError(null);
+      setTokenHistoryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setTokenHistory(null);
+    setTokenHistoryError(null);
+    setTokenHistoryLoading(true);
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getTokenHistory(wallet.account, signature, timestamp, tokenFilter);
+        if (!cancelled) setTokenHistory(res);
+      } catch (err) {
+        if (!cancelled) setTokenHistoryError(err.message || "Couldn't load this token's PnL history");
+      } finally {
+        if (!cancelled) setTokenHistoryLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getAuthParams, getTokenHistory, wallet.account, tokenFilter]);
+
+  const mainChartHistory =
+    tokenFilter === "all"
+      ? combinedHistory
+      : walletFilter === "all"
+        ? tokenHistory?.combined || []
+        : tokenHistory?.perWallet?.find((w) => w.walletAddress === walletFilter)?.points || [];
+  const mainChartError = tokenFilter === "all" ? historyError : tokenHistoryError;
 
   // Value Over Time chart mode — "pnl" (realized + unrealized, net) or "value" (raw portfolio
   // value). Defaults to pnl: profit/loss over time is what most people actually want from this
@@ -642,25 +686,26 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
                   {chartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
-                  <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began. PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value." />
+                  <InfoTooltip text="Your whole portfolio's value and profit/loss, day by day, since tracking began — or one token's, if you've picked one from the Token filter above (NFTs have their own dedicated PnL section). PnL mode shows realized + unrealized combined; Value mode shows raw portfolio value. A specific token's history is computed on the spot the first time you pick it, so expect a short wait." />
                 </div>
                 <PnlValueToggle chartMode={chartMode} setChartMode={setChartMode} />
               </div>
               {chartMode === "pnl" && <PnlSubModeToggle pnlSubMode={pnlSubMode} setPnlSubMode={setPnlSubMode} />}
-              {tokenFilter !== "all" && !historyError && (
-                <div style={{ fontSize: 11, color: muted, marginBottom: 8, fontStyle: "italic" }}>
-                  Per-token history isn't available yet — this chart shows your whole tracked wallet{walletFilter === "all" && active.length > 1 ? "s" : ""}, not just the selected token.
-                </div>
-              )}
-              {historyError ? (
-                <div style={{ fontSize: 12, color: errorColor }}>{historyError}</div>
-              ) : combinedHistory.length === 0 ? (
+              {mainChartError ? (
+                <div style={{ fontSize: 12, color: errorColor }}>{mainChartError}</div>
+              ) : tokenFilter !== "all" && tokenHistoryLoading ? (
                 <div style={{ fontSize: 12, color: mutedLight }}>
-                  No history yet — this fills in once the daily snapshot has run at least once.
+                  Computing {resolveTokenName(tokenFilter)}'s PnL history — this can take a moment the first time…
+                </div>
+              ) : mainChartHistory.length === 0 ? (
+                <div style={{ fontSize: 12, color: mutedLight }}>
+                  {tokenFilter !== "all"
+                    ? "No history yet for this token."
+                    : "No history yet — this fills in once the daily snapshot has run at least once."}
                 </div>
               ) : (
                 <SparklineChart
-                  data={combinedHistory.map((p) => ({
+                  data={mainChartHistory.map((p) => ({
                     label: p.date,
                     value: chartMode === "pnl" ? pnlOverTimeValue(p, pnlSubMode) : Number(p.totalValueUsd),
                   }))}

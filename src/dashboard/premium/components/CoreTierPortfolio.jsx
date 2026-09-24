@@ -43,6 +43,15 @@ const HOLDING_CATEGORIES = [
   { id: "tokens", label: "Tokens" },
   { id: "nfts", label: "NFT's" },
 ];
+// The 4 buckets Total Portfolio Balance / Portfolio Composition split into — same 4 slices
+// compositionSlices below has always shown, now individually toggleable. Order here is the
+// render order for both the filter checkboxes and (via compositionSlices) the chart legend.
+const PORTFOLIO_CATEGORY_DEFS = [
+  { key: "native", label: "Native ETN" },
+  { key: "tokens", label: "Tokens" },
+  { key: "liquidity", label: "Liquidity Positions" },
+  { key: "staking", label: "Staking / Yield Farms" },
+];
 const HOLDINGS_PAGE_SIZE = 10;
 // Wrapped ETN — native ETN has no token contract of its own, so its 24h change is read off WETN's
 // (ElectroSwap's quote asset; same address tokenChartRouter.js's own WETN_ADDRESS uses).
@@ -174,6 +183,20 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
   const [holdingsShown, setHoldingsShown] = useState(HOLDINGS_PAGE_SIZE);
+  // Which of the 4 Total Portfolio Balance / Portfolio Composition categories are hidden from both
+  // the headline figure and the chart — a category NOT in this set is shown (default: all 4 on,
+  // matching what this panel always displayed before this filter existed). Deliberately NOT reset
+  // on wallet-list/walletFilter changes — a member filtering out Staking/Yield Farms to see "just
+  // my liquid holdings" would otherwise lose that choice on every reconnect/tab revisit.
+  const [hiddenCategories, setHiddenCategories] = useState(() => new Set());
+  const toggleCategory = useCallback((key) => {
+    setHiddenCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   // Drops any in-progress editor state on an account change — one built for the previous account
   // has no business surviving a disconnect/switch. The access/tracked-wallet state itself resets
@@ -507,7 +530,10 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
             hasUnpriced = true;
           }
         }
-        return { address: w.address, total: (etnUsd || 0) + tokensUsd, hasUnpriced, changeParts };
+        // etnUsd/tokensUsd broken out separately (not just `total`) so the category filter below
+        // can toggle Native ETN and Tokens independently for the per-wallet breakdown rows too —
+        // `total` is kept as-is since portfolioChange.js/other math may still want the unfiltered sum.
+        return { address: w.address, etnUsd: etnUsd || 0, tokensUsd, total: (etnUsd || 0) + tokensUsd, hasUnpriced, changeParts };
       })
     : [];
   // Scoped to the filtered wallet when one's selected — same wallets perWalletTotals already
@@ -530,35 +556,56 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const lpUsd = lpEntry?.totalUsd != null ? Number(lpEntry.totalUsd) : null;
   const lpHasUnpriced = Boolean(lpEntry?.hasUnpriced);
 
+  // Cross-wallet Tokens total — same figure the composition chart's own "tokens" slice always
+  // summed, pulled out here so both the headline total and the chart can share it.
+  const tokensUsdTotal = allVisibleTokens.reduce((sum, t) => sum + (t.usdValue ?? 0), 0);
+  // Whether each of the 4 categories is currently shown — a category filtered out contributes
+  // nothing to the headline total, the per-wallet rows below, or the composition chart.
+  const categoryOn = {
+    native: !hiddenCategories.has("native"),
+    tokens: !hiddenCategories.has("tokens"),
+    liquidity: !hiddenCategories.has("liquidity"),
+    staking: !hiddenCategories.has("staking"),
+  };
   const totalPortfolioUsd =
     filteredWalletTotals.length > 0 || defiUsd != null || lpUsd != null
-      ? filteredWalletTotals.reduce((sum, w) => sum + w.total, 0) + (defiUsd ?? 0) + (lpUsd ?? 0)
+      ? (categoryOn.native ? combinedUsdValue ?? 0 : 0) +
+        (categoryOn.tokens ? tokensUsdTotal : 0) +
+        (categoryOn.liquidity ? lpUsd ?? 0 : 0) +
+        (categoryOn.staking ? defiUsd ?? 0 : 0)
       : null;
   // 24h markers, same scope as the figures beside them: the grand total covers ETN + tokens +
-  // LP/V3 + farm/staking legs, and each per-wallet row covers that wallet's own of the same. See portfolioChange.js for the method (current holdings, price movement only).
+  // LP/V3 + farm/staking legs, and each per-wallet row covers that wallet's own of the same. See
+  // portfolioChange.js for the method (current holdings, price movement only). Also respects the
+  // category filter — a hidden category's own price movement shouldn't move a badge for a total
+  // that no longer includes it.
   const legParts = (positions) =>
     (positions || []).flatMap((p) => (p.legs || []).map((leg) => ({ value: Number(leg.usdValue), change: priceChanges[leg.tokenAddress?.toLowerCase()] })));
   const totalChange24h = computePortfolioChange([
-    ...filteredWalletTotals.flatMap((w) => w.changeParts),
-    ...legParts(defiEntry?.positions),
-    ...legParts(lpEntry?.v2Positions),
-    ...legParts(lpEntry?.v3Positions),
+    ...(categoryOn.native || categoryOn.tokens ? filteredWalletTotals.flatMap((w) => w.changeParts) : []),
+    ...(categoryOn.staking ? legParts(defiEntry?.positions) : []),
+    ...(categoryOn.liquidity ? [...legParts(lpEntry?.v2Positions), ...legParts(lpEntry?.v3Positions)] : []),
   ]);
-  const totalPortfolioHasUnpriced = filteredWalletTotals.some((w) => w.hasUnpriced) || defiHasUnpriced || lpHasUnpriced;
+  // Coarse on purpose: native/token "unpriced" is tracked as one combined flag per wallet (see
+  // perWalletTotals above), not split further, so hiding just one of that pair still surfaces the
+  // warning if the OTHER one is shown and has an unresolved price.
+  const totalPortfolioHasUnpriced =
+    ((categoryOn.native || categoryOn.tokens) && filteredWalletTotals.some((w) => w.hasUnpriced)) ||
+    (categoryOn.liquidity && lpHasUnpriced) ||
+    (categoryOn.staking && defiHasUnpriced);
 
-  // Composition pie chart's 4 slices — Native ETN, regular fungible Tokens, Liquidity Positions
+  // Composition pie chart's slices — Native ETN, regular fungible Tokens, Liquidity Positions
   // (V2 LP + V3, held directly), Staking/Yield Farms (locked in a farm/staking contract). Each
   // slice is the SAME figure already computed above for its own section, just grouped together —
   // no new computation, so the chart can never disagree with the numbers shown elsewhere on this
-  // panel. A slice is 0 (not omitted) when its own figure is null/unresolved — see
-  // PortfolioCompositionChart.jsx's own comment on why a $0 wedge is the honest choice here, since
-  // the OTHER three slices' real values would otherwise silently look like the whole portfolio.
-  const compositionSlices = [
-    { key: "native", label: "Native ETN", value: combinedUsdValue ?? 0 },
-    { key: "tokens", label: "Tokens", value: allVisibleTokens.reduce((sum, t) => sum + (t.usdValue ?? 0), 0) },
-    { key: "liquidity", label: "Liquidity Positions", value: lpUsd ?? 0 },
-    { key: "staking", label: "Staking / Yield Farms", value: defiUsd ?? 0 },
-  ];
+  // panel. Filtered down to only the categories the toggle row above the chart has left on — a
+  // hidden category disappears from the wedge AND the legend entirely (see toggleCategory), rather
+  // than showing as a muted/zeroed row, since "filter" was the ask.
+  const compositionSlices = PORTFOLIO_CATEGORY_DEFS.filter((c) => categoryOn[c.key]).map((c) => ({
+    key: c.key,
+    label: c.label,
+    value: c.key === "native" ? combinedUsdValue ?? 0 : c.key === "tokens" ? tokensUsdTotal : c.key === "liquidity" ? lpUsd ?? 0 : defiUsd ?? 0,
+  }));
 
   const renderPending = () => {
     if (!pending) return null;
@@ -833,7 +880,38 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
                     <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                       Total Portfolio Balance (USD)
-                      <InfoTooltip text="Everything this dashboard can currently price for you: native ETN, regular token holdings, liquidity positions, and anything staked or farming — added together. A '≈' means at least one piece hasn't resolved a price yet, so the real total is at least this much." />
+                      <InfoTooltip text="Everything this dashboard can currently price for you: native ETN, regular token holdings, liquidity positions, and anything staked or farming — added together. Uncheck a category below to exclude it from this total and the composition chart. A '≈' means at least one shown piece hasn't resolved a price yet, so the real total is at least this much." />
+                    </div>
+                    {/* Filters which of the 4 categories count toward the total below AND the
+                        Portfolio Composition chart further down — one control for both, since a
+                        total that disagreed with its own chart would be confusing. */}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                      {PORTFOLIO_CATEGORY_DEFS.map((c) => {
+                        const isOn = categoryOn[c.key];
+                        return (
+                          <label
+                            key={c.key}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "5px 10px",
+                              borderRadius: 20,
+                              border: `1px solid ${isOn ? green : border}`,
+                              background: isOn ? "rgba(24,187,26,0.10)" : "transparent",
+                              cursor: "pointer",
+                              opacity: isOn ? 1 : 0.55,
+                              fontSize: 11,
+                              fontFamily: monoFont,
+                              color: isOn ? "#fff" : mutedLight,
+                              userSelect: "none",
+                            }}
+                          >
+                            <input type="checkbox" checked={isOn} onChange={() => toggleCategory(c.key)} style={{ accentColor: green, flexShrink: 0 }} />
+                            {c.label}
+                          </label>
+                        );
+                      })}
                     </div>
                     <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
                       {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
@@ -874,15 +952,23 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                           // Each row includes that wallet's own liquidity and staking/farm positions,
                           // so the rows add up to the Total above (they used to be ETN + tokens only,
                           // leaving the total larger than its own breakdown by exactly those positions).
+                          // Respects the same category filter as the grand total above, so these rows
+                          // never disagree with it.
                           const walletDefi = defiPositions?.perWallet?.find((x) => x.walletAddress === w.address);
                           const walletLp = lpPositions?.perWallet?.find((x) => x.walletAddress === w.address);
-                          const rowTotal = w.total + Number(walletDefi?.totalUsd ?? 0) + Number(walletLp?.totalUsd ?? 0);
-                          const rowHasUnpriced = w.hasUnpriced || Boolean(walletDefi?.hasUnpriced) || Boolean(walletLp?.hasUnpriced);
+                          const rowTotal =
+                            (categoryOn.native ? w.etnUsd : 0) +
+                            (categoryOn.tokens ? w.tokensUsd : 0) +
+                            (categoryOn.liquidity ? Number(walletLp?.totalUsd ?? 0) : 0) +
+                            (categoryOn.staking ? Number(walletDefi?.totalUsd ?? 0) : 0);
+                          const rowHasUnpriced =
+                            ((categoryOn.native || categoryOn.tokens) && w.hasUnpriced) ||
+                            (categoryOn.staking && Boolean(walletDefi?.hasUnpriced)) ||
+                            (categoryOn.liquidity && Boolean(walletLp?.hasUnpriced));
                           const walletChange = computePortfolioChange([
-                            ...w.changeParts,
-                            ...legParts(walletDefi?.positions),
-                            ...legParts(walletLp?.v2Positions),
-                            ...legParts(walletLp?.v3Positions),
+                            ...(categoryOn.native || categoryOn.tokens ? w.changeParts : []),
+                            ...(categoryOn.staking ? legParts(walletDefi?.positions) : []),
+                            ...(categoryOn.liquidity ? [...legParts(walletLp?.v2Positions), ...legParts(walletLp?.v3Positions)] : []),
                           ]);
                           return (
                             <div key={w.address}>
