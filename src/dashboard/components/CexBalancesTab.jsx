@@ -4,11 +4,22 @@ import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
-import CexBalanceLineChart from "./CexBalanceLineChart.jsx";
+import SparklineChart from "./SparklineChart.jsx";
 import { useCexBalanceHistory } from "../hooks/useCexBalanceHistory.js";
-import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
+import { formatEtnBalance, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
 
 const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
+const selectStyle = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  border: `1px solid ${border}`,
+  background: panel2,
+  color: "#fff",
+  fontFamily: monoFont,
+  fontSize: 12,
+  fontWeight: 600,
+  outline: "none",
+};
 
 // Re-polls the published cache periodically — backend/utils/cexBalanceHistory.js itself only
 // refreshes daily by default, so this just needs to be frequent enough to pick up a fresh publish
@@ -44,6 +55,12 @@ export default function CexBalancesTab({ onSelectAddress }) {
   const [addresses, setAddresses] = useState([]);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  // Which single line the chart/stats below show — "combined" (the default) or one specific
+  // address. One line at a time, not every address toggled on at once: with more than a couple of
+  // addresses a fully multi-line chart reads as noise, not a comparison — a dropdown to swap which
+  // one you're looking at (same pattern as CoreTierPnl.jsx's own token filter) is the more usable
+  // way to answer "who's actually reducing their ETN" one exchange at a time.
+  const [selected, setSelected] = useState("combined");
 
   useEffect(() => {
     let cancelled = false;
@@ -68,20 +85,30 @@ export default function CexBalancesTab({ onSelectAddress }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [getCexBalanceHistory]);
 
+  // Self-healing the same way CoreTierPnl.jsx's own token filter is: if the selected address ever
+  // vanishes (a relabel, a fetch that dropped it this cycle), this quietly falls back to "combined"
+  // instead of showing a blank chart for something no longer in scope.
+  const selectedAddress =
+    selected !== "combined" && addresses.some((a) => a.address === selected) ? selected : "combined";
+  const selectedSeries =
+    selectedAddress === "combined" ? series : addresses.find((a) => a.address === selectedAddress)?.series;
+  const selectedLabel =
+    selectedAddress === "combined" ? "Combined" : addresses.find((a) => a.address === selectedAddress)?.label;
+
   const chartData = useMemo(() => {
-    if (!Array.isArray(series)) return [];
-    return series
+    if (!Array.isArray(selectedSeries)) return [];
+    return selectedSeries
       .map((p) => {
         let value;
         try {
-          value = parseFloat(ethers.formatEther(p.totalBalance));
+          value = parseFloat(ethers.formatEther(p.totalBalance ?? p.balance));
         } catch {
           value = null;
         }
         return { label: p.date, value: Number.isFinite(value) ? value : null };
       })
       .filter((p) => p.value !== null);
-  }, [series]);
+  }, [selectedSeries]);
 
   const chartStats = useMemo(() => {
     if (chartData.length === 0) return null;
@@ -123,11 +150,18 @@ export default function CexBalancesTab({ onSelectAddress }) {
 
       <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
         <CornerBrackets color={green} />
-        <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
-          <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />Combined ETN Balance — Rolling 12 Months
-        </div>
-        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14 }}>
-          Every line is on by default — uncheck one below to isolate it, or compare a few at once to see who's actually reducing their ETN.
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ ...sectionLabelStyle, marginBottom: 0 }}>
+            <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />{selectedLabel} ETN Balance — Rolling 12 Months
+          </div>
+          {addresses.length > 0 && (
+            <select value={selectedAddress} onChange={(e) => setSelected(e.target.value)} style={selectStyle}>
+              <option value="combined">Combined (all addresses)</option>
+              {addresses.map((a) => (
+                <option key={a.address} value={a.address}>{a.label} ({shortHash(a.address)})</option>
+              ))}
+            </select>
+          )}
         </div>
 
         {chartStats ? (
@@ -152,7 +186,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
                 </div>
               </div>
             </div>
-            <CexBalanceLineChart addresses={addresses} />
+            <SparklineChart data={chartData} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           </>
         ) : (
           <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
