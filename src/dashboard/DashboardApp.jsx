@@ -49,12 +49,23 @@ export default function DashboardApp() {
   useCurrency();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   // /pnl opens straight to the Premium (PnL Statement) tab — the feature's canonical link,
-  // dashboard.planetzephyros.xyz/pnl. /premium is kept working too, purely for backward
-  // compatibility: it's the path already baked into the "Request another statement" link on every
-  // PDF generated before this path was renamed (see PREMIUM_TAB_URL history in
-  // pnlStatementGenerator.js) — those frozen artifacts can't be edited after the fact. Same
-  // deep-link spirit as /statement/:requestId below.
-  const [tab, setTab] = useState(() => (/^\/(statement\/[^/]+|premium|pnl)\/?$/i.test(window.location.pathname) ? "premium" : "overview"));
+  // dashboard.planetzephyros.xyz/pnl. Same for /statement/:requestId below (a specific statement's
+  // own deep link, extracted separately just below).
+  //
+  // /premium now opens Core Tier instead (confirmed decision) — Core Tier's own nav label is
+  // "Premium - Core Tier", so /premium reading as "the premium tab" now means that one. /premium
+  // used to alias PnL Statement purely for backward compatibility with the "Request another
+  // statement" link baked into every PDF generated before /pnl became the canonical path (see
+  // PREMIUM_TAB_URL history in pnlStatementGenerator.js) — there's no way to tell that old link
+  // apart from a fresh /premium visit (same bare path either way), so this is a deliberate,
+  // accepted one-time breakage for already-issued PDFs' own "Request another statement" link, not
+  // an oversight. Nothing generated going forward is affected — those now use /pnl.
+  const [tab, setTab] = useState(() => {
+    const path = window.location.pathname;
+    if (/^\/(statement\/[^/]+|pnl)\/?$/i.test(path)) return "premium";
+    if (/^\/premium\/?$/i.test(path)) return "portfolio";
+    return "overview";
+  });
   const [selectedToken, setSelectedToken] = useState(null);
   // Which address Address Lookup should open on next — named generically since it's fed from
   // more than one source now (TokenDetail's holder links, Overview's validator links), not just
