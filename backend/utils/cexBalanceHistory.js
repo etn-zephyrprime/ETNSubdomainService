@@ -128,18 +128,23 @@ export async function refreshAndPublish() {
       return;
     }
 
-    const series = [];
-    for (let d = cutoffDate; d <= today; d = addDays(d, 1)) {
-      const total = succeeded.reduce((sum, { filled }) => sum + (filled.get(d) ?? 0n), 0n);
-      series.push({ date: d, totalBalance: total.toString() });
-    }
+    const dateRange = [];
+    for (let d = cutoffDate; d <= today; d = addDays(d, 1)) dateRange.push(d);
 
-    // Current (today's) balance per address, for the tab's own per-CEX list — the same forward-
-    // filled map already has it, no separate live fetch needed.
+    const series = dateRange.map((d) => ({
+      date: d,
+      totalBalance: succeeded.reduce((sum, { filled }) => sum + (filled.get(d) ?? 0n), 0n).toString(),
+    }));
+
+    // Current (today's) balance per address, PLUS that same address's own daily series over the
+    // whole window — powers CexBalanceLineChart.jsx's per-CEX toggleable lines, so a member can
+    // isolate/compare individual exchanges instead of only ever seeing the combined total. The same
+    // forward-filled map already has both, no separate fetch needed.
     const addresses = succeeded.map(({ row, filled }) => ({
       address: row.address,
       label: row.label,
       balance: (filled.get(today) ?? 0n).toString(),
+      series: dateRange.map((d) => ({ date: d, balance: (filled.get(d) ?? 0n).toString() })),
     }));
 
     await setCexBalanceHistoryCache(series, addresses);
