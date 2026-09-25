@@ -19,49 +19,67 @@ const TABS = [
   { id: "portfolio", label: "Premium - Core Tier", accent: "gold" },
   { id: "premium", label: "PnL Statement", accent: "silver" },
 ];
+const FREE_TABS = TABS.filter((t) => !t.accent);
+const PAID_TABS = TABS.filter((t) => t.accent);
 
 const ACCENTS = {
   gold: { color: gold, glow: goldGlow, bgActive: "rgba(232,191,76,0.18)", bgInactive: "rgba(232,191,76,0.08)" },
   silver: { color: silver, glow: silverGlow, bgActive: "rgba(192,197,204,0.18)", bgInactive: "rgba(192,197,204,0.08)" },
 };
 
+function NavButton({ t, isActive, onChange }) {
+  const special = t.accent ? ACCENTS[t.accent] : null;
+  return (
+    <button
+      onClick={() => onChange(t.id)}
+      style={{
+        width: "100%",
+        minWidth: 0,
+        padding: "10px 8px",
+        borderRadius: 6,
+        border: `1px solid ${special || isActive ? special?.color ?? green : border}`,
+        background: special
+          ? isActive ? special.bgActive : special.bgInactive
+          : isActive ? "rgba(18,86,131,0.12)" : panel2,
+        color: special || isActive ? special?.color ?? green : mutedLight,
+        boxShadow: special && isActive ? `0 0 10px ${special.glow}` : undefined,
+        fontFamily: monoFont,
+        fontSize: 11,
+        letterSpacing: 0.6,
+        textTransform: "uppercase",
+        fontWeight: special ? 800 : 700,
+        cursor: "pointer",
+      }}
+    >
+      {t.label}
+    </button>
+  );
+}
+
+// Two fixed grids, not flex-wrap: the free tabs as 4x2 (2x4 on narrow screens) and the two paid
+// tabs as their own 2x1 row beneath — a deliberate, exact layout rather than "however many happen
+// to fit per row at the current width".
 export default function DashboardNav({ active, onChange }) {
   return (
-    <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
-      {/* On desktop the two paid tabs (Core Tier, PnL Statement) get their own row beneath the free ones; on
-          narrow screens the tabs just wrap as before, so the break is only switched on from 720px up. */}
-      <style>{`.dash-nav-break{display:none}@media (min-width:720px){.dash-nav-break{display:block;flex-basis:100%;height:0;margin-top:-8px}}`}</style>
-      {TABS.map((t, i) => {
-        const isActive = t.id === active;
-        const special = t.accent ? ACCENTS[t.accent] : null;
-        return (
-          <React.Fragment key={t.id}>
-          {t.accent && !TABS[i - 1]?.accent && <div className="dash-nav-break" />}
-          <button
-            onClick={() => onChange(t.id)}
-            style={{
-              flex: "1 1 120px",
-              padding: "10px 8px",
-              borderRadius: 6,
-              border: `1px solid ${special || isActive ? special?.color ?? green : border}`,
-              background: special
-                ? isActive ? special.bgActive : special.bgInactive
-                : isActive ? "rgba(18,86,131,0.12)" : panel2,
-              color: special || isActive ? special?.color ?? green : mutedLight,
-              boxShadow: special && isActive ? `0 0 10px ${special.glow}` : undefined,
-              fontFamily: monoFont,
-              fontSize: 11,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              fontWeight: special ? 800 : 700,
-              cursor: "pointer",
-            }}
-          >
-            {t.label}
-          </button>
-          </React.Fragment>
-        );
-      })}
+    <div style={{ marginBottom: 24 }}>
+      <style>{`
+        .dash-nav-free{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;}
+        .dash-nav-paid{display:grid;grid-template-columns:repeat(1,1fr);gap:8px;}
+        @media (min-width:720px){
+          .dash-nav-free{grid-template-columns:repeat(4,1fr);}
+          .dash-nav-paid{grid-template-columns:repeat(2,1fr);}
+        }
+      `}</style>
+      <div className="dash-nav-free">
+        {FREE_TABS.map((t) => (
+          <NavButton key={t.id} t={t} isActive={t.id === active} onChange={onChange} />
+        ))}
+      </div>
+      <div className="dash-nav-paid">
+        {PAID_TABS.map((t) => (
+          <NavButton key={t.id} t={t} isActive={t.id === active} onChange={onChange} />
+        ))}
+      </div>
     </div>
   );
 }
