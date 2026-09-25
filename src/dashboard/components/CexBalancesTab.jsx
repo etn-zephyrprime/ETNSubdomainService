@@ -85,15 +85,51 @@ export default function CexBalancesTab({ onSelectAddress }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [getCexBalanceHistory]);
 
-  // Self-healing the same way CoreTierPnl.jsx's own token filter is: if the selected address ever
-  // vanishes (a relabel, a fetch that dropped it this cycle), this quietly falls back to "combined"
-  // instead of showing a blank chart for something no longer in scope.
-  const selectedAddress =
-    selected !== "combined" && addresses.some((a) => a.address === selected) ? selected : "combined";
-  const selectedSeries =
-    selectedAddress === "combined" ? series : addresses.find((a) => a.address === selectedAddress)?.series;
-  const selectedLabel =
-    selectedAddress === "combined" ? "Combined" : addresses.find((a) => a.address === selectedAddress)?.label;
+  // Grouped by label, not a flat list — several addresses commonly share one CEX (KuCoin alone has
+  // four: two hot wallets, a Vault contract, and its proxy), so a flat dropdown quickly becomes hard
+  // to scan. Sorted alphabetically so the group order stays stable as addresses are added over time.
+  const groupedAddresses = useMemo(() => {
+    const byLabel = new Map();
+    for (const a of addresses) {
+      if (!byLabel.has(a.label)) byLabel.set(a.label, []);
+      byLabel.get(a.label).push(a);
+    }
+    return [...byLabel.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [addresses]);
+
+  // Three kinds of selection: "combined" (every tracked address), "cex:<label>" (every address
+  // sharing one CEX's label — offered only when that CEX has more than one, e.g. "All KuCoin"), or
+  // one specific address. Self-healing the same way CoreTierPnl.jsx's own token filter is: if the
+  // selected address/label ever vanishes (a relabel, a fetch that dropped it this cycle), this
+  // quietly falls back to "combined" instead of showing a blank chart for something no longer in scope.
+  const isValidSelection = (sel) => {
+    if (sel === "combined") return true;
+    if (sel.startsWith("cex:")) return addresses.some((a) => a.label === sel.slice(4));
+    return addresses.some((a) => a.address === sel);
+  };
+  const resolvedSelected = isValidSelection(selected) ? selected : "combined";
+
+  let selectedSeries;
+  let selectedLabel;
+  if (resolvedSelected === "combined") {
+    selectedSeries = series;
+    selectedLabel = "Combined";
+  } else if (resolvedSelected.startsWith("cex:")) {
+    const label = resolvedSelected.slice(4);
+    const group = addresses.filter((a) => a.label === label);
+    selectedLabel = label;
+    // Every address's own `series` shares the exact same date range, in the exact same order (see
+    // cexBalanceHistory.js's own dateRange) — safe to sum by index rather than re-matching on date.
+    const dates = group[0]?.series?.map((p) => p.date) || [];
+    selectedSeries = dates.map((date, i) => ({
+      date,
+      balance: group.reduce((sum, a) => sum + BigInt(a.series?.[i]?.balance ?? "0"), 0n).toString(),
+    }));
+  } else {
+    const match = addresses.find((a) => a.address === resolvedSelected);
+    selectedSeries = match?.series;
+    selectedLabel = match?.label;
+  }
 
   const chartData = useMemo(() => {
     if (!Array.isArray(selectedSeries)) return [];
@@ -155,10 +191,15 @@ export default function CexBalancesTab({ onSelectAddress }) {
             <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />{selectedLabel} ETN Balance — Rolling 12 Months
           </div>
           {addresses.length > 0 && (
-            <select value={selectedAddress} onChange={(e) => setSelected(e.target.value)} style={selectStyle}>
+            <select value={resolvedSelected} onChange={(e) => setSelected(e.target.value)} style={selectStyle}>
               <option value="combined">Combined (all addresses)</option>
-              {addresses.map((a) => (
-                <option key={a.address} value={a.address}>{a.label} ({shortHash(a.address)})</option>
+              {groupedAddresses.map(([label, group]) => (
+                <optgroup key={label} label={label}>
+                  {group.length > 1 && <option value={`cex:${label}`}>All {label} ({group.length})</option>}
+                  {group.map((a) => (
+                    <option key={a.address} value={a.address}>{shortHash(a.address)}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           )}
