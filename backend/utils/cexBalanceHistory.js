@@ -94,7 +94,10 @@ export function forwardFill(perDate, startDate, endDate) {
 
 let isRunning = false;
 
-async function refreshAndPublish() {
+// Exported so scripts/runCexBalanceHistory.js can trigger a real refresh on demand (e.g. right
+// after adding a new address via addCexAddress.js) instead of waiting up to CACHE_INTERVAL_MS for
+// the next scheduled cycle, or a redeploy for the immediate startup run.
+export async function refreshAndPublish() {
   if (isRunning) return; // previous refresh still in flight — skip this tick
   isRunning = true;
   try {

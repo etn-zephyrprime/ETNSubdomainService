@@ -24,9 +24,17 @@ export const MIGRATION_WALLET_ADDRESS = "0xC25CfD4901aA9b43ab81A57b423fd5D17ace9
 const POLL_INTERVAL_MS = process.env.MIGRATION_WALLET_INTERVAL_MS
   ? parseInt(process.env.MIGRATION_WALLET_INTERVAL_MS, 10)
   : 15 * 60 * 1000; // 15 minutes
-const BACKFILL_DAYS = process.env.MIGRATION_WALLET_HISTORY_DAYS
-  ? parseInt(process.env.MIGRATION_WALLET_HISTORY_DAYS, 10)
-  : 365;
+// How far before this wallet's own first-ever balance-changing event the chart starts — NOT a
+// fixed lookback window like cexBalanceHistory.js/teamWalletsBalanceHistory.js use (365 days):
+// this wallet's whole history is one credit event, so a year-long mostly-flat-at-zero chart with a
+// single jump near the very end wastes the entire chart on nothing happening. The walk below finds
+// this wallet's own real first event (paginating to genesis, not a cutoff date) and the chart
+// starts CONFIRMED_LEAD_DAYS before it instead — a short, honest "here's the moment right before
+// anything happened" lead-in, not an arbitrary year.
+const CONFIRMED_LEAD_DAYS = 7;
+// Safety net against a runaway address (an API change breaking pagination termination, or this
+// wallet someday acquiring a genuinely long real history) — walking all the way to genesis is fine
+// for a wallet this quiet; this just bounds the worst case, not an expected limit.
 const MAX_PAGES = 100;
 const MAX_TRANSACTIONS_SHOWN = 25;
 
@@ -46,15 +54,19 @@ async function fetchJson(path) {
   return res.json();
 }
 
-// Same walk as cexBalanceHistory.js's own fetchAddressBalanceEvents — see that file's own comment
-// for the full reasoning (real per-event balances from Blockscout's own ledger, not day-bucketed/
-// estimated). Also returns the single event with the LARGEST positive delta seen across the whole
-// walk — for a wallet whose balance was set once and hasn't moved since, that's unambiguously "the"
-// migration event; for one with ordinary activity it's just informational (biggest single credit),
-// never asserted as anything more specific than what the raw event itself shows.
-async function fetchBalanceEventsAndBiggestCredit(address, cutoffDate) {
+// Walks this wallet's ENTIRE coin-balance-history back to genesis (bounded by MAX_PAGES, not a
+// cutoff date — see CONFIRMED_LEAD_DAYS's own comment on why this wallet specifically wants its
+// real first event, not a fixed window) — real per-event balances from Blockscout's own ledger, not
+// day-bucketed/estimated. Also returns the single event with the LARGEST positive delta seen across
+// the whole walk — for a wallet whose balance was set once and hasn't moved since, that's
+// unambiguously "the" migration event; for one with ordinary activity it's just informational
+// (biggest single credit), never asserted as anything more specific than what the raw event itself
+// shows. `earliestDate` is this wallet's own real first balance-changing event's date — null if it
+// has never had one (a freshly-created address with zero history).
+async function fetchBalanceEventsAndBiggestCredit(address) {
   const perDate = new Map();
   let biggestCredit = null; // { date, blockNumber, timestamp, deltaWei }
+  let earliestDate = null;
   let params = null;
 
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -63,11 +75,10 @@ async function fetchBalanceEventsAndBiggestCredit(address, cutoffDate) {
     const items = res.items || [];
     if (items.length === 0) break;
 
-    let sawOlderThanCutoff = false;
     for (const item of items) {
       const date = dateKey(item.block_timestamp);
       if (!perDate.has(date)) perDate.set(date, item.value);
-      if (date < cutoffDate) sawOlderThanCutoff = true;
+      if (earliestDate === null || date < earliestDate) earliestDate = date;
 
       try {
         const delta = BigInt(item.delta ?? "0");
@@ -79,11 +90,11 @@ async function fetchBalanceEventsAndBiggestCredit(address, cutoffDate) {
       }
     }
 
-    if (sawOlderThanCutoff || !res.next_page_params) break;
+    if (!res.next_page_params) break; // reached genesis — items arrive newest-first, so this is the true end
     params = res.next_page_params;
   }
 
-  return { perDate, biggestCredit };
+  return { perDate, biggestCredit, earliestDate };
 }
 
 // Identical forward-fill to cexBalanceHistory.js's own — see that file's own comment for why the
@@ -113,16 +124,21 @@ async function refreshAndPublish() {
   isRunning = true;
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const cutoffDate = addDays(today, -BACKFILL_DAYS);
 
-    const [{ perDate, biggestCredit }, txRes] = await Promise.all([
-      fetchBalanceEventsAndBiggestCredit(MIGRATION_WALLET_ADDRESS, cutoffDate),
+    const [{ perDate, biggestCredit, earliestDate }, txRes] = await Promise.all([
+      fetchBalanceEventsAndBiggestCredit(MIGRATION_WALLET_ADDRESS),
       fetchJson(`/addresses/${MIGRATION_WALLET_ADDRESS}/transactions`),
     ]);
 
-    const filled = forwardFill(perDate, cutoffDate, today);
+    // Start CONFIRMED_LEAD_DAYS before this wallet's own real first event, not a fixed lookback —
+    // see that constant's own comment. Falls back to a short window ending today if the wallet has
+    // literally no balance history at all yet (shouldn't happen for the address this tracks, but
+    // keeps this function well-defined rather than producing an empty/negative range).
+    const startDate = addDays(earliestDate ?? today, -CONFIRMED_LEAD_DAYS);
+
+    const filled = forwardFill(perDate, startDate, today);
     const series = [];
-    for (let d = cutoffDate; d <= today; d = addDays(d, 1)) {
+    for (let d = startDate; d <= today; d = addDays(d, 1)) {
       series.push({ date: d, balance: (filled.get(d) ?? 0n).toString() });
     }
 
