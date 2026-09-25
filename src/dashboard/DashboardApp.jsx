@@ -130,8 +130,12 @@ export default function DashboardApp() {
           A third, more central pool (orange, bottom) used to sit here too — removed since, even
           toned down from gold to orange, a pool that size sitting behind the main content column
           read as a wash over the page rather than an edge accent. Same call made on the ETN
-          Subdomain Service main site's own central pool. */}
-      <div style={{ position: "fixed", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }} aria-hidden="true">
+          Subdomain Service main site's own central pool.
+          Dimmed on mobile: these two orbs' fixed 520-560px size assumes a wide viewport where they
+          sit tucked into the corners — on a narrow phone screen they're wider than the screen
+          itself, so they overlap heavily and read as one big glow sitting in the middle rather than
+          an edge accent. Confirmed live. Same isMobile flag DashboardHeader already uses. */}
+      <div style={{ position: "fixed", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0, opacity: isMobile ? 0.2 : 1 }} aria-hidden="true">
         <div style={{ position: "absolute", width: 560, height: 560, left: "-12%", top: "-16%", borderRadius: "50%", background: `radial-gradient(circle, ${greenGlow}, transparent 70%)`, filter: "blur(20px)" }} />
         <div style={{ position: "absolute", width: 520, height: 520, right: "-10%", top: "8%", borderRadius: "50%", background: `radial-gradient(circle, ${blueGlow}, transparent 70%)`, filter: "blur(20px)" }} />
       </div>

@@ -3,6 +3,7 @@ import { green, orange, blue, muted, mutedLight, panel2, border, monoFont } from
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
 import BridgeChart from "./BridgeChart.jsx";
+import MigrationWalletCard from "./MigrationWalletCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
 import { useEtnBridge } from "../hooks/useEtnBridge.js";
 import { formatCompact, formatInt, shortHash, timeAgo } from "../utils/format.js";
@@ -158,6 +159,8 @@ export default function EtnBridgeTab() {
           )}
         </div>
       )}
+
+      <MigrationWalletCard />
 
       {data?.updatedAt && <div style={{ fontSize: 10, color: muted }}>Updated {timeAgo(data.updatedAt)}</div>}
     </div>
