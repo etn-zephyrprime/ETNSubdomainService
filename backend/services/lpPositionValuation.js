@@ -412,7 +412,23 @@ async function finalizeV3Position(candidate, priceMap) {
  * show it unpriced, which is worse than this dedicated valuation). Plain array rather than a Set so
  * this is directly JSON-persistable to wallet_position_cache with no reshaping either way. Never
  * throws — one bad position/probe is skipped, not fatal to the rest. */
-async function computeLpPositionsLive(walletAddress, heldFungibleTokens) {
+// Exported so pnlPositionValuation.js can call this directly, bypassing getLiquidityPositionsUsd's
+// own cache entirely — see that file's own import comment for why: its candidate list is derived
+// from the FIFO LEDGER's open lots, not the wallet's live Blockscout balance the router below
+// builds its own candidates from. Those two lists can legitimately disagree (the ledger's own view
+// of "what's held" can drift from live truth for reasons that have nothing to do with staleness —
+// an ingestion gap, a lot the ledger tracks differently, etc.), so they were never really the same
+// computation to begin with. Confirmed live this was a real bug, not just a caching inefficiency:
+// sharing one wallet_position_cache row between the two meant whichever caller last wrote to it
+// could silently overwrite the OTHER caller's correct result with its own differently-scoped one —
+// on a wallet where the ledger-derived list dropped the LP token entirely, this intermittently
+// zeroed out the Portfolio page's own Liquidity Positions figure and the Composition chart's
+// liquidity slice, with the two candidate bases trading places every few seconds as each side's own
+// read/write cycle landed — exactly the "flickers 10-15% with no real activity" symptom reported
+// live. pnlPositionValuation.js's own caller (computeLivePnlSnapshot) already has its own 30s
+// snapshotCache one level up, so skipping this file's cache costs it nothing meaningful in practice
+// — the fingerprint mismatch meant it was barely ever hitting this cache anyway, just corrupting it.
+export async function computeLpPositionsLive(walletAddress, heldFungibleTokens) {
   const [v2Candidates, v3TokenIds] = await Promise.all([
     Promise.all(
       heldFungibleTokens.map((t) => {

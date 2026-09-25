@@ -18,7 +18,12 @@
 //    (`combineLockedPositionValue`), since defiPositionValuation reports legs by token.
 import Decimal from "decimal.js";
 import { ethers } from "ethers";
-import { getLiquidityPositionsUsd } from "./lpPositionValuation.js";
+// computeLpPositionsLive, not the cached getLiquidityPositionsUsd — this file's own candidate list
+// (below) is derived from the FIFO ledger's open lots, a genuinely different basis than the live
+// Blockscout-balance candidates the Portfolio page's own router builds. Sharing a cache between the
+// two was a confirmed real bug (intermittently zeroed the Portfolio page's own Liquidity Positions
+// figure) — see computeLpPositionsLive's own export comment in lpPositionValuation.js.
+import { computeLpPositionsLive } from "./lpPositionValuation.js";
 import { getOpenDefiPositionsUsd } from "./defiPositionValuation.js";
 import { POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 
@@ -86,7 +91,7 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
       candidates.push({ address: key, decimals: 18, rawBalance: ethers.parseUnits(qty.toFixed(18), 18).toString() });
     }
 
-    const lp = await getLiquidityPositionsUsd(trackedWallet, candidates);
+    const lp = await computeLpPositionsLive(trackedWallet, candidates);
     for (const p of lp.v2Positions) {
       const key = String(p.tokenAddress).toLowerCase();
       const qty = qtyByKey.get(key);
