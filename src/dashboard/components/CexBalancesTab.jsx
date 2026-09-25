@@ -4,9 +4,9 @@ import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
-import SparklineChart from "./SparklineChart.jsx";
+import CexBalanceLineChart from "./CexBalanceLineChart.jsx";
 import { useCexBalanceHistory } from "../hooks/useCexBalanceHistory.js";
-import { formatEtnBalance, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
 
 const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
@@ -123,8 +123,11 @@ export default function CexBalancesTab({ onSelectAddress }) {
 
       <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
         <CornerBrackets color={green} />
-        <div style={sectionLabelStyle}>
+        <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>
           <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />Combined ETN Balance — Rolling 12 Months
+        </div>
+        <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14 }}>
+          Every line is on by default — uncheck one below to isolate it, or compare a few at once to see who's actually reducing their ETN.
         </div>
 
         {chartStats ? (
@@ -149,7 +152,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
                 </div>
               </div>
             </div>
-            <SparklineChart data={chartData} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            <CexBalanceLineChart addresses={addresses} />
           </>
         ) : (
           <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
