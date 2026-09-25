@@ -13,6 +13,7 @@ const TABS = [
   { id: "address", label: "Address Lookup" },
   { id: "nameservice", label: "Name Service" },
   { id: "team", label: "Team Wallets" },
+  { id: "cex", label: "CEX Balances" },
   { id: "bridge", label: "ETN Bridge" },
   { id: "hyperlane", label: "Hyperlane Bridge" },
   { id: "portfolio", label: "Premium - Core Tier", accent: "gold" },

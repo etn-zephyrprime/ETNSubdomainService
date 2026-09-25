@@ -12,6 +12,7 @@ import TokenDetail from "./components/TokenDetail.jsx";
 import AddressLookup from "./components/AddressLookup.jsx";
 import NameServiceStats from "./components/NameServiceStats.jsx";
 import TeamWalletsTab from "./components/TeamWalletsTab.jsx";
+import CexBalancesTab from "./components/CexBalancesTab.jsx";
 import EtnBridgeTab from "./components/EtnBridgeTab.jsx";
 import HyperlaneBridgeTab from "./components/HyperlaneBridgeTab.jsx";
 import DashboardErrorBoundary from "./components/DashboardErrorBoundary.jsx";
@@ -205,6 +206,7 @@ export default function DashboardApp() {
           {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
           {tab === "nameservice" && <NameServiceStats />}
           {tab === "team" && <TeamWalletsTab onSelectAddress={handleSelectAddress} />}
+          {tab === "cex" && <CexBalancesTab onSelectAddress={handleSelectAddress} />}
           {tab === "bridge" && <EtnBridgeTab />}
           {tab === "hyperlane" && <HyperlaneBridgeTab />}
           {tab === "portfolio" && (
