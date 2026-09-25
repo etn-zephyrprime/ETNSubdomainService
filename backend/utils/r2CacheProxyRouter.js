@@ -48,6 +48,7 @@ const ALLOWED_FILES = new Set([
   "team-wallets.json",
   "team-wallets-balance-history.json",
   "cex-balance-history.json",
+  "migration-wallet-history.json",
   "etn-bridge.json",
   "hyperlane-bridge.json",
   "team-wallet-destinations.json",
