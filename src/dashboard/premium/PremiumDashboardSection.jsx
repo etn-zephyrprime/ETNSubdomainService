@@ -5,7 +5,6 @@ import PremiumWalletChip from "./components/PremiumWalletChip.jsx";
 import PnlStatementRequest from "./components/PnlStatementRequest.jsx";
 import PnlStatementViewer from "./components/PnlStatementViewer.jsx";
 import DashboardPanel from "./components/DashboardPanel.jsx";
-import StatCard from "../components/StatCard.jsx";
 import SparklineChart from "../components/SparklineChart.jsx";
 import { green, greenGlow, muted, mutedLight } from "../theme.js";
 
@@ -96,12 +95,6 @@ export default function PremiumDashboardSection({ initialStatementRequestId = nu
             <div style={{ fontSize: 11, color: mutedLight, textAlign: "center" }}>Stats unavailable right now.</div>
           ) : (
             <>
-              <StatCard
-                label="CORE Burned"
-                value={stats ? fmtCore(stats.totalCoreBurned) : "…"}
-                sub="Via this contract's own buy-and-burn — not other burn sources on Electroneum."
-              />
-
               <DashboardPanel>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
                   Statements Requested (Cumulative)

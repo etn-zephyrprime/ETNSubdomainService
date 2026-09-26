@@ -22,6 +22,7 @@ const POLL_INTERVAL_MS = 60000;
 // Wallets holding less than this are tucked behind a "show more" button, and movements older than
 // MOVEMENT_MAX_AGE_DAYS aren't listed (a year is also the balance chart's window).
 const MIN_LISTED_BALANCE_WEI = 1000n * 10n ** 18n; // 1,000 ETN
+const MIN_ALL_LIST_BALANCE_WEI = 100_000n * 10n ** 18n; // 100,000 ETN — the "All Suspected Team Wallets" list
 const MOVEMENT_MAX_AGE_DAYS = 365;
 
 function balanceOf(wallet) {
@@ -114,6 +115,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [showSmallWallets, setShowSmallWallets] = useState(false);
+  const [showAllSmallTeamWallets, setShowAllSmallTeamWallets] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,6 +168,12 @@ export default function TeamWalletsTab({ onSelectAddress }) {
     if (b.balanceWei === null) return -1;
     return b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0;
   });
+
+  // Only wallets holding 100,000+ ETN show by default; the rest (including any the feed has no balance for) sit
+  // behind a Show more button.
+  const isBigTeamWallet = (w) => w.balanceWei !== null && w.balanceWei >= MIN_ALL_LIST_BALANCE_WEI;
+  const smallTeamWalletCount = allTeamWallets.filter((w) => !isBigTeamWallet(w)).length;
+  const listedTeamWallets = showAllSmallTeamWallets ? allTeamWallets : allTeamWallets.filter(isBigTeamWallet);
 
   const movementCutoffMs = Date.now() - MOVEMENT_MAX_AGE_DAYS * 86400000;
   const recentMovements = movements.filter((m) => {
@@ -235,7 +243,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
       </div>
       <div style={{ position: "relative", padding: "0 14px 6px", background: panel2, border: `1px solid ${border}`, borderRadius: 4, marginBottom: 24 }}>
         <CornerBrackets color={green} />
-        {allTeamWallets.map((w) => (
+        {listedTeamWallets.map((w) => (
           <div key={w.address} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${border}`, flexWrap: "wrap" }}>
             <div style={{ minWidth: 0 }}>
               <a href={`${EXPLORER_BASE_URL}/address/${w.address}`} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#fff", fontFamily: monoFont, textDecoration: "none", wordBreak: "break-all" }}>
@@ -248,6 +256,16 @@ export default function TeamWalletsTab({ onSelectAddress }) {
             </div>
           </div>
         ))}
+        {smallTeamWalletCount > 0 && (
+          <div style={{ padding: "10px 0 4px", textAlign: "center" }}>
+            <button
+              onClick={() => setShowAllSmallTeamWallets((v) => !v)}
+              style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 6, color: mutedLight, fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6, fontSize: 11, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+            >
+              {showAllSmallTeamWallets ? "Show fewer" : `Show ${smallTeamWalletCount} more (under 100,000 ETN)`}
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={{ ...sectionLabelStyle, marginBottom: 4 }}>

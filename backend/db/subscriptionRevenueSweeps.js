@@ -1,5 +1,12 @@
 import { query } from "./pool.js";
 
+/** Total CORE burned by Core Tier subscription-revenue sweeps (the sweep scheduler's own log) — the
+ * Core Tier counterpart to buyAndBurnLog.getTotalCoreBurned, which covers PnL Statements. */
+export async function getTotalCoreBurnedBySweeps() {
+  const res = await query(`SELECT COALESCE(SUM(core_burned), 0) AS total FROM subscription_revenue_sweeps`);
+  return res?.rows[0]?.total || "0";
+}
+
 /** Every executed sweep, most recent first — the sweep scheduler's own audit trail (see
  * migrations/008_subscription_revenue_sweeps.sql for why balance/owed are recorded alongside the
  * swept amount, not just the amount itself). */

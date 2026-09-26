@@ -12,6 +12,7 @@ import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getById, getByTxHash, getByPayerWallet, getCumulativeRequestedSeries, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
 import { getTotalCoreBurned } from "../db/buyAndBurnLog.js";
+import { getTotalCoreBurnedBySweeps } from "../db/subscriptionRevenueSweeps.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
 import { periodTypeLabel } from "../services/periodTypes.js";
 import { verifyWalletOwnership } from "./walletAuth.js";
@@ -95,11 +96,14 @@ router.get("/pnl/statements", async (req, res) => {
 // cumulative "Statements Requested" chart — no auth needed (same posture as GET /games-style
 // endpoints elsewhere in this codebase): nothing here is keyed to any one wallet or request.
 router.get("/pnl/stats", async (req, res) => {
-  const [totalCoreBurned, cumulativeRequested] = await Promise.all([
+  const [totalCoreBurned, coreTierCoreBurned, cumulativeRequested] = await Promise.all([
     getTotalCoreBurned(),
+    getTotalCoreBurnedBySweeps(),
     getCumulativeRequestedSeries(),
   ]);
-  res.json({ totalCoreBurned, cumulativeRequested });
+  // combinedCoreBurned = PnL Statements + Core Tier — the Overview tab's "CORE Burned" card.
+  const combinedCoreBurned = String(Number(totalCoreBurned) + Number(coreTierCoreBurned));
+  res.json({ totalCoreBurned, coreTierCoreBurned, combinedCoreBurned, cumulativeRequested });
 });
 
 // Fills in the user-supplied self-owned-addresses list (watcher already created the row, fully
