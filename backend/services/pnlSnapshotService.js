@@ -25,6 +25,7 @@ import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { upsertPnlSnapshot, getExistingSnapshotDates } from "../db/pnlSnapshots.js";
+import { getPersistedPnlSnapshot, upsertPersistedPnlSnapshot } from "../db/pnlSnapshotCache.js";
 import { ingestWalletHistory, backfillDeferredPrices, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
 import { getBatchPricesUsd } from "../utils/tokenChartRouter.js";
@@ -285,9 +286,62 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   // result must never be handed back later as if it were a complete one).
   if (!isColdStart) {
     snapshotCache.set(cacheKey, { snapshot: result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+    // Persisted too (see getSnapshotFast) — fire-and-forget, a failed write must never fail a
+    // snapshot that was just computed successfully.
+    persistedMemo.set(cacheKey, { payload: result, computedAt: new Date().toISOString() });
+    upsertPersistedPnlSnapshot(cacheKey, result).catch((err) =>
+      console.warn(`⚠️  PnL snapshot: couldn't persist snapshot for ${trackedWallet}:`, err.message)
+    );
   }
 
   return result;
+}
+
+const inFlightSnapshotRefresh = new Map(); // cacheKey -> Promise, so a burst of polls starts ONE recompute
+// In-memory copy of the saved (Supabase) snapshot, so the frontend's 3s poll while `refreshing` doesn't
+// re-read a tens-of-KB JSONB row from Postgres on every tick (Supabase egress has been a real concern
+// here — see the snapshot cache header above). Filled on the first DB read and on every fresh
+// computation (see computeLivePnlSnapshot), so it never lags the row it mirrors.
+const persistedMemo = new Map(); // cacheKey -> { payload, computedAt: ISO string }
+
+/**
+ * The fast path for the PnL tab: returns a snapshot WITHOUT waiting for a full computation whenever
+ * one exists, or null when the caller has to compute normally (cold start, or nothing saved yet).
+ *   - fresh in-memory hit  -> { snapshot, refreshing: false }
+ *   - otherwise a snapshot saved in Supabase from an earlier computation -> served immediately as
+ *     { snapshot, refreshing: true, computedAt }, while exactly one background recompute (deduped per
+ *     key) brings it current. The frontend keeps polling while `refreshing` and swaps the fresh
+ *     figures in when the recompute has landed (it then hits the in-memory cache).
+ * Before this, every deploy/restart emptied the only cache (in-memory), so the first PnL load after
+ * one paid the full FIFO-replay + live-pricing cost — a couple of minutes on screen — even though the
+ * result had been computed and thrown away moments (or a day) earlier.
+ */
+export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
+  const ingestionState = await getIngestionState(trackedWallet).catch(() => null);
+  // Cold start: computeLivePnlSnapshot deliberately does its own priority-scoped, never-cached thing.
+  if (!ingestionState?.cold_start_completed_at) return null;
+
+  const cacheKey = snapshotCacheKey(trackedWallet, selfOwnedAddresses);
+  const ingestionUpdatedAtMs = ingestionState.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
+  const cached = snapshotCache.get(cacheKey);
+  if (cached && cached.ingestionUpdatedAt === ingestionUpdatedAtMs && Date.now() - cached.computedAt < SNAPSHOT_CACHE_TTL_MS) {
+    return { snapshot: cached.snapshot, refreshing: false };
+  }
+
+  let persisted = persistedMemo.get(cacheKey) || null;
+  if (!persisted) {
+    persisted = await getPersistedPnlSnapshot(cacheKey).catch(() => null);
+    if (persisted) persistedMemo.set(cacheKey, { payload: persisted.payload, computedAt: new Date(persisted.computedAt).toISOString() });
+  }
+  if (!persisted) return null;
+
+  if (!inFlightSnapshotRefresh.has(cacheKey)) {
+    const promise = computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses, null)
+      .catch((err) => console.error(`⚠️  PnL snapshot: background refresh failed for ${trackedWallet}:`, err.message))
+      .finally(() => inFlightSnapshotRefresh.delete(cacheKey));
+    inFlightSnapshotRefresh.set(cacheKey, promise);
+  }
+  return { snapshot: persisted.payload, refreshing: true, computedAt: persisted.computedAt };
 }
 
 /** Combines several wallets' own live snapshots (from computeLivePnlSnapshot) into one — holdings

@@ -22,6 +22,17 @@ const CATEGORY_OPTIONS = [
 ];
 const sectionHeaderStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
+// "5m ago" / "3h ago" / "2d ago" for the saved-figures note.
+function savedAgeText(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "earlier";
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 48 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+}
+
 function pnlColor(v) {
   return v > 0 ? green : v < 0 ? errorColor : mutedLight;
 }
@@ -278,10 +289,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // at that point `snapshot` already holds the real, freshly-computed figures from that same
   // response, no extra fetch needed.
   useEffect(() => {
-    if (!snapshot?.ingesting) return;
+    if (!snapshot?.ingesting && !snapshot?.refreshing) return;
     const id = setInterval(() => loadSnapshot(undefined, { silent: true }), INGEST_POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [snapshot?.ingesting, loadSnapshot]);
+  }, [snapshot?.ingesting, snapshot?.refreshing, loadSnapshot]);
 
   const toggleTokenSelection = (walletAddress, tokenAddress) => {
     setPickerSelections((prev) => {
@@ -541,6 +552,15 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
               </div>
             ) : combined ? (
               <>
+                {/* `refreshing`: these are real figures SAVED in Supabase from an earlier
+                    computation (see pnlSnapshotService.js's getSnapshotFast), shown immediately while
+                    a fresh one is computed in the background — the poll above swaps it in. Not the
+                    same as `ingesting` (nothing to show yet). */}
+                {snapshot.refreshing && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: mutedLight, marginBottom: 12 }}>
+                    <RefreshCw size={11} /> Showing your last saved figures{snapshot.staleAsOf ? ` (${savedAgeText(snapshot.staleAsOf)})` : ""} — updating with live prices…
+                  </div>
+                )}
                 {combined.pricingIncomplete && (
                   <div style={{ fontSize: 11, color: mutedLight, marginBottom: 12, fontStyle: "italic" }}>
                     Still finishing price history for some of your other tokens in the background — the figures below will fill

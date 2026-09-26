@@ -1293,7 +1293,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {(lpEntry.v2Positions || []).map((p) => (
-                          <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
+                          <div key={`${p.walletAddress || ""}-${p.tokenAddress}`} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                               <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
                                 <TokenPairLogo legs={p.legs} />
@@ -1306,6 +1306,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                             <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                               {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                             </div>
+                            {Number(p.lockedQuantity) > 0 && (
+                              <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                                {Math.round((Number(p.lockedQuantity) / Number(p.quantity)) * 100)}% of this position is locked in ElectroSwap's Locker — still yours, counted here.
+                              </div>
+                            )}
                           </div>
                         ))}
                         {(lpEntry.v3Positions || []).map((p) => (

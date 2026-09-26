@@ -253,7 +253,14 @@ router.post("/premium/liquidity-positions", async (req, res) => {
   // recompute already running. The real (if momentarily outdated) figures are already in `perWallet`
   // above; the frontend should keep showing them and just poll again shortly.
   const refreshing = perWallet.some((w) => w.refreshing);
-  res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses] }, refreshing });
+  // The combined view needs the actual position rows too (not just the total) — CoreTierPortfolio's
+  // Liquidity Positions list reads `combined.v2Positions/v3Positions` when no single wallet is
+  // filtered, and this used to omit them, so the "All wallets" view counted liquidity in the total but
+  // listed none of it. Each row keeps its wallet so two wallets in the same pool stay distinguishable.
+  const tag = (list, walletAddress) => (list || []).map((p) => ({ ...p, walletAddress }));
+  const v2Positions = perWallet.flatMap((w) => tag(w.v2Positions, w.walletAddress));
+  const v3Positions = perWallet.flatMap((w) => tag(w.v3Positions, w.walletAddress));
+  res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses], v2Positions, v3Positions }, refreshing });
 });
 
 

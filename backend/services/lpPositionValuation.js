@@ -81,8 +81,20 @@ const POSITIONS_CACHE_TTL_MS = process.env.LP_POSITIONS_CACHE_TTL_MS
 // defiPositionValuation.js's own inFlightRefresh.
 const inFlightRefresh = new Map(); // walletAddress (lowercase) -> Promise
 
+// "lp2:" prefix versions the fingerprint: it invalidates every wallet_position_cache 'lp' row written
+// before locked-liquidity support existed (those rows only ever counted LP tokens held directly, so
+// they under-report any wallet with liquidity in ElectroSwapLockerV2 — and, being "fresh" by
+// fingerprint, would otherwise have been served as correct indefinitely). Bump again if the meaning
+// of a cached payload ever changes.
+const FINGERPRINT_VERSION = "lp2:";
+// A persisted row that matches the current fingerprint is still only trusted this long: USD values
+// move with price, and a lock added/withdrawn changes the position without changing the wallet's
+// own token balances (so the fingerprint can't see it). Older than this is served immediately as
+// stale (`refreshing: true`) while a background recompute brings it current.
+const L2_MAX_AGE_MS = process.env.LP_L2_MAX_AGE_MS ? parseInt(process.env.LP_L2_MAX_AGE_MS, 10) : 10 * 60 * 1000;
+
 function tokensFingerprint(heldFungibleTokens) {
-  return heldFungibleTokens
+  return FINGERPRINT_VERSION + heldFungibleTokens
     .map((t) => `${t.address.toLowerCase()}:${t.rawBalance}`)
     .sort()
     .join(",");
@@ -208,7 +220,7 @@ export async function probeV2Pool(address) {
  * amounts, which is safe to do per-candidate since it's all pure on-chain reads, none of it hits
  * GeckoTerminal or gets batched into the "too many calls" failure mode pricing did. Returns null if
  * this address isn't confirmed to be a real ElectroSwap V2 pair. */
-async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals) {
+async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals, lockedRaw = 0n) {
   const meta = await probeV2Pool(tokenAddress);
   if (!meta) return null;
 
@@ -225,7 +237,16 @@ async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals) {
   const amount0 = share.times(new Decimal(ethers.formatUnits(reserves.reserve0, decimals0)));
   const amount1 = share.times(new Decimal(ethers.formatUnits(reserves.reserve1, decimals1)));
 
-  return { tokenAddress: tokenAddress.toLowerCase(), quantity: walletBalance.toString(), token0: meta.token0, token1: meta.token1, amount0, amount1 };
+  return {
+    tokenAddress: tokenAddress.toLowerCase(),
+    quantity: walletBalance.toString(),
+    // How much of `quantity` is sitting in ElectroSwapLockerV2 rather than in the wallet itself.
+    lockedQuantity: new Decimal(ethers.formatUnits(lockedRaw, decimals)).toString(),
+    token0: meta.token0,
+    token1: meta.token1,
+    amount0,
+    amount1,
+  };
 }
 
 /** Turns a resolveV2LpCandidate result into the final priced row, using the shared priceMap. */
@@ -240,6 +261,7 @@ async function finalizeV2LpPosition(candidate, priceMap) {
     kind: "v2_lp",
     tokenAddress: candidate.tokenAddress,
     quantity: candidate.quantity,
+    lockedQuantity: candidate.lockedQuantity,
     legs: [
       { tokenAddress: candidate.token0, symbol: meta0?.symbol || null, amount: candidate.amount0.toString(), usdValue: usd0?.toString() ?? null },
       { tokenAddress: candidate.token1, symbol: meta1?.symbol || null, amount: candidate.amount1.toString(), usdValue: usd1?.toString() ?? null },
@@ -404,6 +426,40 @@ async function finalizeV3Position(candidate, priceMap) {
   };
 }
 
+// ---------------------------------------------------------------------------------------------
+// LOCKED liquidity. ElectroSwap lets an owner lock LP tokens in ElectroSwapLockerV2 — the LP tokens
+// then sit in THAT contract's balance, not the owner's, so a valuation that only looks at what the
+// wallet itself holds (a plain Blockscout token-balance list) never sees them. Confirmed live: a
+// wallet owning 99.9% of the CORE/WETN pool held only 109k of 918k LP tokens directly; 808k were in
+// two locks (ids 28 and 32) it owns, so the pool showed ~$860 instead of ~$14k. The locker records
+// ownership on-chain: getLockIDsByOwner(owner) -> ids, getLockById(id) -> { pair, owner, amount, ... }.
+const LOCKER_ADDRESS = process.env.ELECTROSWAP_LOCKER_ADDRESS || "0x16ca736c8B181772009e598F37f137e9cD36AFAE";
+const LOCKER_ABI = [
+  "function getLockIDsByOwner(address _owner) view returns (uint256[])",
+  "function getLockById(uint256 _lockID) view returns (tuple(uint256 lockID, address pair, address owner, uint256 initial, uint256 amount, uint256 created, uint256 duration))",
+];
+const MAX_LOCKS_PER_WALLET = 50; // sanity bound, not an expected limit (a wallet has a handful at most)
+
+/** Map of lowercased pair address -> total LP amount (BigInt, raw) this wallet has locked in
+ * ElectroSwapLockerV2. Never throws: a failed lookup just means locked liquidity isn't counted this
+ * call (logged) — the same behavior as before this existed, not a failed valuation. */
+export async function getLockedLpByPair(walletAddress) {
+  const byPair = new Map();
+  try {
+    const locker = new ethers.Contract(LOCKER_ADDRESS, LOCKER_ABI, getProvider());
+    const ids = (await locker.getLockIDsByOwner(walletAddress)).slice(0, MAX_LOCKS_PER_WALLET);
+    const locks = await Promise.all(ids.map((id) => locker.getLockById(id).catch(() => null)));
+    for (const lock of locks) {
+      if (!lock || lock.owner.toLowerCase() !== walletAddress.toLowerCase() || lock.amount <= 0n) continue;
+      const key = lock.pair.toLowerCase();
+      byPair.set(key, (byPair.get(key) || 0n) + lock.amount);
+    }
+  } catch (err) {
+    console.warn(`⚠️  LP position valuation: couldn't read locked liquidity for ${walletAddress}:`, err.message);
+  }
+  return byPair;
+}
+
 /** The actual live computation — pure L3, no caching at all. See getLiquidityPositionsUsd below for
  * the cache levels wrapping this. Returns `{ v2Positions, v3Positions, totalUsd, hasUnpriced,
  * lpTokenAddresses }` — `lpTokenAddresses` is a plain array (lowercased) of `heldFungibleTokens`
@@ -428,10 +484,24 @@ async function finalizeV3Position(candidate, priceMap) {
 // live. pnlPositionValuation.js's own caller (computeLivePnlSnapshot) already has its own 30s
 // snapshotCache one level up, so skipping this file's cache costs it nothing meaningful in practice
 // — the fingerprint mismatch meant it was barely ever hitting this cache anyway, just corrupting it.
-export async function computeLpPositionsLive(walletAddress, heldFungibleTokens) {
+export async function computeLpPositionsLive(walletAddress, heldFungibleTokens, { includeLocked = true } = {}) {
+  // Fold locked LP (see getLockedLpByPair) into the candidate list: a pair the wallet also holds
+  // directly has the two amounts added; a pair it holds ONLY as a lock becomes a candidate of its own.
+  const lockedByPair = includeLocked ? await getLockedLpByPair(walletAddress) : new Map();
+  const candidateTokens = heldFungibleTokens.map((t) => ({ ...t, lockedRaw: 0n }));
+  for (const [pair, lockedRaw] of lockedByPair) {
+    const existing = candidateTokens.find((t) => t.address.toLowerCase() === pair);
+    if (existing) {
+      existing.rawBalance = (BigInt(existing.rawBalance) + lockedRaw).toString();
+      existing.lockedRaw = lockedRaw;
+    } else {
+      candidateTokens.push({ address: pair, decimals: 18, rawBalance: lockedRaw.toString(), lockedRaw }); // LP tokens are always 18 decimals
+    }
+  }
+
   const [v2Candidates, v3TokenIds] = await Promise.all([
     Promise.all(
-      heldFungibleTokens.map((t) => {
+      candidateTokens.map((t) => {
         // Number(...), not just `?? 18` -- t.decimals comes straight from Blockscout's raw JSON
         // (a STRING, e.g. "18") on every caller of this function (both coreTierDemoRouter.js and
         // CoreTierPortfolio.jsx build their own candidate list the same way, straight off
@@ -446,7 +516,7 @@ export async function computeLpPositionsLive(walletAddress, heldFungibleTokens) 
         // SAME known Blockscout gotcha already worked around elsewhere in this codebase (see
         // CoreTierDemo.jsx's own token-pricing effect).
         const decimals = Number(t.decimals ?? 18);
-        return resolveV2LpCandidate(t.address, BigInt(t.rawBalance), decimals).catch((err) => {
+        return resolveV2LpCandidate(t.address, BigInt(t.rawBalance), decimals, t.lockedRaw).catch((err) => {
           console.warn(`⚠️  LP position valuation: resolveV2LpCandidate failed for ${t.address} (treated as not-a-pair):`, err.message);
           return null;
         });
@@ -540,9 +610,10 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
   // instant instead of paying the full live-compute cost.
   const persisted = await getCachedPosition(walletAddress, "lp").catch(() => null);
   if (persisted) {
-    if (persisted.fingerprint === fingerprint) {
-      // The wallet's held tokens haven't changed since this was computed — still exactly correct,
-      // so it's safe to remember in L1 too.
+    const l2Age = persisted.computedAt ? Date.now() - new Date(persisted.computedAt).getTime() : Infinity;
+    if (persisted.fingerprint === fingerprint && l2Age < L2_MAX_AGE_MS) {
+      // The wallet's held tokens haven't changed and the row is recent (see L2_MAX_AGE_MS) — safe to
+      // remember in L1 too.
       positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now() });
       return persisted.payload;
     }
