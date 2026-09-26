@@ -91,7 +91,10 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
       candidates.push({ address: key, decimals: 18, rawBalance: ethers.parseUnits(qty.toFixed(18), 18).toString() });
     }
 
-    const lp = await computeLpPositionsLive(trackedWallet, candidates);
+    // includeLocked:false — this file prices each LEDGER lot per unit (position value / quantity), and
+    // the ledger's quantity is just what the wallet holds; the per-unit price is the same either way, so
+    // skip the extra locker RPC calls.
+    const lp = await computeLpPositionsLive(trackedWallet, candidates, { includeLocked: false });
     for (const p of lp.v2Positions) {
       const key = String(p.tokenAddress).toLowerCase();
       const qty = qtyByKey.get(key);
