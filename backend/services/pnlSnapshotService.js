@@ -113,6 +113,68 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
   return { events, transfers, defiActivity };
 }
 
+// ---- Shared ledger-state cache ------------------------------------------------------------------
+// The FIFO ledger for a wallet (open lots, locked lots, realized disposals, total gas) is a pure
+// function of its INGESTED data — it doesn't depend on prices or on when it's asked. Yet every
+// consumer used to rebuild it from scratch on each call: three whole-history SELECTs (transfers, swaps,
+// DeFi activity) plus a full replay. computeLivePnlSnapshot did that on every 30s-TTL miss (so any
+// member who simply reloaded the page), NFT PnL and Diamond Hands did it on EVERY call with no cache at
+// all. That is the dominant source of Supabase egress: 8GB used against a 5GB free-plan cap with only a
+// handful of users. The ledger only changes when ingestion advances a cursor, and
+// wallet_ingestion_state.updated_at moves exactly then (see upsertIngestionState), so it's cached
+// keyed on that — no TTL: nothing about it goes stale with time. A restart/deploy empties it (one
+// rebuild per wallet), which is fine.
+//
+// Stores only the compact result: `closing` (open + locked lots) and the realized disposals, plus the
+// summed gas — NOT the raw events/transfers, which are the large part. Callers must treat it as
+// READ-ONLY; getLedgerState hands out copies of the arrays for exactly that reason.
+const ledgerCache = new Map(); // key -> { ingestionUpdatedAt, closing: { lots, lockedLots, realizedEvents }, gasTotalUsd: Decimal }
+const LEDGER_CACHE_MAX_ENTRIES = 24; // ~ a handful of members x up to 4 wallets; each entry is a few hundred KB at most
+
+function rememberLedger(key, entry) {
+  ledgerCache.delete(key); // re-insert so Map order is recency order
+  ledgerCache.set(key, entry);
+  while (ledgerCache.size > LEDGER_CACHE_MAX_ENTRIES) ledgerCache.delete(ledgerCache.keys().next().value);
+}
+
+/**
+ * `{ closing, gasTotalUsd, asOf }` for one wallet — closing = { lots, lockedLots, realizedEvents }.
+ * Call AFTER ingestion has run (every existing caller already does). Cache hit -> no database read at
+ * all beyond the single ingestion-state row; miss -> the full history read + replay once, then cached.
+ * Never cached for a cold-start wallet or a priority-scoped run (`priorityAssets`): that result is a
+ * deliberately partial view (see computeLivePnlSnapshot's SAFETY BOUNDARY comment).
+ */
+export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
+  const now = new Date();
+  const state = await getIngestionState(trackedWallet).catch(() => null);
+  const cacheable = Boolean(state?.cold_start_completed_at) && !priorityAssets;
+  const key = snapshotCacheKey(trackedWallet, selfOwnedAddresses);
+  // Tagged with the timestamp read BEFORE the build, same philosophy as snapshotCache: if ingestion
+  // lands new data while we build, the next call sees a newer updated_at and rebuilds once — never a
+  // stale hit.
+  const updatedAtMs = state?.updated_at ? new Date(state.updated_at).getTime() : null;
+
+  if (cacheable) {
+    const hit = ledgerCache.get(key);
+    if (hit && hit.ingestionUpdatedAt === updatedAtMs) {
+      rememberLedger(key, hit);
+      return {
+        closing: { lots: hit.closing.lots.slice(), lockedLots: hit.closing.lockedLots.slice(), realizedEvents: hit.closing.realizedEvents.slice() },
+        gasTotalUsd: hit.gasTotalUsd,
+        asOf: now,
+      };
+    }
+  }
+
+  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
+  const { closing } = replayFifo(events, now, now);
+  const gas = await computeGasFeesUsd(transfers); // whole history — these views have no period to scope it to
+  const compact = { lots: closing.lots, lockedLots: closing.lockedLots || [], realizedEvents: closing.realizedEvents };
+
+  if (cacheable) rememberLedger(key, { ingestionUpdatedAt: updatedAtMs, closing: compact, gasTotalUsd: gas.totalGasUsd });
+  return { closing: compact, gasTotalUsd: gas.totalGasUsd, asOf: now };
+}
+
 /**
  * Live PnL snapshot for `trackedWallet` as of right now: current holdings (per token, valued at
  * today's price via the same ElectroSwap-derived pipeline the Statement uses), unrealized P&L, and
@@ -209,11 +271,11 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
 
   await ingestWalletHistory(trackedWallet, selfOwnedAddresses, priorityAssets);
 
-  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
+  // The ledger (lots + realized disposals + gas) — cached keyed on ingestion progress, see
+  // getLedgerState. Only the LIVE PRICING below is recomputed on every snapshot.
+  const { closing, gasTotalUsd } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets);
 
-  const { closing } = replayFifo(events, now, now);
-
-  const [valuation, gas] = await Promise.all([
+  const [valuation] = await Promise.all([
     // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
     // cost basis (see pnlPositionValuation.js) — so Current Value and Unrealized P&L include the
     // positions the Portfolio panel already counts.
@@ -225,11 +287,10 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
       const valuation = await valueInventoryAtTimestamp(closing.lots, now, { ...tokenPrices, ...positions.livePricesUsd });
       return addLockedPositionsToValuation(valuation, positions.lockedByToken);
     })(),
-    computeGasFeesUsd(transfers), // whole history — this view has no period to scope it to
   ]);
 
   const realizedPnlUsdGross = closing.realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
-  const realizedPnlUsd = realizedPnlUsdGross.minus(gas.totalGasUsd);
+  const realizedPnlUsd = realizedPnlUsdGross.minus(gasTotalUsd);
 
   // Per-token realized P&L, for the dashboard's token filter (CoreTierPnl.jsx) — GROSS of gas,
   // unlike the aggregate realizedPnlUsd above: gas is paid in ETN regardless of which token a
@@ -275,7 +336,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
       [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
       NFT_GROUPING_EXCLUSIONS
     ),
-    gasUsd: gas.totalGasUsd.toString(),
+    gasUsd: gasTotalUsd.toString(),
     // True only when THIS computation used priority scoping — the figures above are a lower
     // bound (same spirit as the rest of this app's "≈" convention) until the background backfill
     // (already kicked off) finishes filling in the deferred prices.

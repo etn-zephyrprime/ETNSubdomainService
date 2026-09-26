@@ -40,7 +40,66 @@ export function getPool() {
 export async function query(text, params) {
   const pool = getPool();
   if (!pool) return null;
-  return pool.query(text, params);
+  const res = await pool.query(text, params);
+  recordQueryUsage(text, res);
+  return res;
+}
+
+// ---- Egress instrumentation ------------------------------------------------------------------
+// Supabase's free plan caps EGRESS (bytes leaving the database), and there's no per-query view of it
+// in the dashboard. This tallies, per distinct statement, how many times it ran and roughly how many
+// bytes came back, and logs the top few once an hour — so "what is actually using our egress" is
+// answerable from the Render logs instead of guessed at. Deliberately cheap: only statements that
+// return 20+ rows are sized (a JSON.stringify of a huge result is itself real CPU), and the per-row
+// size is sampled from the first 5 rows and extrapolated rather than serializing everything.
+// Tallies are per process and reset on restart/deploy.
+const queryUsage = new Map(); // normalized statement -> { calls, rows, bytes }
+const SIZE_SAMPLE_MIN_ROWS = 20;
+
+function normalizeStatement(text) {
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 110);
+}
+
+function recordQueryUsage(text, res) {
+  try {
+    const rows = res?.rows?.length || 0;
+    let bytes = 0;
+    if (rows > 0) {
+      if (rows >= SIZE_SAMPLE_MIN_ROWS) {
+        const sample = res.rows.slice(0, 5);
+        bytes = Math.round((JSON.stringify(sample).length / sample.length) * rows);
+      } else {
+        bytes = JSON.stringify(res.rows).length;
+      }
+    }
+    const key = normalizeStatement(text);
+    const entry = queryUsage.get(key) || { calls: 0, rows: 0, bytes: 0 };
+    entry.calls += 1;
+    entry.rows += rows;
+    entry.bytes += bytes;
+    queryUsage.set(key, entry);
+  } catch {
+    // instrumentation must never affect a query
+  }
+}
+
+/** Top statements by estimated bytes returned since this process started. */
+export function getQueryUsageReport(limit = 8) {
+  return [...queryUsage.entries()]
+    .sort((a, b) => b[1].bytes - a[1].bytes)
+    .slice(0, limit)
+    .map(([statement, u]) => ({ statement, calls: u.calls, rows: u.rows, mb: Math.round((u.bytes / 1e6) * 10) / 10 }));
+}
+
+const USAGE_LOG_INTERVAL_MS = process.env.DB_USAGE_LOG_INTERVAL_MS ? parseInt(process.env.DB_USAGE_LOG_INTERVAL_MS, 10) : 60 * 60 * 1000;
+if (process.env.DATABASE_URL) {
+  const timer = setInterval(() => {
+    const report = getQueryUsageReport();
+    if (report.length === 0) return;
+    const totalMb = Math.round([...queryUsage.values()].reduce((s, u) => s + u.bytes, 0) / 1e5) / 10;
+    console.log(`📊 DB egress since start: ~${totalMb} MB returned. Top statements:\n` + report.map((r) => `   ${r.mb} MB · ${r.calls} calls · ${r.rows} rows · ${r.statement}`).join("\n"));
+  }, USAGE_LOG_INTERVAL_MS);
+  timer.unref?.(); // never keep the process alive just for this
 }
 
 /** Splits `array` into chunks of at most `size` items each — for any bulk multi-row INSERT built
