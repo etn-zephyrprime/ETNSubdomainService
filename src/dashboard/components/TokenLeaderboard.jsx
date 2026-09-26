@@ -10,6 +10,8 @@ import { formatCompact, formatUsdPrice, shortHash, isSpamTokenName } from "../ut
 import { ElectroSwap } from "../../../backend/assets/media.js";
 import NeonButton from "../../components/NeonButton.jsx";
 
+const TOP_TOKENS_SHOWN = 10; // Tokens tab: top N by liquidity (plus any with locked liquidity) before "Show more"
+
 const CATEGORIES = [
   { id: "tokens", label: "Tokens", type: "ERC-20" },
   { id: "nfts", label: "NFT's", type: "ERC-721,ERC-1155" },
@@ -26,6 +28,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [showAllTokens, setShowAllTokens] = useState(false);
 
   const activeType = CATEGORIES.find((c) => c.id === category).type;
 
@@ -87,6 +90,14 @@ export default function TokenLeaderboard({ onSelectToken }) {
       return b.liquidityUsd - a.liquidityUsd;
     });
 
+  // Tokens tab only: collapse to the top 10 by liquidity plus every token with locked liquidity; the rest
+  // sit behind "Show more". (Sorted above, so "top 10" is just the first 10.) NFTs are left as they were.
+  const collapseTokens = category === "tokens" && !showAllTokens;
+  const displayedTokens = collapseTokens
+    ? visibleTokens.filter((t, i) => i < TOP_TOKENS_SHOWN || lockBadgeText(t.lockInfo))
+    : visibleTokens;
+  const hiddenTokenCount = category === "tokens" ? visibleTokens.length - displayedTokens.length : 0;
+
   if (error) {
     return <div style={{ fontSize: 13, color: errorColor, textAlign: "center", padding: 24 }}>{error}</div>;
   }
@@ -133,7 +144,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
       ) : visibleTokens.length === 0 ? (
         <div style={{ fontSize: 13, color: muted, textAlign: "center", padding: 24 }}>Nothing found.</div>
       ) : (
-        visibleTokens.map((token) => (
+        displayedTokens.map((token) => (
           <div
             key={token.address}
             role="button"
@@ -197,7 +208,15 @@ export default function TokenLeaderboard({ onSelectToken }) {
         ))
       )}
 
-      {nextPageParams && (
+      {category === "tokens" && !loading && (hiddenTokenCount > 0 || showAllTokens) && (
+        <div style={{ textAlign: "center", marginTop: 12 }}>
+          <NeonButton variant="dark" onClick={() => setShowAllTokens((v) => !v)} style={{ padding: "8px 20px", fontSize: 12 }}>
+            {showAllTokens ? "Show fewer" : `Show ${hiddenTokenCount} more`}
+          </NeonButton>
+        </div>
+      )}
+
+      {nextPageParams && !collapseTokens && (
         <div style={{ textAlign: "center", marginTop: 12 }}>
           <NeonButton variant="dark" onClick={handleLoadMore} loading={loadingMore} style={{ padding: "8px 20px", fontSize: 12 }}>
             {loadingMore ? "Loading…" : "Load More"}

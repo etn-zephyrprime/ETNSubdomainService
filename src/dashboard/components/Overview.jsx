@@ -14,6 +14,8 @@ import { useCexAddresses } from "../hooks/useCexAddresses.js";
 import { formatCompact, formatInt, formatUsdCompact, shortHash, timeAgo, formatEtnBalance, formatChartDate } from "../utils/format.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
+import StatCard from "./StatCard.jsx";
+import { usePnlStats } from "../hooks/usePnlStats.js";
 import TileChart from "./TileChart.jsx";
 import EtnPriceChart from "./EtnPriceChart.jsx";
 import CalendarHeatmap from "./CalendarHeatmap.jsx";
@@ -209,6 +211,15 @@ const TOP_TX_STEP = 10;
 export default function Overview({ onSelectAddress }) {
   const { getStats, getTransactionsChart, getIndexingStatus, getTransactions, getBlocks } = useBlockscout();
   const { getSnapshots } = useDashboardStats();
+  const { getStats: getPnlStats } = usePnlStats();
+  const [coreBurned, setCoreBurned] = useState(null); // PnL Statements + Core Tier, from /api/pnl/stats
+  useEffect(() => {
+    let cancelled = false;
+    getPnlStats()
+      .then((d) => { if (!cancelled) setCoreBurned(d.combinedCoreBurned ?? d.totalCoreBurned); })
+      .catch((err) => console.error("Failed to load CORE burned:", err));
+    return () => { cancelled = true; };
+  }, [getPnlStats]);
   const { getTvlHistory } = useTvlHistory();
   const { getDailyBlockStats } = useDailyBlockStats();
   const { getHourlyActivity } = useHourlyActivity();
@@ -524,6 +535,14 @@ export default function Overview({ onSelectAddress }) {
         loading={!stats}
         renderChart={renderChart}
       />
+
+      <div style={{ marginTop: 24 }}>
+        <StatCard
+          label="CORE Burned"
+          value={coreBurned == null ? "…" : `${Number(coreBurned).toLocaleString(undefined, { maximumFractionDigits: 2 })} CORE`}
+          sub="PnL Statements + Core Tier combined, via this contract's own buy-and-burn — not other burn sources on Electroneum."
+        />
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginTop: 24 }}>
         <div>
