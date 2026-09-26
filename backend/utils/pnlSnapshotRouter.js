@@ -15,7 +15,7 @@ import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshot
 import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
-import { computeLivePnlSnapshot, combineLivePnlSnapshots } from "../services/pnlSnapshotService.js";
+import { computeLivePnlSnapshot, combineLivePnlSnapshots, getSnapshotFast } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
 import { computeTokenPnlHistory, combineTokenPnlHistory } from "../services/tokenPnlService.js";
@@ -120,6 +120,8 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     const failed = [];
     const needsSelection = [];
     const jobs = [];
+    let refreshing = false; // at least one wallet's figures are SAVED ones being refreshed in the background
+    let staleAsOf = null; // the oldest computedAt among those
     // Sequential, not Promise.all — same reasoning as pnlSnapshotScheduler.js's own poll loop: a
     // full FIFO replay + live pricing per wallet is real work, and a member only ever has up to 4
     // covered wallets (their own connected wallet + up to 3 explicitly tracked — see
@@ -144,6 +146,24 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
         // priorityAssets/SAFETY BOUNDARY comment for why that scoping only ever applies pre-cold-start).
         needsSelection.push({ walletAddress: address, availableTokens: await getSelectableTokens(address) });
         continue;
+      }
+
+      // Fast path: a fresh in-memory snapshot, or one SAVED in Supabase from an earlier computation
+      // (served right away while a single background recompute refreshes it) — see getSnapshotFast.
+      // Skips the ingest gate below: the recompute runs ingestWalletHistory itself, and the gate only
+      // exists to report progress for a slow SYNCHRONOUS run, which this path never does.
+      try {
+        const fast = await getSnapshotFast(address, selfOwnedAddresses);
+        if (fast) {
+          perWallet.push({ walletAddress: address, ...fast.snapshot });
+          if (fast.refreshing) {
+            refreshing = true;
+            if (!staleAsOf || new Date(fast.computedAt) < new Date(staleAsOf)) staleAsOf = fast.computedAt;
+          }
+          continue;
+        }
+      } catch (err) {
+        console.error(`⚠️  getSnapshotFast failed for wallet ${address} (computing normally):`, err.message);
       }
 
       // Every reconnect attempts a fresh sync (see checkAndStartIngestIfNeeded's own header
@@ -190,7 +210,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     // whatever DID finish this round still shows, rather than blocking everything on the slowest
     // wallet.
     const combined = perWallet.length > 0 ? combineLivePnlSnapshots(perWallet) : null;
-    res.json({ perWallet, combined, failed, needsSelection, ingesting: jobs.length > 0, jobs });
+    res.json({ perWallet, combined, failed, needsSelection, ingesting: jobs.length > 0, jobs, refreshing, staleAsOf });
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });
