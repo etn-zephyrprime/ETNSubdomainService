@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ethers } from "ethers";
 import { Wallet as WalletIcon, TriangleAlert, Sparkles, RefreshCw } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
@@ -7,6 +7,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
+import { usePortfolioSummary } from "../../hooks/usePortfolioSummary.js";
 import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useTokenPriceChanges } from "../../hooks/useTokenPriceChanges.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
@@ -132,6 +133,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getDefiPositions } = useDefiPositions();
   const { getLiquidityPositions } = useLiquidityPositions();
+  const { getPortfolioSummary, savePortfolioSummary } = usePortfolioSummary();
   const { getBatchTokenPrices } = useBatchTokenPrices();
   const { getTokenPriceChanges } = useTokenPriceChanges();
   const etnUsdPrice = useEtnPrice();
@@ -189,6 +191,31 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // on wallet-list/walletFilter changes — a member filtering out Staking/Yield Farms to see "just
   // my liquid holdings" would otherwise lose that choice on every reconnect/tab revisit.
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set());
+  // Last-known summary saved server-side (Supabase) — shown the instant the tab opens, and again
+  // while liquidity/staking are still loading, so the headline total never has to be built from
+  // scratch on screen. null until read (or if nothing's ever been saved). Replaced by the live
+  // figures the moment those have settled — see showCached below.
+  const [cachedSummary, setCachedSummary] = useState(null); // { perWallet: [...], hasUnpriced, computedAt } | null
+  const lastSavedTotalRef = useRef(null);
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setCachedSummary(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getPortfolioSummary(wallet.account, signature, timestamp);
+        if (!cancelled && res?.summary?.perWallet?.length) setCachedSummary({ ...res.summary, computedAt: res.computedAt });
+      } catch (err) {
+        console.warn("Couldn't read saved portfolio summary (showing live figures only):", err.message);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccess, active, wallet.account]);
+
   const toggleCategory = useCallback((key) => {
     setHiddenCategories((prev) => {
       const next = new Set(prev);
@@ -643,6 +670,136 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     value: c.key === "native" ? combinedUsdValue ?? 0 : c.key === "tokens" ? tokensUsdTotal : c.key === "liquidity" ? lpUsd ?? 0 : defiUsd ?? 0,
   }));
 
+  // ---- Saved (Supabase) summary: display + save -------------------------------------------------
+  // Cached wallets restricted to the member's CURRENT covered set (a wallet untracked since the
+  // save must not keep counting), then to the page-wide wallet filter, then summed by whichever
+  // categories are switched on — so the category checkboxes and wallet filter work on the saved
+  // figures exactly as they do on live ones.
+  const activeAddrSet = new Set(active.map((w) => w.address.toLowerCase()));
+  const cachedRows = (cachedSummary?.perWallet || [])
+    .filter((w) => activeAddrSet.has(w.address.toLowerCase()))
+    .filter((w) => walletFilter === "all" || w.address.toLowerCase() === String(walletFilter).toLowerCase())
+    .map((w) => ({
+      address: w.address,
+      total:
+        (categoryOn.native ? w.native : 0) + (categoryOn.tokens ? w.tokens : 0) +
+        (categoryOn.liquidity ? w.liquidity : 0) + (categoryOn.staking ? w.staking : 0),
+      parts: w,
+    }));
+  const cachedTotalUsd = cachedRows.reduce((sum, r) => sum + r.total, 0);
+  const cachedSlices = PORTFOLIO_CATEGORY_DEFS.filter((c) => categoryOn[c.key]).map((c) => ({
+    key: c.key,
+    label: c.label,
+    value: cachedRows.reduce((sum, r) => sum + r.parts[c.key], 0),
+  }));
+  // Show the saved figures while the live ones can't be trusted yet: before the live portfolio has
+  // loaded at all, or while liquidity/staking are still outstanding.
+  const showCached = cachedRows.length > 0 && (!portfolio || positionsBlocking);
+  const cachedAgeText = (() => {
+    const t = cachedSummary?.computedAt ? new Date(cachedSummary.computedAt).getTime() : NaN;
+    if (!Number.isFinite(t)) return "earlier";
+    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    return hrs < 48 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+  })();
+
+  // The live summary worth SAVING: only once EVERY source has genuinely reported (regardless of which
+  // categories are toggled — a hidden category must not save as $0), with no errors, so a partial
+  // figure can never overwrite a good saved one. Built from per-wallet parts so it's independent of
+  // the wallet filter.
+  const liveSummary = useMemo(() => {
+    if (!portfolio || etnUsdPrice == null) return null;
+    if (lpPositions === null || defiPositions === null || lpPositionsError || defiPositionsError) return null;
+    if (defiPositions.ingesting || defiPositions.refreshing || lpPositions.refreshing) return null;
+    const perWallet = perWalletTotals.map((w) => ({
+      address: w.address,
+      native: w.etnUsd,
+      tokens: w.tokensUsd,
+      liquidity: Number(lpPositions.perWallet?.find((x) => x.walletAddress === w.address)?.totalUsd ?? 0),
+      staking: Number(defiPositions.perWallet?.find((x) => x.walletAddress === w.address)?.totalUsd ?? 0),
+    }));
+    const total = perWallet.reduce((sum, w) => sum + w.native + w.tokens + w.liquidity + w.staking, 0);
+    if (!(total > 0)) return null;
+    const hasUnpriced =
+      perWalletTotals.some((w) => w.hasUnpriced) ||
+      Boolean(defiPositions.combined?.hasUnpriced) || Boolean(lpPositions.combined?.hasUnpriced);
+    return { perWallet, hasUnpriced, total };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolio, etnUsdPrice, lpPositions, defiPositions, lpPositionsError, defiPositionsError, tokenPrices]);
+
+  // Debounced: token prices trickle in after the balances do, so the live figures keep shifting for a
+  // few seconds — only save once they've held still, and skip the write when the total is within
+  // 0.5% of what's already saved (this runs on every visit; most of the time nothing moved).
+  const liveSummaryTotal = liveSummary ? Math.round(liveSummary.total) : null;
+  useEffect(() => {
+    if (!liveSummary || !hasAccess) return;
+    const t = setTimeout(async () => {
+      const cachedAll = (cachedSummary?.perWallet || []).reduce((sum, w) => sum + w.native + w.tokens + w.liquidity + w.staking, 0);
+      const last = lastSavedTotalRef.current ?? (cachedAll > 0 ? cachedAll : null);
+      if (last != null && Math.abs(liveSummary.total - last) <= last * 0.005) return;
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        await savePortfolioSummary(wallet.account, signature, timestamp, { perWallet: liveSummary.perWallet, hasUnpriced: liveSummary.hasUnpriced });
+        lastSavedTotalRef.current = liveSummary.total;
+      } catch (err) {
+        console.warn("Couldn't save portfolio summary:", err.message);
+      }
+    }, 6000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSummaryTotal, hasAccess]);
+
+  // The 4-category filter row — a const so the live view and the saved-summary view share it.
+  const categoryFilterRow = (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+      {PORTFOLIO_CATEGORY_DEFS.map((c) => {
+        const isOn = categoryOn[c.key];
+        return (
+          <label
+            key={c.key}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "5px 10px",
+              borderRadius: 20,
+              border: `1px solid ${isOn ? green : border}`,
+              background: isOn ? "rgba(24,187,26,0.10)" : "transparent",
+              cursor: "pointer",
+              opacity: isOn ? 1 : 0.55,
+              fontSize: 11,
+              fontFamily: monoFont,
+              color: isOn ? "#fff" : mutedLight,
+              userSelect: "none",
+            }}
+          >
+            <input type="checkbox" checked={isOn} onChange={() => toggleCategory(c.key)} style={{ accentColor: green, flexShrink: 0 }} />
+            {c.label}
+          </label>
+        );
+      })}
+    </div>
+  );
+
+  // Per-wallet rows for the saved-summary view (no 24h badges: those need live price legs).
+  const cachedRowsList =
+    walletFilter === "all" && cachedRows.length > 0 ? (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12, opacity: 0.75 }}>
+        {cachedRows.map((r) => (
+          <div key={r.address} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span style={{ color: mutedLight }}>
+              {r.address.toLowerCase() === wallet.account?.toLowerCase() ? "You — " : ""}
+              {resolveName(r.address)}
+            </span>
+            <RowLeader />
+            <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(r.total)}</span>
+          </div>
+        ))}
+      </div>
+    ) : null;
+
   const renderPending = () => {
     if (!pending) return null;
     const isAdd = pending.type === "add";
@@ -910,7 +1067,31 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
               {portfolioError ? (
                 <div style={{ fontSize: 12, color: errorColor }}>{portfolioError}</div>
               ) : !portfolio ? (
-                <div style={{ fontSize: 12, color: mutedLight }}>Loading combined portfolio…</div>
+                showCached ? (
+                  <>
+                    <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                        Total Portfolio Balance (USD)
+                      </div>
+                      {categoryFilterRow}
+                      <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: 0.75 }}>
+                        {cachedSummary?.hasUnpriced ? "≈ " : ""}{formatUsdPrice(cachedTotalUsd)}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: mutedLight, marginTop: 4 }}>
+                        <RefreshCw size={11} /> Last saved {cachedAgeText} — refreshing live balances…
+                      </div>
+                      {cachedRowsList}
+                    </div>
+                    <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+                      <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
+                        Portfolio Composition
+                      </div>
+                      <PortfolioCompositionChart slices={cachedSlices} hasUnpriced={Boolean(cachedSummary?.hasUnpriced)} />
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: mutedLight }}>Loading combined portfolio…</div>
+                )
               ) : (
                 <>
                   <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
@@ -921,40 +1102,18 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     {/* Filters which of the 4 categories count toward the total below AND the
                         Portfolio Composition chart further down — one control for both, since a
                         total that disagreed with its own chart would be confusing. */}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-                      {PORTFOLIO_CATEGORY_DEFS.map((c) => {
-                        const isOn = categoryOn[c.key];
-                        return (
-                          <label
-                            key={c.key}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              padding: "5px 10px",
-                              borderRadius: 20,
-                              border: `1px solid ${isOn ? green : border}`,
-                              background: isOn ? "rgba(24,187,26,0.10)" : "transparent",
-                              cursor: "pointer",
-                              opacity: isOn ? 1 : 0.55,
-                              fontSize: 11,
-                              fontFamily: monoFont,
-                              color: isOn ? "#fff" : mutedLight,
-                              userSelect: "none",
-                            }}
-                          >
-                            <input type="checkbox" checked={isOn} onChange={() => toggleCategory(c.key)} style={{ accentColor: green, flexShrink: 0 }} />
-                            {c.label}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: positionsBlocking ? 0.45 : 1, transition: "opacity 0.2s" }}>
-                      {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced || positionsBlocking ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
+                    {categoryFilterRow}
+                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: positionsBlocking ? (showCached ? 0.75 : 0.45) : 1, transition: "opacity 0.2s" }}>
+                      {showCached
+                        ? `${cachedSummary?.hasUnpriced ? "≈ " : ""}${formatUsdPrice(cachedTotalUsd)}`
+                        : totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced || positionsBlocking ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
                     </div>
                     {positionsBlocking && (
                       <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: mutedLight, marginTop: 4 }}>
-                        <RefreshCw size={11} /> Still loading {[lpBlocking && "liquidity", defiBlocking && "staking / farming"].filter(Boolean).join(" and ")} positions — this total will rise once they're in.
+                        <RefreshCw size={11} />
+                        {showCached
+                          ? ` Showing your last saved total (${cachedAgeText}) — refreshing ${[lpBlocking && "liquidity", defiBlocking && "staking / farming"].filter(Boolean).join(" and ")} positions.`
+                          : ` Still loading ${[lpBlocking && "liquidity", defiBlocking && "staking / farming"].filter(Boolean).join(" and ")} positions — this total will rise once they're in.`}
                       </div>
                     )}
                     {totalChange24h && !positionsBlocking && (
@@ -987,7 +1146,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       </div>
                     )}
 
-                    {walletFilter === "all" && (
+                    {showCached && cachedRowsList}
+                    {walletFilter === "all" && !showCached && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12, opacity: positionsBlocking ? 0.45 : 1, transition: "opacity 0.2s" }}>
                         {filteredWalletTotals.map((w) => {
                           // Each row includes that wallet's own liquidity and staking/farm positions,
@@ -1040,7 +1200,9 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       Portfolio Composition
                       <InfoTooltip text="How your Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it. A $0 category means nothing's there yet, or it just hasn't priced — the total above tells you which." />
                     </div>
-                    {positionsBlocking ? (
+                    {showCached ? (
+                      <PortfolioCompositionChart slices={cachedSlices} hasUnpriced={Boolean(cachedSummary?.hasUnpriced)} />
+                    ) : positionsBlocking ? (
                       <div style={{ height: 150, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: muted, textAlign: "center", padding: "0 12px" }}>
                         Waiting for liquidity and staking positions before drawing the split — so it doesn't reshuffle when they arrive.
                       </div>
