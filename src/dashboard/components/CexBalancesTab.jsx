@@ -34,6 +34,18 @@ function balanceOf(entry) {
   }
 }
 
+// Same breakpoint DashboardApp.jsx uses for its own isMobile flag.
+const MOBILE_MAX_WIDTH = 768;
+
+// A cex_addresses label can carry a long explanatory suffix — e.g. "Unknown CEX (unconfirmed -
+// high-frequency payout pattern)", written that way deliberately as an honest note-to-self about
+// how sure the entry is. Fine on desktop, but it wraps/overflows a phone-width row and dropdown, so
+// on mobile only, everything from the first "(" onward is dropped. The full label stays the
+// identity used for grouping/selection either way — this only changes what's DISPLAYED.
+function shortLabel(label) {
+  return label.replace(/\s*\(.*$/, "").trim() || label;
+}
+
 function formatValue(v) {
   return `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
 }
@@ -61,6 +73,13 @@ export default function CexBalancesTab({ onSelectAddress }) {
   // one you're looking at (same pattern as CoreTierPnl.jsx's own token filter) is the more usable
   // way to answer "who's actually reducing their ETN" one exchange at a time.
   const [selected, setSelected] = useState("combined");
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= MOBILE_MAX_WIDTH);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= MOBILE_MAX_WIDTH);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const displayLabel = (label) => (isMobile ? shortLabel(label) : label);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,14 +207,14 @@ export default function CexBalancesTab({ onSelectAddress }) {
         <CornerBrackets color={green} />
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <div style={{ ...sectionLabelStyle, marginBottom: 0 }}>
-            <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />{selectedLabel} ETN Balance — Rolling 12 Months
+            <TokenLogo address="NATIVE" label="ETN" size={16} spacing={7} />{displayLabel(selectedLabel || "")} ETN Balance — Rolling 12 Months
           </div>
           {addresses.length > 0 && (
             <select value={resolvedSelected} onChange={(e) => setSelected(e.target.value)} style={selectStyle}>
               <option value="combined">Combined (all addresses)</option>
               {groupedAddresses.map(([label, group]) => (
-                <optgroup key={label} label={label}>
-                  {group.length > 1 && <option value={`cex:${label}`}>All {label} ({group.length})</option>}
+                <optgroup key={label} label={displayLabel(label)}>
+                  {group.length > 1 && <option value={`cex:${label}`}>All {displayLabel(label)} ({group.length})</option>}
                   {group.map((a) => (
                     <option key={a.address} value={a.address}>{shortHash(a.address)}</option>
                   ))}
@@ -265,7 +284,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: "#fff", fontWeight: 700, fontFamily: monoFont, whiteSpace: "nowrap" }}>{a.label}</div>
+                <div style={{ fontSize: 12, color: "#fff", fontWeight: 700, fontFamily: monoFont, whiteSpace: "nowrap" }}>{displayLabel(a.label)}</div>
                 <div style={{ fontSize: 10, color: muted, fontFamily: monoFont, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {shortHash(a.address)}
                 </div>
