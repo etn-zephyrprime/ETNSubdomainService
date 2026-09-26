@@ -139,7 +139,17 @@ async function refreshAndPublish() {
       series.push({ date: d, totalBalance: total.toString() });
     }
 
-    await setTeamWalletsBalanceHistoryCache(series);
+    // Per-wallet daily balances (whole ETN, aligned to `series` by index) so the chart can be filtered to one
+    // wallet. Whole ETN rather than wei keeps the file small; a wallet whose fetch failed is left out.
+    const dates = series.map((p) => p.date);
+    const wallets = {};
+    TEAM_WALLET_ADDRESSES.forEach((address, i) => {
+      const walletMap = perWalletFilled[i];
+      if (!walletMap) return;
+      wallets[address.toLowerCase()] = dates.map((d) => Number((walletMap.get(d) ?? 0n) / 10n ** 18n));
+    });
+
+    await setTeamWalletsBalanceHistoryCache(series, wallets);
     console.log(`📈 Team wallets balance history updated — ${series.length} day(s), ${succeeded.length}/${TEAM_WALLET_ADDRESSES.length} wallet(s)`);
   } catch (err) {
     console.error("⚠️  Team wallets balance history refresh failed:", err.message);

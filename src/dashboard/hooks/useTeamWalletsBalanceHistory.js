@@ -10,12 +10,12 @@ export function useTeamWalletsBalanceHistory() {
   const getBalanceHistory = useCallback(async () => {
     try {
       const res = await fetch(r2ProxyUrl("team-wallets-balance-history.json"));
-      if (!res.ok) return [];
+      if (!res.ok) return { series: [], wallets: {} };
       const data = await res.json();
-      return Array.isArray(data?.series) ? data.series : [];
+      return { series: Array.isArray(data?.series) ? data.series : [], wallets: data?.wallets || {} };
     } catch (err) {
       console.warn("Team wallets balance history fetch failed:", err.message);
-      return [];
+      return { series: [], wallets: {} };
     }
   }, []);
 

@@ -2,13 +2,13 @@ import React, { useEffect, useState } from "react";
 import { green, orange, blue, error as red, muted, mutedLight, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWalletDestinations } from "../hooks/useTeamWalletDestinations.js";
-import { formatCompact, shortHash, timeAgo } from "../utils/format.js";
+import { formatEtnShort, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
 
 const sectionLabel = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted };
-const etn = (n) => `${formatCompact(n)} ETN`;
+const etn = (n) => `${formatEtnShort(Number(n))} ETN`;
 
 const KIND = {
   exchange: { label: "EXCHANGE", color: orange },
