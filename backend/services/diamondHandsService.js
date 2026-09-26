@@ -23,8 +23,7 @@
 import Decimal from "decimal.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
-import { buildEventsForWallet } from "./pnlSnapshotService.js";
-import { replayFifo } from "./fifoLotEngine.js";
+import { getLedgerState } from "./pnlSnapshotService.js";
 import { getPricePointsSince } from "../db/pricePoints.js";
 
 // Rolling window (ending at each disposal) a "recent high" is measured over, and how far below
@@ -272,8 +271,9 @@ async function getWalletLedgerState(trackedWallet, selfOwnedAddresses) {
   if (!ingestionState?.cold_start_completed_at) {
     await ingestWalletHistory(trackedWallet, selfOwnedAddresses, null);
   }
-  const { events } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, now);
-  const { closing } = replayFifo(events, now, now);
+  // Shared, ingestion-keyed ledger cache (see getLedgerState) — this used to rebuild the whole
+  // ledger from three full-history SELECTs on every single call, uncached.
+  const { closing } = await getLedgerState(trackedWallet, selfOwnedAddresses, null);
   return { lots: closing.lots, realizedEvents: closing.realizedEvents, now };
 }
 

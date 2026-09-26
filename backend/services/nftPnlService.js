@@ -22,6 +22,7 @@
 // apart, never a second, separately-tracked concept.
 import Decimal from "decimal.js";
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
+import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { buildNftEvents } from "./pnlEventBuilder.js";
@@ -169,6 +170,14 @@ export function buildRollups(byToken, unmatchedCount) {
  * member's own tracked wallets is correctly excluded from realized P&L (see buildNftEvents'
  * is_self_transfer handling) — same convention computeLivePnlSnapshot already uses.
  */
+// Whole result cached keyed on ingestion progress — NFT PnL uses no live prices, so it's a pure
+// function of the ingested transfers and only changes when wallet_ingestion_state.updated_at moves
+// (see upsertIngestionState). It used to be recomputed from a full-history SELECT on EVERY call with no
+// cache at all — one of the biggest sources of Supabase egress (see pnlSnapshotService.js's
+// getLedgerState comment for the full story). Small entry (per-collection/token rollups), LRU-capped.
+const nftSnapshotCache = new Map(); // key -> { ingestionUpdatedAt, snapshot }
+const NFT_CACHE_MAX_ENTRIES = 24;
+
 export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresses = []) {
   // Ensures this wallet's transfer history is ingested — cheap/no-op if already done (resumes from
   // last_ingested_block, same as computeLivePnlSnapshot's own call). No priorityAssets scoping: NFT
@@ -176,6 +185,27 @@ export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresse
   // first computation" to speed up the way the fungible-token panel has.
   await ingestWalletHistory(trackedWallet, selfOwnedAddresses);
 
+  const cacheKey = `${trackedWallet.toLowerCase()}|${[...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",")}`;
+  const state = await getIngestionState(trackedWallet).catch(() => null);
+  const updatedAtMs = state?.updated_at ? new Date(state.updated_at).getTime() : null;
+  const cacheable = Boolean(state?.cold_start_completed_at);
+  const hit = cacheable ? nftSnapshotCache.get(cacheKey) : null;
+  if (hit && hit.ingestionUpdatedAt === updatedAtMs) {
+    nftSnapshotCache.delete(cacheKey);
+    nftSnapshotCache.set(cacheKey, hit); // recency order
+    return hit.snapshot;
+  }
+
+  const snapshot = await buildLiveNftPnlSnapshot(trackedWallet);
+  if (cacheable) {
+    nftSnapshotCache.delete(cacheKey);
+    nftSnapshotCache.set(cacheKey, { ingestionUpdatedAt: updatedAtMs, snapshot });
+    while (nftSnapshotCache.size > NFT_CACHE_MAX_ENTRIES) nftSnapshotCache.delete(nftSnapshotCache.keys().next().value);
+  }
+  return snapshot;
+}
+
+async function buildLiveNftPnlSnapshot(trackedWallet) {
   const now = new Date();
   const transfers = await getAllTransfersBefore(trackedWallet, now);
   const { events, unmatchedCount } = buildNftEvents(transfers);

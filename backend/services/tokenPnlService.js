@@ -35,7 +35,7 @@ import { getIngestionState } from "../db/walletIngestionState.js";
 const tokenHistoryCache = new Map(); // cacheKey -> { points, computedAt: ms, ingestionUpdatedAt: ms|null }
 const TOKEN_HISTORY_CACHE_TTL_MS = process.env.PNL_TOKEN_HISTORY_CACHE_TTL_MS
   ? parseInt(process.env.PNL_TOKEN_HISTORY_CACHE_TTL_MS, 10)
-  : 30000;
+  : 10 * 60 * 1000; // 10 min: history is fixed data plus today's live price — the whole-history read behind it is the expensive part (see pnlSnapshotService.js's getLedgerState comment)
 
 function tokenHistoryCacheKey(trackedWallet, selfOwnedAddresses, tokenKey, windowDays) {
   const selfOwnedKey = [...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",");
