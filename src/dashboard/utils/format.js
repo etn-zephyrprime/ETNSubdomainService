@@ -57,10 +57,21 @@ export function formatUsdPrice(value) {
   return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** Native ETN balance (always 18 decimals) — same rounding as this app's own formatEth. */
+/** An ETN amount as a plain number: 2 decimals below 1,000,000, compact ("1M", "97.1M", "2.19B")
+ * from 1,000,000 up — a 9-digit balance with cents is unreadable in a list row or chart stat, and the
+ * cents mean nothing at that size. */
+export function formatEtnAmount(n) {
+  if (!Number.isFinite(n)) return "—";
+  if (Math.abs(n) >= 1_000_000) {
+    return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n);
+  }
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Native ETN balance (always 18 decimals) — see formatEtnAmount for the compact-over-1M rule. */
 export function formatEtnBalance(wei) {
   try {
-    return parseFloat(ethers.formatEther(wei)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return formatEtnAmount(parseFloat(ethers.formatEther(wei)));
   } catch {
     return "—";
   }

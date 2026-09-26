@@ -540,14 +540,20 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
   // instant instead of paying the full live-compute cost.
   const persisted = await getCachedPosition(walletAddress, "lp").catch(() => null);
   if (persisted) {
-    // Populate L1 under THIS fingerprint either way — even a stale L2 row is worth remembering for
-    // repeat calls with the same (unchanged) candidate list until the background refresh lands.
-    positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now() });
-
     if (persisted.fingerprint === fingerprint) {
-      // The wallet's held tokens haven't changed since this was computed — still exactly correct.
+      // The wallet's held tokens haven't changed since this was computed — still exactly correct,
+      // so it's safe to remember in L1 too.
+      positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now() });
       return persisted.payload;
     }
+
+    // A STALE row must NOT be put in L1 under the current fingerprint's key. It used to be: the
+    // very next poll (3s later) then hit that L1 entry, got the stale numbers back WITHOUT the
+    // `refreshing` flag, and the frontend stopped polling — so the fresh recompute finished in the
+    // background but nothing ever fetched it, and a stale/light figure (e.g. a row written before
+    // the LP cache-sharing fix, missing a position) stayed on screen until a manual reload. Left out
+    // of L1, every poll re-reads L2, keeps getting `refreshing: true`, and picks up the fresh value
+    // the moment recomputeAndPersistLpPositions writes it.
 
     // Stale: the wallet's held tokens have changed since this was computed. Still real numbers for
     // whatever hasn't changed — serve immediately, and kick exactly one background recompute per

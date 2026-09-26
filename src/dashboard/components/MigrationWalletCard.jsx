@@ -6,7 +6,7 @@ import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
 import SparklineChart from "./SparklineChart.jsx";
 import { useMigrationWalletHistory } from "../hooks/useMigrationWalletHistory.js";
-import { formatCompact, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { formatCompact, formatEtnAmount, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { MIGRATION_WALLET_ADDRESS } from "../utils/migrationWallet.js";
 
@@ -15,7 +15,7 @@ const POLL_INTERVAL_MS = 300000; // backend refreshes every 15 min — this just
 
 function etn(wei) {
   try {
-    return `${parseFloat(ethers.formatEther(wei)).toLocaleString(undefined, { maximumFractionDigits: 2 })} ETN`;
+    return `${formatEtnAmount(parseFloat(ethers.formatEther(wei)))} ETN`;
   } catch {
     return "—";
   }
@@ -98,7 +98,7 @@ export default function MigrationWalletCard() {
           </div>
 
           {chartData.length >= 2 ? (
-            <SparklineChart data={chartData} height={120} formatValue={(v) => `${v.toLocaleString(undefined, { maximumFractionDigits: 2 })} ETN`} formatLabel={formatChartDate} />
+            <SparklineChart data={chartData} height={120} formatValue={(v) => `${formatEtnAmount(v)} ETN`} formatLabel={formatChartDate} />
           ) : (
             <div style={{ height: 60, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: muted }}>
               Not enough history yet for a trend line.

@@ -32,6 +32,7 @@ import {
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
+import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
 // so a signature cached client-side (see useWalletAuthSignature.js) works across all of them
@@ -253,6 +254,70 @@ router.post("/premium/liquidity-positions", async (req, res) => {
   // above; the frontend should keep showing them and just poll again shortly.
   const refreshing = perWallet.some((w) => w.refreshing);
   res.json({ perWallet, combined: { totalUsd, hasUnpriced, lpTokenAddresses: [...allLpTokenAddresses] }, refreshing });
+});
+
+
+// Last-known portfolio summary — see migrations/018_portfolio_summary_cache.sql. GET is what the
+// Portfolio tab reads FIRST on load so real numbers show immediately; POST is the tab saving its own
+// freshly-settled live figures back. The figures are computed client-side (native/token balances come
+// straight from Blockscout in the browser), so the server never trusts the body as-is: it rebuilds a
+// bounded object from finite, non-negative numbers for covered wallets only, so a bad/odd client can
+// only ever put junk in its OWN member's cached display, never anything structural.
+const MAX_SUMMARY_USD = 1e12;
+function cleanUsd(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= MAX_SUMMARY_USD ? n : null;
+}
+
+router.get("/premium/portfolio-summary", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const row = await getPortfolioSummary(wallet);
+    res.json(row ? { summary: row.payload, computedAt: row.computedAt } : { summary: null, computedAt: null });
+  } catch (err) {
+    // A cache read must never break the tab — degrade to "nothing saved yet".
+    console.error("⚠️  Portfolio summary read failed:", err.message);
+    res.json({ summary: null, computedAt: null });
+  }
+});
+
+router.post("/premium/portfolio-summary", async (req, res) => {
+  const { wallet, signature, timestamp, summary } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const covered = new Set((await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase()));
+  const perWallet = [];
+  for (const w of Array.isArray(summary?.perWallet) ? summary.perWallet.slice(0, 10) : []) {
+    if (!w || !ethers.isAddress(w.address) || !covered.has(String(w.address).toLowerCase())) continue;
+    const native = cleanUsd(w.native);
+    const tokens = cleanUsd(w.tokens);
+    const liquidity = cleanUsd(w.liquidity);
+    const staking = cleanUsd(w.staking);
+    if ([native, tokens, liquidity, staking].some((v) => v === null)) continue;
+    perWallet.push({ address: String(w.address).toLowerCase(), native, tokens, liquidity, staking });
+  }
+  if (perWallet.length === 0) return res.status(400).json({ error: "No valid wallets in summary" });
+
+  try {
+    await upsertPortfolioSummary(wallet, { perWallet, hasUnpriced: Boolean(summary?.hasUnpriced) });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("⚠️  Portfolio summary save failed:", err.message);
+    res.status(500).json({ error: "Couldn't save summary" });
+  }
 });
 
 export default router;

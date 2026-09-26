@@ -6,7 +6,7 @@ import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
 import SparklineChart from "./SparklineChart.jsx";
 import { useCexBalanceHistory } from "../hooks/useCexBalanceHistory.js";
-import { formatEtnBalance, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { formatEtnBalance, formatEtnAmount, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
 
 const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 const selectStyle = {
@@ -47,7 +47,7 @@ function shortLabel(label) {
 }
 
 function formatValue(v) {
-  return `${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETN`;
+  return `${formatEtnAmount(v)} ETN`;
 }
 
 // Free-tier tab tracking every known CEX/bridge address (see backend/db/cexAddresses.js) — a
