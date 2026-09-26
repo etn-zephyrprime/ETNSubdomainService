@@ -10,6 +10,7 @@ import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
 import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
 import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
+import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont } from "../theme.js";
@@ -130,6 +131,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
         <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         {hasAccess && membershipPanel}
         <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />

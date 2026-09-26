@@ -32,6 +32,7 @@ import {
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
+import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
@@ -141,6 +142,36 @@ router.delete("/premium/tracked-wallets", async (req, res) => {
 // defiPositionValuation.js's own header comment). A separate endpoint rather than folded into GET
 // /premium/tracked-wallets above: this does real on-chain reads (not just a DB lookup) and a member
 // with no DeFi activity at all shouldn't pay for it on every tracked-wallet-list fetch.
+// Cumulative gas spent (in ETN) by each covered wallet, as a per-day series the frontend
+// accumulates and filters by wallet. Reads only what's already ingested — a wallet whose history
+// hasn't been ingested yet simply has no rows (it fills in once its ingestion runs).
+router.get("/premium/gas-spend", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const active = await getCoveredWallets(wallet);
+    const rows = await getDailyGasByWallet(active.map((w) => w.address));
+    const byWallet = {};
+    for (const w of active) byWallet[w.address] = [];
+    const lcToAddr = new Map(active.map((w) => [w.address.toLowerCase(), w.address]));
+    for (const r of rows) {
+      const addr = lcToAddr.get(r.tracked_wallet);
+      if (!addr) continue;
+      byWallet[addr].push({ day: r.day, etn: parseFloat(ethers.formatEther(BigInt(r.gas_wei))), txCount: r.tx_count });
+    }
+    res.json({ perWallet: active.map((w) => ({ walletAddress: w.address, daily: byWallet[w.address] })) });
+  } catch (err) {
+    console.error("Gas spend lookup failed:", err);
+    res.status(500).json({ error: "Failed to load gas spend" });
+  }
+});
+
 router.get("/premium/defi-positions", async (req, res) => {
   const { wallet, signature, timestamp } = req.query;
   if (!wallet || !ethers.isAddress(wallet)) {
