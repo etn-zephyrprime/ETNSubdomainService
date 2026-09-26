@@ -68,6 +68,26 @@ export function formatEtnAmount(n) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** ETN amount abbreviated to K / M / BN with 2 decimals (1,234 -> "1.23K", 2,500,000 -> "2.50M",
+ * 1.2e9 -> "1.20BN"); under 1,000 it's a plain 2-decimal number. Used on the Team Wallets tab. */
+export function formatEtnShort(n) {
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}BN`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return n.toFixed(2);
+}
+
+/** formatEtnShort for a native wei amount (18 decimals). */
+export function formatEtnShortWei(wei) {
+  try {
+    return formatEtnShort(parseFloat(ethers.formatEther(wei)));
+  } catch {
+    return "—";
+  }
+}
+
 /** Native ETN balance (always 18 decimals) — see formatEtnAmount for the compact-over-1M rule. */
 export function formatEtnBalance(wei) {
   try {

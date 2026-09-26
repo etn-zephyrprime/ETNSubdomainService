@@ -3,7 +3,7 @@ import { ethers } from "ethers";
 import { green, blue, mutedLight, muted, panel2, border, error as red, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWallets } from "../hooks/useTeamWallets.js";
-import { formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
+import { formatEtnShortWei as formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { TEAM_WALLET_ADDRESSES } from "../utils/teamWallets.js";
 import StatCard from "./StatCard.jsx";
@@ -205,7 +205,7 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         />
       </div>
 
-      <TeamBalanceChart />
+      <TeamBalanceChart wallets={wallets} />
 
       <TeamDestinations onSelectAddress={onSelectAddress} />
 

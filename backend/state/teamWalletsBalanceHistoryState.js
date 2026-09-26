@@ -32,7 +32,7 @@ export async function getTeamWalletsBalanceHistoryCache() {
   try {
     const res = await r2.send(new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: CACHE_KEY }));
     const parsed = JSON.parse(await res.Body.transformToString());
-    return { series: Array.isArray(parsed?.series) ? parsed.series : [] };
+    return { series: Array.isArray(parsed?.series) ? parsed.series : [], wallets: parsed?.wallets || {} };
   } catch (err) {
     if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NoSuchKey") {
       return { series: [] }; // never written yet
@@ -44,7 +44,7 @@ export async function getTeamWalletsBalanceHistoryCache() {
 
 /** Publishes `{ series, updatedAt }`. Longer cache lifetime than this backend's live/near-live
  * caches — a daily-granularity history series doesn't change meaningfully within a minute. */
-export async function setTeamWalletsBalanceHistoryCache(series) {
+export async function setTeamWalletsBalanceHistoryCache(series, wallets = {}) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -52,7 +52,7 @@ export async function setTeamWalletsBalanceHistoryCache(series) {
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ series, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ series, wallets, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=300",
     })
