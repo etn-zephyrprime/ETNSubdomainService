@@ -618,6 +618,18 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     (categoryOn.liquidity && lpHasUnpriced) ||
     (categoryOn.staking && defiHasUnpriced);
 
+  // True while a category that's switched ON hasn't reported yet — Liquidity (no response yet) or
+  // Staking/Yield Farms (no response yet, or still doing its first-time sync). Confirmed live: the
+  // headline total and donut used to render immediately from native ETN + tokens alone, then jump by
+  // thousands of dollars (and reshuffle every wedge) when liquidity/staking landed — the "unstable
+  // on load" behavior. While this is true the total is shown dimmed with an explicit note, its 24h
+  // badge is hidden (it's computed from the legs known so far, so it'd be misleading), and the
+  // donut waits. A category whose request FAILED counts as settled (its own error line already
+  // says so) — this must never hold the panel hostage to a request that isn't coming back.
+  const lpBlocking = categoryOn.liquidity && !lpPositionsError && lpPositions === null;
+  const defiBlocking = categoryOn.staking && !defiPositionsError && (defiPositions === null || Boolean(defiPositions?.ingesting));
+  const positionsBlocking = lpBlocking || defiBlocking;
+
   // Composition pie chart's slices — Native ETN, regular fungible Tokens, Liquidity Positions
   // (V2 LP + V3, held directly), Staking/Yield Farms (locked in a farm/staking contract). Each
   // slice is the SAME figure already computed above for its own section, just grouped together —
@@ -937,10 +949,15 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         );
                       })}
                     </div>
-                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
-                      {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
+                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: positionsBlocking ? 0.45 : 1, transition: "opacity 0.2s" }}>
+                      {totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced || positionsBlocking ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
                     </div>
-                    {totalChange24h && (
+                    {positionsBlocking && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: mutedLight, marginTop: 4 }}>
+                        <RefreshCw size={11} /> Still loading {[lpBlocking && "liquidity", defiBlocking && "staking / farming"].filter(Boolean).join(" and ")} positions — this total will rise once they're in.
+                      </div>
+                    )}
+                    {totalChange24h && !positionsBlocking && (
                       <div style={{ marginTop: 4 }}>
                         <Change24hBadge change={totalChange24h} fontSize={13} />
                       </div>
@@ -971,7 +988,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     )}
 
                     {walletFilter === "all" && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 12, opacity: positionsBlocking ? 0.45 : 1, transition: "opacity 0.2s" }}>
                         {filteredWalletTotals.map((w) => {
                           // Each row includes that wallet's own liquidity and staking/farm positions,
                           // so the rows add up to the Total above (they used to be ETN + tokens only,
@@ -1023,7 +1040,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       Portfolio Composition
                       <InfoTooltip text="How your Total Portfolio Balance splits across the four kinds of value this dashboard tracks. Hover a wedge or a legend row to highlight it. A $0 category means nothing's there yet, or it just hasn't priced — the total above tells you which." />
                     </div>
-                    <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalPortfolioHasUnpriced} />
+                    {positionsBlocking ? (
+                      <div style={{ height: 150, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: muted, textAlign: "center", padding: "0 12px" }}>
+                        Waiting for liquidity and staking positions before drawing the split — so it doesn't reshuffle when they arrive.
+                      </div>
+                    ) : (
+                      <PortfolioCompositionChart slices={compositionSlices} hasUnpriced={totalPortfolioHasUnpriced} />
+                    )}
                   </div>
 
                   <div style={{ marginBottom: 16 }}>
