@@ -58,24 +58,47 @@ async function main() {
   const tokenAddresses = await collectPooledTokenAddresses();
   console.log(`Found ${tokenAddresses.length} distinct pooled token(s). Backfilling each to its own deploy block...\n`);
 
+  // How often to print a mid-step progress line — a single step can cover a 20,000-block range
+  // (chunked into many small log queries, then one timestamp lookup per block that had a burn),
+  // which can easily run for minutes with zero output otherwise. Throttled by wall-clock time, not
+  // by chunk count, so a token with sparse activity (few chunks, but each one slow) still reports
+  // in reasonably rather than going quiet between rare log-query completions.
+  const PROGRESS_INTERVAL_MS = 5000;
+
   const summary = [];
   for (const [i, address] of tokenAddresses.entries()) {
-    process.stdout.write(`[${i + 1}/${tokenAddresses.length}] ${address} — `);
+    console.log(`[${i + 1}/${tokenAddresses.length}] ${address}`);
     let steps = 0;
     let newEvents = 0;
+    let lastPrint = 0;
+    const onProgress = (p) => {
+      const now = Date.now();
+      if (now - lastPrint < PROGRESS_INTERVAL_MS) return;
+      lastPrint = now;
+      if (p.phase === "logs") {
+        const span = p.rangeEnd - p.rangeStart || 1;
+        const pct = (((p.scannedTo - p.rangeStart) / span) * 100).toFixed(1);
+        console.log(`    step ${steps + 1}: scanning logs — block ${p.scannedTo.toLocaleString()} of ${p.rangeStart.toLocaleString()}-${p.rangeEnd.toLocaleString()} (${pct}%), ${p.foundSoFar} burn(s) found in this step so far`);
+      } else if (p.phase === "timestamps") {
+        console.log(`    step ${steps + 1}: fetching timestamps — ${p.done}/${p.total} blocks`);
+      }
+    };
     try {
       const result = await backfillTokenFully(address, {
         maxSteps: MAX_STEPS_PER_TOKEN,
+        onProgress,
         onStep: (step) => {
           steps += 1;
           newEvents += step.newEventsCount;
+          const blocksToGo = Math.max(0, step.lowScannedBlock - step.deployBlock);
+          console.log(`    step ${steps} done — scanned to block ${step.lowScannedBlock.toLocaleString()} (${blocksToGo.toLocaleString()} block(s) left to deploy block ${step.deployBlock.toLocaleString()}), +${step.newEventsCount} burn(s) this step`);
         },
       });
       const status = result.fullyBackfilled ? "done" : result.hitMaxSteps ? `hit ${MAX_STEPS_PER_TOKEN}-step cap, re-run to continue` : "incomplete";
-      console.log(`${status} — ${steps} step(s), ${newEvents} new burn event(s) found`);
+      console.log(`  -> ${status} — ${steps} step(s) total, ${newEvents} new burn event(s) found\n`);
       summary.push({ address, status, steps, newEvents });
     } catch (err) {
-      console.log(`FAILED after ${steps} step(s): ${err.message}`);
+      console.log(`  -> FAILED after ${steps} step(s): ${err.message}\n`);
       summary.push({ address, status: "failed", steps, newEvents, error: err.message });
     }
   }
