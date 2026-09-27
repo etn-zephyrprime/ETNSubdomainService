@@ -143,13 +143,59 @@ async function scanRange(contract, provider, targetAddress, fromBlock, toBlock) 
     }));
 }
 
-const inFlightScans = new Map(); // tokenAddress (lowercase) -> Promise, dedupes concurrent viewers of the same token
+const inFlightScans = new Map(); // tokenAddress (lowercase) -> Promise, dedupes concurrent viewers/callers of the same token
+
+/** Does ONE bounded step of incremental scanning for `tokenAddress` — forward catch-up to the
+ * chain tip if it's behind, else one backward step toward its deploy block (same
+ * MAX_BLOCKS_PER_CALL-sized step either way) — persisting any newly-found burn events and
+ * advancing its cursor. Shared by ensureTokenBurnsScanned (one step per page view, cooldown-gated)
+ * and backfillTokenFully (many steps back-to-back, for the standalone backfill script) — this is
+ * the part that actually talks to the chain; the two callers differ only in how many times, how
+ * often, and whether cooldown applies. Not wrapped in try/catch here — both callers handle that
+ * themselves, since they react to a failure differently (silently give up vs. stop and report). */
+async function scanOneStep(tokenAddress, cursor) {
+  const provider = getProvider();
+  const targetAddress = burnTargetAddress(tokenAddress);
+  const contract = new ethers.Contract(tokenAddress, TRANSFER_ABI, provider);
+  const latestBlock = await provider.getBlockNumber();
+
+  const deployBlock = cursor?.deployBlock ?? (await resolveDeployBlock(tokenAddress)) ?? 0;
+  const newEvents = [];
+  let lowScannedBlock = cursor?.lowScannedBlock ?? null;
+  let highScannedBlock = cursor?.highScannedBlock ?? null;
+
+  if (highScannedBlock == null) {
+    // First time this token's ever been scanned — same "start recent, backfill older in the
+    // background" bootstrap as nftSalesCache.js, so there's something real to show immediately
+    // rather than making the very first viewer wait out however much history there is.
+    const fromBlock = Math.max(deployBlock, latestBlock - MAX_BLOCKS_PER_CALL + 1);
+    newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, latestBlock)));
+    highScannedBlock = latestBlock;
+    lowScannedBlock = fromBlock;
+  } else {
+    if (latestBlock > highScannedBlock) {
+      newEvents.push(...(await scanRange(contract, provider, targetAddress, highScannedBlock + 1, latestBlock)));
+      highScannedBlock = latestBlock;
+    }
+    if (lowScannedBlock > deployBlock) {
+      const toBlock = lowScannedBlock - 1;
+      const fromBlock = Math.max(deployBlock, toBlock - MAX_BLOCKS_PER_CALL + 1);
+      newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, toBlock)));
+      lowScannedBlock = fromBlock;
+    }
+  }
+
+  await insertTokenBurnEvents(tokenAddress, newEvents);
+  await upsertTokenBurnCursor(tokenAddress, { deployBlock, lowScannedBlock, highScannedBlock });
+
+  return { newEventsCount: newEvents.length, deployBlock, lowScannedBlock, highScannedBlock, fullyBackfilled: lowScannedBlock <= deployBlock };
+}
 
 /** Kicks off a BOUNDED amount of incremental scanning for `tokenAddress` in the background (NOT
- * awaited by the caller — see getTokenBurnHistory below), persisting any newly-found burn events
- * and advancing its cursor. Safe to call on every page view: a fresh-enough cursor (see
- * SCAN_COOLDOWN_MS) makes this a no-op past the initial cursor read, and inFlightScans dedupes
- * concurrent callers onto the same in-progress scan rather than starting a second one.
+ * awaited by the caller — see getTokenBurnHistory below). Safe to call on every page view: a
+ * fresh-enough cursor (see SCAN_COOLDOWN_MS) makes this a no-op past the initial cursor read, and
+ * inFlightScans dedupes concurrent callers onto the same in-progress scan rather than starting a
+ * second one.
  *
  * Deliberately fire-and-forget from the caller's perspective — this used to be awaited inline,
  * which meant a single slow/hanging RPC call (or a chain of range-too-large retries) blocked the
@@ -169,40 +215,7 @@ function ensureTokenBurnsScanned(tokenAddress) {
     try {
       const cursor = await getTokenBurnCursor(tokenAddress);
       if (cursor && Date.now() - new Date(cursor.updatedAt).getTime() < SCAN_COOLDOWN_MS) return;
-
-      const provider = getProvider();
-      const targetAddress = burnTargetAddress(tokenAddress);
-      const contract = new ethers.Contract(tokenAddress, TRANSFER_ABI, provider);
-      const latestBlock = await provider.getBlockNumber();
-
-      const deployBlock = cursor?.deployBlock ?? (await resolveDeployBlock(tokenAddress)) ?? 0;
-      const newEvents = [];
-      let lowScannedBlock = cursor?.lowScannedBlock ?? null;
-      let highScannedBlock = cursor?.highScannedBlock ?? null;
-
-      if (highScannedBlock == null) {
-        // First time this token's ever been scanned — same "start recent, backfill older in the
-        // background" bootstrap as nftSalesCache.js, so there's something real to show immediately
-        // rather than making the very first viewer wait out however much history there is.
-        const fromBlock = Math.max(deployBlock, latestBlock - MAX_BLOCKS_PER_CALL + 1);
-        newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, latestBlock)));
-        highScannedBlock = latestBlock;
-        lowScannedBlock = fromBlock;
-      } else {
-        if (latestBlock > highScannedBlock) {
-          newEvents.push(...(await scanRange(contract, provider, targetAddress, highScannedBlock + 1, latestBlock)));
-          highScannedBlock = latestBlock;
-        }
-        if (lowScannedBlock > deployBlock) {
-          const toBlock = lowScannedBlock - 1;
-          const fromBlock = Math.max(deployBlock, toBlock - MAX_BLOCKS_PER_CALL + 1);
-          newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, toBlock)));
-          lowScannedBlock = fromBlock;
-        }
-      }
-
-      await insertTokenBurnEvents(tokenAddress, newEvents);
-      await upsertTokenBurnCursor(tokenAddress, { deployBlock, lowScannedBlock, highScannedBlock });
+      await scanOneStep(tokenAddress, cursor);
     } catch (err) {
       console.warn(`⚠️  Token burns: scan failed for ${tokenAddress} (serving whatever's already known):`, err.message);
     }
@@ -211,6 +224,40 @@ function ensureTokenBurnsScanned(tokenAddress) {
   inFlightScans.set(key, promise);
   promise.finally(() => inFlightScans.delete(key));
   return promise;
+}
+
+/** Repeatedly steps `tokenAddress` all the way back to its own deploy block, ignoring
+ * SCAN_COOLDOWN_MS (a script run, not a page view — the whole point is to push through in one go
+ * rather than wait for organic page views to each contribute one step). For
+ * scripts/backfillTokenBurns.js only; every interactive request still goes through
+ * ensureTokenBurnsScanned above. Shares inFlightScans with that function so a token being
+ * backfilled here is never ALSO scanned by a concurrent page view (and vice versa) — one active
+ * step per token at a time, same guarantee either caller gets on its own.
+ *
+ * `onStep(stepResult)` fires after every step (for progress logging). Throws on the first scan
+ * failure, since a script wants to know something went wrong, unlike the silent-best-effort
+ * request path — the caller decides whether to keep going with the next token. */
+export async function backfillTokenFully(tokenAddress, { onStep, maxSteps = 500 } = {}) {
+  const key = tokenAddress.toLowerCase();
+  while (inFlightScans.has(key)) await inFlightScans.get(key); // wait out any request-driven scan already in progress
+
+  const promise = (async () => {
+    let cursor = await getTokenBurnCursor(tokenAddress);
+    for (let step = 0; step < maxSteps; step++) {
+      const result = await scanOneStep(tokenAddress, cursor);
+      onStep?.(result);
+      if (result.fullyBackfilled) return result;
+      cursor = { deployBlock: result.deployBlock, lowScannedBlock: result.lowScannedBlock, highScannedBlock: result.highScannedBlock };
+    }
+    return { fullyBackfilled: false, hitMaxSteps: true };
+  })();
+
+  inFlightScans.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightScans.delete(key);
+  }
 }
 
 /** True the moment a cursor is due for a rescan (never scanned yet, or SCAN_COOLDOWN_MS has
