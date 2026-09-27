@@ -72,7 +72,7 @@ export function burnTargetAddress(tokenAddress) {
 // Same range-adaptive chunked scan duplicated across this repo's own on-chain-history caches (see
 // nftSalesCache.js's identical queryLogsChunked for the full reasoning) — kept as its own copy per
 // this file's established "small per-file helpers are fine to drift independently" convention.
-async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 2000, minChunkSize = 50) {
+async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize = 2000, minChunkSize = 50, onProgress) {
   const events = [];
   let start = fromBlock;
   while (start <= toBlock) {
@@ -81,6 +81,7 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
       const chunk = await contract.queryFilter(filter, start, end);
       events.push(...chunk);
       start = end + 1;
+      onProgress?.({ phase: "logs", scannedTo: end, rangeStart: fromBlock, rangeEnd: toBlock, foundSoFar: events.length });
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
       const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
@@ -112,13 +113,14 @@ async function resolveDeployBlock(tokenAddress) {
   }
 }
 
-async function scanRange(contract, provider, targetAddress, fromBlock, toBlock) {
+async function scanRange(contract, provider, targetAddress, fromBlock, toBlock, onProgress) {
   if (fromBlock > toBlock) return [];
-  const logs = await queryLogsChunked(contract, contract.filters.Transfer(null, targetAddress), fromBlock, toBlock);
+  const logs = await queryLogsChunked(contract, contract.filters.Transfer(null, targetAddress), fromBlock, toBlock, 2000, 50, onProgress);
   if (logs.length === 0) return [];
 
   const uniqueBlocks = [...new Set(logs.map((e) => e.blockNumber))];
   const timestamps = new Map();
+  let timestampsDone = 0;
   await Promise.all(
     uniqueBlocks.map(async (blockNumber) => {
       try {
@@ -127,6 +129,9 @@ async function scanRange(contract, provider, targetAddress, fromBlock, toBlock) 
       } catch (err) {
         console.warn(`⚠️  Token burns: couldn't fetch timestamp for block ${blockNumber}:`, err.message);
         timestamps.set(blockNumber, null);
+      } finally {
+        timestampsDone += 1;
+        onProgress?.({ phase: "timestamps", done: timestampsDone, total: uniqueBlocks.length });
       }
     })
   );
@@ -153,7 +158,7 @@ const inFlightScans = new Map(); // tokenAddress (lowercase) -> Promise, dedupes
  * the part that actually talks to the chain; the two callers differ only in how many times, how
  * often, and whether cooldown applies. Not wrapped in try/catch here — both callers handle that
  * themselves, since they react to a failure differently (silently give up vs. stop and report). */
-async function scanOneStep(tokenAddress, cursor) {
+async function scanOneStep(tokenAddress, cursor, onProgress) {
   const provider = getProvider();
   const targetAddress = burnTargetAddress(tokenAddress);
   const contract = new ethers.Contract(tokenAddress, TRANSFER_ABI, provider);
@@ -169,18 +174,18 @@ async function scanOneStep(tokenAddress, cursor) {
     // background" bootstrap as nftSalesCache.js, so there's something real to show immediately
     // rather than making the very first viewer wait out however much history there is.
     const fromBlock = Math.max(deployBlock, latestBlock - MAX_BLOCKS_PER_CALL + 1);
-    newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, latestBlock)));
+    newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, latestBlock, onProgress)));
     highScannedBlock = latestBlock;
     lowScannedBlock = fromBlock;
   } else {
     if (latestBlock > highScannedBlock) {
-      newEvents.push(...(await scanRange(contract, provider, targetAddress, highScannedBlock + 1, latestBlock)));
+      newEvents.push(...(await scanRange(contract, provider, targetAddress, highScannedBlock + 1, latestBlock, onProgress)));
       highScannedBlock = latestBlock;
     }
     if (lowScannedBlock > deployBlock) {
       const toBlock = lowScannedBlock - 1;
       const fromBlock = Math.max(deployBlock, toBlock - MAX_BLOCKS_PER_CALL + 1);
-      newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, toBlock)));
+      newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, toBlock, onProgress)));
       lowScannedBlock = fromBlock;
     }
   }
@@ -234,17 +239,22 @@ function ensureTokenBurnsScanned(tokenAddress) {
  * backfilled here is never ALSO scanned by a concurrent page view (and vice versa) — one active
  * step per token at a time, same guarantee either caller gets on its own.
  *
- * `onStep(stepResult)` fires after every step (for progress logging). Throws on the first scan
+ * `onStep(stepResult)` fires after every step (for progress logging). `onProgress(progressEvent)`
+ * fires MID-step — a single step can itself take a long time (a wide block range with a lot of
+ * chunked log-querying, then a per-unique-block timestamp lookup for whatever it found), and
+ * without this a caller hears nothing at all until the whole step finishes. Two shapes:
+ * `{ phase: "logs", scannedTo, rangeStart, rangeEnd, foundSoFar }` per chunk of the log query, and
+ * `{ phase: "timestamps", done, total }` per resolved block timestamp. Throws on the first scan
  * failure, since a script wants to know something went wrong, unlike the silent-best-effort
  * request path — the caller decides whether to keep going with the next token. */
-export async function backfillTokenFully(tokenAddress, { onStep, maxSteps = 500 } = {}) {
+export async function backfillTokenFully(tokenAddress, { onStep, onProgress, maxSteps = 500 } = {}) {
   const key = tokenAddress.toLowerCase();
   while (inFlightScans.has(key)) await inFlightScans.get(key); // wait out any request-driven scan already in progress
 
   const promise = (async () => {
     let cursor = await getTokenBurnCursor(tokenAddress);
     for (let step = 0; step < maxSteps; step++) {
-      const result = await scanOneStep(tokenAddress, cursor);
+      const result = await scanOneStep(tokenAddress, cursor, onProgress);
       onStep?.(result);
       if (result.fullyBackfilled) return result;
       cursor = { deployBlock: result.deployBlock, lowScannedBlock: result.lowScannedBlock, highScannedBlock: result.highScannedBlock };
