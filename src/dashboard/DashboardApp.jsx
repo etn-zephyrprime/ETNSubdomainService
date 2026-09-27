@@ -16,6 +16,7 @@ import CexBalancesTab from "./components/CexBalancesTab.jsx";
 import EtnBridgeTab from "./components/EtnBridgeTab.jsx";
 import HyperlaneBridgeTab from "./components/HyperlaneBridgeTab.jsx";
 import DashboardErrorBoundary from "./components/DashboardErrorBoundary.jsx";
+import { useSessionAnalytics, trackTabView } from "./hooks/useSessionAnalytics.js";
 // Core Tier's public demo — imported DIRECTLY (not lazily), unlike PortfolioDashboardSection and
 // PremiumDashboardSection below: it has zero wallet-connection dependency (see CoreTierDemoPage.jsx's
 // own header comment for how that's verified), so mounting it doesn't pull the WalletConnect/AppKit
@@ -89,9 +90,13 @@ export default function DashboardApp() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  // Free-dashboard usage tracking — see useSessionAnalytics.js's own header comment.
+  useSessionAnalytics();
+
   const handleTabChange = (id) => {
     setTab(id);
     setSelectedToken(null);
+    trackTabView(id);
   };
 
   const handleSelectAddress = (address) => {

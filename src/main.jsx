@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { Analytics } from '@vercel/analytics/react'
 import './index.css'
 import { enableBrandFont } from './brandJsx/core.js'
 
@@ -32,9 +33,14 @@ async function mount() {
 
   if (isDashboardHost) {
     const { default: DashboardApp } = await import('./dashboard/DashboardApp.jsx');
+    // Vercel Web Analytics — freemium-dashboard usage tracking (unique visitors/visits), scoped to
+    // this branch only: the main ENS site (App.jsx below) isn't what was asked for, and keeping it
+    // out avoids counting its traffic against the same event budget. Requires "Web Analytics" to
+    // be turned on for this project in the Vercel dashboard (a one-time account-side setting).
     root.render(
       <React.StrictMode>
         <DashboardApp />
+        <Analytics />
       </React.StrictMode>,
     );
     return;
