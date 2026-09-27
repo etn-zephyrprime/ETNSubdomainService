@@ -145,13 +145,23 @@ async function scanRange(contract, provider, targetAddress, fromBlock, toBlock) 
 
 const inFlightScans = new Map(); // tokenAddress (lowercase) -> Promise, dedupes concurrent viewers of the same token
 
-/** Does a BOUNDED amount of incremental scanning for `tokenAddress`, persisting any newly-found
- * burn events and advancing its cursor — never a full unbounded walk. Safe to call on every page
- * view: a fresh-enough cursor (see SCAN_COOLDOWN_MS) makes this a no-op past the initial DB read.
+/** Kicks off a BOUNDED amount of incremental scanning for `tokenAddress` in the background (NOT
+ * awaited by the caller — see getTokenBurnHistory below), persisting any newly-found burn events
+ * and advancing its cursor. Safe to call on every page view: a fresh-enough cursor (see
+ * SCAN_COOLDOWN_MS) makes this a no-op past the initial cursor read, and inFlightScans dedupes
+ * concurrent callers onto the same in-progress scan rather than starting a second one.
+ *
+ * Deliberately fire-and-forget from the caller's perspective — this used to be awaited inline,
+ * which meant a single slow/hanging RPC call (or a chain of range-too-large retries) blocked the
+ * whole page load on it, and looked to a viewer exactly like a "stuck"/stale chart. Now the request
+ * always returns immediately with whatever's already in Postgres (see getTokenBurnHistory), and
+ * this runs after the response, same "return cached, refresh behind it" shape as
+ * pnlSnapshotService.js's own getSnapshotFast/computeLivePnlSnapshot split.
+ *
  * Best-effort — never throws; a scan failure just means this call's history is whatever was already
  * known, same "never let a nice-to-have background refresh take down the actual page" posture as
  * this app's other ingestion-adjacent features. */
-async function ensureTokenBurnsScanned(tokenAddress) {
+function ensureTokenBurnsScanned(tokenAddress) {
   const key = tokenAddress.toLowerCase();
   if (inFlightScans.has(key)) return inFlightScans.get(key);
 
@@ -199,11 +209,16 @@ async function ensureTokenBurnsScanned(tokenAddress) {
   })();
 
   inFlightScans.set(key, promise);
-  try {
-    await promise;
-  } finally {
-    inFlightScans.delete(key);
-  }
+  promise.finally(() => inFlightScans.delete(key));
+  return promise;
+}
+
+/** True the moment a cursor is due for a rescan (never scanned yet, or SCAN_COOLDOWN_MS has
+ * elapsed) — same test ensureTokenBurnsScanned itself uses to decide whether to skip, exposed here
+ * so getTokenBurnHistory can report `refreshing` honestly instead of guessing from inFlightScans
+ * alone (a scan that's due but hasn't been kicked off THIS call yet is still "about to happen"). */
+function isScanDue(cursor) {
+  return !cursor || Date.now() - new Date(cursor.updatedAt).getTime() >= SCAN_COOLDOWN_MS;
 }
 
 /**
@@ -220,9 +235,12 @@ async function ensureTokenBurnsScanned(tokenAddress) {
  * NftSalesChart.jsx) rather than silently presenting a partial total as if it were the whole story.
  */
 export async function getTokenBurnHistory(tokenAddress) {
-  await ensureTokenBurnsScanned(tokenAddress);
-
+  // Read whatever's already persisted FIRST — this must never wait on on-chain scanning (see
+  // ensureTokenBurnsScanned's own comment on why: a slow RPC call used to block this whole
+  // response, which is what made the chart look stuck/stale rather than just "still catching up").
   const [events, cursor] = await Promise.all([getTokenBurnEvents(tokenAddress), getTokenBurnCursor(tokenAddress)]);
+  const refreshing = inFlightScans.has(tokenAddress.toLowerCase()) || isScanDue(cursor);
+  if (refreshing) ensureTokenBurnsScanned(tokenAddress); // not awaited — runs after this returns
 
   let cumulative = 0n;
   const byDay = new Map(); // "YYYY-MM-DD" -> cumulative raw BigInt as of end of that day
@@ -243,5 +261,6 @@ export async function getTokenBurnHistory(tokenAddress) {
     series,
     recentEvents,
     fullyBackfilled: cursor != null && cursor.deployBlock != null && cursor.lowScannedBlock <= cursor.deployBlock,
+    refreshing,
   };
 }

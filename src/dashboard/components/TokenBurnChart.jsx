@@ -15,20 +15,35 @@ const RECENT_BURNS_SHOWN = 10;
 // reduction — shown just as honestly, without implying the token's own total supply changed.
 export default function TokenBurnChart({ address, decimals, totalSupply }) {
   const { getTokenBurns } = useTokenBurns();
-  const [data, setData] = useState(null); // { isCore, burnAddress, totalBurnedRaw, series, recentEvents, fullyBackfilled } | null while loading
+  const [data, setData] = useState(null); // { isCore, burnAddress, totalBurnedRaw, series, recentEvents, fullyBackfilled, refreshing } | null while loading
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
     setData(null);
     setError(null);
-    getTokenBurns(address)
-      .then((res) => { if (!cancelled) setData(res); })
-      .catch((err) => {
-        console.error("Failed to load token burn history:", err);
-        if (!cancelled) setError("Couldn't load burn history — try again shortly.");
-      });
-    return () => { cancelled = true; };
+
+    function load() {
+      getTokenBurns(address)
+        .then((res) => {
+          if (cancelled) return;
+          setData(res);
+          setError(null);
+          // The scan now runs in the background (see tokenBurnService.js) rather than blocking this
+          // request — `refreshing: true` means it hasn't finished yet, so poll again shortly for the
+          // events it's about to add, same "keep showing what's there, refresh behind it" shape as
+          // the Core Tier panels' own stale-while-revalidate polling.
+          if (res.refreshing) timer = setTimeout(load, 4000);
+        })
+        .catch((err) => {
+          console.error("Failed to load token burn history:", err);
+          if (!cancelled) setError("Couldn't load burn history — try again shortly.");
+        });
+    }
+    load();
+
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [address, getTokenBurns]);
 
   const series = useMemo(
