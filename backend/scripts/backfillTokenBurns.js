@@ -1,16 +1,23 @@
 // backend/scripts/backfillTokenBurns.js
 //
 // Drives tokenBurnService.js's per-token burn scan all the way back to each token's own deploy
-// block, for every token that has a real, active ElectroSwap liquidity pool (V2 or V3) — rather
-// than waiting on organic Tokens-tab page views to each contribute one MAX_BLOCKS_PER_CALL-sized
-// step. The interactive path (a visitor opening a token's page) only ever advances a token's
-// history by one bounded step per view, and the backward half specifically only progresses for
-// tokens people actually click into — a rarely-viewed token's chart can sit stuck at "history since
-// whenever it was first viewed" indefinitely. This script instead: 1) asks ElectroSwap which
-// tokens are actually pooled (same getPools(2,...)/getPools(3,...) call tokenLiquidityCache.js
-// already makes for the free Tokens tab's liquidity figures — the token addresses on either side of
-// a returned pool ARE "a token with an active liquidity pool"), then 2) for each one, calls
-// backfillTokenFully (tokenBurnService.js) to step it all the way back to its own deploy block.
+// block, for tokens worth having full burn history for — a real liquidity lock OR a burned
+// liquidity pool (per tokenLocksCache.js's own published summary), NOT every pooled token
+// indiscriminately (an earlier version of this script did that; most of ElectroSwap's ~100-200
+// pooled tokens are low-effort/low-interest listings nobody's asked about, and backfilling every
+// one of them wastes RPC calls and Postgres rows on tokens nobody cares about). This still starts
+// from the pooled-token universe (same getPools(2,...)/getPools(3,...) call tokenLiquidityCache.js
+// makes) since a token needs SOME pool to have a lock on in the first place, then narrows it down
+// using token-locks.json (the same weekly ElectroSwap /liquidity-locks sweep that already powers
+// the Tokens tab's lock badge — see tokenLocksCache.js/lockStatus.js) — count > 0 there covers both
+// a real time-locked LP position and a burned/permanent one (normalizeLocks folds burned locks into
+// the same `count`, just also into `permanentCount`).
+//
+// Without this filter the interactive path (a visitor opening a token's page) only ever advances a
+// token's history by one bounded step per view, and the backward half specifically only progresses
+// for tokens people actually click into — a rarely-viewed token's chart can sit stuck at "history
+// since whenever it was first viewed" indefinitely. This script pushes it all the way back in one
+// go for the tokens that are actually worth it.
 //
 // Usage:
 //   node backend/scripts/backfillTokenBurns.js
@@ -22,6 +29,7 @@
 import dotenv from "dotenv";
 import { getPool } from "../db/pool.js";
 import { getPools } from "../utils/electroSwapApi.js";
+import { getTokenLocksCache } from "../state/tokenLocksState.js";
 import { backfillTokenFully } from "../services/tokenBurnService.js";
 
 dotenv.config();
@@ -49,14 +57,31 @@ async function collectPooledTokenAddresses() {
   return [...addresses];
 }
 
+/** Narrows `pooledAddresses` down to the ones token-locks.json says have at least one lock (real
+ * or burned — see this file's own header comment). Throws rather than silently falling back to
+ * "everything pooled" if the cache isn't there yet — that's exactly the unwanted behavior this
+ * filter exists to replace, so a missing/unconfigured cache should stop the run, not quietly do the
+ * old thing. */
+async function filterToLockedOrBurned(pooledAddresses) {
+  const cache = await getTokenLocksCache();
+  if (!cache?.locksByAddress) {
+    throw new Error(
+      "token-locks.json hasn't been published yet (or R2 isn't configured) — tokenLocksCache.js's weekly sweep needs to have run at least once before this script can tell which tokens have a lock. Check R2_ENDPOINT/R2_BUCKET_NAME/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY, and that the backend has been up long enough for its startup lock sweep to finish."
+    );
+  }
+  return pooledAddresses.filter((addr) => (cache.locksByAddress[addr]?.count || 0) > 0);
+}
+
 async function main() {
   if (!getPool()) {
     throw new Error("DATABASE_URL not set — nothing to do (token_burn_cursor/token_burn_events live in Postgres).");
   }
 
   console.log("Fetching ElectroSwap's pool list (V2 + V3) to find every token with an active liquidity pool...");
-  const tokenAddresses = await collectPooledTokenAddresses();
-  console.log(`Found ${tokenAddresses.length} distinct pooled token(s). Backfilling each to its own deploy block...\n`);
+  const pooledAddresses = await collectPooledTokenAddresses();
+  console.log(`Found ${pooledAddresses.length} distinct pooled token(s). Checking token-locks.json for which ones have a lock or burned LP...`);
+  const tokenAddresses = await filterToLockedOrBurned(pooledAddresses);
+  console.log(`${tokenAddresses.length} of ${pooledAddresses.length} pooled token(s) have a liquidity lock or burned LP. Backfilling those to their own deploy block...\n`);
 
   // How often to print a mid-step progress line — a single step can cover a 20,000-block range
   // (chunked into many small log queries, then one timestamp lookup per block that had a burn),
