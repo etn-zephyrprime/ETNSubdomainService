@@ -6,7 +6,8 @@ import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
 import SparklineChart from "./SparklineChart.jsx";
 import { useCexBalanceHistory } from "../hooks/useCexBalanceHistory.js";
-import { formatEtnBalance, formatEtnAmount, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { useEtnPrice } from "../../hooks/useEtnPrice.js";
+import { formatEtnBalance, formatEtnAmount, formatUsdPrice, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
 
 const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 const selectStyle = {
@@ -50,6 +51,17 @@ function formatValue(v) {
   return `${formatEtnAmount(v)} ETN`;
 }
 
+// null (never a fabricated $0) until the live ETN/USD rate has loaded.
+function usdFromWei(wei, etnUsdPrice) {
+  if (etnUsdPrice == null) return null;
+  try {
+    const etn = parseFloat(ethers.formatEther(wei));
+    return Number.isFinite(etn) ? etn * etnUsdPrice : null;
+  } catch {
+    return null;
+  }
+}
+
 // Free-tier tab tracking every known CEX/bridge address (see backend/db/cexAddresses.js) — a
 // combined ETN balance chart over the last ~12 months, plus each address's own current balance.
 // Backed entirely by backend/utils/cexBalanceHistory.js's R2-published snapshot
@@ -62,6 +74,7 @@ function formatValue(v) {
 // not exclusively exchanges; each row's own `label` says what it actually is.
 export default function CexBalancesTab({ onSelectAddress }) {
   const { getCexBalanceHistory } = useCexBalanceHistory();
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
 
   const [series, setSeries] = useState(null); // null = loading, [] = loaded but empty
   const [addresses, setAddresses] = useState([]);
@@ -179,6 +192,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
   }, [chartData]);
 
   const totalBalanceWei = addresses.reduce((sum, a) => sum + balanceOf(a), 0n);
+  const totalBalanceUsd = usdFromWei(totalBalanceWei, etnUsdPrice);
   const sortedAddresses = [...addresses].sort((a, b) => {
     const diff = balanceOf(b) - balanceOf(a);
     return diff > 0n ? 1 : diff < 0n ? -1 : 0;
@@ -199,8 +213,10 @@ export default function CexBalancesTab({ onSelectAddress }) {
         <StatCard
           label="Combined CEX ETN Balance"
           value={series === null ? "Loading…" : <><TokenLogo address="NATIVE" label="ETN" size={22} spacing={8} />{formatEtnBalance(totalBalanceWei)} ETN</>}
-          sub={updatedAt ? `Updated ${timeAgo(updatedAt)}` : undefined}
-        />
+          sub={series !== null && totalBalanceUsd != null ? formatUsdPrice(totalBalanceUsd) : undefined}
+        >
+          {updatedAt && <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Updated {timeAgo(updatedAt)}</div>}
+        </StatCard>
       </div>
 
       <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
@@ -289,8 +305,13 @@ export default function CexBalancesTab({ onSelectAddress }) {
                   {shortHash(a.address)}
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: green, fontWeight: 700, flexShrink: 0 }}>
-                <TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(a.balance)} ETN
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                  <TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{formatEtnBalance(a.balance)} ETN
+                </div>
+                {usdFromWei(a.balance, etnUsdPrice) != null && (
+                  <div style={{ fontSize: 10, color: mutedLight }}>{formatUsdPrice(usdFromWei(a.balance, etnUsdPrice))}</div>
+                )}
               </div>
             </button>
           ))

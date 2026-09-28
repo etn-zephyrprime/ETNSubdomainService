@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import { green, orange, blue, error as red, muted, mutedLight, panel2, border, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWalletDestinations } from "../hooks/useTeamWalletDestinations.js";
-import { formatEtnShort, shortHash, timeAgo } from "../utils/format.js";
+import { useEtnPrice } from "../../hooks/useEtnPrice.js";
+import { formatEtnShort, formatUsdPrice, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
@@ -89,6 +90,7 @@ function DestinationRow({ d, onSelectAddress }) {
 // Backed by backend/utils/teamWalletsDestinations.js's R2-published report.
 export default function TeamDestinations({ onSelectAddress }) {
   const { getTeamWalletDestinations } = useTeamWalletDestinations();
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
   const [report, setReport] = useState(undefined); // undefined = loading, null = unavailable
 
   useEffect(() => {
@@ -113,11 +115,16 @@ export default function TeamDestinations({ onSelectAddress }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
         {[
-          { label: "Sent Out", value: etn(totals.outEtn), color: red },
-          { label: "Came Back In", value: etn(totals.inEtn), color: green },
-          { label: "Net Out", value: etn(totals.netOutEtn), color: "#fff" },
+          { label: "Sent Out", raw: totals.outEtn, color: red },
+          { label: "Came Back In", raw: totals.inEtn, color: green },
+          { label: "Net Out", raw: totals.netOutEtn, color: "#fff" },
         ].map((c) => (
-          <StatCard key={c.label} label={c.label} value={<span style={{ color: c.color }}>{c.value}</span>} />
+          <StatCard
+            key={c.label}
+            label={c.label}
+            value={<span style={{ color: c.color }}>{etn(c.raw)}</span>}
+            sub={etnUsdPrice != null ? formatUsdPrice(Number(c.raw) * etnUsdPrice) : undefined}
+          />
         ))}
       </div>
 

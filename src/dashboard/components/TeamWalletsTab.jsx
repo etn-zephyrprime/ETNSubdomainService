@@ -3,7 +3,8 @@ import { ethers } from "ethers";
 import { green, blue, mutedLight, muted, panel2, border, error as red, monoFont } from "../theme.js";
 import TokenLogo from "./TokenLogo.jsx";
 import { useTeamWallets } from "../hooks/useTeamWallets.js";
-import { formatEtnShortWei as formatEtnBalance, shortHash, timeAgo } from "../utils/format.js";
+import { useEtnPrice } from "../../hooks/useEtnPrice.js";
+import { formatEtnShortWei as formatEtnBalance, formatUsdPrice, shortHash, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { TEAM_WALLET_ADDRESSES } from "../utils/teamWallets.js";
 import StatCard from "./StatCard.jsx";
@@ -109,6 +110,7 @@ function MovementRow({ movement }) {
 // talks to Blockscout directly, same reasoning as every other cache-backed tab on this dashboard.
 export default function TeamWalletsTab({ onSelectAddress }) {
   const { getTeamWallets } = useTeamWallets();
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
 
   const [wallets, setWallets] = useState(null); // null = loading, [] = loaded but empty
   const [movements, setMovements] = useState([]);
@@ -201,8 +203,14 @@ export default function TeamWalletsTab({ onSelectAddress }) {
         <StatCard
           label="Combined Team ETN Balance"
           value={wallets === null ? "Loading…" : <><TokenLogo address="NATIVE" label="ETN" size={22} spacing={8} />{formatEtnBalance(totalBalanceWei)} ETN</>}
-          sub={updatedAt ? `Updated ${timeAgo(updatedAt)}` : undefined}
-        />
+          sub={
+            wallets !== null && etnUsdPrice != null
+              ? formatUsdPrice(parseFloat(ethers.formatEther(totalBalanceWei)) * etnUsdPrice)
+              : undefined
+          }
+        >
+          {updatedAt && <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Updated {timeAgo(updatedAt)}</div>}
+        </StatCard>
       </div>
 
       <TeamBalanceChart wallets={wallets} />
