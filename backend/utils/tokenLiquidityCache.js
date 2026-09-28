@@ -87,6 +87,7 @@ async function refreshAndPublish() {
 
     const provider = createRpcProvider({ batchMaxCount: 1 });
     const liquidityUsd = {};
+    const poolCounts = {}; // same keys as liquidityUsd — how many pools were SUMMED into that figure, for the frontend's "$X across N pools" qualifier
     let readFailures = 0;
     let unpriced = 0;
     // TVL = every valued pool counted ONCE (liquidityUsd below credits each pool to BOTH its tokens, so
@@ -127,6 +128,8 @@ async function refreshAndPublish() {
         const t1Addr = token1.address.toLowerCase();
         liquidityUsd[t0Addr] = (liquidityUsd[t0Addr] || 0) + poolLiquidityUsd;
         liquidityUsd[t1Addr] = (liquidityUsd[t1Addr] || 0) + poolLiquidityUsd;
+        poolCounts[t0Addr] = (poolCounts[t0Addr] || 0) + 1;
+        poolCounts[t1Addr] = (poolCounts[t1Addr] || 0) + 1;
       } catch (err) {
         readFailures++;
         console.warn(`⚠️  Token liquidity cache: failed to read balances for pool ${address}:`, err.message);
@@ -143,7 +146,7 @@ async function refreshAndPublish() {
       return;
     }
 
-    await setTokenLiquidityCache(liquidityUsd);
+    await setTokenLiquidityCache(liquidityUsd, poolCounts);
     await recordTvlPoint({ tvlUsd, valuedPools, totalPools: pools.length }); // never throws; guards against a degraded run itself
     console.log(
       `💧 Token liquidity cache updated — ${Object.keys(liquidityUsd).length} token(s) across ${pools.length} pool(s)` +
