@@ -3,16 +3,23 @@ import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
+import { useDisplayNames } from "../hooks/useDisplayNames.js";
+import { useCexAddresses } from "../hooks/useCexAddresses.js";
+import { useTokenLocks } from "../hooks/useTokenLocks.js";
 import { usePayment } from "../../hooks/usePayment.js";
+import { useOwnedNames } from "../../hooks/useOwnedNames.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../utils/tokenPriceCache.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
+import { lockBadgeText } from "../utils/lockStatus.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
 import TileChart from "./TileChart.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
+import CexTag from "./CexTag.jsx";
 import TokenLogo from "./TokenLogo.jsx";
+import { Lock } from "lucide-react";
 
 const inputStyle = {
   width: "100%",
@@ -108,6 +115,16 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { getTokenChart } = useTokenChart();
   const { resolveName } = usePayment();
+  const cexMap = useCexAddresses();
+  const locksByAddress = useTokenLocks();
+  const { getNamesOwnedBy } = useOwnedNames();
+  // Same shared, cached resolver used everywhere else on this dashboard (Team Wallets, Balance
+  // History, the Tokens tab's burn lists) — prefers a verified reverse/primary name, falling back
+  // to any name the address owns even without one set (see that hook's own header comment). More
+  // accurate than Blockscout's own raw ens_domain_name field, which this app's own reverse-name
+  // work already found can go stale (a name transferred away, whose old owner's reverse pointer
+  // was never cleared) — see useReverseRecord.js's verifyPrimaryName.
+  const { resolve: resolveDisplayName } = useDisplayNames(resolvedAddress ? [resolvedAddress] : []);
 
   const [input, setInput] = useState(initialAddress || "");
   const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
@@ -124,6 +141,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [noLiquidityTokens, setNoLiquidityTokens] = useState(new Set());
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [ownedNames, setOwnedNames] = useState(null); // null = loading, [] = owns none
 
   const [balanceHistory, setBalanceHistory] = useState(null);
   const [txHistory, setTxHistory] = useState(null);
@@ -173,6 +191,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     setTokenPrices(readCachedTokenPrices());
     setNoLiquidityTokens(new Set());
     setShowHiddenTokens(false);
+    setOwnedNames(null);
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -191,6 +210,22 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     })();
     return () => { cancelled = true; };
   }, [resolvedAddress, getAddress, getAddressCounters, getAddressTokenBalances]);
+
+  // Every name this address owns through this app — on-brand for an ENS platform's own
+  // address-lookup tool, and the exact same cache (owned-names.json) the display-name fallback
+  // below also draws from. Read-only here (this tab isn't the registration app, no manage/renew
+  // actions) — just "here's what this address owns."
+  useEffect(() => {
+    if (!resolvedAddress) return;
+    let cancelled = false;
+    getNamesOwnedBy(resolvedAddress)
+      .then((names) => { if (!cancelled) setOwnedNames(names); })
+      .catch((err) => {
+        console.warn("Failed to load owned names:", err.message);
+        if (!cancelled) setOwnedNames([]);
+      });
+    return () => { cancelled = true; };
+  }, [resolvedAddress, getNamesOwnedBy]);
 
   // USD value per holding — fetched per fungible token (NFTs have no ElectroSwap trading pair, so
   // there's no price to fetch for those), one small request each via the same GeckoTerminal-backed
@@ -360,6 +395,14 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const showMoreAvailable = { transactions: !!txNextParams, tokenTransfers: !!transferNextParams }[activeMetric];
   const showMoreLoading = { transactions: txLoadingMore, tokenTransfers: transferLoadingMore }[activeMetric];
 
+  // Prefer the resolved name; fall back to "Wallet" (not the short-hex resolve() itself returns
+  // for an unresolved address) — the full address is already shown as its own link right below, so
+  // repeating a short-hex version of it as the "name" would be redundant, not informative.
+  const shortAddrFallback = resolvedAddress ? `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}` : null;
+  const resolvedDisplayName = resolvedAddress ? resolveDisplayName(resolvedAddress) : null;
+  const displayName = resolvedDisplayName && resolvedDisplayName !== shortAddrFallback ? resolvedDisplayName : null;
+  const cexLabel = resolvedAddress ? cexMap.get(resolvedAddress.toLowerCase()) : null;
+
   const captions = {
     balance: "ETN balance, full history by day",
     transactions: `Transactions per day, last ${txWindowDays} days (${counters ? formatCompact(counters.transactions_count) : "…"} total all-time)`,
@@ -400,11 +443,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       {resolvedAddress && addressInfo && (
         <div>
           <div style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>
-                {addressInfo.ens_domain_name || "Wallet"}
+                {displayName || "Wallet"}
               </div>
               {isTeamWallet(resolvedAddress) && <TeamWalletTag />}
+              {cexLabel && <CexTag label={cexLabel} />}
             </div>
             <a
               href={`${EXPLORER_BASE_URL}/address/${resolvedAddress}`}
@@ -418,6 +462,25 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>Contract{addressInfo.is_verified ? " · Verified" : ""}</div>
             )}
           </div>
+
+          {ownedNames && ownedNames.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                Names Owned ({ownedNames.length})
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {ownedNames.map((n) => (
+                  <div
+                    key={n.node}
+                    title={n.expiry ? `Expires ${new Date(n.expiry * 1000).toLocaleDateString()}` : undefined}
+                    style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${border}`, background: panel2, fontSize: 11, fontFamily: monoFont, color: mutedLight }}
+                  >
+                    {n.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <TileChart
             tiles={[
@@ -498,6 +561,8 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
           ) : (
             visibleHoldings.slice(0, 25).map((tb, i) => {
               const { usdValue } = tb;
+              const lockInfo = holdingsCategory === "tokens" ? locksByAddress.get(tb.token?.address?.toLowerCase()) : null;
+              const lockText = lockBadgeText(lockInfo);
               return (
                 <button
                   key={`${tb.token?.address}-${i}`}
@@ -521,6 +586,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   <span style={{ fontSize: 12, color: "#fff" }}>
                     <TokenLogo address={tb.token?.address} label={tb.token?.symbol || tb.token?.name} placeholder={holdingsCategory === "tokens"} />
                     {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
+                    {lockText && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: green, marginLeft: 8 }}>
+                        <Lock size={10} />
+                        {lockText}
+                      </span>
+                    )}
                   </span>
                   <span style={{ textAlign: "right" }}>
                     <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
