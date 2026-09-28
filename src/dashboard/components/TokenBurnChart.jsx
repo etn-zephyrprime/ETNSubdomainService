@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { green, mutedLight, muted, panel2, border, error as errorColor } from "../theme.js";
+import { green, mutedLight, muted, panel2, border, monoFont, error as errorColor } from "../theme.js";
 import { useTokenBurns } from "../hooks/useTokenBurns.js";
 import { formatTokenAmount, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import SparklineChart from "./SparklineChart.jsx";
+import TeamWalletTag from "./TeamWalletTag.jsx";
 
 const RECENT_BURNS_SHOWN = 10;
+const TOP_BURNERS_PAGE_SIZE = 5;
+const MAX_TOP_BURNERS_SHOWN = 20; // matches tokenBurnService.js's own MAX_TOP_BURNERS cap
 
 // Cumulative "how much of this token has been burned" chart for TokenDetail.jsx's Tokens tab — see
 // tokenBurnService.js's own header comment for the two different things "burned" means depending on
@@ -17,12 +21,14 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
   const { getTokenBurns } = useTokenBurns();
   const [data, setData] = useState(null); // { isCore, burnAddress, totalBurnedRaw, series, recentEvents, fullyBackfilled, refreshing } | null while loading
   const [error, setError] = useState(null);
+  const [showAllBurners, setShowAllBurners] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let timer = null;
     setData(null);
     setError(null);
+    setShowAllBurners(false);
 
     function load() {
       getTokenBurns(address)
@@ -126,6 +132,48 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
             <div style={{ fontSize: 10, color: muted, marginTop: 8, textAlign: "center" }}>
               Still backfilling this token's full history — the totals above reflect what's been scanned so far.
             </div>
+          )}
+
+          {data.topBurners && data.topBurners.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 700, color: mutedLight, margin: "18px 0 8px", textTransform: "uppercase", letterSpacing: 0.6 }}>
+                Top Burners
+              </div>
+              <div style={{ display: "flex", padding: "0 0 6px", fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: muted, textTransform: "uppercase", letterSpacing: 1 }}>
+                <div style={{ width: 24 }}>#</div>
+                <div style={{ flex: 1 }}>Address</div>
+                <div style={{ textAlign: "right" }}>Burned</div>
+              </div>
+              {data.topBurners.slice(0, showAllBurners ? MAX_TOP_BURNERS_SHOWN : TOP_BURNERS_PAGE_SIZE).map((b, i) => (
+                <a
+                  key={b.address}
+                  href={`${EXPLORER_BASE_URL}/address/${b.address}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: "flex", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}`, textDecoration: "none" }}
+                >
+                  <div style={{ width: 24, fontSize: 11, color: muted, fontWeight: 700 }}>{i + 1}</div>
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>{shortHash(b.address)}</span>
+                    {isTeamWallet(b.address) && <TeamWalletTag style={{ fontSize: 8 }} />}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: green }}>{formatTokenAmount(b.totalRaw, decimals)}</div>
+                    <div style={{ fontSize: 10, color: mutedLight }}>{b.eventCount} burn{b.eventCount === 1 ? "" : "s"}</div>
+                  </div>
+                </a>
+              ))}
+              {!showAllBurners && data.topBurners.length > TOP_BURNERS_PAGE_SIZE && (
+                <div style={{ textAlign: "center", marginTop: 10 }}>
+                  <button
+                    onClick={() => setShowAllBurners(true)}
+                    style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 6, color: mutedLight, fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6, fontSize: 11, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+                  >
+                    Show {Math.min(TOP_BURNERS_PAGE_SIZE, data.topBurners.length - TOP_BURNERS_PAGE_SIZE)} more
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           <div style={{ fontSize: 11, fontWeight: 700, color: mutedLight, margin: "18px 0 8px", textTransform: "uppercase", letterSpacing: 0.6 }}>

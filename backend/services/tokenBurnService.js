@@ -55,6 +55,7 @@ const SCAN_COOLDOWN_MS = process.env.TOKEN_BURN_SCAN_COOLDOWN_MS
   ? parseInt(process.env.TOKEN_BURN_SCAN_COOLDOWN_MS, 10)
   : 60000;
 const MAX_RECENT_EVENTS = 20;
+const MAX_TOP_BURNERS = 20; // TokenBurnChart.jsx shows 5, then "Show more" up to this many
 
 let sharedProvider = null;
 function getProvider() {
@@ -310,6 +311,25 @@ export async function getTokenBurnHistory(tokenAddress) {
   const series = [...byDay.entries()].map(([date, cumulativeRaw]) => ({ date, cumulativeRaw: cumulativeRaw.toString() }));
   const recentEvents = events.slice(-MAX_RECENT_EVENTS).reverse();
 
+  // Which addresses have sent the most to the burn address, lifetime — computed from the same
+  // event list already loaded above rather than a separate SQL aggregate: burns are rare enough
+  // per token (same reasoning getTokenBurnEvents's own header comment gives for not paginating
+  // them) that summing in JS here costs nothing extra, and it's one less query to keep in sync with
+  // whatever this function already does to `events`. Ties (equal total burned) fall back to the
+  // higher event count, then address, purely for a stable, deterministic order.
+  const byAddress = new Map(); // lowercased from_address -> { totalRaw: BigInt, eventCount }
+  for (const e of events) {
+    const key = e.fromAddress.toLowerCase();
+    const entry = byAddress.get(key) || { address: key, totalRaw: 0n, eventCount: 0 };
+    entry.totalRaw += BigInt(e.amount);
+    entry.eventCount += 1;
+    byAddress.set(key, entry);
+  }
+  const topBurners = [...byAddress.values()]
+    .sort((a, b) => (b.totalRaw > a.totalRaw ? 1 : b.totalRaw < a.totalRaw ? -1 : b.eventCount - a.eventCount || a.address.localeCompare(b.address)))
+    .slice(0, MAX_TOP_BURNERS)
+    .map((e) => ({ address: e.address, totalRaw: e.totalRaw.toString(), eventCount: e.eventCount }));
+
   return {
     isCore: burnTargetAddress(tokenAddress) === ZERO_ADDRESS,
     burnAddress: burnTargetAddress(tokenAddress),
@@ -317,6 +337,7 @@ export async function getTokenBurnHistory(tokenAddress) {
     totalEvents: events.length, // recentEvents is capped at MAX_RECENT_EVENTS — this is the real count
     series,
     recentEvents,
+    topBurners,
     fullyBackfilled: cursor != null && cursor.deployBlock != null && cursor.lowScannedBlock <= cursor.deployBlock,
     refreshing,
   };
