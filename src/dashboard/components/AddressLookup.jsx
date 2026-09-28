@@ -3,17 +3,24 @@ import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
-import { useValidatorRewards } from "../hooks/useValidatorRewards.js";
+import { useDisplayNames } from "../hooks/useDisplayNames.js";
+import { useCexAddresses } from "../hooks/useCexAddresses.js";
+import { useTokenLocks } from "../hooks/useTokenLocks.js";
 import { usePayment } from "../../hooks/usePayment.js";
-import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, shortHash, isSpamTokenName, formatChartDate } from "../utils/format.js";
+import { useOwnedNames } from "../../hooks/useOwnedNames.js";
+import { useEtnPrice } from "../../hooks/useEtnPrice.js";
+import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../utils/tokenPriceCache.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
+import { lockBadgeText } from "../utils/lockStatus.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import NeonButton from "../../components/NeonButton.jsx";
 import TileChart from "./TileChart.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
+import CexTag from "./CexTag.jsx";
 import TokenLogo from "./TokenLogo.jsx";
+import { Lock } from "lucide-react";
 
 const inputStyle = {
   width: "100%",
@@ -88,17 +95,6 @@ const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // maxes this cap can add up to ~75s of queued lookups ahead of everyone else's, not just its own.
 const MAX_PRICED_HOLDINGS = 50;
 
-// How recently a validator has to have produced a block to count as "active" here — validator-
-// rewards.json (backend/utils/validatorRewardsCache.js) is bucketed by real UTC day, so this can't
-// be finer than a day; 2 covers today-in-progress plus all of yesterday, so a validator isn't
-// dropped from the list purely for not having produced a block yet *today* at the moment someone
-// looks. This app's own dashboard has already confirmed this chain's validator set round-robins
-// fast (4 different validators in 4 consecutive blocks — see CalendarHeatmap.jsx's header
-// comment), so in practice this window includes essentially every currently-active validator
-// without also dragging in ones that may have rotated out over the full 90-day history the same
-// cache otherwise powers on Overview.jsx.
-const ACTIVE_VALIDATOR_WINDOW_DAYS = 2;
-
 // A holding's USD value from its own per-token price (see the tokenPrices-fetching effect below)
 // — null (row just omits the $ figure) whenever there's no known price yet, same "omit rather
 // than fake a number" convention as TokenDetail.jsx's holderUsdValue.
@@ -119,15 +115,23 @@ function tokenUsdValue(rawValue, decimals, priceUsd) {
 export default function AddressLookup({ initialAddress = null, onSelectToken }) {
   const { getAddress, getAddressCounters, getAddressTokenBalances, getAddressCoinBalanceHistory, getAddressTransactions, getAddressTokenTransfers } = useBlockscout();
   const { getTokenChart } = useTokenChart();
-  const { getValidatorRewards } = useValidatorRewards();
   const { resolveName } = usePayment();
+  const cexMap = useCexAddresses();
+  const locksByAddress = useTokenLocks();
+  const { getNamesOwnedBy } = useOwnedNames();
+  // Same shared, cached resolver used everywhere else on this dashboard (Team Wallets, Balance
+  // History, the Tokens tab's burn lists) — prefers a verified reverse/primary name, falling back
+  // to any name the address owns even without one set (see that hook's own header comment). More
+  // accurate than Blockscout's own raw ens_domain_name field, which this app's own reverse-name
+  // work already found can go stale (a name transferred away, whose old owner's reverse pointer
+  // was never cleared) — see useReverseRecord.js's verifyPrimaryName.
+  const { resolve: resolveDisplayName } = useDisplayNames(resolvedAddress ? [resolvedAddress] : []);
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
 
   const [input, setInput] = useState(initialAddress || "");
   const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
-
-  const [validators, setValidators] = useState(null); // null = loading, [] = none found
 
   const [addressInfo, setAddressInfo] = useState(null);
   const [counters, setCounters] = useState(null);
@@ -139,6 +143,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [noLiquidityTokens, setNoLiquidityTokens] = useState(new Set());
   const [showHiddenTokens, setShowHiddenTokens] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [ownedNames, setOwnedNames] = useState(null); // null = loading, [] = owns none
 
   const [balanceHistory, setBalanceHistory] = useState(null);
   const [txHistory, setTxHistory] = useState(null);
@@ -151,44 +156,6 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const [transferLoadingMore, setTransferLoadingMore] = useState(false);
   const [activeMetric, setActiveMetric] = useState("balance");
   const [holdingsCategory, setHoldingsCategory] = useState("tokens");
-
-  // Quick-pick shortcuts into this same lookup — independent of whatever address (if any) is
-  // currently looked up, so it loads once on mount rather than being tied to resolvedAddress.
-  // Ranked by blocks produced within ACTIVE_VALIDATOR_WINDOW_DAYS, not the full 90-day history
-  // validator-rewards.json otherwise covers (see that constant's comment) — a different, narrower
-  // ranking than ValidatorLineChart.jsx's on Overview, so no attempt is made to share its color
-  // assignment here.
-  useEffect(() => {
-    let cancelled = false;
-    getValidatorRewards()
-      .then((res) => {
-        if (cancelled) return;
-        const days = res?.days || {};
-        const cutoff = new Date(Date.now() - ACTIVE_VALIDATOR_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
-        const totals = new Map();
-        for (const [day, entry] of Object.entries(days)) {
-          if (day < cutoff) continue;
-          for (const [address, v] of Object.entries(entry.validators || {})) {
-            totals.set(address, (totals.get(address) || 0) + v.blocks);
-          }
-        }
-        const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([address, blocks]) => ({ address, blocks }));
-        setValidators(ranked);
-      })
-      .catch((err) => {
-        console.warn("Failed to load active validators:", err.message);
-        if (!cancelled) setValidators([]);
-      });
-    return () => { cancelled = true; };
-  }, [getValidatorRewards]);
-
-  // Already a known-good checksummed address — no name resolution needed, unlike handleLookup
-  // below which has to handle arbitrary free-text input.
-  const selectValidator = (address) => {
-    setInput(address);
-    setResolveError(null);
-    setResolvedAddress(address);
-  };
 
   const handleLookup = async () => {
     setResolveError(null);
@@ -226,6 +193,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     setTokenPrices(readCachedTokenPrices());
     setNoLiquidityTokens(new Set());
     setShowHiddenTokens(false);
+    setOwnedNames(null);
     (async () => {
       try {
         const [info, counterRes, balances] = await Promise.all([
@@ -244,6 +212,22 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     })();
     return () => { cancelled = true; };
   }, [resolvedAddress, getAddress, getAddressCounters, getAddressTokenBalances]);
+
+  // Every name this address owns through this app — on-brand for an ENS platform's own
+  // address-lookup tool, and the exact same cache (owned-names.json) the display-name fallback
+  // below also draws from. Read-only here (this tab isn't the registration app, no manage/renew
+  // actions) — just "here's what this address owns."
+  useEffect(() => {
+    if (!resolvedAddress) return;
+    let cancelled = false;
+    getNamesOwnedBy(resolvedAddress)
+      .then((names) => { if (!cancelled) setOwnedNames(names); })
+      .catch((err) => {
+        console.warn("Failed to load owned names:", err.message);
+        if (!cancelled) setOwnedNames([]);
+      });
+    return () => { cancelled = true; };
+  }, [resolvedAddress, getNamesOwnedBy]);
 
   // USD value per holding — fetched per fungible token (NFTs have no ElectroSwap trading pair, so
   // there's no price to fetch for those), one small request each via the same GeckoTerminal-backed
@@ -407,11 +391,51 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     [tokenBalances, noLiquidityTokens]
   );
 
+  const etnBalanceUsd = useMemo(() => {
+    if (etnUsdPrice == null || !addressInfo?.coin_balance) return null;
+    try {
+      const etn = parseFloat(ethers.formatEther(addressInfo.coin_balance));
+      return Number.isFinite(etn) ? etn * etnUsdPrice : null;
+    } catch {
+      return null;
+    }
+  }, [addressInfo, etnUsdPrice]);
+
+  // ETN balance + every priced fungible holding (NFTs excluded — no market price to sum, same
+  // reasoning nftPnlService.js's own header comment gives for never estimating a held NFT's
+  // current value) — independent of the Tokens/NFT's toggle above, which only affects the LIST.
+  // `incomplete: true` whenever at least one non-spam fungible holding has no known price yet
+  // (still loading, or past MAX_PRICED_HOLDINGS) — the total is real, just a floor, not the whole
+  // story, same "never silently overclaim precision" posture as this file's other USD figures.
+  const totalWalletValue = useMemo(() => {
+    if (!addressInfo) return { usd: null, incomplete: false };
+    let usd = etnBalanceUsd;
+    let incomplete = etnBalanceUsd == null;
+    for (const tb of tokenBalances) {
+      if (NFT_TOKEN_TYPES.has(tb.token?.type) || isSpamTokenName(tb.token?.name)) continue;
+      const v = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
+      if (v == null) {
+        incomplete = true;
+      } else {
+        usd = (usd ?? 0) + v;
+      }
+    }
+    return { usd, incomplete };
+  }, [addressInfo, etnBalanceUsd, tokenBalances, tokenPrices]);
+
   // "Show more" is available whenever there's a saved next_page_params to resume from — null
   // means fetchUntilWindow ran out of data on its own, i.e. this address's *complete* history is
   // already loaded, not just the current window's worth.
   const showMoreAvailable = { transactions: !!txNextParams, tokenTransfers: !!transferNextParams }[activeMetric];
   const showMoreLoading = { transactions: txLoadingMore, tokenTransfers: transferLoadingMore }[activeMetric];
+
+  // Prefer the resolved name; fall back to "Wallet" (not the short-hex resolve() itself returns
+  // for an unresolved address) — the full address is already shown as its own link right below, so
+  // repeating a short-hex version of it as the "name" would be redundant, not informative.
+  const shortAddrFallback = resolvedAddress ? `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)}` : null;
+  const resolvedDisplayName = resolvedAddress ? resolveDisplayName(resolvedAddress) : null;
+  const displayName = resolvedDisplayName && resolvedDisplayName !== shortAddrFallback ? resolvedDisplayName : null;
+  const cexLabel = resolvedAddress ? cexMap.get(resolvedAddress.toLowerCase()) : null;
 
   const captions = {
     balance: "ETN balance, full history by day",
@@ -428,40 +452,6 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   return (
     <div>
       <style>{`.dash-addr-row{transition:border-color .15s ease;} .dash-addr-row:hover:not(:disabled),.dash-addr-row:focus-visible{border-bottom-color:${green};}`}</style>
-
-      {validators && validators.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
-            Active Validators (last {ACTIVE_VALIDATOR_WINDOW_DAYS}d)
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {validators.map(({ address, blocks }) => (
-              <button
-                key={address}
-                onClick={() => selectValidator(address)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  border: `1px solid ${address === resolvedAddress ? green : border}`,
-                  background: address === resolvedAddress ? "rgba(24,187,26,0.12)" : panel2,
-                  color: address === resolvedAddress ? green : mutedLight,
-                  fontSize: 11,
-                  fontFamily: monoFont,
-                  cursor: "pointer",
-                }}
-              >
-                {shortHash(address)}
-                <span style={{ color: muted, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-                  {formatInt(blocks)} blk
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         <input
@@ -487,11 +477,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
       {resolvedAddress && addressInfo && (
         <div>
           <div style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>
-                {addressInfo.ens_domain_name || "Wallet"}
+                {displayName || "Wallet"}
               </div>
               {isTeamWallet(resolvedAddress) && <TeamWalletTag />}
+              {cexLabel && <CexTag label={cexLabel} />}
             </div>
             <a
               href={`${EXPLORER_BASE_URL}/address/${resolvedAddress}`}
@@ -506,9 +497,53 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
             )}
           </div>
 
+          {ownedNames && ownedNames.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>
+                Names Owned ({ownedNames.length})
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {ownedNames.map((n) => (
+                  <div
+                    key={n.node}
+                    title={n.expiry ? `Expires ${new Date(n.expiry * 1000).toLocaleDateString()}` : undefined}
+                    style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${border}`, background: panel2, fontSize: 11, fontFamily: monoFont, color: mutedLight }}
+                  >
+                    {n.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <TileChart
             tiles={[
-              { id: "balance", label: "ETN Balance", value: `${formatEtnBalance(addressInfo.coin_balance)} ETN` },
+              {
+                id: "totalValue",
+                label: "Total Wallet Value",
+                disabled: true, // informational only — no time-series to swap the chart to (see totalWalletValue's own comment)
+                value:
+                  totalWalletValue.usd != null ? (
+                    <>
+                      {totalWalletValue.incomplete && <span style={{ color: mutedLight }}>~</span>}
+                      {formatUsdPrice(totalWalletValue.usd)}
+                    </>
+                  ) : (
+                    "…"
+                  ),
+              },
+              {
+                id: "balance",
+                label: "ETN Balance",
+                value: (
+                  <>
+                    {formatEtnBalance(addressInfo.coin_balance)} ETN
+                    {etnBalanceUsd != null && (
+                      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginTop: 2 }}>{formatUsdPrice(etnBalanceUsd)}</div>
+                    )}
+                  </>
+                ),
+              },
               { id: "transactions", label: "Transactions", value: counters ? formatCompact(counters.transactions_count) : "…" },
               { id: "tokenTransfers", label: "Token Transfers", value: counters ? formatCompact(counters.token_transfers_count) : "…" },
             ]}
@@ -585,6 +620,8 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
           ) : (
             visibleHoldings.slice(0, 25).map((tb, i) => {
               const { usdValue } = tb;
+              const lockInfo = holdingsCategory === "tokens" ? locksByAddress.get(tb.token?.address?.toLowerCase()) : null;
+              const lockText = lockBadgeText(lockInfo);
               return (
                 <button
                   key={`${tb.token?.address}-${i}`}
@@ -608,6 +645,12 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
                   <span style={{ fontSize: 12, color: "#fff" }}>
                     <TokenLogo address={tb.token?.address} label={tb.token?.symbol || tb.token?.name} placeholder={holdingsCategory === "tokens"} />
                     {tb.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{tb.token?.symbol}</span>
+                    {lockText && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: green, marginLeft: 8 }}>
+                        <Lock size={10} />
+                        {lockText}
+                      </span>
+                    )}
                   </span>
                   <span style={{ textAlign: "right" }}>
                     <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(tb.value, tb.token?.decimals)}</span>
