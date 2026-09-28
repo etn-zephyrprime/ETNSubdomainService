@@ -12,7 +12,7 @@ export function useTokenBurns() {
       const data = await res.json().catch(() => null);
       throw new Error(data?.error || `Token burns request failed (${res.status})`);
     }
-    return res.json(); // { isCore, burnAddress, totalBurnedRaw, series: [{date, cumulativeRaw}], recentEvents, topBurners: [{address, totalRaw, eventCount}], fullyBackfilled, refreshing }
+    return res.json(); // { isCore, burnAddresses, totalBurnedRaw, series: [{date, cumulativeRaw}], recentEvents, topBurners: [{address, totalRaw, eventCount}], fullyBackfilled, refreshing }
   }, []);
 
   return { getTokenBurns };

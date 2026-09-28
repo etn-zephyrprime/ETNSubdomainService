@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, monoFont, error as errorColor } from "../theme.js";
 import { useTokenBurns } from "../hooks/useTokenBurns.js";
 import { useDisplayNames } from "../hooks/useDisplayNames.js";
@@ -12,6 +13,15 @@ const RECENT_BURNS_SHOWN = 10;
 const TOP_BURNERS_PAGE_SIZE = 5;
 const MAX_TOP_BURNERS_SHOWN = 20; // matches tokenBurnService.js's own MAX_TOP_BURNERS cap
 
+// CORE's total STARTING supply — same value, same reasoning, as src/components/CoreBurnedCard.jsx's
+// own identical constant: not something CORE's contract exposes (there's no "initial supply" view,
+// only the current, shrinking totalSupply()), so this is a fixed number rather than a read. "% of
+// supply" for CORE is deliberately measured against this fixed figure, not the live token.total_supply
+// prop every other token here uses — CORE's own totalSupply() falls every time burn() runs, so
+// dividing by it would be a moving, ever-smaller denominator instead of "how much of what CORE
+// originally had is now gone."
+const CORE_STARTING_SUPPLY = 1_000_000;
+
 // Cumulative "how much of this token has been burned" chart for TokenDetail.jsx's Tokens tab — see
 // tokenBurnService.js's own header comment for the two different things "burned" means depending on
 // the token, mirrored in the caption below: CORE has a real burn() function that reduces its own
@@ -20,7 +30,7 @@ const MAX_TOP_BURNERS_SHOWN = 20; // matches tokenBurnService.js's own MAX_TOP_B
 // reduction — shown just as honestly, without implying the token's own total supply changed.
 export default function TokenBurnChart({ address, decimals, totalSupply }) {
   const { getTokenBurns } = useTokenBurns();
-  const [data, setData] = useState(null); // { isCore, burnAddress, totalBurnedRaw, series, recentEvents, fullyBackfilled, refreshing } | null while loading
+  const [data, setData] = useState(null); // { isCore, burnAddresses, totalBurnedRaw, series, recentEvents, fullyBackfilled, refreshing } | null while loading
   const [error, setError] = useState(null);
   const [showAllBurners, setShowAllBurners] = useState(false);
 
@@ -72,8 +82,17 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
   const { resolve: resolveName } = useDisplayNames(burnerAddresses);
 
   const percentOfSupply = useMemo(() => {
-    if (!data?.totalBurnedRaw || !totalSupply) return null;
+    if (!data?.totalBurnedRaw) return null;
     try {
+      if (data.isCore) {
+        // Against the fixed STARTING supply, not the current (shrinking) one — see
+        // CORE_STARTING_SUPPLY's own comment. Same float-division precision tradeoff
+        // CoreBurnedCard.jsx's own identical calculation already accepts.
+        const burnedTokens = parseFloat(ethers.formatUnits(data.totalBurnedRaw, decimals));
+        if (!Number.isFinite(burnedTokens)) return null;
+        return (burnedTokens / CORE_STARTING_SUPPLY) * 100;
+      }
+      if (!totalSupply) return null;
       const total = BigInt(totalSupply);
       if (total <= 0n) return null;
       const basisPoints = (BigInt(data.totalBurnedRaw) * 1000000n) / total; // 1e6 precision, same "raw BigInt basis points" precision reasoning as TokenDetail.jsx's own holderPercentage
@@ -81,7 +100,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
     } catch {
       return null;
     }
-  }, [data, totalSupply]);
+  }, [data, totalSupply, decimals]);
 
   if (error) {
     return <div style={{ fontSize: 12, color: errorColor, padding: 16, textAlign: "center" }}>{error}</div>;
@@ -94,7 +113,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
       </div>
       <div style={{ fontSize: 11, color: mutedLight, marginBottom: 14, lineHeight: 1.6 }}>
         {data?.isCore
-          ? "CORE has a real burn() function — every figure here actually reduced CORE's own total supply, whether triggered by this app's Buy Back & Burn or anything else."
+          ? `CORE has a real burn() function — every figure here combines that (Transfers to the true zero address) with CORE also sent directly to the conventional "dead" address, both real, permanent removals from circulation. % of Supply is measured against CORE's fixed starting supply of ${CORE_STARTING_SUPPLY.toLocaleString()}, not its current (shrinking) total supply.`
           : "This token has no burn() function of its own — the amounts here were sent to the widely-used conventional \"dead\" address (0x000…dEaD), a permanent, verifiable removal from circulation, but not a reduction of the token's own total supply."}
       </div>
 

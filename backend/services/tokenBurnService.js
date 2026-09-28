@@ -11,12 +11,23 @@
 //     Telegram alerts — see that file's own header comment for the "why zero address, not just any
 //     Transfer" reasoning (CORE's own fee-on-transfer tax also burns a cut on every ordinary
 //     transfer, which is real and correctly counted here too, not just explicit burn() calls).
+//     CONFIRMED LIVE: CORE also has real burns to the conventional dead address on top of that —
+//     some CORE was sent to 0x000...dEaD directly rather than through burn() — so CORE's own burn
+//     history aggregates BOTH addresses (see burnTargetAddresses below), not just the "official"
+//     zero-address mechanism; undercounting the dead-address burns would understate CORE's real
+//     total burned.
 //   - Every other token on this chain has no burn() function at all (a plain ERC20 has no way to
 //     reduce its own totalSupply from outside the contract) — sending to the conventional
 //     0x000...dEaD address is simply a WIDELY-UNDERSTOOD CONVENTION for "I intend this gone
 //     forever", not a real supply reduction. This chart shows that convention faithfully (real,
 //     verifiable on-chain transfers to that address) without ever claiming it reduced totalSupply
 //     the way CORE's does — see the frontend's own copy for how this distinction is presented.
+//
+// "% of supply" for CORE specifically is calculated against its own fixed STARTING supply (see
+// CORE_STARTING_SUPPLY in TokenBurnChart.jsx — same constant, same reasoning, as
+// CoreBurnedCard.jsx's own CORE_TOTAL_SUPPLY), never CORE's current totalSupply() — that number
+// itself SHRINKS every time burn() runs, so dividing by it would be a moving, ever-smaller
+// denominator rather than "how much of what CORE originally had has been destroyed."
 //
 // Per-token, resumable, dual-cursor scan — same "catch up to tip, backfill older history in the
 // background" shape as nftSalesCache.js, just persisted per-token in Postgres (token_burn_cursor)
@@ -63,11 +74,12 @@ function getProvider() {
   return sharedProvider;
 }
 
-/** Which address counts as "burned" for this specific token — see this file's own header comment
- * for the CORE-vs-everything-else distinction. */
-export function burnTargetAddress(tokenAddress) {
-  if (CORE_TOKEN_ADDRESS && tokenAddress.toLowerCase() === CORE_TOKEN_ADDRESS.toLowerCase()) return ZERO_ADDRESS;
-  return DEAD_ADDRESS;
+/** Which address(es) count as "burned" for this specific token — see this file's own header
+ * comment for the CORE-vs-everything-else distinction, and for why CORE alone aggregates two
+ * addresses rather than one. */
+export function burnTargetAddresses(tokenAddress) {
+  if (CORE_TOKEN_ADDRESS && tokenAddress.toLowerCase() === CORE_TOKEN_ADDRESS.toLowerCase()) return [ZERO_ADDRESS, DEAD_ADDRESS];
+  return [DEAD_ADDRESS];
 }
 
 // Same range-adaptive chunked scan duplicated across this repo's own on-chain-history caches (see
@@ -114,9 +126,12 @@ async function resolveDeployBlock(tokenAddress) {
   }
 }
 
-async function scanRange(contract, provider, targetAddress, fromBlock, toBlock, onProgress) {
+async function scanRange(contract, provider, targetAddresses, fromBlock, toBlock, onProgress) {
   if (fromBlock > toBlock) return [];
-  const logs = await queryLogsChunked(contract, contract.filters.Transfer(null, targetAddress), fromBlock, toBlock, 2000, 50, onProgress);
+  // A second positional array value for an indexed Transfer topic means "OR" at the eth_getLogs
+  // level (any transfer whose `to` matches ANY of these) — one filtered log query covers both of
+  // CORE's burn addresses instead of needing two separate scans.
+  const logs = await queryLogsChunked(contract, contract.filters.Transfer(null, targetAddresses), fromBlock, toBlock, 2000, 50, onProgress);
   if (logs.length === 0) return [];
 
   const uniqueBlocks = [...new Set(logs.map((e) => e.blockNumber))];
@@ -185,7 +200,7 @@ const inFlightScans = new Map(); // tokenAddress (lowercase) -> Promise, dedupes
  * themselves, since they react to a failure differently (silently give up vs. stop and report). */
 async function scanOneStep(tokenAddress, cursor, onProgress) {
   const provider = getProvider();
-  const targetAddress = burnTargetAddress(tokenAddress);
+  const targetAddresses = burnTargetAddresses(tokenAddress);
   const contract = new ethers.Contract(tokenAddress, TRANSFER_ABI, provider);
   const latestBlock = await provider.getBlockNumber();
 
@@ -199,18 +214,18 @@ async function scanOneStep(tokenAddress, cursor, onProgress) {
     // background" bootstrap as nftSalesCache.js, so there's something real to show immediately
     // rather than making the very first viewer wait out however much history there is.
     const fromBlock = Math.max(deployBlock, latestBlock - MAX_BLOCKS_PER_CALL + 1);
-    newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, latestBlock, onProgress)));
+    newEvents.push(...(await scanRange(contract, provider, targetAddresses, fromBlock, latestBlock, onProgress)));
     highScannedBlock = latestBlock;
     lowScannedBlock = fromBlock;
   } else {
     if (latestBlock > highScannedBlock) {
-      newEvents.push(...(await scanRange(contract, provider, targetAddress, highScannedBlock + 1, latestBlock, onProgress)));
+      newEvents.push(...(await scanRange(contract, provider, targetAddresses, highScannedBlock + 1, latestBlock, onProgress)));
       highScannedBlock = latestBlock;
     }
     if (lowScannedBlock > deployBlock) {
       const toBlock = lowScannedBlock - 1;
       const fromBlock = Math.max(deployBlock, toBlock - MAX_BLOCKS_PER_CALL + 1);
-      newEvents.push(...(await scanRange(contract, provider, targetAddress, fromBlock, toBlock, onProgress)));
+      newEvents.push(...(await scanRange(contract, provider, targetAddresses, fromBlock, toBlock, onProgress)));
       lowScannedBlock = fromBlock;
     }
   }
@@ -326,6 +341,55 @@ export async function backfillTokenFully(tokenAddress, { onStep, onProgress, onR
   }
 }
 
+/** One-off catch-up for CORE specifically, needed exactly once after burnTargetAddresses started
+ * returning [ZERO_ADDRESS, DEAD_ADDRESS] instead of just [ZERO_ADDRESS] (see this file's header
+ * comment): re-scans ONLY the dead-address leg across whatever block range CORE's cursor ALREADY
+ * covers from the old zero-address-only scans, so historical dead-address burns inside that window
+ * get inserted retroactively. Blocks outside that window don't need this — anything the cursor
+ * hasn't reached yet (older blocks still pending backward backfill, newer ones still pending
+ * forward catch-up) will get scanned with the new combined filter automatically, the normal way.
+ *
+ * A no-op if CORE_TOKEN_ADDRESS isn't configured or CORE has never been scanned at all (nothing
+ * "already scanned with the old filter" to top up in that case — a first scan already uses the new
+ * combined filter). Idempotent: insertTokenBurnEvents already dedupes by
+ * (token_address, tx_hash, log_index), so re-running this (or its range overlapping a normal scan)
+ * just finds 0 new rows the second time. Deliberately does NOT touch the persisted cursor — this is
+ * a data top-up, not a change in scan progress. For scripts/fixCoreDeadAddressBurns.js only. */
+export async function backfillCoreDeadAddressGap({ onProgress } = {}) {
+  if (!CORE_TOKEN_ADDRESS) throw new Error("CORE_TOKEN_ADDRESS isn't configured");
+  const cursor = await getTokenBurnCursor(CORE_TOKEN_ADDRESS);
+  if (!cursor || cursor.lowScannedBlock == null || cursor.highScannedBlock == null) {
+    return { scanned: false, reason: "CORE has never been scanned yet — a first scan already covers both burn addresses, nothing to top up." };
+  }
+
+  const provider = getProvider();
+  const contract = new ethers.Contract(CORE_TOKEN_ADDRESS, TRANSFER_ABI, provider);
+  const rangeStart = cursor.lowScannedBlock;
+  const rangeEnd = cursor.highScannedBlock;
+  let inserted = 0;
+  let from = rangeStart;
+
+  while (from <= rangeEnd) {
+    const to = Math.min(from + MAX_BLOCKS_PER_CALL - 1, rangeEnd);
+    let events;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        events = await scanRange(contract, provider, [DEAD_ADDRESS], from, to, onProgress);
+        break;
+      } catch (err) {
+        if (attempt >= BACKFILL_STEP_RETRIES) throw err;
+        await sleep(1000 * 3 ** attempt);
+      }
+    }
+    await insertTokenBurnEvents(CORE_TOKEN_ADDRESS, events);
+    inserted += events.length;
+    from = to + 1;
+    if (from <= rangeEnd && BACKFILL_STEP_DELAY_MS > 0) await sleep(BACKFILL_STEP_DELAY_MS);
+  }
+
+  return { scanned: true, rangeStart, rangeEnd, blocksCovered: rangeEnd - rangeStart + 1, inserted };
+}
+
 /** True the moment a cursor is due for a rescan (never scanned yet, or SCAN_COOLDOWN_MS has
  * elapsed) — same test ensureTokenBurnsScanned itself uses to decide whether to skip, exposed here
  * so getTokenBurnHistory can report `refreshing` honestly instead of guessing from inFlightScans
@@ -335,8 +399,10 @@ function isScanDue(cursor) {
 }
 
 /**
- * `{ isCore, burnAddress, totalBurnedRaw, series, recentEvents, fullyBackfilled }` for
- * `tokenAddress` — `totalBurnedRaw`/`series[].cumulativeRaw`/`recentEvents[].amount` are all raw
+ * `{ isCore, burnAddresses, totalBurnedRaw, series, recentEvents, fullyBackfilled }` for
+ * `tokenAddress` (`totalBurnedRaw` is the SUM across every address in `burnAddresses` — for CORE
+ * that's the zero address AND the dead address combined, see this file's own header comment) —
+ * `totalBurnedRaw`/`series[].cumulativeRaw`/`recentEvents[].amount` are all raw
  * integer strings in the token's own smallest unit; the caller already has this token's `decimals`
  * (it's part of the same Blockscout token response TokenDetail.jsx already loaded) so formatting
  * happens at the frontend, not here — same division of responsibility as this app's other
@@ -385,9 +451,10 @@ export async function getTokenBurnHistory(tokenAddress) {
     .slice(0, MAX_TOP_BURNERS)
     .map((e) => ({ address: e.address, totalRaw: e.totalRaw.toString(), eventCount: e.eventCount }));
 
+  const isCore = !!CORE_TOKEN_ADDRESS && tokenAddress.toLowerCase() === CORE_TOKEN_ADDRESS.toLowerCase();
   return {
-    isCore: burnTargetAddress(tokenAddress) === ZERO_ADDRESS,
-    burnAddress: burnTargetAddress(tokenAddress),
+    isCore,
+    burnAddresses: burnTargetAddresses(tokenAddress),
     totalBurnedRaw: cumulative.toString(),
     totalEvents: events.length, // recentEvents is capped at MAX_RECENT_EVENTS — this is the real count
     series,
