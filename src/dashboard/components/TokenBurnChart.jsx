@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { green, mutedLight, muted, panel2, border, monoFont, error as errorColor } from "../theme.js";
 import { useTokenBurns } from "../hooks/useTokenBurns.js";
-import { formatTokenAmount, formatChartDate, shortHash, timeAgo } from "../utils/format.js";
+import { useDisplayNames } from "../hooks/useDisplayNames.js";
+import { formatTokenAmount, formatChartDate, timeAgo } from "../utils/format.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import SparklineChart from "./SparklineChart.jsx";
@@ -60,6 +61,15 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
       })),
     [data, decimals]
   );
+
+  // ENS/primary names for every address either list below shows — same page-wide cached resolver
+  // used elsewhere on this dashboard (Team Wallets, Balance History), so an address already
+  // resolved there (or by an earlier token's burn lists) doesn't pay for a second lookup.
+  const burnerAddresses = useMemo(
+    () => [...(data?.topBurners || []).map((b) => b.address), ...(data?.recentEvents || []).map((e) => e.fromAddress)],
+    [data]
+  );
+  const { resolve: resolveName } = useDisplayNames(burnerAddresses);
 
   const percentOfSupply = useMemo(() => {
     if (!data?.totalBurnedRaw || !totalSupply) return null;
@@ -154,7 +164,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
                 >
                   <div style={{ width: 24, fontSize: 11, color: muted, fontWeight: 700 }}>{i + 1}</div>
                   <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>{shortHash(b.address)}</span>
+                    <span style={{ fontSize: 12, color: "#fff", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{resolveName(b.address)}</span>
                     {isTeamWallet(b.address) && <TeamWalletTag style={{ fontSize: 8 }} />}
                   </div>
                   <div style={{ textAlign: "right" }}>
@@ -188,7 +198,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
               style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${border}`, textDecoration: "none" }}
             >
               <div>
-                <div style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>{shortHash(e.fromAddress)}</div>
+                <div style={{ fontSize: 12, color: "#fff", fontFamily: "monospace" }}>{resolveName(e.fromAddress)}</div>
                 <div style={{ fontSize: 10, color: mutedLight }}>{timeAgo(new Date(e.timestampMs).toISOString())}</div>
               </div>
               <div style={{ fontSize: 12, fontWeight: 700, color: green }}>{formatTokenAmount(e.amount, decimals)}</div>
