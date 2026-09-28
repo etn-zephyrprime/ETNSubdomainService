@@ -18,10 +18,16 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
         {tiles.map((tile) => {
           const isActive = tile.id === activeId;
+          // `disabled` tiles (e.g. AddressLookup.jsx's "Total Wallet Value" — a figure with no
+          // matching time-series to swap the chart to) render as a plain, non-interactive info
+          // card instead of a clickable metric-select button — same visual tile, just a <div>
+          // instead of a <button onClick>, so it still sizes/aligns as an ordinary grid cell
+          // alongside the real clickable tiles rather than needing a separate layout.
+          const Tag = tile.disabled ? "div" : "button";
           return (
-            <button
+            <Tag
               key={tile.id}
-              onClick={() => onSelect(tile.id)}
+              onClick={tile.disabled ? undefined : () => onSelect(tile.id)}
               style={{
                 position: "relative",
                 textAlign: "left",
@@ -30,7 +36,7 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
                 background: panel2,
                 border: `1px solid ${isActive ? green : border}`,
                 boxShadow: isActive ? `0 0 12px ${greenGlow}` : "none",
-                cursor: "pointer",
+                cursor: tile.disabled ? "default" : "pointer",
               }}
             >
               <CornerBrackets color={isActive ? green : border} />
@@ -45,7 +51,7 @@ export default function TileChart({ tiles, activeId, onSelect, data, formatValue
                   <span style={{ color: muted, fontWeight: 600 }}>7D</span> {tile.changeText}
                 </div>
               )}
-            </button>
+            </Tag>
           );
         })}
       </div>

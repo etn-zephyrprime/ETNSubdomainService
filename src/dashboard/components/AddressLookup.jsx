@@ -8,6 +8,7 @@ import { useCexAddresses } from "../hooks/useCexAddresses.js";
 import { useTokenLocks } from "../hooks/useTokenLocks.js";
 import { usePayment } from "../../hooks/usePayment.js";
 import { useOwnedNames } from "../../hooks/useOwnedNames.js";
+import { useEtnPrice } from "../../hooks/useEtnPrice.js";
 import { formatCompact, formatTokenAmount, formatUsdPrice, formatEtnBalance, formatInt, isSpamTokenName, formatChartDate } from "../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../utils/tokenPriceCache.js";
 import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
@@ -125,6 +126,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   // work already found can go stale (a name transferred away, whose old owner's reverse pointer
   // was never cleared) — see useReverseRecord.js's verifyPrimaryName.
   const { resolve: resolveDisplayName } = useDisplayNames(resolvedAddress ? [resolvedAddress] : []);
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
 
   const [input, setInput] = useState(initialAddress || "");
   const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
@@ -389,6 +391,38 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
     [tokenBalances, noLiquidityTokens]
   );
 
+  const etnBalanceUsd = useMemo(() => {
+    if (etnUsdPrice == null || !addressInfo?.coin_balance) return null;
+    try {
+      const etn = parseFloat(ethers.formatEther(addressInfo.coin_balance));
+      return Number.isFinite(etn) ? etn * etnUsdPrice : null;
+    } catch {
+      return null;
+    }
+  }, [addressInfo, etnUsdPrice]);
+
+  // ETN balance + every priced fungible holding (NFTs excluded — no market price to sum, same
+  // reasoning nftPnlService.js's own header comment gives for never estimating a held NFT's
+  // current value) — independent of the Tokens/NFT's toggle above, which only affects the LIST.
+  // `incomplete: true` whenever at least one non-spam fungible holding has no known price yet
+  // (still loading, or past MAX_PRICED_HOLDINGS) — the total is real, just a floor, not the whole
+  // story, same "never silently overclaim precision" posture as this file's other USD figures.
+  const totalWalletValue = useMemo(() => {
+    if (!addressInfo) return { usd: null, incomplete: false };
+    let usd = etnBalanceUsd;
+    let incomplete = etnBalanceUsd == null;
+    for (const tb of tokenBalances) {
+      if (NFT_TOKEN_TYPES.has(tb.token?.type) || isSpamTokenName(tb.token?.name)) continue;
+      const v = tokenUsdValue(tb.value, tb.token?.decimals, tokenPrices[tb.token?.address?.toLowerCase()]);
+      if (v == null) {
+        incomplete = true;
+      } else {
+        usd = (usd ?? 0) + v;
+      }
+    }
+    return { usd, incomplete };
+  }, [addressInfo, etnBalanceUsd, tokenBalances, tokenPrices]);
+
   // "Show more" is available whenever there's a saved next_page_params to resume from — null
   // means fetchUntilWindow ran out of data on its own, i.e. this address's *complete* history is
   // already loaded, not just the current window's worth.
@@ -484,7 +518,32 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
 
           <TileChart
             tiles={[
-              { id: "balance", label: "ETN Balance", value: `${formatEtnBalance(addressInfo.coin_balance)} ETN` },
+              {
+                id: "totalValue",
+                label: "Total Wallet Value",
+                disabled: true, // informational only — no time-series to swap the chart to (see totalWalletValue's own comment)
+                value:
+                  totalWalletValue.usd != null ? (
+                    <>
+                      {totalWalletValue.incomplete && <span style={{ color: mutedLight }}>~</span>}
+                      {formatUsdPrice(totalWalletValue.usd)}
+                    </>
+                  ) : (
+                    "…"
+                  ),
+              },
+              {
+                id: "balance",
+                label: "ETN Balance",
+                value: (
+                  <>
+                    {formatEtnBalance(addressInfo.coin_balance)} ETN
+                    {etnBalanceUsd != null && (
+                      <div style={{ fontSize: 12, fontWeight: 700, color: mutedLight, marginTop: 2 }}>{formatUsdPrice(etnBalanceUsd)}</div>
+                    )}
+                  </>
+                ),
+              },
               { id: "transactions", label: "Transactions", value: counters ? formatCompact(counters.transactions_count) : "…" },
               { id: "tokenTransfers", label: "Token Transfers", value: counters ? formatCompact(counters.token_transfers_count) : "…" },
             ]}
