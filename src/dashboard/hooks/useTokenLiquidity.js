@@ -7,8 +7,12 @@ import { r2ProxyUrl } from "../../config.js";
 // liquidity" + $ display on the free Tokens tab.
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-// Map<lowercased token address, liquidity USD> — a token ElectroSwap doesn't list (or that hasn't
-// parsed correctly this cycle) is simply absent from the map, never a fabricated 0.
+// Map<lowercased token address, { usd, poolCount }> — a token ElectroSwap doesn't list (or that
+// hasn't parsed correctly this cycle) is simply absent from the map, never a fabricated 0. `usd` is
+// a SUM across every pool the token appears in (see tokenLiquidityCache.js's own comment) —
+// `poolCount` is how many pools were summed, so a caller can show "$X across N pools" instead of a
+// bare figure that reads like one pool's own size (confirmed confusing live: WETN's $204k is 116
+// pools added together, not one WETN pool).
 let cachedLiquidity = new Map();
 let subscribers = new Set();
 
@@ -22,7 +26,8 @@ async function fetchAndBroadcast() {
     const next = new Map();
     for (const [address, usd] of Object.entries(data.liquidityUsd)) {
       if (typeof usd === "number" && Number.isFinite(usd) && usd >= 0) {
-        next.set(address.toLowerCase(), usd);
+        const poolCount = data.poolCounts?.[address];
+        next.set(address.toLowerCase(), { usd, poolCount: typeof poolCount === "number" ? poolCount : null });
       }
     }
     cachedLiquidity = next;
@@ -40,8 +45,9 @@ function ensurePolling() {
 }
 
 /**
- * Returns a Map<lowercased token address, liquidity USD> — empty until the first successful fetch.
- * Shared module-level cache + a single polling timer regardless of how many components call this.
+ * Returns a Map<lowercased token address, { usd, poolCount }> — empty until the first successful
+ * fetch. Shared module-level cache + a single polling timer regardless of how many components call
+ * this.
  */
 export function useTokenLiquidity() {
   const [liquidity, setLiquidity] = useState(cachedLiquidity);

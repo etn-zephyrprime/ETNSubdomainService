@@ -77,11 +77,18 @@ export default function TokenLeaderboard({ onSelectToken }) {
   // figures don't apply to a collection.
   const visibleTokens = tokens
     .filter((t) => !isSpamTokenName(t.name))
-    .map((t) => ({
-      ...t,
-      liquidityUsd: category === "tokens" ? liquidityByAddress.get(t.address?.toLowerCase()) ?? null : null,
-      lockInfo: category === "tokens" ? locksByAddress.get(t.address?.toLowerCase()) ?? null : null,
-    }))
+    .map((t) => {
+      const liquidity = category === "tokens" ? liquidityByAddress.get(t.address?.toLowerCase()) : null;
+      return {
+        ...t,
+        liquidityUsd: liquidity?.usd ?? null,
+        // Only shown when > 1 (see the render below) — this figure is a SUM across every pool the
+        // token appears in, not one pool's own size (see useTokenLiquidity.js's own comment); for
+        // the common case of a token with exactly one real pool there's nothing to disambiguate.
+        liquidityPoolCount: liquidity?.poolCount ?? null,
+        lockInfo: category === "tokens" ? locksByAddress.get(t.address?.toLowerCase()) ?? null : null,
+      };
+    })
     .sort((a, b) => {
       if (category !== "tokens") return 0;
       if (a.liquidityUsd == null && b.liquidityUsd == null) return 0;
@@ -200,7 +207,14 @@ export default function TokenLeaderboard({ onSelectToken }) {
                   <div style={{ fontSize: 13, fontWeight: 700, color: green }}>
                     {token.liquidityUsd != null ? formatUsdPrice(token.liquidityUsd) : "—"}
                   </div>
-                  <div style={{ fontSize: 11, color: mutedLight }}>{formatCompact(token.holders)} holders</div>
+                  <div style={{ fontSize: 11, color: mutedLight }} title={`${formatCompact(token.holders)} holders`}>
+                    {/* A token paired in several pools (e.g. WETN, the base pairing asset for
+                        most of this DEX) has the $ figure above summed across ALL of them, not one
+                        pool's own size — said outright here rather than left implicit, for the
+                        minority of tokens where it's true. Holder count (this line's usual
+                        content) is still one hover away rather than dropped outright. */}
+                    {token.liquidityPoolCount > 1 ? `across ${token.liquidityPoolCount} pools` : `${formatCompact(token.holders)} holders`}
+                  </div>
                 </>
               )}
             </div>

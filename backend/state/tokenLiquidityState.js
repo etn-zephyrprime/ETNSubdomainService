@@ -44,9 +44,13 @@ export async function getTokenLiquidityCache() {
   }
 }
 
-/** Publishes `{ liquidityUsd: { [tokenAddress]: usd }, updatedAt }` — `liquidityUsd` is keyed by
- * lowercased token address, same convention tokenPriceState.js's own `prices` map uses. */
-export async function setTokenLiquidityCache(liquidityUsd) {
+/** Publishes `{ liquidityUsd: { [tokenAddress]: usd }, poolCounts: { [tokenAddress]: count },
+ * updatedAt }` — both keyed by lowercased token address, same convention tokenPriceState.js's own
+ * `prices` map uses. `poolCounts` exists so the frontend can show "$X across N pools" instead of a
+ * bare figure that reads like one pool's own size — see tokenLiquidityCache.js's own comment on
+ * why liquidityUsd is a SUM across every pool a token appears in (confirmed confusing live: WETN's
+ * $204k is 116 pools added together, not one WETN pool). */
+export async function setTokenLiquidityCache(liquidityUsd, poolCounts) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -54,7 +58,7 @@ export async function setTokenLiquidityCache(liquidityUsd) {
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ liquidityUsd, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ liquidityUsd, poolCounts, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })
