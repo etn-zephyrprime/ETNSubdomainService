@@ -119,6 +119,13 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   const cexMap = useCexAddresses();
   const locksByAddress = useTokenLocks();
   const { getNamesOwnedBy } = useOwnedNames();
+  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
+
+  const [input, setInput] = useState(initialAddress || "");
+  const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState(null);
+
   // Same shared, cached resolver used everywhere else on this dashboard (Team Wallets, Balance
   // History, the Tokens tab's burn lists) — prefers a verified reverse/primary name, falling back
   // to any name the address owns even without one set (see that hook's own header comment). More
@@ -126,12 +133,6 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   // work already found can go stale (a name transferred away, whose old owner's reverse pointer
   // was never cleared) — see useReverseRecord.js's verifyPrimaryName.
   const { resolve: resolveDisplayName } = useDisplayNames(resolvedAddress ? [resolvedAddress] : []);
-  const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
-
-  const [input, setInput] = useState(initialAddress || "");
-  const [resolvedAddress, setResolvedAddress] = useState(initialAddress || null);
-  const [resolving, setResolving] = useState(false);
-  const [resolveError, setResolveError] = useState(null);
 
   const [addressInfo, setAddressInfo] = useState(null);
   const [counters, setCounters] = useState(null);
