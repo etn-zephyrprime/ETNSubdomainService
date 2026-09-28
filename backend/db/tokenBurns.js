@@ -55,6 +55,34 @@ export async function insertTokenBurnEvents(tokenAddress, events) {
  * (unlike, say, every transfer) that returning the full history in one call is fine — no pagination
  * needed here, matching nftSalesCache.js's own "just return the whole known list" convention for a
  * similarly low-volume, chart-feeding dataset. */
+/** Every distinct token that has at least one stored burn event — for
+ * scripts/fixTokenBurnSenders.js, which corrects `from_address` on rows scanned before
+ * tokenBurnService.js's scanRange started preferring the transaction's own sender over the
+ * Transfer log's `from` (see that fix's own header comment). */
+export async function getDistinctTokensWithBurnEvents() {
+  const res = await query(`SELECT DISTINCT token_address FROM token_burn_events`);
+  return (res?.rows || []).map((r) => r.token_address);
+}
+
+/** Every distinct tx_hash already stored for `tokenAddress` — one on-chain sender lookup per
+ * transaction is enough to fix every row that shares it (a tx can contain more than one burn log,
+ * e.g. multi-hop swaps), rather than one lookup per row. */
+export async function getDistinctBurnTxHashes(tokenAddress) {
+  const res = await query(`SELECT DISTINCT tx_hash FROM token_burn_events WHERE token_address = $1`, [tokenAddress.toLowerCase()]);
+  return (res?.rows || []).map((r) => r.tx_hash);
+}
+
+/** Overwrites `from_address` for every row of `tokenAddress`/`txHash` (there's exactly one real
+ * sender per transaction, however many burn logs it contains) — a no-op UPDATE (same value) if
+ * nothing was actually wrong. Returns how many rows changed. */
+export async function updateBurnEventSender(tokenAddress, txHash, fromAddress) {
+  const res = await query(
+    `UPDATE token_burn_events SET from_address = $1 WHERE token_address = $2 AND tx_hash = $3 AND from_address IS DISTINCT FROM $1`,
+    [fromAddress.toLowerCase(), tokenAddress.toLowerCase(), txHash]
+  );
+  return res?.rowCount || 0;
+}
+
 export async function getTokenBurnEvents(tokenAddress) {
   const res = await query(
     `SELECT tx_hash, log_index, from_address, amount, block_number, "timestamp"

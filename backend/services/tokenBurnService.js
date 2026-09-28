@@ -137,12 +137,36 @@ async function scanRange(contract, provider, targetAddress, fromBlock, toBlock, 
     })
   );
 
+  // The Transfer log's own `from` is frequently just whichever contract happened to be forwarding
+  // tokens at that moment — most commonly the ElectroSwap LP pool itself, mid-swap, paying out a
+  // fee-on-transfer tax straight to the burn address — not the actual trader who caused the burn.
+  // Confirmed live on the Tokens tab's Top Burners table: an LP pool address sitting at #1. Same
+  // root cause, and same fix, as coreClashBurnWatcher.js's own "Donor" field once had (see that
+  // file's git history) — prefer the transaction's own `from` (the EOA that actually signed and
+  // submitted it), falling back to the log's `from` only if the transaction fetch fails.
+  const uniqueTxHashes = [...new Set(logs.map((e) => e.transactionHash))];
+  const txSenders = new Map();
+  let sendersDone = 0;
+  await Promise.all(
+    uniqueTxHashes.map(async (txHash) => {
+      try {
+        const tx = await provider.getTransaction(txHash);
+        if (tx?.from) txSenders.set(txHash, tx.from);
+      } catch (err) {
+        console.warn(`⚠️  Token burns: couldn't resolve sender for tx ${txHash} (falling back to the Transfer log's own "from"):`, err.message);
+      } finally {
+        sendersDone += 1;
+        onProgress?.({ phase: "senders", done: sendersDone, total: uniqueTxHashes.length });
+      }
+    })
+  );
+
   return logs
     .filter((log) => timestamps.get(log.blockNumber) != null) // no honest timestamp -> skip rather than fake one
     .map((log) => ({
       txHash: log.transactionHash,
       logIndex: log.index,
-      fromAddress: log.args.from,
+      fromAddress: txSenders.get(log.transactionHash) || log.args.from,
       amount: log.args.value.toString(),
       blockNumber: log.blockNumber,
       timestampMs: timestamps.get(log.blockNumber),
@@ -260,10 +284,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * `onStep(stepResult)` fires after every step (for progress logging). `onProgress(progressEvent)`
  * fires MID-step — a single step can itself take a long time (a wide block range with a lot of
- * chunked log-querying, then a per-unique-block timestamp lookup for whatever it found), and
- * without this a caller hears nothing at all until the whole step finishes. Two shapes:
- * `{ phase: "logs", scannedTo, rangeStart, rangeEnd, foundSoFar }` per chunk of the log query, and
- * `{ phase: "timestamps", done, total }` per resolved block timestamp. Still throws once retries are
+ * chunked log-querying, then a per-unique-block timestamp lookup and a per-unique-tx sender lookup
+ * for whatever it found), and without this a caller hears nothing at all until the whole step
+ * finishes. Three shapes: `{ phase: "logs", scannedTo, rangeStart, rangeEnd, foundSoFar }` per chunk
+ * of the log query, `{ phase: "timestamps", done, total }` per resolved block timestamp, and
+ * `{ phase: "senders", done, total }` per resolved transaction sender. Still throws once retries are
  * exhausted, since a script wants to know something went wrong, unlike the silent-best-effort
  * request path — the caller decides whether to keep going with the next token. */
 export async function backfillTokenFully(tokenAddress, { onStep, onProgress, onRetry, maxSteps = 500 } = {}) {
