@@ -232,6 +232,18 @@ function ensureTokenBurnsScanned(tokenAddress) {
   return promise;
 }
 
+// A backfill run takes hundreds of steps back-to-back with zero pacing between them, each one
+// itself several chunked queryFilter calls plus a getBlock per unique block — confirmed live to be
+// enough burst volume to get BOTH rpcProvider.js endpoints 403'ing in the same run (the primary
+// failing over to the secondary under this exact load, then the secondary's own burst-403 kicking
+// in too — see rpcProvider.js's own comments on each). A page-view-triggered step never hits this
+// (one step per request, naturally paced by real traffic), so this delay/retry only applies here.
+const BACKFILL_STEP_DELAY_MS = process.env.TOKEN_BURN_BACKFILL_STEP_DELAY_MS
+  ? parseInt(process.env.TOKEN_BURN_BACKFILL_STEP_DELAY_MS, 10)
+  : 300;
+const BACKFILL_STEP_RETRIES = 3;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Repeatedly steps `tokenAddress` all the way back to its own deploy block, ignoring
  * SCAN_COOLDOWN_MS (a script run, not a page view — the whole point is to push through in one go
  * rather than wait for organic page views to each contribute one step). For
@@ -240,25 +252,43 @@ function ensureTokenBurnsScanned(tokenAddress) {
  * backfilled here is never ALSO scanned by a concurrent page view (and vice versa) — one active
  * step per token at a time, same guarantee either caller gets on its own.
  *
+ * Two things exist here specifically to survive a long run against rpcProvider.js's two shared,
+ * public-node endpoints (see BACKFILL_STEP_DELAY_MS's own comment): a small pause between every
+ * step, and a short retry-with-backoff (1s/3s/9s) on a step that fails, before giving up on this
+ * token — a lone transient 403 no longer takes the whole token (and, since the script moves on
+ * immediately otherwise, potentially the rest of the run) down with it.
+ *
  * `onStep(stepResult)` fires after every step (for progress logging). `onProgress(progressEvent)`
  * fires MID-step — a single step can itself take a long time (a wide block range with a lot of
  * chunked log-querying, then a per-unique-block timestamp lookup for whatever it found), and
  * without this a caller hears nothing at all until the whole step finishes. Two shapes:
  * `{ phase: "logs", scannedTo, rangeStart, rangeEnd, foundSoFar }` per chunk of the log query, and
- * `{ phase: "timestamps", done, total }` per resolved block timestamp. Throws on the first scan
- * failure, since a script wants to know something went wrong, unlike the silent-best-effort
+ * `{ phase: "timestamps", done, total }` per resolved block timestamp. Still throws once retries are
+ * exhausted, since a script wants to know something went wrong, unlike the silent-best-effort
  * request path — the caller decides whether to keep going with the next token. */
-export async function backfillTokenFully(tokenAddress, { onStep, onProgress, maxSteps = 500 } = {}) {
+export async function backfillTokenFully(tokenAddress, { onStep, onProgress, onRetry, maxSteps = 500 } = {}) {
   const key = tokenAddress.toLowerCase();
   while (inFlightScans.has(key)) await inFlightScans.get(key); // wait out any request-driven scan already in progress
 
   const promise = (async () => {
     let cursor = await getTokenBurnCursor(tokenAddress);
     for (let step = 0; step < maxSteps; step++) {
-      const result = await scanOneStep(tokenAddress, cursor, onProgress);
+      let result;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          result = await scanOneStep(tokenAddress, cursor, onProgress);
+          break;
+        } catch (err) {
+          if (attempt >= BACKFILL_STEP_RETRIES) throw err;
+          const delayMs = 1000 * 3 ** attempt;
+          onRetry?.({ attempt: attempt + 1, maxAttempts: BACKFILL_STEP_RETRIES, delayMs, error: err });
+          await sleep(delayMs);
+        }
+      }
       onStep?.(result);
       if (result.fullyBackfilled) return result;
       cursor = { deployBlock: result.deployBlock, lowScannedBlock: result.lowScannedBlock, highScannedBlock: result.highScannedBlock };
+      if (BACKFILL_STEP_DELAY_MS > 0) await sleep(BACKFILL_STEP_DELAY_MS);
     }
     return { fullyBackfilled: false, hitMaxSteps: true };
   })();

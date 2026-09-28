@@ -34,6 +34,14 @@ import { backfillTokenFully } from "../services/tokenBurnService.js";
 
 dotenv.config();
 
+// Manually excluded, lowercased — confirmed-dead tokens that happen to still carry a lock/burned-LP
+// entry (so they'd otherwise pass the filterToLockedOrBurned check below) but aren't worth spending
+// RPC calls/Postgres rows backfilling. Add an address here with a short reason, same "hand-curated
+// list, update by hand" convention as teamWallets.js's own TEAM_WALLET_ADDRESSES.
+const EXCLUDED_TOKENS = new Set([
+  "0xe99f54cc1fc4b148b61af54e4337b5f259dfa403", // dead token, per direct instruction 2026-09-28
+]);
+
 // Same per-token step size the interactive path uses by default (see tokenBurnService.js's own
 // MAX_BLOCKS_PER_CALL) — this script just takes many steps back-to-back instead of one per page
 // view. Override via TOKEN_BURN_MAX_BLOCKS_PER_CALL if a faster/slower pace is wanted for this run
@@ -80,12 +88,21 @@ async function main() {
   console.log("Fetching ElectroSwap's pool list (V2 + V3) to find every token with an active liquidity pool...");
   const pooledAddresses = await collectPooledTokenAddresses();
   console.log(`Found ${pooledAddresses.length} distinct pooled token(s). Checking token-locks.json for which ones have a lock or burned LP...`);
-  const tokenAddresses = await filterToLockedOrBurned(pooledAddresses);
-  console.log(`${tokenAddresses.length} of ${pooledAddresses.length} pooled token(s) have a liquidity lock or burned LP. Backfilling those to their own deploy block...\n`);
+  const lockedOrBurned = await filterToLockedOrBurned(pooledAddresses);
+  const tokenAddresses = lockedOrBurned.filter((addr) => !EXCLUDED_TOKENS.has(addr));
+  const excludedCount = lockedOrBurned.length - tokenAddresses.length;
+  console.log(
+    `${lockedOrBurned.length} of ${pooledAddresses.length} pooled token(s) have a liquidity lock or burned LP` +
+      (excludedCount > 0 ? ` (${excludedCount} manually excluded)` : "") +
+      `. Backfilling ${tokenAddresses.length} to their own deploy block...\n`
+  );
 
   // A single step can cover a 20,000-block range and run for minutes — this prints one throttled
   // line so a long run doesn't look hung, without the earlier per-chunk/per-phase/per-step noise.
   const PROGRESS_INTERVAL_MS = 15000;
+  const TOKEN_FAILURE_COOLDOWN_MS = process.env.TOKEN_BURN_BACKFILL_FAILURE_COOLDOWN_MS
+    ? parseInt(process.env.TOKEN_BURN_BACKFILL_FAILURE_COOLDOWN_MS, 10)
+    : 30000;
 
   const summary = [];
   for (const [i, address] of tokenAddresses.entries()) {
@@ -109,6 +126,10 @@ async function main() {
           steps += 1;
           newEvents += step.newEventsCount;
         },
+        // A step already retries itself a few times (see backfillTokenFully) before this fires the
+        // LAST time — just a one-line heads-up so a slow patch of retries doesn't look identical to
+        // the "quiet for 15s, must still be working" case above.
+        onRetry: (r) => console.log(`  [${i + 1}/${tokenAddresses.length}] ${address} — retry ${r.attempt}/${r.maxAttempts} in ${r.delayMs / 1000}s (${r.error.message})`),
       });
       const status = result.fullyBackfilled ? "done" : result.hitMaxSteps ? `hit ${MAX_STEPS_PER_TOKEN}-step cap, re-run to continue` : "incomplete";
       console.log(`[${i + 1}/${tokenAddresses.length}] ${address}: ${status} — ${steps} step(s), ${newEvents} new burn(s)`);
@@ -116,6 +137,13 @@ async function main() {
     } catch (err) {
       console.log(`[${i + 1}/${tokenAddresses.length}] ${address}: FAILED after ${steps} step(s) — ${err.message}`);
       summary.push({ address, status: "failed", steps, newEvents, error: err.message });
+      // A failure here means retries already ran out inside backfillTokenFully — i.e. this wasn't
+      // a one-off blip, both RPC endpoints were genuinely struggling. Rushing straight into the
+      // next token's first call just repeats the same failure (confirmed live: 9 tokens in a row
+      // failed instantly after one busy token tripped this). A longer pause here gives the RPC
+      // endpoints real time to recover before asking them for anything else.
+      console.log(`  pausing ${TOKEN_FAILURE_COOLDOWN_MS / 1000}s before the next token...`);
+      await new Promise((resolve) => setTimeout(resolve, TOKEN_FAILURE_COOLDOWN_MS));
     }
   }
 
