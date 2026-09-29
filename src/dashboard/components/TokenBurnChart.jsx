@@ -141,12 +141,19 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
     const dailyRate = (last.value - base.value) / windowDays; // CORE/day, already in whole-token units
     if (!Number.isFinite(dailyRate) || dailyRate <= 0) return null; // flat or shrinking burn total isn't something to project forward
 
-    const burnSeries = [];
-    for (let m = 0; m < FORECAST_POINTS; m++) {
+    // Real history for the same trailing window the rate itself is measured over (so the chart
+    // shows exactly the stretch that produced the projection, not an arbitrarily different range),
+    // then the projected continuation — sharing "today" as one point (not duplicated) so the two
+    // halves read as one continuous line, solid-into-dashed, rather than a gap or a jump.
+    const historyPrefix = series.filter((p) => new Date(p.label).getTime() >= baseMs);
+    const forecastFromIndex = historyPrefix.length - 1;
+    const projectedFuture = [];
+    for (let m = 1; m < FORECAST_POINTS; m++) {
       const t = (m / (FORECAST_POINTS - 1)) * FORECAST_HORIZON_DAYS;
       const projected = Math.min(CORE_STARTING_SUPPLY, last.value + dailyRate * t);
-      burnSeries.push({ label: new Date(lastMs + t * ONE_DAY_MS).toISOString().slice(0, 10), value: projected });
+      projectedFuture.push({ label: new Date(lastMs + t * ONE_DAY_MS).toISOString().slice(0, 10), value: projected });
     }
+    const burnSeries = [...historyPrefix, ...projectedFuture];
 
     // Project when each not-yet-reached threshold WOULD be crossed at this pace — real (already-
     // crossed) steps are carried through unchanged so the chart's step lookup treats the boundary
@@ -166,6 +173,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
     const finalBurned = burnSeries[burnSeries.length - 1].value;
     return {
       burnSeries,
+      forecastFromIndex,
       taxSteps,
       dailyRate,
       windowDays,
@@ -279,7 +287,7 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
                 height={140}
                 formatBurnValue={(v) => v.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 formatLabel={(l) => formatChartDate(l, true)}
-                forecast
+                forecastFromIndex={forecast.forecastFromIndex}
               />
             </>
           ) : series.length >= 2 ? (
