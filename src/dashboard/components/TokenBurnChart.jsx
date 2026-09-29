@@ -7,6 +7,7 @@ import { formatTokenAmount, formatChartDate, timeAgo } from "../utils/format.js"
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import SparklineChart from "./SparklineChart.jsx";
+import CoreBurnTaxChart from "./CoreBurnTaxChart.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
 
 const RECENT_BURNS_SHOWN = 10;
@@ -145,12 +146,22 @@ export default function TokenBurnChart({ address, decimals, totalSupply }) {
           </div>
 
           {series.length >= 2 ? (
-            <SparklineChart
-              data={series}
-              height={140}
-              formatValue={(v) => v.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-              formatLabel={(l) => formatChartDate(l, true)}
-            />
+            data.isCore && data.taxSchedule?.steps?.length > 0 ? (
+              <CoreBurnTaxChart
+                burnSeries={series}
+                taxSteps={data.taxSchedule.steps}
+                height={140}
+                formatBurnValue={(v) => v.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                formatLabel={(l) => formatChartDate(l, true)}
+              />
+            ) : (
+              <SparklineChart
+                data={series}
+                height={140}
+                formatValue={(v) => v.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                formatLabel={(l) => formatChartDate(l, true)}
+              />
+            )
           ) : (
             <div style={{ height: 60, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: muted }}>
               Not enough burn history yet for a trend line.
