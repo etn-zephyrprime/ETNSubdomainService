@@ -34,7 +34,12 @@ function identity(v) {
   return String(v);
 }
 
-export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue = identity, formatLabel = identity, height = 140, width = 280, forecast = false }) {
+// `forecastFromIndex` (optional): the index in `burnSeries` where real history ends and the
+// projected continuation begins — everything up to and including that index draws solid/filled,
+// everything from it onward draws dashed/lighter, sharing that one point so the line reads as
+// continuous rather than two disconnected pieces. Omit entirely for a pure-history chart (every
+// point solid, the original behavior).
+export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue = identity, formatLabel = identity, height = 140, width = 280, forecastFromIndex = null }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -133,17 +138,29 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
                 <line key={i} x1={0} y1={burnToY(v)} x2={width} y2={burnToY(v)} stroke={border} strokeWidth={0.5} strokeDasharray="2,2" />
               ))}
 
-              <path d={areaPath(burnCoords)} fill={greenGlow} stroke="none" opacity={forecast ? 0.4 : 1} />
-              <polyline
-                points={linePath(burnCoords)}
-                fill="none"
-                stroke={green}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray={forecast ? "6,4" : undefined}
-                opacity={forecast ? 0.85 : 1}
-              />
+              {forecastFromIndex != null && forecastFromIndex < burnCoords.length - 1 ? (
+                <>
+                  {/* Real history: solid line, filled area, up to and including the split point. */}
+                  <path d={areaPath(burnCoords.slice(0, forecastFromIndex + 1))} fill={greenGlow} stroke="none" />
+                  <polyline points={linePath(burnCoords.slice(0, forecastFromIndex + 1))} fill="none" stroke={green} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                  {/* Projected continuation: dashed, no fill, starting FROM the split point so the line stays continuous. */}
+                  <polyline
+                    points={linePath(burnCoords.slice(forecastFromIndex))}
+                    fill="none"
+                    stroke={green}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="6,4"
+                    opacity={0.85}
+                  />
+                </>
+              ) : (
+                <>
+                  <path d={areaPath(burnCoords)} fill={greenGlow} stroke="none" />
+                  <polyline points={linePath(burnCoords)} fill="none" stroke={green} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </>
+              )}
 
               {sellCoords.length > 1 && (
                 <polyline points={linePath(sellCoords)} fill="none" stroke={blue} strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeDasharray="4,3" />
@@ -213,9 +230,9 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
           <span><span style={{ display: "inline-block", width: 10, height: 2, background: blue, marginRight: 5, verticalAlign: "middle" }} />Sell tax</span>
         </div>
       )}
-      {forecast && (
+      {forecastFromIndex != null && (
         <div style={{ fontSize: 10, color: mutedLight, marginTop: 6, fontStyle: "italic" }}>
-          Dashed = projected, not a guarantee — assumes burns continue at the recent daily rate. See the note above for exactly how it's calculated.
+          Solid = actual history, dashed = projected (not a guarantee) — assumes burns continue at the recent daily rate. See the note above for exactly how it's calculated.
         </div>
       )}
     </div>
