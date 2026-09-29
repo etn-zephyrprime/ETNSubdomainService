@@ -16,7 +16,7 @@ import { green, greenGlow, orange, blue, muted, mutedLight, panel, border } from
 //
 // `taxSteps`: coreTaxScheduleService.js's own step list — [{ supplyPct, buyTaxPct, sellTaxPct,
 // crossedAt (ISO, null if not yet reached) }], in descending supplyPct (= chronological) order.
-function taxRateAt(taxSteps, dateMs, key) {
+export function taxRateAt(taxSteps, dateMs, key) {
   // Latest step whose crossedAt is on/before `dateMs` — steps are chronological, so a plain
   // reverse scan for the first match is a normal "as-of" lookup, same shape as this app's other
   // "closing value on the target date" queries (e.g. balanceHistory.js's own forward-fill).
@@ -34,7 +34,7 @@ function identity(v) {
   return String(v);
 }
 
-export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue = identity, formatLabel = identity, height = 140, width = 280 }) {
+export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue = identity, formatLabel = identity, height = 140, width = 280, forecast = false }) {
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -133,8 +133,17 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
                 <line key={i} x1={0} y1={burnToY(v)} x2={width} y2={burnToY(v)} stroke={border} strokeWidth={0.5} strokeDasharray="2,2" />
               ))}
 
-              <path d={areaPath(burnCoords)} fill={greenGlow} stroke="none" />
-              <polyline points={linePath(burnCoords)} fill="none" stroke={green} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+              <path d={areaPath(burnCoords)} fill={greenGlow} stroke="none" opacity={forecast ? 0.4 : 1} />
+              <polyline
+                points={linePath(burnCoords)}
+                fill="none"
+                stroke={green}
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray={forecast ? "6,4" : undefined}
+                opacity={forecast ? 0.85 : 1}
+              />
 
               {sellCoords.length > 1 && (
                 <polyline points={linePath(sellCoords)} fill="none" stroke={blue} strokeWidth={1.5} vectorEffect="non-scaling-stroke" strokeDasharray="4,3" />
@@ -198,10 +207,15 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
       </div>
 
       {hasTax && (
-        <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 10, color: mutedLight }}>
+        <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 10, color: mutedLight, flexWrap: "wrap" }}>
           <span><span style={{ display: "inline-block", width: 10, height: 2, background: green, marginRight: 5, verticalAlign: "middle" }} />Cumulative burned</span>
           <span><span style={{ display: "inline-block", width: 10, height: 2, background: orange, marginRight: 5, verticalAlign: "middle" }} />Buy tax</span>
           <span><span style={{ display: "inline-block", width: 10, height: 2, background: blue, marginRight: 5, verticalAlign: "middle" }} />Sell tax</span>
+        </div>
+      )}
+      {forecast && (
+        <div style={{ fontSize: 10, color: mutedLight, marginTop: 6, fontStyle: "italic" }}>
+          Dashed = projected, not a guarantee — assumes burns continue at the recent daily rate. See the note above for exactly how it's calculated.
         </div>
       )}
     </div>
