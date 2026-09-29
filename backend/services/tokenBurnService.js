@@ -41,6 +41,7 @@ import { createRpcProvider } from "../utils/rpcProvider.js";
 import { fetchBlockscoutJson } from "../utils/blockscoutClient.js";
 import { CORE_TOKEN_ADDRESS } from "../utils/coreClashConfig.js";
 import { getTokenBurnCursor, upsertTokenBurnCursor, insertTokenBurnEvents, getTokenBurnEvents } from "../db/tokenBurns.js";
+import { getCoreTaxScheduleForDisplay } from "./coreTaxScheduleService.js";
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // The universally-recognized "burn" vanity address — not a real contract, nothing special about it
@@ -452,6 +453,9 @@ export async function getTokenBurnHistory(tokenAddress) {
     .map((e) => ({ address: e.address, totalRaw: e.totalRaw.toString(), eventCount: e.eventCount }));
 
   const isCore = !!CORE_TOKEN_ADDRESS && tokenAddress.toLowerCase() === CORE_TOKEN_ADDRESS.toLowerCase();
+  // CORE-only: the on-chain-confirmed buy/sell tax history (see coreTaxScheduleService.js) — a
+  // cheap cache read, never touches the chain itself here. null for every other token.
+  const taxSchedule = isCore ? await getCoreTaxScheduleForDisplay().catch(() => null) : null;
   return {
     isCore,
     burnAddresses: burnTargetAddresses(tokenAddress),
@@ -460,6 +464,7 @@ export async function getTokenBurnHistory(tokenAddress) {
     series,
     recentEvents,
     topBurners,
+    taxSchedule,
     fullyBackfilled: cursor != null && cursor.deployBlock != null && cursor.lowScannedBlock <= cursor.deployBlock,
     refreshing,
   };
