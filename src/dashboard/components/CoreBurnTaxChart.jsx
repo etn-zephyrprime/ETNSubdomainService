@@ -10,9 +10,15 @@ import { green, greenGlow, orange, blue, muted, mutedLight, panel, border } from
 //
 // `burnSeries`: [{ label, value }] — same shape/order as TokenBurnChart.jsx's own cumulative-burned
 // series (one point per UTC day that had a burn — SPARSE, not one point per calendar day). Plotted
-// by INDEX position (evenly spaced), same convention SparklineChart itself uses — so the tax
-// overlay below is computed by looking up each of THESE SAME dates against the tax schedule, not
-// against a separate dense daily range, to stay aligned point-for-point on the shared X axis.
+// by ACTUAL ELAPSED TIME (not index position, unlike SparklineChart) — deliberately different from
+// that component's own convention: this chart can show a sparse, irregularly-spaced real-history
+// segment right next to an evenly-spaced 12-point forecast segment (see TokenBurnChart.jsx's own
+// forecast builder), and plotting THAT by index would give the 90 real days and the 365 forecast
+// days equal visual width regardless of how much time each actually spans — confirmed live: it
+// made 90 days of history look like a LONGER stretch than the 365-day forecast, exactly backwards.
+// Real elapsed time is what a reader actually expects "how long is this stretch" to mean here.
+// The tax overlay below is computed by looking up each of THESE SAME dates against the tax
+// schedule, so it stays aligned point-for-point with the burn line on the shared time axis.
 //
 // `taxSteps`: coreTaxScheduleService.js's own step list — [{ supplyPct, buyTaxPct, sellTaxPct,
 // crossedAt (ISO, null if not yet reached) }], in descending supplyPct (= chronological) order.
@@ -66,8 +72,14 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
   const burnMin = Math.min(...clean.map((d) => d.value));
   const burnMax = Math.max(...clean.map((d) => d.value));
   const burnRange = burnMax - burnMin || 1;
-  const stepX = width / (clean.length - 1);
   const burnToY = (v) => height - ((v - burnMin) / burnRange) * height;
+
+  // X position by real elapsed time, not index — see this file's own header comment for why.
+  const timesMs = clean.map((d) => new Date(d.label).getTime());
+  const startMs = timesMs[0];
+  const endMs = timesMs[timesMs.length - 1];
+  const totalMs = endMs - startMs || 1;
+  const dateToX = (ms) => ((ms - startMs) / totalMs) * width;
 
   // Right axis: shared scale across BOTH tax lines (they're the same unit, %), from 0 (taxes never
   // go negative) to the highest rate either line ever showed — not each line's own independent min,
@@ -76,7 +88,7 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
   const taxMax = taxValues.length > 0 ? Math.max(...taxValues) : 1;
   const taxToY = (v) => height - (v / (taxMax || 1)) * height;
 
-  const burnCoords = clean.map((d, i) => [i * stepX, burnToY(d.value)]);
+  const burnCoords = clean.map((d, i) => [dateToX(timesMs[i]), burnToY(d.value)]);
   // Step (not linear) interpolation: a tax line holds flat at its current rate until the exact
   // point it changes, then jumps — linear interpolation between two different rates would draw a
   // gradual ramp that never actually existed on-chain.
@@ -84,9 +96,10 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
     const points = [];
     for (let i = 0; i < series.length; i++) {
       if (series[i] == null) continue;
+      const x = dateToX(timesMs[i]);
       const y = taxToY(series[i]);
-      if (points.length > 0) points.push([i * stepX, points[points.length - 1][1]]); // flat line up to this index
-      points.push([i * stepX, y]);
+      if (points.length > 0) points.push([x, points[points.length - 1][1]]); // flat line up to this point in time
+      points.push([x, y]);
     }
     return points;
   }
@@ -105,8 +118,20 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
     const fraction = (clientX - rect.left) / rect.width;
-    const index = Math.max(0, Math.min(clean.length - 1, Math.round(fraction * (clean.length - 1))));
-    setHoverIndex(index);
+    const targetMs = startMs + fraction * totalMs;
+    // Nearest point by actual elapsed time, not by uniform index spacing — with points spread
+    // unevenly across time (sparse history, evenly-spaced-but-far-apart forecast months), the
+    // point under the cursor isn't necessarily at round(fraction * (length - 1)) anymore.
+    let closest = 0;
+    let closestDist = Infinity;
+    for (let i = 0; i < timesMs.length; i++) {
+      const dist = Math.abs(timesMs[i] - targetMs);
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = i;
+      }
+    }
+    setHoverIndex(closest);
   };
 
   const hoverCoord = hoverIndex != null ? burnCoords[hoverIndex] : null;
@@ -215,10 +240,15 @@ export default function CoreBurnTaxChart({ burnSeries, taxSteps, formatBurnValue
             )}
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-            <span style={{ fontSize: 10, color: muted }}>{formatLabel(clean[0].label)}</span>
-            <span style={{ fontSize: 10, color: muted }}>{formatLabel(clean[Math.round((clean.length - 1) / 2)].label)}</span>
-            <span style={{ fontSize: 10, color: muted }}>{formatLabel(clean[clean.length - 1].label)}</span>
+          <div style={{ position: "relative", height: 12, marginTop: 4 }}>
+            {/* Positioned by real elapsed time (same dateToX the chart itself uses), not an even
+                3-way split — with an uneven mix of sparse history and far-apart forecast points,
+                the true time-midpoint usually isn't the index-midpoint. */}
+            <span style={{ position: "absolute", left: 0, fontSize: 10, color: muted }}>{formatLabel(clean[0].label)}</span>
+            <span style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", fontSize: 10, color: muted }}>
+              {formatLabel(new Date(startMs + totalMs / 2).toISOString().slice(0, 10))}
+            </span>
+            <span style={{ position: "absolute", right: 0, fontSize: 10, color: muted }}>{formatLabel(clean[clean.length - 1].label)}</span>
           </div>
         </div>
       </div>
