@@ -56,6 +56,7 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
   const [currency, setCurrency] = useState("usd"); // "usd" | "etn" — ETN only meaningful for the Price metric, see the toggle below
   const [chart, setChart] = useState(null); // { hasData, candles?, pool?, hasWetnPool } — always USD-denominated; drives Market Cap and the ETN toggle's availability
   const [wetnChart, setWetnChart] = useState(null); // same shape, WETN-denominated — only fetched once the ETN toggle is actually used
+  const [wetnRateLimited, setWetnRateLimited] = useState(false); // true once retries are exhausted specifically on a 503 — see the fetch effect below
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -86,14 +87,36 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
   useEffect(() => {
     if (metric !== "price" || currency !== "etn" || !etnToggleReady) return;
     let cancelled = false;
+    let timer = null;
     setWetnChart(null);
-    getTokenChart(address, range, "wetn")
-      .then((res) => { if (!cancelled) setWetnChart(res); })
-      .catch((err) => {
-        console.error("Failed to load WETN-denominated token chart:", err);
-        if (!cancelled) setWetnChart({ hasData: false });
-      });
-    return () => { cancelled = true; };
+    setWetnRateLimited(false);
+
+    // A few retries, backing off each time, specifically for GeckoTerminal's shared rate limit
+    // (503 — see tokenChartRouter.js's own err.rateLimited handling) — reported live: switching
+    // to ETN tripped this. Expected to be MORE exposed to it than a plain USD range click: this
+    // mode skips ElectroSwap's own (non-rate-limited) candles entirely — see loadTokenChart's own
+    // comment on why there's no documented non-USD mode for that source — so it's often the
+    // FIRST GeckoTerminal call for this token/range rather than one ElectroSwap already served,
+    // landing on whatever's left of the shared budget. A transient burst like that usually clears
+    // within a few seconds; every OTHER failure (400/502/no pool) is never worth retrying.
+    function load(attempt = 0) {
+      getTokenChart(address, range, "wetn")
+        .then((res) => { if (!cancelled) setWetnChart(res); })
+        .catch((err) => {
+          console.error(`Failed to load WETN-denominated token chart (attempt ${attempt + 1}):`, err.message);
+          if (err.status === 503 && attempt < 3) {
+            timer = setTimeout(() => { if (!cancelled) load(attempt + 1); }, 4000 * (attempt + 1));
+            return;
+          }
+          if (!cancelled) {
+            setWetnChart({ hasData: false });
+            setWetnRateLimited(err.status === 503);
+          }
+        });
+    }
+    load();
+
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [address, range, metric, currency, etnToggleReady, getTokenChart]);
 
   const effectiveCurrency = metric === "price" && etnToggleReady && currency === "etn" ? "etn" : "usd";
@@ -192,7 +215,19 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
         </div>
       </div>
 
-      {!stats ? (
+      {effectiveCurrency === "etn" && wetnChart && !wetnChart.hasData ? (
+        // Distinct from the generic "no pool"/"no recent activity" cases above (those are gated
+        // on the USD chart, which already succeeded or this toggle wouldn't be showing at all) —
+        // this is specifically the ETN-mode fetch having given up, after retries, usually on a
+        // sustained rate limit. Without this, `stats` below would just stay null forever (no
+        // candles to compute from) and the chart would show "Loading…" indefinitely instead of
+        // telling the viewer what actually happened.
+        <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted, textAlign: "center", padding: "0 16px" }}>
+          {wetnRateLimited
+            ? "Price data is temporarily rate-limited — try again in a moment, or switch back to USD."
+            : "Couldn't load ETN-denominated pricing for this range — try again, or switch back to USD."}
+        </div>
+      ) : !stats ? (
         <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: muted }}>
           Loading…
         </div>
