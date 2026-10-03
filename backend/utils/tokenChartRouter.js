@@ -141,17 +141,20 @@ function enqueueGeckoTerminalCall(fn) {
 // (see `windowMs` below) is what keeps the "7D"/"30D"/"90D" pills honest regardless of how
 // active a given pool is.
 // electroSwapBucket: the equivalent bucket size on ElectroSwap's own candles endpoint (see
-// tryElectroSwapCandles below) — '4h' for the 7-day view, '1d' for 30/90, matching the same
-// granularity GeckoTerminal's timeframe/aggregate pair already produces for each range.
+// tryElectroSwapCandles below) — '1h' for the 7-day view, '4h' for 30D, '1d' for 90D, matching the
+// same granularity GeckoTerminal's timeframe/aggregate pair already produces for each range.
+// Bumped from 4h/1d/1d (42/30/90 candles) to 1h/4h/1d (168/180/90) — confirmed too coarse to show
+// real intraday/intraweek price movement on the 7D and 30D views specifically.
 const RANGE_PARAMS = {
-  "7": { timeframe: "hour", aggregate: 4, limit: 1000, windowMs: 7 * 24 * 60 * 60 * 1000, electroSwapBucket: "4h" },
-  "30": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 30 * 24 * 60 * 60 * 1000, electroSwapBucket: "1d" },
+  "7": { timeframe: "hour", aggregate: 1, limit: 1000, windowMs: 7 * 24 * 60 * 60 * 1000, electroSwapBucket: "1h" },
+  "30": { timeframe: "hour", aggregate: 4, limit: 1000, windowMs: 30 * 24 * 60 * 60 * 1000, electroSwapBucket: "4h" },
   "90": { timeframe: "day", aggregate: 1, limit: 1000, windowMs: 90 * 24 * 60 * 60 * 1000, electroSwapBucket: "1d" },
 };
 // Generous like GeckoTerminal's own `limit` above (fetch more than the window strictly needs, then
-// filter by real elapsed time) — comfortably covers 90 daily candles or 7 days of 4-hour candles
-// (42) with room to spare, well under ElectroSwap's own 500-item batch cap.
-const ELECTROSWAP_CANDLE_LIMIT = 200;
+// filter by real elapsed time) — comfortably covers 90 daily candles, 7 days of 1-hour candles
+// (168), or 30 days of 4-hour candles (180), with room to spare, well under ElectroSwap's own
+// 500-item batch cap.
+const ELECTROSWAP_CANDLE_LIMIT = 300;
 
 /** Tries ElectroSwap's own candles endpoint for this token/range — a direct token-address lookup,
  * no per-pool selection needed (unlike the GeckoTerminal path below, which has to pick a specific
@@ -247,10 +250,24 @@ function highestReserve(pools) {
   );
 }
 
-async function loadTokenChart(address, range) {
+/**
+ * `currency`: "usd" (default) or "wetn". "wetn" denominates the chart directly in the pool's own
+ * WETN-reserve ratio — CONFIRMED LIVE (2026-10-03, real GeckoTerminal response) that
+ * `currency=token` returns EXACTLY the "1 TOKEN = X WETN" figure GeckoTerminal's own site
+ * displays, vs. this app's previous approach for an ETN-denominated chart: dividing this token's
+ * own USD price by ETN's SEPARATELY-SOURCED USD price (KuCoin ETN-USDT, via price_points) — two
+ * independent markets that don't perfectly arbitrage against each other, confirmed to drift by a
+ * few percent from the real on-chain ratio (reported live: GeckoTerminal showed 1 CORE = 13.74
+ * WETN, the USD-division approach computed 13.0248). Since WETN is 1:1 pegged to ETN (same
+ * assumption tokenLiquidityCache.js/lpPositionValuation.js already make), the pool's own WETN
+ * ratio IS the real ETN price, with no cross-market round trip at all — strictly more accurate,
+ * not just differently-approximate. Only possible for a token that actually has a WETN pool; see
+ * `hasWetnPool` on the return value for how a caller is expected to know that upfront.
+ */
+async function loadTokenChart(address, range, currency = "usd") {
   const pools = await getPools(address);
   if (pools.length === 0) {
-    return { hasData: false };
+    return { hasData: false, hasWetnPool: false };
   }
 
   // Prefer the highest-liquidity WETN pair if one exists at all — see WETN_ADDRESS's comment —
@@ -265,7 +282,16 @@ async function loadTokenChart(address, range) {
     const otherId = baseId === tokenId ? quoteId : baseId;
     return otherId === wetnId;
   });
-  const best = highestReserve(wetnPools.length > 0 ? wetnPools : pools);
+  const hasWetnPool = wetnPools.length > 0;
+
+  // The "wetn" currency MUST come from an actual WETN pool specifically — there's no ratio to
+  // read otherwise. Reported as its own distinct reason (not the generic no-pool-at-all case)
+  // so the frontend can hide the ETN toggle for this token rather than showing a confusing error.
+  if (currency === "wetn" && !hasWetnPool) {
+    return { hasData: false, reason: "no_wetn_pool", hasWetnPool: false };
+  }
+
+  const best = highestReserve(hasWetnPool ? wetnPools : pools);
   const poolAddress = best.attributes.address;
   const isBase = best.relationships?.base_token?.data?.id === `${NETWORK}_${address.toLowerCase()}`;
   const tokenSide = isBase ? "base" : "quote";
@@ -278,11 +304,13 @@ async function loadTokenChart(address, range) {
   // limit at all. `pool`/hasData above are unaffected either way — they're still GeckoTerminal-
   // pool-discovery-based (see this function's own top half), so a token whose real pool ElectroSwap
   // just doesn't have candle data for yet still correctly reports "has a real pool" rather than
-  // looking confirmed-dead.
-  let candles = await tryElectroSwapCandles(address, range, windowMs);
+  // looking confirmed-dead. Skipped entirely for `currency: "wetn"` — ElectroSwap's own candles
+  // endpoint has no documented non-USD mode, and guessing at one risks silently mislabeling a
+  // USD-denominated candle as a WETN one.
+  let candles = currency === "wetn" ? null : await tryElectroSwapCandles(address, range, windowMs);
   if (!candles) {
     const ohlcvRes = await fetchGeckoTerminal(
-      `/networks/${NETWORK}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}&currency=usd&token=${tokenSide}`
+      `/networks/${NETWORK}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${limit}&currency=${currency === "wetn" ? "token" : "usd"}&token=${tokenSide}`
     );
     const list = ohlcvRes.data?.attributes?.ohlcv_list || [];
     const cutoffMs = Date.now() - windowMs;
@@ -306,10 +334,10 @@ async function loadTokenChart(address, range) {
     // A real pool exists, it just hasn't traded within this specific window — distinct from
     // "no pool at all" so the frontend can point the user at a longer range instead of implying
     // this token has no market.
-    return { hasData: false, reason: "no_recent_activity", pool };
+    return { hasData: false, reason: "no_recent_activity", pool, hasWetnPool };
   }
 
-  return { hasData: true, candles, pool };
+  return { hasData: true, candles, pool, hasWetnPool };
 }
 
 // Long-range ETN price history, backed by price_points (see pnlPricing.js's KuCoin backfill) —
@@ -386,6 +414,7 @@ router.get("/etn-candles", async (req, res) => {
 router.get("/token-chart", async (req, res) => {
   const address = String(req.query.address || "");
   const range = String(req.query.range || "30");
+  const currency = String(req.query.currency || "usd");
 
   if (!ethers.isAddress(address)) {
     return res.status(400).json({ error: "Invalid address" });
@@ -393,15 +422,18 @@ router.get("/token-chart", async (req, res) => {
   if (!RANGE_PARAMS[range]) {
     return res.status(400).json({ error: "Invalid range — use 7, 30, or 90" });
   }
+  if (currency !== "usd" && currency !== "wetn") {
+    return res.status(400).json({ error: "Invalid currency — use usd or wetn" });
+  }
 
-  const cacheKey = `${address.toLowerCase()}:${range}`;
+  const cacheKey = `${address.toLowerCase()}:${range}:${currency}`;
   const cached = cache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return res.json(cached.payload);
   }
 
   try {
-    const payload = await loadTokenChart(address, range);
+    const payload = await loadTokenChart(address, range, currency);
     cache.set(cacheKey, { payload, expiresAt: Date.now() + CACHE_TTL_MS });
     res.json(payload);
   } catch (err) {
