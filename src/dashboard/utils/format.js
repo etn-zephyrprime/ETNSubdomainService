@@ -57,6 +57,19 @@ export function formatUsdPrice(value) {
   return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** "X ETN" for a per-unit PRICE (e.g. "how many ETN = 1 token", an average purchase price in ETN
+ * terms) — same sub-cent-aware precision tiering as formatUsdPrice above (a token can be worth a
+ * tiny fraction of one ETN just as easily as many ETN), just no currency symbol/display-currency
+ * conversion, since this IS the unit, not a USD figure to convert. Shared by TokenPriceChart.jsx's
+ * USD/ETN toggle and CoreTierPortfolio.jsx's average-cost-per-token line. */
+export function formatEtnPrice(v) {
+  if (!Number.isFinite(v)) return "—";
+  if (v === 0) return "0 ETN";
+  if (Math.abs(v) < 0.000001) return `${v.toExponential(2)} ETN`;
+  if (Math.abs(v) < 1) return `${v.toFixed(6)} ETN`;
+  return `${v.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN`;
+}
+
 /** An ETN amount as a plain number: 2 decimals below 1,000,000, compact ("1M", "97.1M", "2.19B")
  * from 1,000,000 up — a 9-digit balance with cents is unreadable in a list row or chart stat, and the
  * cents mean nothing at that size. */

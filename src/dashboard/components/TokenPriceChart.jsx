@@ -4,7 +4,7 @@ import { green, error as errorColor, mutedLight, muted, panel2, border } from ".
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useEtnPriceHistory } from "../hooks/useEtnPriceHistory.js";
 import { buildEtnPriceLookup } from "../utils/balanceHistory.js";
-import { formatUsdPrice, formatCompact, formatChartDate } from "../utils/format.js";
+import { formatUsdPrice, formatEtnPrice, formatCompact, formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
 import CandlestickChart from "./CandlestickChart.jsx";
 
@@ -21,17 +21,6 @@ const CURRENCIES = [
   { id: "usd", label: "USD" },
   { id: "etn", label: "ETN" },
 ];
-
-// "X ETN = 1 token" — same sub-cent-aware precision tiering as format.js's own formatUsdPrice
-// (a token can be worth a tiny fraction of one ETN just as easily as many ETN), just no currency
-// symbol/display-currency conversion, since this IS the unit, not a USD figure to convert.
-function formatEtnPrice(v) {
-  if (!Number.isFinite(v)) return "—";
-  if (v === 0) return "0 ETN";
-  if (Math.abs(v) < 0.000001) return `${v.toExponential(2)} ETN`;
-  if (Math.abs(v) < 1) return `${v.toFixed(6)} ETN`;
-  return `${v.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN`;
-}
 
 function Pill({ active, onClick, children }) {
   return (

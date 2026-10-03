@@ -6,13 +6,14 @@ import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
+import { useAvgCostBasis } from "../../hooks/useAvgCostBasis.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
 import { usePortfolioSummary } from "../../hooks/usePortfolioSummary.js";
 import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useTokenPriceChanges } from "../../hooks/useTokenPriceChanges.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
-import { formatTokenAmount, formatUsdPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
+import { formatTokenAmount, formatUsdPrice, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
@@ -132,6 +133,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   } = coreTierAccess;
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getDefiPositions } = useDefiPositions();
+  const { getAvgCostBasis } = useAvgCostBasis();
   const { getLiquidityPositions } = useLiquidityPositions();
   const { getPortfolioSummary, savePortfolioSummary } = usePortfolioSummary();
   const { getBatchTokenPrices } = useBatchTokenPrices();
@@ -169,6 +171,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // real wait for members who actually have something staked/farmed.
   const [defiPositions, setDefiPositions] = useState(null);
   const [defiPositionsError, setDefiPositionsError] = useState(null);
+  const [avgCostByToken, setAvgCostByToken] = useState(null); // { [lowercased tokenAddress]: { avgCostUsd, avgCostEtn } } | null while loading
   // Live value of directly-held LP/V3 positions — { perWallet, combined } | null while loading.
   // Same "separate, independent load" reasoning as defiPositions above (real on-chain reads, not
   // just a Blockscout balance read — see lpPositionValuation.js), but this one also NEEDS
@@ -315,6 +318,29 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     const id = setInterval(() => loadDefiPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [defiPositions?.ingesting, defiPositions?.refreshing, loadDefiPositions]);
+
+  // Average purchase price per token (USD + ETN) for Combined Holdings below — loads alongside the
+  // combined portfolio, independently; a slow/failed lookup here never blocks the holdings list
+  // itself from showing (it just shows without an average-price line). No polling — unlike DeFi
+  // positions this isn't tied to an ingest-progress banner, it just quietly fills in once ready.
+  useEffect(() => {
+    if (!hasAccess || active.length === 0) {
+      setAvgCostByToken(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        const res = await getAvgCostBasis(wallet.account, signature, timestamp);
+        if (!cancelled) setAvgCostByToken(res.avgCostByToken || {});
+      } catch (err) {
+        console.error("Failed to load average cost basis:", err.message);
+        if (!cancelled) setAvgCostByToken({}); // holdings list still renders, just without this line
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [hasAccess, active, getAuthParams, getAvgCostBasis, wallet.account]);
 
   // Live LP/V3 position values load once `portfolio` has resolved — unlike defiPositions above,
   // this needs each wallet's own token-balance list as the V2 LP-pool candidate set (see
@@ -1416,6 +1442,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
                               {usdValue != null && (
                                 <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
+                              )}
+                              {holdingsCategory === "tokens" && avgCostByToken?.[t.token?.address?.toLowerCase()] && (
+                                <span style={{ display: "block", fontSize: 10, color: muted, marginTop: 2 }}>
+                                  avg {formatUsdPrice(avgCostByToken[t.token.address.toLowerCase()].avgCostUsd)}
+                                  {avgCostByToken[t.token.address.toLowerCase()].avgCostEtn != null &&
+                                    ` / ${formatEtnPrice(avgCostByToken[t.token.address.toLowerCase()].avgCostEtn)}`}
+                                </span>
                               )}
                             </span>
                           </div>
