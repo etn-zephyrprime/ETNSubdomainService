@@ -33,6 +33,7 @@ import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
+import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
@@ -169,6 +170,60 @@ router.get("/premium/gas-spend", async (req, res) => {
   } catch (err) {
     console.error("Gas spend lookup failed:", err);
     res.status(500).json({ error: "Failed to load gas spend" });
+  }
+});
+
+// Average purchase price per held token (USD + ETN), combined across every covered wallet — see
+// avgCostBasisService.js's own header comment for why ETN needs real new work (a per-lot historical
+// ETN price lookup) rather than just a cheap conversion of the USD figure. Wallets' own RAW totals
+// are combined first (same reasoning combineLivePnlSnapshots uses for holdings — averaging each
+// wallet's own average would be wrong once wallets hold different quantities of the same token),
+// then divided once at the end.
+router.get("/premium/avg-cost-basis", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const active = await getCoveredWallets(wallet);
+    const addresses = active.map((w) => w.address);
+
+    const perWalletTotals = await Promise.all(
+      addresses.map((address) => getCostBasisTotalsByToken(address, addresses.filter((a) => a !== address)))
+    );
+
+    const combined = new Map(); // tokenAddress -> { quantity, costBasisUsd, costBasisEtn, etnQuantity } (BigNumber-ish via plain numbers — see note below)
+    for (const totals of perWalletTotals) {
+      for (const [tokenAddress, t] of Object.entries(totals)) {
+        const entry = combined.get(tokenAddress) || { quantity: 0, costBasisUsd: 0, costBasisEtn: 0, etnQuantity: 0 };
+        // Plain float addition, not Decimal — these are already-summed per-wallet totals (each a
+        // single decimal string), combined across at most a handful of wallets; the precision this
+        // app's internal FIFO math itself cares about (fifoLotEngine.js's own Decimal usage) has
+        // already happened upstream. Good enough for a display-only "average price" figure.
+        entry.quantity += Number(t.quantity);
+        entry.costBasisUsd += Number(t.costBasisUsd);
+        entry.costBasisEtn += Number(t.costBasisEtn);
+        entry.etnQuantity += Number(t.etnQuantity);
+        combined.set(tokenAddress, entry);
+      }
+    }
+
+    const avgCostByToken = {};
+    for (const [tokenAddress, entry] of combined) {
+      if (entry.quantity <= 0) continue;
+      avgCostByToken[tokenAddress] = {
+        avgCostUsd: entry.costBasisUsd / entry.quantity,
+        avgCostEtn: entry.etnQuantity > 0 ? entry.costBasisEtn / entry.etnQuantity : null,
+      };
+    }
+    res.json({ avgCostByToken });
+  } catch (err) {
+    console.error("Avg cost basis lookup failed:", err);
+    res.status(500).json({ error: "Failed to load average cost basis" });
   }
 });
 
