@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { green, error as errorColor, mutedLight, muted, panel2, border } from "../theme.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
+import { useEtnPriceHistory } from "../hooks/useEtnPriceHistory.js";
+import { buildEtnPriceLookup } from "../utils/balanceHistory.js";
 import { formatUsdPrice, formatCompact, formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
 import CandlestickChart from "./CandlestickChart.jsx";
@@ -15,6 +17,21 @@ const METRICS = [
   { id: "price", label: "Price" },
   { id: "marketCap", label: "Market Cap" },
 ];
+const CURRENCIES = [
+  { id: "usd", label: "USD" },
+  { id: "etn", label: "ETN" },
+];
+
+// "X ETN = 1 token" — same sub-cent-aware precision tiering as format.js's own formatUsdPrice
+// (a token can be worth a tiny fraction of one ETN just as easily as many ETN), just no currency
+// symbol/display-currency conversion, since this IS the unit, not a USD figure to convert.
+function formatEtnPrice(v) {
+  if (!Number.isFinite(v)) return "—";
+  if (v === 0) return "0 ETN";
+  if (Math.abs(v) < 0.000001) return `${v.toExponential(2)} ETN`;
+  if (Math.abs(v) < 1) return `${v.toFixed(6)} ETN`;
+  return `${v.toLocaleString(undefined, { maximumFractionDigits: 4 })} ETN`;
+}
 
 function Pill({ active, onClick, children }) {
   return (
@@ -46,11 +63,14 @@ function Pill({ active, onClick, children }) {
 // tokens but not a guarantee), not a second data source.
 export default function TokenPriceChart({ address, decimals, totalSupply }) {
   const { getTokenChart } = useTokenChart();
+  const { getEtnPriceHistory } = useEtnPriceHistory();
 
   const [range, setRange] = useState("30");
   const [metric, setMetric] = useState("price");
+  const [currency, setCurrency] = useState("usd"); // "usd" | "etn" — ETN only meaningful for the Price metric, see the toggle below
   const [chart, setChart] = useState(null); // { hasData, candles?, pool? }
   const [error, setError] = useState(null);
+  const [etnPricePoints, setEtnPricePoints] = useState(null); // null until loaded; [] on failure (ETN toggle just stays unavailable)
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +84,28 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
       });
     return () => { cancelled = true; };
   }, [address, range, getTokenChart]);
+
+  // ETN/USD daily history — fetched once (not per range/token switch), same "all" full-history
+  // fetch CoreTierBalanceHistory.jsx already uses for its own USD toggle, so converting ANY of
+  // this token's candles (even ones further back than CoinGecko's own 365-day free-tier cap) to
+  // "X ETN = 1 token" always has a real historical ETN rate to divide by, not today's rate
+  // misapplied to the whole window.
+  useEffect(() => {
+    let cancelled = false;
+    getEtnPriceHistory("all")
+      .then((res) => { if (!cancelled) setEtnPricePoints(Array.isArray(res?.points) ? res.points : []); })
+      .catch((err) => {
+        console.error("Failed to load ETN price history:", err.message);
+        if (!cancelled) setEtnPricePoints([]);
+      });
+    return () => { cancelled = true; };
+  }, [getEtnPriceHistory]);
+
+  const etnPriceLookup = useMemo(
+    () => (etnPricePoints && etnPricePoints.length > 0 ? buildEtnPriceLookup(etnPricePoints) : null),
+    [etnPricePoints]
+  );
+  const etnToggleReady = etnPriceLookup != null;
 
   const supplyFloat = useMemo(() => {
     try {
@@ -83,23 +125,43 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
     return chart.candles.map((c) => ({ label: c.label, value: c.close * supplyFloat }));
   }, [chart, supplyFloat]);
 
+  // ETN-denominated candles: each OHLC value divided by ETN's OWN real USD price on that SAME day
+  // (not today's rate applied retroactively — same reasoning CoreTierBalanceHistory.jsx's own USD
+  // toggle already uses) — "how many ETN = 1 token", using ETN's actual historical rate, so this
+  // can show a genuinely different trend than the USD chart (e.g. a token holding steady against
+  // ETN while both move together against USD), not just a rescaled copy of it. A candle whose day
+  // has no known ETN price (shouldn't happen given how dense that series is) is dropped rather
+  // than shown with a fabricated rate.
+  const effectiveCurrency = metric === "price" && etnToggleReady ? currency : "usd";
+  const priceCandles = useMemo(() => {
+    if (!chart?.candles) return null;
+    if (effectiveCurrency !== "etn") return chart.candles;
+    return chart.candles
+      .map((c) => {
+        const etnPrice = etnPriceLookup(c.label.slice(0, 10));
+        if (etnPrice == null) return null;
+        return { ...c, open: c.open / etnPrice, high: c.high / etnPrice, low: c.low / etnPrice, close: c.close / etnPrice };
+      })
+      .filter(Boolean);
+  }, [chart, effectiveCurrency, etnPriceLookup]);
+
   const stats = useMemo(() => {
-    if (!chart?.candles || chart.candles.length === 0) return null;
-    const candles = chart.candles;
     if (metric === "price") {
-      const current = candles[candles.length - 1].close;
-      const first = candles[0].open;
-      const high = Math.max(...candles.map((c) => c.high));
-      const low = Math.min(...candles.map((c) => c.low));
+      if (!priceCandles || priceCandles.length === 0) return null;
+      const current = priceCandles[priceCandles.length - 1].close;
+      const first = priceCandles[0].open;
+      const high = Math.max(...priceCandles.map((c) => c.high));
+      const low = Math.min(...priceCandles.map((c) => c.low));
       return { current, high, low, changePct: first ? ((current - first) / first) * 100 : 0 };
     }
+    if (!chart?.candles || chart.candles.length === 0) return null;
     const values = marketCapSeries.map((p) => p.value);
     const current = values[values.length - 1];
     const first = values[0];
     return { current, high: Math.max(...values), low: Math.min(...values), changePct: first ? ((current - first) / first) * 100 : 0 };
-  }, [chart, metric, marketCapSeries]);
+  }, [chart, metric, marketCapSeries, priceCandles]);
 
-  const formatValue = metric === "price" ? formatUsdPrice : (v) => `$${formatCompact(v)}`;
+  const formatValue = metric === "price" ? (effectiveCurrency === "etn" ? formatEtnPrice : formatUsdPrice) : (v) => `$${formatCompact(v)}`;
 
   if (error) {
     return <div style={{ fontSize: 12, color: errorColor, padding: 16, textAlign: "center" }}>{error}</div>;
@@ -127,14 +189,21 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
     <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted }}>
-          {metric === "price" ? "Price" : "Market Cap"}{chart?.pool ? ` · via ${chart.pool.name}` : ""}
+          {metric === "price" ? `Price${effectiveCurrency === "etn" ? " (ETN)" : ""}` : "Market Cap"}{chart?.pool ? ` · via ${chart.pool.name}` : ""}
         </div>
-        <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
             {METRICS.map((m) => (
               <Pill key={m.id} active={m.id === metric} onClick={() => setMetric(m.id)}>{m.label}</Pill>
             ))}
           </div>
+          {metric === "price" && etnToggleReady && (
+            <div style={{ display: "flex", gap: 6 }}>
+              {CURRENCIES.map((c) => (
+                <Pill key={c.id} active={c.id === currency} onClick={() => setCurrency(c.id)}>{c.label}</Pill>
+              ))}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6 }}>
             {RANGES.map((r) => (
               <Pill key={r.id} active={r.id === range} onClick={() => setRange(r.id)}>{r.label}</Pill>
@@ -171,7 +240,7 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
           </div>
 
           {metric === "price" ? (
-            <CandlestickChart candles={chart.candles} volume={volumeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            <CandlestickChart candles={priceCandles} volume={volumeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           ) : (
             <SparklineChart data={marketCapSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           )}
