@@ -84,6 +84,13 @@ export async function insertTransfers(rows) {
       values
     );
   }
+
+  // Invalidate getAllTransfersBefore's own memo (below) for every wallet this batch touched — a
+  // stale memo entry must never survive real new data landing for that wallet, or the ledger/NFT/
+  // token-history caches' own "ingestion advanced -> rebuild" invalidation would be silently
+  // undermined by this memo quietly still serving the PRE-ingestion read underneath them.
+  const affectedWallets = new Set(rows.map((r) => r.trackedWallet.toLowerCase()));
+  for (const wallet of affectedWallets) transfersMemo.delete(wallet);
 }
 
 /** Every transfer of ONE specific fungible token for `trackedWallet`, oldest first — narrow
@@ -113,13 +120,59 @@ export async function getTransfersInRange(trackedWallet, fromTs, toTs) {
   return res?.rows || [];
 }
 
+// Short-lived, per-wallet memo of getAllTransfersBefore's own result. Confirmed live via
+// pg_stat_statements: 3,106 calls / 9.93 MILLION rows from this one query alone — the single
+// largest source of remaining Supabase egress, bigger than everything else combined. Root cause:
+// several independent, otherwise-correct caches each need "this wallet's full event history" —
+// pnlSnapshotService.js's getLedgerState, nftPnlService.js's own NFT snapshot cache, and
+// tokenPnlService.js's own per-token history cache — and each rebuilds on its OWN schedule when it
+// sees ingestion has advanced, but NONE of them share the underlying database read with each other.
+// One new transfer landing for an active wallet can trigger this exact full-history SELECT *
+// multiple times within moments, once per independent cache that happens to miss around the same
+// time.
+//
+// Deliberately NOT keyed to the exact `beforeTs` requested — every current caller passes a freshly
+// captured `new Date()` (i.e. "live, as of right now"), so two calls a few seconds apart would
+// otherwise miss each other by milliseconds and never collapse. Instead: a cached result is reused
+// only if it was fetched within MEMO_TTL_MS AND the newly requested `beforeTs` falls within that
+// same short window of the cached fetch's own `beforeTs`. Safe for every live caller — this app
+// already accepts exactly this much staleness elsewhere for exactly this reason (see
+// SNAPSHOT_CACHE_TTL_MS/SCAN_COOLDOWN_MS's own identical "collapse near-simultaneous calls" logic)
+// — and a correctness no-op for pnlStatementGenerator.js's period-scoped calls: a frozen statement's
+// `periodEnd` is some date in the past, essentially never within MEMO_TTL_MS of "right now" the way
+// a live call's `beforeTs` always is, so that caller keeps hitting the database with an exact query
+// every time, unaffected — exactly what a tax-document-grade figure needs (see fifoLotEngine.js's
+// own header comment on precision).
+//
+// insertTransfers above clears a wallet's entry the moment new rows land for it, so this can never
+// serve pre-ingestion data to a caller that specifically woke up BECAUSE ingestion advanced.
+const MEMO_TTL_MS = 20000;
+const MEMO_MAX_ENTRIES = 12; // small — each entry holds a wallet's FULL raw transfer history, not a compact summary
+const transfersMemo = new Map(); // trackedWallet (lowercase) -> { rows, beforeTsMs, fetchedAtMs }
+
+function rememberTransfers(trackedWallet, beforeTsMs, rows) {
+  transfersMemo.delete(trackedWallet); // re-insert so Map order is recency order
+  transfersMemo.set(trackedWallet, { rows, beforeTsMs, fetchedAtMs: Date.now() });
+  while (transfersMemo.size > MEMO_MAX_ENTRIES) transfersMemo.delete(transfersMemo.keys().next().value);
+}
+
 export async function getAllTransfersBefore(trackedWallet, beforeTs) {
+  const wallet = trackedWallet.toLowerCase();
+  const beforeTsMs = new Date(beforeTs).getTime();
+
+  const hit = transfersMemo.get(wallet);
+  if (hit && Date.now() - hit.fetchedAtMs < MEMO_TTL_MS && Math.abs(beforeTsMs - hit.beforeTsMs) < MEMO_TTL_MS) {
+    return hit.rows;
+  }
+
   const res = await query(
     `SELECT * FROM ingested_transfers WHERE tracked_wallet = $1 AND "timestamp" < $2
      ORDER BY "timestamp" ASC, log_index ASC`,
-    [trackedWallet.toLowerCase(), beforeTs]
+    [wallet, beforeTs]
   );
-  return res?.rows || [];
+  const rows = res?.rows || [];
+  rememberTransfers(wallet, beforeTsMs, rows);
+  return rows;
 }
 
 /** Rows left with no price — either a deliberately-deferred non-priority asset (see
