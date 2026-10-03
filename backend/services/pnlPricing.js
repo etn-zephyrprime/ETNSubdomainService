@@ -390,6 +390,22 @@ async function ensureBackfilled(cacheAsset, tokenAddress) {
       return null;
     }
 
+    // Same "pools exist but zero candles saved" contradiction this function's own retry check
+    // above exists for — this time catching it fresh, before a bad result gets persisted at all.
+    // Confirmed this is needed, not just theoretical: without it, retrying the stale-record check
+    // above re-ran this ENTIRE bulk backfill (a /tokens/pools call plus up to 20 OHLCV pages PER
+    // pool) on every single price lookup for the same still-rate-limited asset within one process
+    // run, since a result that merely "looks complete" (no throw, just empty) was never added to
+    // failedBackfillThisRun — live logs showed dozens of repeat attempts for one wallet replay,
+    // hammering GeckoTerminal hard enough to trip its real rate limit. Added to
+    // failedBackfillThisRun (not persisted to the DB) so this run gives up after one more try per
+    // asset, while a later process run still gets a fresh attempt once the real outage clears.
+    if (!usedKucoin && result.poolCount > 0 && !result.earliestDate) {
+      console.warn(`⚠️  Price backfill: ${cacheAsset} still came back empty despite ${result.poolCount} pool(s) found — not persisting, will retry on a future run`);
+      failedBackfillThisRun.add(cacheAsset);
+      return null;
+    }
+
     await markBackfilled(cacheAsset, { earliestAvailableDate: result.earliestDate, poolCount: result.poolCount });
     console.log(
       `💰 Price history backfilled for ${cacheAsset}: earliest available ${result.earliestDate ? result.earliestDate.toISOString().slice(0, 10) : "none found"}, ${result.poolCount} source(s) scanned`
