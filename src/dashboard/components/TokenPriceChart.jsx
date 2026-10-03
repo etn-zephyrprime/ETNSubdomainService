@@ -254,8 +254,12 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
             </div>
           </div>
 
+          {/* Taller than this app's usual 140px chart height (every other SparklineChart/
+              CandlestickChart on this dashboard) — with the denser 7D/30D candles from the
+              previous PR, 140px compressed wicks/bodies enough to flatten out real price
+              movement. 260px gives each candle meaningfully more vertical room. */}
           {metric === "price" ? (
-            <CandlestickChart candles={activeChart.candles} volume={volumeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            <CandlestickChart candles={activeChart.candles} volume={volumeSeries} height={260} formatValue={formatValue} formatLabel={formatChartDate} />
           ) : (
             <SparklineChart data={marketCapSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           )}
