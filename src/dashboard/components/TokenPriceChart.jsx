@@ -2,8 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { green, error as errorColor, mutedLight, muted, panel2, border } from "../theme.js";
 import { useTokenChart } from "../hooks/useTokenChart.js";
-import { useEtnPriceHistory } from "../hooks/useEtnPriceHistory.js";
-import { buildEtnPriceLookup } from "../utils/balanceHistory.js";
 import { formatUsdPrice, formatEtnPrice, formatCompact, formatChartDate } from "../utils/format.js";
 import SparklineChart from "./SparklineChart.jsx";
 import CandlestickChart from "./CandlestickChart.jsx";
@@ -52,20 +50,19 @@ function Pill({ active, onClick, children }) {
 // tokens but not a guarantee), not a second data source.
 export default function TokenPriceChart({ address, decimals, totalSupply }) {
   const { getTokenChart } = useTokenChart();
-  const { getEtnPriceHistory } = useEtnPriceHistory();
 
   const [range, setRange] = useState("30");
   const [metric, setMetric] = useState("price");
   const [currency, setCurrency] = useState("usd"); // "usd" | "etn" — ETN only meaningful for the Price metric, see the toggle below
-  const [chart, setChart] = useState(null); // { hasData, candles?, pool? }
+  const [chart, setChart] = useState(null); // { hasData, candles?, pool?, hasWetnPool } — always USD-denominated; drives Market Cap and the ETN toggle's availability
+  const [wetnChart, setWetnChart] = useState(null); // same shape, WETN-denominated — only fetched once the ETN toggle is actually used
   const [error, setError] = useState(null);
-  const [etnPricePoints, setEtnPricePoints] = useState(null); // null until loaded; [] on failure (ETN toggle just stays unavailable)
 
   useEffect(() => {
     let cancelled = false;
     setChart(null);
     setError(null);
-    getTokenChart(address, range)
+    getTokenChart(address, range, "usd")
       .then((res) => { if (!cancelled) setChart(res); })
       .catch((err) => {
         console.error("Failed to load token chart:", err);
@@ -74,27 +71,33 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
     return () => { cancelled = true; };
   }, [address, range, getTokenChart]);
 
-  // ETN/USD daily history — fetched once (not per range/token switch), same "all" full-history
-  // fetch CoreTierBalanceHistory.jsx already uses for its own USD toggle, so converting ANY of
-  // this token's candles (even ones further back than CoinGecko's own 365-day free-tier cap) to
-  // "X ETN = 1 token" always has a real historical ETN rate to divide by, not today's rate
-  // misapplied to the whole window.
+  const etnToggleReady = chart?.hasWetnPool === true;
+
+  // Only fetched once the ETN toggle is actually in use (and only possible when this token has a
+  // real WETN pool) — denominated DIRECTLY in the pool's own WETN-reserve ratio, the same figure
+  // GeckoTerminal's own site shows ("1 CORE = 13.74 WETN"), not derived by dividing this token's
+  // USD price by ETN's separately-sourced USD price. CONFIRMED LIVE that division drifts from the
+  // real on-chain ratio by a few percent (two independent markets — a DEX pool vs. KuCoin's
+  // ETN-USDT spot — don't perfectly arbitrage against each other): reported 1 CORE = 13.74 WETN
+  // on GeckoTerminal vs. 13.0248 "ETN" from the old division-based figure. Since WETN is 1:1
+  // pegged to ETN (same assumption tokenLiquidityCache.js/lpPositionValuation.js already make),
+  // the pool's own ratio IS the real ETN price, no cross-market round trip needed — see
+  // tokenChartRouter.js's own loadTokenChart comment for the confirmed live numbers.
   useEffect(() => {
+    if (metric !== "price" || currency !== "etn" || !etnToggleReady) return;
     let cancelled = false;
-    getEtnPriceHistory("all")
-      .then((res) => { if (!cancelled) setEtnPricePoints(Array.isArray(res?.points) ? res.points : []); })
+    setWetnChart(null);
+    getTokenChart(address, range, "wetn")
+      .then((res) => { if (!cancelled) setWetnChart(res); })
       .catch((err) => {
-        console.error("Failed to load ETN price history:", err.message);
-        if (!cancelled) setEtnPricePoints([]);
+        console.error("Failed to load WETN-denominated token chart:", err);
+        if (!cancelled) setWetnChart({ hasData: false });
       });
     return () => { cancelled = true; };
-  }, [getEtnPriceHistory]);
+  }, [address, range, metric, currency, etnToggleReady, getTokenChart]);
 
-  const etnPriceLookup = useMemo(
-    () => (etnPricePoints && etnPricePoints.length > 0 ? buildEtnPriceLookup(etnPricePoints) : null),
-    [etnPricePoints]
-  );
-  const etnToggleReady = etnPriceLookup != null;
+  const effectiveCurrency = metric === "price" && etnToggleReady && currency === "etn" ? "etn" : "usd";
+  const activeChart = effectiveCurrency === "etn" ? wetnChart : chart;
 
   const supplyFloat = useMemo(() => {
     try {
@@ -104,43 +107,28 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
     }
   }, [totalSupply, decimals]);
 
+  // Volume stays USD-only (and is simply omitted in ETN mode) — GeckoTerminal's own volume figure
+  // switches denomination right along with `currency` (confirmed live: ~51,656 WETN vs. ~111 USD
+  // for the same candle), so showing it unlabeled under a WETN-denominated chart would read as a
+  // USD figure that's actually in WETN units. Not asked for here, so left out rather than guessed at.
   const volumeSeries = useMemo(() => {
-    if (!chart?.candles) return null;
+    if (effectiveCurrency === "etn" || !chart?.candles) return null;
     return chart.candles.map((c) => ({ label: c.label, value: c.volumeUsd || 0 }));
-  }, [chart]);
+  }, [chart, effectiveCurrency]);
 
   const marketCapSeries = useMemo(() => {
     if (!chart?.candles || !supplyFloat) return [];
     return chart.candles.map((c) => ({ label: c.label, value: c.close * supplyFloat }));
   }, [chart, supplyFloat]);
 
-  // ETN-denominated candles: each OHLC value divided by ETN's OWN real USD price on that SAME day
-  // (not today's rate applied retroactively — same reasoning CoreTierBalanceHistory.jsx's own USD
-  // toggle already uses) — "how many ETN = 1 token", using ETN's actual historical rate, so this
-  // can show a genuinely different trend than the USD chart (e.g. a token holding steady against
-  // ETN while both move together against USD), not just a rescaled copy of it. A candle whose day
-  // has no known ETN price (shouldn't happen given how dense that series is) is dropped rather
-  // than shown with a fabricated rate.
-  const effectiveCurrency = metric === "price" && etnToggleReady ? currency : "usd";
-  const priceCandles = useMemo(() => {
-    if (!chart?.candles) return null;
-    if (effectiveCurrency !== "etn") return chart.candles;
-    return chart.candles
-      .map((c) => {
-        const etnPrice = etnPriceLookup(c.label.slice(0, 10));
-        if (etnPrice == null) return null;
-        return { ...c, open: c.open / etnPrice, high: c.high / etnPrice, low: c.low / etnPrice, close: c.close / etnPrice };
-      })
-      .filter(Boolean);
-  }, [chart, effectiveCurrency, etnPriceLookup]);
-
   const stats = useMemo(() => {
     if (metric === "price") {
-      if (!priceCandles || priceCandles.length === 0) return null;
-      const current = priceCandles[priceCandles.length - 1].close;
-      const first = priceCandles[0].open;
-      const high = Math.max(...priceCandles.map((c) => c.high));
-      const low = Math.min(...priceCandles.map((c) => c.low));
+      if (!activeChart?.candles || activeChart.candles.length === 0) return null;
+      const candles = activeChart.candles;
+      const current = candles[candles.length - 1].close;
+      const first = candles[0].open;
+      const high = Math.max(...candles.map((c) => c.high));
+      const low = Math.min(...candles.map((c) => c.low));
       return { current, high, low, changePct: first ? ((current - first) / first) * 100 : 0 };
     }
     if (!chart?.candles || chart.candles.length === 0) return null;
@@ -148,13 +136,16 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
     const current = values[values.length - 1];
     const first = values[0];
     return { current, high: Math.max(...values), low: Math.min(...values), changePct: first ? ((current - first) / first) * 100 : 0 };
-  }, [chart, metric, marketCapSeries, priceCandles]);
+  }, [chart, activeChart, metric, marketCapSeries]);
 
   const formatValue = metric === "price" ? (effectiveCurrency === "etn" ? formatEtnPrice : formatUsdPrice) : (v) => `$${formatCompact(v)}`;
 
   if (error) {
     return <div style={{ fontSize: 12, color: errorColor, padding: 16, textAlign: "center" }}>{error}</div>;
   }
+  // Loading/no-data gating always reads off the USD chart — it's the one that's always fetched
+  // (drives Market Cap and hasWetnPool regardless of the toggle), and both denominations come
+  // from the same underlying pool/range so "no recent activity" is true for either one together.
   if (chart && !chart.hasData) {
     return (
       <div style={{ padding: 16, borderRadius: 12, background: panel2, border: `1px solid ${border}`, marginBottom: 24 }}>
@@ -229,7 +220,7 @@ export default function TokenPriceChart({ address, decimals, totalSupply }) {
           </div>
 
           {metric === "price" ? (
-            <CandlestickChart candles={priceCandles} volume={volumeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
+            <CandlestickChart candles={activeChart.candles} volume={volumeSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           ) : (
             <SparklineChart data={marketCapSeries} height={140} formatValue={formatValue} formatLabel={formatChartDate} />
           )}
