@@ -24,6 +24,29 @@ import { ethers } from "ethers";
  * Returns `{ label, value }[]` (value a plain float ETN number, not wei) — directly usable as
  * SparklineChart's `data` prop.
  */
+/**
+ * Same shape/forward-fill logic as mergeBalanceHistories above, for a token balance series instead
+ * of ETN — plain decimal-string balances (tokenBalanceHistoryService.js's own output), not wei, so
+ * no ethers/BigInt conversion. No `initialValues` equivalent needed here (unlike ETN's Blockscout-
+ * sourced 90-day retention cap): this app's own ingested transfer history already reaches back to
+ * the wallet's cold-start, so there's no "before the window" gap to backfill from a separate seed.
+ */
+export function mergeTokenBalanceHistories(perWalletItems) {
+  const pointers = perWalletItems.map(() => 0);
+  const current = perWalletItems.map(() => 0);
+  const allDates = [...new Set(perWalletItems.flatMap((items) => items.map((i) => i.date)))].sort();
+
+  return allDates.map((date) => {
+    perWalletItems.forEach((items, i) => {
+      while (pointers[i] < items.length && items[pointers[i]].date <= date) {
+        current[i] = Number(items[pointers[i]].balance);
+        pointers[i] += 1;
+      }
+    });
+    return { label: date, value: current.reduce((sum, v) => sum + v, 0) };
+  });
+}
+
 export function mergeBalanceHistories(perWalletItems, initialWeis = []) {
   const pointers = perWalletItems.map(() => 0);
   const currentWei = perWalletItems.map((_, i) => initialWeis[i] ?? 0n);

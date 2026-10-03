@@ -86,6 +86,23 @@ export async function insertTransfers(rows) {
   }
 }
 
+/** Every transfer of ONE specific fungible token for `trackedWallet`, oldest first — narrow
+ * columns only (not `SELECT *`, unlike this file's whole-history reads above), since balance
+ * replay only needs direction/amount/timestamp. Powers tokenBalanceHistoryService.js's per-token
+ * Balance History chart. `is_self_transfer` is irrelevant here (unlike for PnL) — tokens moving
+ * between a member's own wallets still genuinely leave/enter THIS wallet's own on-chain balance,
+ * which is exactly what a balance-over-time chart is supposed to reflect. */
+export async function getTokenTransfersForWallet(trackedWallet, tokenAddress) {
+  const res = await query(
+    `SELECT direction, amount_decimal, "timestamp"
+     FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND asset_type = 'erc20' AND token_address = $2
+     ORDER BY "timestamp" ASC`,
+    [trackedWallet.toLowerCase(), tokenAddress.toLowerCase()]
+  );
+  return res?.rows || [];
+}
+
 export async function getTransfersInRange(trackedWallet, fromTs, toTs) {
   const res = await query(
     `SELECT * FROM ingested_transfers
