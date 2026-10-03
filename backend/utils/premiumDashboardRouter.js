@@ -34,6 +34,7 @@ import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
+import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
 // Folded into the signed message (see walletAuth.js) — one literal shared by every route below,
@@ -224,6 +225,33 @@ router.get("/premium/avg-cost-basis", async (req, res) => {
   } catch (err) {
     console.error("Avg cost basis lookup failed:", err);
     res.status(500).json({ error: "Failed to load average cost basis" });
+  }
+});
+
+// Per-token balance-over-time, one wallet at a time — see tokenBalanceHistoryService.js's own
+// header comment for why this is a new capability (no existing source has per-token historical
+// balance) and why it's safe to build from plain transfer summation rather than the FIFO ledger.
+router.get("/premium/token-balance-history", async (req, res) => {
+  const { wallet, signature, timestamp, tokenAddress } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
+    return res.status(400).json({ error: "Query param tokenAddress must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const active = await getCoveredWallets(wallet);
+    const perWallet = await Promise.all(
+      active.map(async (w) => ({ walletAddress: w.address, series: await getTokenBalanceHistory(w.address, tokenAddress) }))
+    );
+    res.json({ perWallet });
+  } catch (err) {
+    console.error("Token balance history lookup failed:", err);
+    res.status(500).json({ error: "Failed to load token balance history" });
   }
 });
 
