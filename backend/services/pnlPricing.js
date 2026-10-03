@@ -327,7 +327,21 @@ function mergeBackfillResults(a, b) {
  * failedBackfillThisRun above for why it IS skipped for the rest of THIS run. */
 async function ensureBackfilled(cacheAsset, tokenAddress) {
   const state = await getBackfillState(cacheAsset);
-  if (state) return state;
+  // A recorded row claiming real pools were found (pool_count > 0) yet zero days of price data
+  // were ever saved (earliest_available_date null) isn't genuine "this token has no trading
+  // history" — a pool only gets created/indexed after real trades happen, so that combination
+  // means every OHLCV page request during the one-time backfill threw (a transient GeckoTerminal
+  // rate limit or outage — a known recurring issue elsewhere in this app, see
+  // tokenChartRouter.js's own circuit breaker) rather than "no data exists". Confirmed live for
+  // CLUB: GeckoTerminal has a real, actively-traded pool with a full year of daily candles, yet
+  // this exact row (pool_count: 1, earliest_available_date: null) was recorded and permanently
+  // blocked every future price lookup for that token (getHistoricalPriceUsd's own "known
+  // bulk-backfill ceiling" fail-fast trusts ANY recorded row, even this contradictory one). Treated
+  // the same as "not backfilled yet" so it gets one more real attempt instead of being stuck
+  // forever — unlike a genuine no-pools-exist result (pool_count === 0), which stays permanent.
+  const looksStale = state && state.pool_count > 0 && !state.earliest_available_date;
+  if (state && !looksStale) return state;
+  if (looksStale) console.warn(`⚠️  Price backfill: retrying ${cacheAsset} — recorded state looked incomplete (pool_count=${state.pool_count}, earliest_available_date=null)`);
   if (failedBackfillThisRun.has(cacheAsset)) return null;
 
   try {
