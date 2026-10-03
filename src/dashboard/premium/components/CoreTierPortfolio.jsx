@@ -13,7 +13,7 @@ import { useBatchTokenPrices } from "../../hooks/useBatchTokenPrices.js";
 import { useTokenPriceChanges } from "../../hooks/useTokenPriceChanges.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
-import { formatTokenAmount, formatUsdPrice, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
+import { formatTokenAmount, formatUsdPrice, formatUsdPricePrecise, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
 import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
@@ -1445,7 +1445,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               )}
                               {holdingsCategory === "tokens" && avgCostByToken?.[t.token?.address?.toLowerCase()] && (
                                 <span style={{ display: "block", fontSize: 10, color: muted, marginTop: 2 }}>
-                                  avg {formatUsdPrice(avgCostByToken[t.token.address.toLowerCase()].avgCostUsd)}
+                                  avg {formatUsdPricePrecise(avgCostByToken[t.token.address.toLowerCase()].avgCostUsd)}
                                   {avgCostByToken[t.token.address.toLowerCase()].avgCostEtn != null &&
                                     ` / ${formatEtnPrice(avgCostByToken[t.token.address.toLowerCase()].avgCostEtn)}`}
                                 </span>

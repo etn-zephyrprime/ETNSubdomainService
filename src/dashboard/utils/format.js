@@ -57,6 +57,23 @@ export function formatUsdPrice(value) {
   return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Like formatUsdPrice, but for a PER-UNIT price (an average purchase price, a live token price —
+ * never a total holding/portfolio value, which is what formatUsdPrice's own 2-decimal-above-$0.01
+ * cutoff is tuned for and should keep). That cutoff is too coarse for a per-unit price anywhere in
+ * the $0.01-$1 range: confirmed live, CoreTierPortfolio.jsx's average-purchase-price line showed
+ * CORE's real ~$0.0124 average as a meaningless "$0.01" — fine for "how much money do I have",
+ * useless for "did I actually buy this cheaply." Extends the extra-decimals cutoff from
+ * formatUsdPrice's $0.01 up to $1, same threshold formatEtnPrice already uses for the identical
+ * per-unit reasoning. Still respects the viewer's chosen display currency. */
+export function formatUsdPricePrecise(value) {
+  if (!Number.isFinite(value)) return "—";
+  const { symbol, rate } = getCurrentCurrencySnapshot();
+  const converted = value * rate;
+  if (converted === 0) return `${symbol}0`;
+  if (Math.abs(converted) < 1) return `${symbol}${converted.toFixed(6)}`;
+  return `${symbol}${converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** "X ETN" for a per-unit PRICE (e.g. "how many ETN = 1 token", an average purchase price in ETN
  * terms) — same sub-cent-aware precision tiering as formatUsdPrice above (a token can be worth a
  * tiny fraction of one ETN just as easily as many ETN), just no currency symbol/display-currency
