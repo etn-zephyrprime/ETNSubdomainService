@@ -24,6 +24,19 @@
 // several wallets' own AVERAGES would be wrong (needs combining the raw sums first, exactly like
 // pnlSnapshotService.js's own combineLivePnlSnapshots does for holdings); dividing into a final
 // average is the caller's job, once wallets are merged.
+//
+// A lot with unitCostUsd === 0 is excluded from BOTH averages entirely, not folded in as a $0
+// "free" acquisition — confirmed live: CLUB showed "avg $0.000000 / 1.05e-15 ETN" for a wallet that
+// had received the bulk of its balance as an inbound transfer whose price was never resolved at
+// ingestion (pnlEventBuilder.js's transferToEvent falls back to `unitCostUsd: t.price_usd_at_time
+// ?? 0` for both self_in AND plain in-transfers — a NULL/unresolved price is indistinguishable from
+// a genuine $0 cost at that point). Including that lot's huge quantity in the denominator while it
+// contributes exactly 0 to the numerator doesn't make the average "$0" — it makes it a tiny,
+// meaningless fraction of whatever the few genuinely-priced lots actually cost, which is worse than
+// showing nothing: it reads as "you got this practically for free" when the truth is "we don't know
+// what this cost." Same "unpriced lots don't count" treatment the ETN side already applies via
+// etnQuantity when a historical ETN price lookup fails — this just extends it to the USD side too,
+// and to the reason (unresolved price), not just the failure mode (lookup error).
 import Decimal from "decimal.js";
 import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { NATIVE_SENTINEL } from "./pnlEventBuilder.js";
@@ -32,21 +45,24 @@ import { getLedgerState } from "./pnlSnapshotService.js";
 export async function getCostBasisTotalsByToken(trackedWallet, selfOwnedAddresses = []) {
   const { closing } = await getLedgerState(trackedWallet, selfOwnedAddresses, null);
 
-  const byToken = new Map(); // tokenAddress -> { quantity, costBasisUsd, costBasisEtn, etnQuantity } (all Decimal)
+  const byToken = new Map(); // tokenAddress -> { pricedQuantity, costBasisUsd, costBasisEtn, etnQuantity } (all Decimal)
   for (const lot of closing.lots) {
+    const unitCostUsd = new Decimal(lot.unitCostUsd ?? 0);
+    if (unitCostUsd.lte(0)) continue; // unresolved/unknown cost — see header comment; don't let it dilute either average
+
     const entry = byToken.get(lot.tokenAddress) || {
-      quantity: new Decimal(0),
+      pricedQuantity: new Decimal(0),
       costBasisUsd: new Decimal(0),
       costBasisEtn: new Decimal(0),
-      etnQuantity: new Decimal(0), // may be < quantity if an ETN price lookup failed for one lot — see below
+      etnQuantity: new Decimal(0), // may be < pricedQuantity if an ETN price lookup failed for one lot — see below
     };
-    entry.quantity = entry.quantity.plus(lot.quantityRemaining);
-    entry.costBasisUsd = entry.costBasisUsd.plus(lot.quantityRemaining.times(lot.unitCostUsd));
+    entry.pricedQuantity = entry.pricedQuantity.plus(lot.quantityRemaining);
+    entry.costBasisUsd = entry.costBasisUsd.plus(lot.quantityRemaining.times(unitCostUsd));
 
     try {
       const etnPriceUsd = await getHistoricalPriceUsd(NATIVE_SENTINEL, lot.openedTimestamp);
       if (Number.isFinite(etnPriceUsd) && etnPriceUsd > 0) {
-        entry.costBasisEtn = entry.costBasisEtn.plus(lot.quantityRemaining.times(lot.unitCostUsd).dividedBy(etnPriceUsd));
+        entry.costBasisEtn = entry.costBasisEtn.plus(lot.quantityRemaining.times(unitCostUsd).dividedBy(etnPriceUsd));
         entry.etnQuantity = entry.etnQuantity.plus(lot.quantityRemaining);
       }
     } catch (err) {
@@ -61,9 +77,9 @@ export async function getCostBasisTotalsByToken(trackedWallet, selfOwnedAddresse
 
   const totals = {};
   for (const [tokenAddress, entry] of byToken) {
-    if (entry.quantity.lte(0)) continue; // fully disposed — nothing currently held to show an average cost for
+    if (entry.pricedQuantity.lte(0)) continue; // nothing with a known cost currently held — no average to show
     totals[tokenAddress] = {
-      quantity: entry.quantity.toString(),
+      quantity: entry.pricedQuantity.toString(),
       costBasisUsd: entry.costBasisUsd.toString(),
       costBasisEtn: entry.costBasisEtn.toString(),
       etnQuantity: entry.etnQuantity.toString(),
