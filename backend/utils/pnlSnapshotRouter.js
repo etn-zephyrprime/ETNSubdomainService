@@ -17,6 +17,7 @@ import { getIngestionState } from "../db/walletIngestionState.js";
 import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots, getSnapshotFast } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
+import { getRecentActivity } from "../services/recentActivityService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
 import { computeTokenPnlHistory, combineTokenPnlHistory } from "../services/tokenPnlService.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
@@ -258,6 +259,47 @@ router.get("/premium/nft-pnl", async (req, res) => {
   } catch (err) {
     console.error("NFT PnL computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your NFT PnL right now — try again shortly" });
+  }
+});
+
+// Recent Activity — a chronological, filterable feed of what's actually happened in a wallet
+// lately (see recentActivityService.js's own header comment for the full category breakdown and
+// the liquidity-leg grouping it does). Same "no priorityTokens, never triggers ingestion itself"
+// shape as the NFT PnL endpoint directly above — relies on /premium/pnl-snapshot (rendered earlier
+// on the same page) having already kicked off ingestion for these wallets.
+router.get("/premium/recent-activity", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  const active = await getCoveredWallets(wallet);
+  if (active.length === 0) {
+    return res.json({ perWallet: [], failed: [] });
+  }
+
+  try {
+    const perWallet = [];
+    const failed = [];
+    // Sequential and independently try/caught — same reasoning as every other endpoint in this
+    // file: one wallet's transient failure shouldn't blank out the others' already-computed results.
+    for (const { address } of active) {
+      try {
+        const items = await getRecentActivity(address);
+        perWallet.push({ walletAddress: address, items });
+      } catch (err) {
+        console.error(`Recent activity fetch failed for wallet ${address}:`, err);
+        failed.push(address);
+      }
+    }
+    res.json({ perWallet, failed });
+  } catch (err) {
+    console.error("Recent activity fetch failed:", err);
+    res.status(502).json({ error: "Couldn't load your recent activity right now — try again shortly" });
   }
 });
 
