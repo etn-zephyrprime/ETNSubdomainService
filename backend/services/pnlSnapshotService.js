@@ -41,6 +41,7 @@ import {
   NATIVE_SENTINEL,
   groupNftHoldingsByCollection,
   groupNftRealizedByCollection,
+  convertRealizedEventsToEtn,
 } from "./pnlEventBuilder.js";
 
 // Short-lived cache for computeLivePnlSnapshot's own result — see this file's own header comment
@@ -161,6 +162,7 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
       return {
         closing: { lots: hit.closing.lots.slice(), lockedLots: hit.closing.lockedLots.slice(), realizedEvents: hit.closing.realizedEvents.slice() },
         gasTotalUsd: hit.gasTotalUsd,
+        gasTotalEtn: hit.gasTotalEtn,
         asOf: now,
       };
     }
@@ -171,8 +173,13 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
   const gas = await computeGasFeesUsd(transfers); // whole history — these views have no period to scope it to
   const compact = { lots: closing.lots, lockedLots: closing.lockedLots || [], realizedEvents: closing.realizedEvents };
 
-  if (cacheable) rememberLedger(key, { ingestionUpdatedAt: updatedAtMs, closing: compact, gasTotalUsd: gas.totalGasUsd });
-  return { closing: compact, gasTotalUsd: gas.totalGasUsd, asOf: now };
+  // gas.totalGasEtn is the RAW ETN actually spent (gasFeeWei summed, no price conversion at all —
+  // gas is paid in ETN directly, so this is exact, not an ETN-equivalent derived from a USD figure)
+  // — threaded through alongside gasTotalUsd for computeLivePnlSnapshot's own ETN-denominated
+  // realized P&L (see pnlEventBuilder.js's convertRealizedEventsToEtn), the same way gasTotalUsd
+  // already nets against the USD figure there.
+  if (cacheable) rememberLedger(key, { ingestionUpdatedAt: updatedAtMs, closing: compact, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn });
+  return { closing: compact, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn, asOf: now };
 }
 
 /**
@@ -273,7 +280,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
 
   // The ledger (lots + realized disposals + gas) — cached keyed on ingestion progress, see
   // getLedgerState. Only the LIVE PRICING below is recomputed on every snapshot.
-  const { closing, gasTotalUsd } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets);
+  const { closing, gasTotalUsd, gasTotalEtn } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets);
 
   const [valuation] = await Promise.all([
     // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
@@ -303,6 +310,22 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   for (const e of closing.realizedEvents) {
     const running = realizedByTokenMap.get(e.tokenAddress) || new Decimal(0);
     realizedByTokenMap.set(e.tokenAddress, running.plus(e.realizedPnlUsd));
+  }
+
+  // ETN-denominated realized P&L — ADDITIONAL to the USD figures above, never a replacement (a
+  // real member request: "is my trading actually increasing the ETN I hold, not just its USD
+  // value" — USD alone can't answer that, since ETN's own price moving between a lot's acquisition
+  // and its disposal changes the USD figure independently of whether the trade itself was
+  // ETN-accretive). Same gross/net-of-gas and per-token split as the USD figures directly above,
+  // for the exact same reasons — gasTotalEtn is the RAW ETN actually spent on gas (no price
+  // conversion needed at all, see getLedgerState's own comment), not a USD-converted-back figure.
+  const realizedEventsEtn = await convertRealizedEventsToEtn(closing.realizedEvents);
+  const realizedPnlEtnGross = realizedEventsEtn.reduce((sum, e) => sum.plus(e.realizedPnlEtn), new Decimal(0));
+  const realizedPnlEtn = realizedPnlEtnGross.minus(gasTotalEtn);
+  const realizedByTokenEtnMap = new Map(); // tokenAddress -> Decimal
+  for (const e of realizedEventsEtn) {
+    const running = realizedByTokenEtnMap.get(e.tokenAddress) || new Decimal(0);
+    realizedByTokenEtnMap.set(e.tokenAddress, running.plus(e.realizedPnlEtn));
   }
 
   if (priorityAssets) {
@@ -337,6 +360,16 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
       NFT_GROUPING_EXCLUSIONS
     ),
     gasUsd: gasTotalUsd.toString(),
+    // ETN-denominated realized P&L — see the comment above realizedPnlEtnGross for why this
+    // exists ADDITIONALLY to every USD figure above, not instead of it. Same gross/net-of-gas and
+    // per-token-grouped shape as their USD counterparts, for a consistent frontend.
+    realizedPnlEtn: realizedPnlEtn.toString(),
+    realizedByTokenEtn: groupNftRealizedByCollection(
+      [...realizedByTokenEtnMap.entries()].map(([tokenAddress, etn]) => ({ tokenAddress, realizedPnlEtn: etn.toString() })),
+      NFT_GROUPING_EXCLUSIONS,
+      "realizedPnlEtn"
+    ),
+    gasEtn: gasTotalEtn,
     // True only when THIS computation used priority scoping — the figures above are a lower
     // bound (same spirit as the rest of this app's "≈" convention) until the background backfill
     // (already kicked off) finishes filling in the deferred prices.
@@ -413,10 +446,13 @@ export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
 export function combineLivePnlSnapshots(snapshots) {
   const holdingsByToken = new Map(); // tokenAddress -> { tokenAddress, quantity: Decimal, costBasisUsd: Decimal, marketValueUsd: Decimal|null }
   const realizedByTokenMap = new Map(); // tokenAddress -> Decimal
+  const realizedByTokenEtnMap = new Map(); // tokenAddress -> Decimal
   let currentValueUsd = new Decimal(0);
   let unrealizedPnlUsd = new Decimal(0);
   let realizedPnlUsd = new Decimal(0);
+  let realizedPnlEtn = new Decimal(0);
   let gasUsd = new Decimal(0);
+  let gasEtn = new Decimal(0);
   let pricingIncomplete = false;
 
   for (const snap of snapshots) {
@@ -424,14 +460,21 @@ export function combineLivePnlSnapshots(snapshots) {
     unrealizedPnlUsd = unrealizedPnlUsd.plus(snap.unrealizedPnlUsd);
     realizedPnlUsd = realizedPnlUsd.plus(snap.realizedPnlUsd);
     gasUsd = gasUsd.plus(snap.gasUsd);
+    // ETN-denominated fields default to 0/[] for a snapshot computed before they existed (a stale
+    // cached response shape, in principle — never persisted, so in practice only matters for the
+    // instant this deploys) — same defensive convention realizedByToken's own [] default already
+    // uses below, extended to these new fields.
+    realizedPnlEtn = realizedPnlEtn.plus(snap.realizedPnlEtn || 0);
+    gasEtn = gasEtn.plus(snap.gasEtn || 0);
     if (snap.pricingIncomplete) pricingIncomplete = true;
 
-    // Defaults to [] for a snapshot computed before this field existed (a stale cached response
-    // shape, in principle — this is never persisted, so in practice only matters for the instant
-    // this deploys) rather than throwing on a wallet whose own snapshot predates it.
     for (const r of snap.realizedByToken || []) {
       const running = realizedByTokenMap.get(r.tokenAddress) || new Decimal(0);
       realizedByTokenMap.set(r.tokenAddress, running.plus(r.realizedPnlUsd));
+    }
+    for (const r of snap.realizedByTokenEtn || []) {
+      const running = realizedByTokenEtnMap.get(r.tokenAddress) || new Decimal(0);
+      realizedByTokenEtnMap.set(r.tokenAddress, running.plus(r.realizedPnlEtn));
     }
 
     for (const h of snap.holdings) {
@@ -461,10 +504,13 @@ export function combineLivePnlSnapshots(snapshots) {
       marketValueUsd: h.marketValueUsd?.toString() ?? null,
     })),
     realizedByToken: [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
+    realizedByTokenEtn: [...realizedByTokenEtnMap.entries()].map(([tokenAddress, etn]) => ({ tokenAddress, realizedPnlEtn: etn.toString() })),
     currentValueUsd: currentValueUsd.toString(),
     unrealizedPnlUsd: unrealizedPnlUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
+    realizedPnlEtn: realizedPnlEtn.toString(),
     gasUsd: gasUsd.toString(),
+    gasEtn: gasEtn.toString(),
     pricingIncomplete,
   };
 }

@@ -6,8 +6,9 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import { useNftPnlSnapshot } from "../../hooks/useNftPnlSnapshot.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
-import { formatUsdPrice } from "../../utils/format.js";
+import { formatUsdPrice, formatEtnAmount } from "../../utils/format.js";
 import TokenLogo from "../../components/TokenLogo.jsx";
+import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -19,6 +20,12 @@ function pnlColor(v) {
 }
 function fmtSigned(v) {
   return `${v >= 0 ? "+" : ""}${formatUsdPrice(v)}`;
+}
+// Same signed-prefix convention as fmtSigned, for the ETN-denominated Realized P&L figure — see
+// CoreTierPnl.jsx's own identical helper for why formatEtnAmount (a plain signed total) rather
+// than formatEtnPrice (a per-unit price formatter) is the right one here.
+function fmtSignedEtn(v) {
+  return `${v >= 0 ? "+" : ""}${formatEtnAmount(v)} ETN`;
 }
 function fmtDate(v) {
   if (!v) return "—";
@@ -91,6 +98,11 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           costBasisUsd: combined.totalCostBasisUsd,
           proceedsUsd: combined.proceedsUsd,
           realizedPnlUsd: combined.realizedPnlUsd,
+          // ETN-denominated realized P&L, ADDITIONAL to realizedPnlUsd — see
+          // pnlEventBuilder.js's convertRealizedEventsToEtn for why ("is my NFT trading actually
+          // growing the ETN I hold"). Defaults to "0" for a snapshot computed before this field
+          // existed, same convention this file's own realizedPnlUsd fields already assume.
+          realizedPnlEtn: combined.realizedPnlEtn ?? "0",
           heldCount: combined.heldTokenCount,
           soldCount: combined.soldTokenCount,
         }
@@ -98,6 +110,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           costBasisUsd: (Number(scopeCollection.heldCostBasisUsd) + Number(scopeCollection.soldCostBasisUsd)).toString(),
           proceedsUsd: scopeCollection.proceedsUsd,
           realizedPnlUsd: scopeCollection.realizedPnlUsd,
+          realizedPnlEtn: scopeCollection.realizedPnlEtn ?? "0",
           heldCount: scopeCollection.heldTokenCount,
           soldCount: scopeCollection.soldTokenCount,
         };
@@ -215,9 +228,15 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                           <div style={{ fontSize: 20, fontWeight: 900, color: "#fff" }}>{formatUsdPrice(Number(figures.proceedsUsd))}</div>
                         </div>
                         <div>
-                          <div style={sectionHeaderStyle}>Realized P&amp;L</div>
+                          <div style={sectionHeaderStyle}>
+                            Realized P&amp;L
+                            <InfoTooltip text="USD: your realized gain/loss in dollar terms. ETN: the same NFT trades measured in ETN instead — did they actually grow how much ETN you hold, independent of what ETN's own price did in between?" />
+                          </div>
                           <div style={{ fontSize: 20, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                             {fmtSigned(Number(figures.realizedPnlUsd))}
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: pnlColor(Number(figures.realizedPnlEtn)) }}>
+                            {fmtSignedEtn(Number(figures.realizedPnlEtn))}
                           </div>
                         </div>
                         <div>
