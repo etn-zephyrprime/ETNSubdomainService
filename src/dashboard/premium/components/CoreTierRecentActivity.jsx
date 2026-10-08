@@ -89,8 +89,12 @@ function describeItem(item, resolveTokenName, resolveWalletName) {
   if (item.kind === "defi") {
     return item.label;
   }
-  // Plain transfer.
-  const counterparty = resolveWalletName(item.counterpartyAddress);
+  // Plain transfer. `counterpartyLabel` (recentActivityService.js's own best-effort contract
+  // label — a subscription payment, a liquidity-pool deposit the stricter FIFO decomposition
+  // declined to unpack) wins over the plain wallet-name resolution when present — confirmed live:
+  // without it, a genuine Core Tier subscription payment or a pool deposit read as a bare "Sent X
+  // to 0xabc..." even though the counterparty is a real, identifiable contract.
+  const counterparty = item.counterpartyLabel || resolveWalletName(item.counterpartyAddress);
   if (item.category === "nft") {
     const collection = resolveTokenName(item.tokenAddress);
     const verb = item.direction === "in" ? "Received" : "Sent";
