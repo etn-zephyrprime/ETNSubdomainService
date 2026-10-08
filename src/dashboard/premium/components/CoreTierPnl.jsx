@@ -7,7 +7,7 @@ import SparklineChart from "../../components/SparklineChart.jsx";
 import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
-import { formatUsdPrice, formatChartDate } from "../../utils/format.js";
+import { formatUsdPrice, formatChartDate, formatEtnAmount } from "../../utils/format.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import TokenLogo from "../../components/TokenLogo.jsx";
@@ -38,6 +38,13 @@ function pnlColor(v) {
 }
 function fmtSigned(v) {
   return `${v >= 0 ? "+" : ""}${formatUsdPrice(v)}`;
+}
+// Same signed-prefix convention as fmtSigned above, for the ETN-denominated Realized P&L figure
+// (see pickTokenFigures' own comment) — formatEtnAmount rather than formatEtnPrice, since this is
+// a signed P&L TOTAL, not a per-unit price (formatEtnPrice's exponential-notation-below-1e-6
+// branch exists for a per-token price, not appropriate here).
+function fmtSignedEtn(v) {
+  return `${v >= 0 ? "+" : ""}${formatEtnAmount(v)} ETN`;
 }
 
 // Sub-toggle shown only in "PnL" chart mode (not "Value") — "Combined" (realized + unrealized
@@ -126,13 +133,24 @@ export function PnlSubModeToggle({ pnlSubMode, setPnlSubMode }) {
 function pickTokenFigures(snap, tokenFilter) {
   if (!snap) return null;
   if (tokenFilter === "all") {
-    return { currentValueUsd: snap.currentValueUsd, unrealizedPnlUsd: snap.unrealizedPnlUsd, realizedPnlUsd: snap.realizedPnlUsd };
+    return {
+      currentValueUsd: snap.currentValueUsd,
+      unrealizedPnlUsd: snap.unrealizedPnlUsd,
+      realizedPnlUsd: snap.realizedPnlUsd,
+      // ETN-denominated realized P&L — ADDITIONAL to realizedPnlUsd, never instead of it (see
+      // pnlSnapshotService.js's own header comment on convertRealizedEventsToEtn for why: "is my
+      // trading actually growing the ETN I hold", which USD alone can't answer). Defaults to "0"
+      // for a snapshot computed before this field existed, same convention realizedPnlUsd's own
+      // per-token default already uses below.
+      realizedPnlEtn: snap.realizedPnlEtn ?? "0",
+    };
   }
   const holding = snap.holdings?.find((h) => h.tokenAddress === tokenFilter);
   const currentValueUsd = holding?.marketValueUsd ?? null;
   const unrealizedPnlUsd = holding?.marketValueUsd != null ? String(Number(holding.marketValueUsd) - Number(holding.costBasisUsd)) : null;
   const realizedPnlUsd = snap.realizedByToken?.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlUsd ?? "0";
-  return { currentValueUsd, unrealizedPnlUsd, realizedPnlUsd };
+  const realizedPnlEtn = snap.realizedByTokenEtn?.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlEtn ?? "0";
+  return { currentValueUsd, unrealizedPnlUsd, realizedPnlUsd, realizedPnlEtn };
 }
 
 // How often to re-poll /pnl-snapshot while a background ingest is in progress (see loadSnapshot's
@@ -594,9 +612,15 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                     </div>
                   </div>
                   <div>
-                    <div style={sectionHeaderStyle}>Realized P&amp;L (running total)</div>
+                    <div style={sectionHeaderStyle}>
+                      Realized P&amp;L (running total)
+                      <InfoTooltip text="USD: your realized gain/loss in dollar terms. ETN: the same trades measured in ETN instead — did they actually grow how much ETN you hold, independent of what ETN's own price did in between? A trade can show a USD gain and an ETN loss (or vice versa) if ETN moved a lot between when you bought and sold." />
+                    </div>
                     <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                       {fmtSigned(Number(figures.realizedPnlUsd))}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: pnlColor(Number(figures.realizedPnlEtn)), marginTop: 2 }}>
+                      {fmtSignedEtn(Number(figures.realizedPnlEtn))}
                     </div>
                     <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
                       {tokenFilter === "all" ? "Since tracking began, net of gas" : "Since tracking began — gas isn't attributed per token"}

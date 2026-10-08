@@ -627,8 +627,13 @@ export function groupNftHoldingsByCollection(perToken, excludeCollectionAddresse
  * more branching than just having two. Both must group NFT tokenIds the same way and stay in sync —
  * a dashboard token filter built from one and applied to the other (see pnlSnapshotService.js's own
  * computeLivePnlSnapshot) needs matching keys on both sides, or a selected collection's realized P&L
- * silently reads as zero instead of what it actually is. */
-export function groupNftRealizedByCollection(realizedByToken, excludeCollectionAddresses = new Set()) {
+ * silently reads as zero instead of what it actually is.
+ *
+ * `field` (default "realizedPnlUsd", matching every pre-existing caller) lets the SAME grouping
+ * logic also serve the ETN-denominated figure (convertRealizedEventsToEtn below) via field
+ * "realizedPnlEtn" — added for "is my trading increasing the ETN I hold, not just the USD value"
+ * (a real member request), without duplicating this function for one field-name difference. */
+export function groupNftRealizedByCollection(realizedByToken, excludeCollectionAddresses = new Set(), field = "realizedPnlUsd") {
   const grouped = new Map(); // collection address (lowercase) -> Decimal
   const rows = [];
   for (const row of realizedByToken) {
@@ -640,10 +645,50 @@ export function groupNftRealizedByCollection(realizedByToken, excludeCollectionA
     }
     const collectionAddress = key.slice(0, colonIndex);
     const running = grouped.get(collectionAddress) || new Decimal(0);
-    grouped.set(collectionAddress, running.plus(new Decimal(row.realizedPnlUsd)));
+    grouped.set(collectionAddress, running.plus(new Decimal(row[field])));
   }
-  for (const [tokenAddress, realizedPnlUsd] of grouped) {
-    rows.push({ tokenAddress, realizedPnlUsd: realizedPnlUsd.toString() });
+  for (const [tokenAddress, value] of grouped) {
+    rows.push({ tokenAddress, [field]: value.toString() });
   }
   return rows;
+}
+
+/** Converts each realized event's USD cost basis/proceeds into their ETN-equivalent AT THE
+ * RESPECTIVE MOMENT each leg actually happened — cost basis divided by ETN's own historical price
+ * at ACQUISITION time, proceeds divided by ETN's price at DISPOSAL time — not today's rate applied
+ * retroactively. Same convention avgCostBasisService.js already established for average cost
+ * basis, extended to realized P&L: "did this trade actually grow how much ETN purchasing power I
+ * have, not just its USD value" (a real member request — USD P&L alone doesn't answer that, since
+ * ETN's own price moving between acquisition and disposal changes the USD figure independently of
+ * whether the trade itself was ETN-accretive).
+ *
+ * Returns a NEW array, same length/order as `realizedEvents` (events whose price lookup failed are
+ * simply omitted, never a fabricated/partial number — same "omit rather than fake" convention as
+ * the rest of this app's pricing code), each entry `{ tokenAddress, realizedPnlEtn: Decimal }` —
+ * callers reduce/group this exactly like they already do for each event's own realizedPnlUsd. An
+ * event whose cost basis or proceeds is already exactly 0 (a shortfall lot with no real
+ * originating lot, or a genuine $0 disposal) skips the price lookup for that side entirely — 0 USD
+ * is 0 ETN regardless of ETN's own price that day, and this also means the shortfall case's null
+ * acquisitionTimestamp is never actually dereferenced. */
+export async function convertRealizedEventsToEtn(realizedEvents) {
+  const out = [];
+  for (const e of realizedEvents) {
+    try {
+      const costBasisUsd = new Decimal(e.costBasisUsd);
+      const proceedsUsd = new Decimal(e.proceedsUsd);
+      const costBasisEtn = costBasisUsd.isZero()
+        ? new Decimal(0)
+        : costBasisUsd.dividedBy(await getHistoricalPriceUsd(NATIVE_SENTINEL, e.acquisitionTimestamp));
+      const proceedsEtn = proceedsUsd.isZero()
+        ? new Decimal(0)
+        : proceedsUsd.dividedBy(await getHistoricalPriceUsd(NATIVE_SENTINEL, e.timestamp));
+      out.push({ tokenAddress: e.tokenAddress, realizedPnlEtn: proceedsEtn.minus(costBasisEtn) });
+    } catch (err) {
+      console.warn(
+        `⚠️  Realized P&L (ETN): couldn't price a leg for ${e.tokenAddress} disposed ${e.timestamp?.toISOString?.() || e.timestamp}:`,
+        err.message
+      );
+    }
+  }
+  return out;
 }

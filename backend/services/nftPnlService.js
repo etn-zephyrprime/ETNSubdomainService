@@ -25,7 +25,7 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
-import { buildNftEvents } from "./pnlEventBuilder.js";
+import { buildNftEvents, convertRealizedEventsToEtn } from "./pnlEventBuilder.js";
 
 function parseNftKey(compositeKey) {
   const idx = compositeKey.lastIndexOf(":");
@@ -38,8 +38,17 @@ function d(v) {
 
 /** Turns the FIFO ledger's raw lots/realizedEvents (both keyed by NFT composite key, each possibly
  * appearing more than once per key — a specific NFT can be bought, sold, and rebought) into one
- * row per composite key, held and sold quantities/figures combined. */
-function buildByToken(lots, realizedEvents) {
+ * row per composite key, held and sold quantities/figures combined.
+ *
+ * `realizedEventsEtn` ([{ tokenAddress, realizedPnlEtn }], from
+ * pnlEventBuilder.js's convertRealizedEventsToEtn) is grouped in a SEPARATE pass, not zipped by
+ * index with `realizedEvents` — that function can omit an event entirely when its price lookup
+ * failed (never a fabricated number), so the two arrays aren't guaranteed the same length/order. A
+ * token whose ETN conversion is missing/incomplete shows "0" for realizedPnlEtn rather than
+ * throwing — same best-effort posture avgCostBasisService.js's own per-lot ETN pricing already
+ * has, acceptable given ETN's own historical price (KuCoin, back to 2019) essentially never fails
+ * to resolve in practice, unlike an arbitrary token's price. */
+function buildByToken(lots, realizedEvents, realizedEventsEtn) {
   const heldByToken = new Map(); // compositeKey -> { quantity, costBasisUsd, firstAcquiredAt }
   for (const lot of lots) {
     const qty = d(lot.quantityRemaining);
@@ -75,12 +84,22 @@ function buildByToken(lots, realizedEvents) {
     }
   }
 
+  // ETN-denominated realized P&L — ADDITIONAL to realizedPnlUsd above, never a replacement (same
+  // "is my trading actually growing the ETN I hold" request as the fungible-token panel). See this
+  // function's own header comment for why this is a separate pass, not zipped by index.
+  const soldByTokenEtn = new Map(); // compositeKey -> Decimal
+  for (const e of realizedEventsEtn) {
+    const running = soldByTokenEtn.get(e.tokenAddress) || new Decimal(0);
+    soldByTokenEtn.set(e.tokenAddress, running.plus(e.realizedPnlEtn));
+  }
+
   const allKeys = new Set([...heldByToken.keys(), ...soldByToken.keys()]);
   const byToken = [];
   for (const key of allKeys) {
     const { collectionAddress, tokenId } = parseNftKey(key);
     const held = heldByToken.get(key);
     const sold = soldByToken.get(key);
+    const soldEtn = soldByTokenEtn.get(key);
     byToken.push({
       collectionAddress,
       tokenId,
@@ -91,6 +110,7 @@ function buildByToken(lots, realizedEvents) {
       soldCostBasisUsd: sold ? sold.costBasisUsd.toString() : "0",
       proceedsUsd: sold ? sold.proceedsUsd.toString() : "0",
       realizedPnlUsd: sold ? sold.realizedPnlUsd.toString() : "0",
+      realizedPnlEtn: soldEtn ? soldEtn.toString() : "0",
       lastSoldAt: sold?.lastSoldAt ?? null,
     });
   }
@@ -116,6 +136,7 @@ export function buildRollups(byToken, unmatchedCount) {
       soldCostBasisUsd: new Decimal(0),
       proceedsUsd: new Decimal(0),
       realizedPnlUsd: new Decimal(0),
+      realizedPnlEtn: new Decimal(0),
     };
     if (Number(t.quantityHeld) > 0) {
       c.heldTokenCount++;
@@ -126,6 +147,7 @@ export function buildRollups(byToken, unmatchedCount) {
       c.soldCostBasisUsd = c.soldCostBasisUsd.plus(t.soldCostBasisUsd);
       c.proceedsUsd = c.proceedsUsd.plus(t.proceedsUsd);
       c.realizedPnlUsd = c.realizedPnlUsd.plus(t.realizedPnlUsd);
+      c.realizedPnlEtn = c.realizedPnlEtn.plus(t.realizedPnlEtn || 0);
     }
     byCollectionMap.set(t.collectionAddress, c);
   }
@@ -137,12 +159,16 @@ export function buildRollups(byToken, unmatchedCount) {
     soldCostBasisUsd: c.soldCostBasisUsd.toString(),
     proceedsUsd: c.proceedsUsd.toString(),
     realizedPnlUsd: c.realizedPnlUsd.toString(),
+    realizedPnlEtn: c.realizedPnlEtn.toString(),
   }));
 
   const heldCostBasisUsd = byCollection.reduce((s, c) => s.plus(c.heldCostBasisUsd), new Decimal(0));
   const soldCostBasisUsd = byCollection.reduce((s, c) => s.plus(c.soldCostBasisUsd), new Decimal(0));
   const proceedsUsd = byCollection.reduce((s, c) => s.plus(c.proceedsUsd), new Decimal(0));
   const realizedPnlUsd = byCollection.reduce((s, c) => s.plus(c.realizedPnlUsd), new Decimal(0));
+  // ETN-denominated realized P&L — see buildByToken's own header comment for why this exists
+  // alongside, never instead of, every USD figure above.
+  const realizedPnlEtn = byCollection.reduce((s, c) => s.plus(c.realizedPnlEtn), new Decimal(0));
 
   return {
     asOf: new Date(),
@@ -152,6 +178,7 @@ export function buildRollups(byToken, unmatchedCount) {
     soldCostBasisUsd: soldCostBasisUsd.toString(),
     proceedsUsd: proceedsUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
+    realizedPnlEtn: realizedPnlEtn.toString(),
     heldTokenCount: byCollection.reduce((s, c) => s + c.heldTokenCount, 0),
     soldTokenCount: byCollection.reduce((s, c) => s + c.soldTokenCount, 0),
     unmatchedCount, // see buildNftEvents' own comment — an NFT leg with no matched same-tx payment, recorded at $0
@@ -212,7 +239,8 @@ async function buildLiveNftPnlSnapshot(trackedWallet) {
   events.sort((a, b) => a.timestamp - b.timestamp); // buildNftEvents doesn't sort; FIFO needs chronological order
 
   const { closing } = replayFifo(events, now, now);
-  const byToken = buildByToken(closing.lots, closing.realizedEvents);
+  const realizedEventsEtn = await convertRealizedEventsToEtn(closing.realizedEvents);
+  const byToken = buildByToken(closing.lots, closing.realizedEvents, realizedEventsEtn);
   return buildRollups(byToken, unmatchedCount);
 }
 
@@ -241,6 +269,7 @@ export function combineLiveNftPnlSnapshots(snapshots) {
           soldCostBasisUsd: d(t.soldCostBasisUsd),
           proceedsUsd: d(t.proceedsUsd),
           realizedPnlUsd: d(t.realizedPnlUsd),
+          realizedPnlEtn: d(t.realizedPnlEtn),
           lastSoldAt: t.lastSoldAt,
         });
       } else {
@@ -250,6 +279,7 @@ export function combineLiveNftPnlSnapshots(snapshots) {
         existing.soldCostBasisUsd = existing.soldCostBasisUsd.plus(t.soldCostBasisUsd);
         existing.proceedsUsd = existing.proceedsUsd.plus(t.proceedsUsd);
         existing.realizedPnlUsd = existing.realizedPnlUsd.plus(t.realizedPnlUsd);
+        existing.realizedPnlEtn = existing.realizedPnlEtn.plus(t.realizedPnlEtn || 0);
         if (t.firstAcquiredAt && (!existing.firstAcquiredAt || t.firstAcquiredAt < existing.firstAcquiredAt)) {
           existing.firstAcquiredAt = t.firstAcquiredAt;
         }
@@ -270,6 +300,7 @@ export function combineLiveNftPnlSnapshots(snapshots) {
     soldCostBasisUsd: t.soldCostBasisUsd.toString(),
     proceedsUsd: t.proceedsUsd.toString(),
     realizedPnlUsd: t.realizedPnlUsd.toString(),
+    realizedPnlEtn: t.realizedPnlEtn.toString(),
     lastSoldAt: t.lastSoldAt,
   }));
 
