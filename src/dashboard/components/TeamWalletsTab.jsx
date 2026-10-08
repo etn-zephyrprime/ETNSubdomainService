@@ -78,6 +78,15 @@ function movementKind(movement) {
   return { label: "INTERNAL", sign: "", color: blue, bg: "rgba(62,166,255,0.05)" };
 }
 
+// Two plain lines instead of one row trying to fit a direction badge, two addresses, up to two
+// separate "ETN Team" pills, an arrow, an amount and a time all in one flex-wrap — which, with
+// both an "ETN Team" pill AND a colored badge pill AND a tinted+left-bordered row background all
+// competing at once, is what actually made this list look busy (confirmed: the user's own
+// complaint was about this exact section). Direction is conveyed ONCE now (the plain colored
+// label, top-left) instead of three times over (border color + background tint + badge pill) —
+// the tinted background and the bordered badge are both dropped as redundant with it. Top line is
+// pure metadata (direction, time); bottom line is the actual content (who, and how much) — nothing
+// has to wrap into anything else since each line only ever holds two things, space-between.
 function MovementRow({ movement }) {
   const kind = movementKind(movement);
   return (
@@ -86,19 +95,23 @@ function MovementRow({ movement }) {
       href={`${EXPLORER_BASE_URL}/tx/${movement.hash}`}
       target="_blank"
       rel="noreferrer"
-      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", margin: "0 -10px", borderBottom: `1px solid ${border}`, borderLeft: `3px solid ${kind.color}`, background: kind.bg, textDecoration: "none", gap: 10 }}
+      style={{ display: "block", padding: "10px 0", borderBottom: `1px solid ${border}`, textDecoration: "none" }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
-        <span style={{ fontFamily: monoFont, fontSize: 9, fontWeight: 800, letterSpacing: 0.6, color: kind.color, border: `1px solid ${kind.color}`, borderRadius: 4, padding: "1px 5px" }}>{kind.label}</span>
-        <span style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(movement.from)}</span>
-        {movement.fromIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
-        <span style={{ fontSize: 11, color: kind.color }}>→</span>
-        <span style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(movement.to)}</span>
-        {movement.toIsTeam && <TeamWalletTag style={{ fontSize: 8 }} />}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <span style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, color: kind.color }}>{kind.label}</span>
+        <span style={{ fontSize: 10, color: muted }}>{timeAgo(movement.timestamp)}</span>
       </div>
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 12, color: kind.color, fontWeight: 700 }}><TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{kind.sign}{formatEtnBalance(movement.value)} ETN</div>
-        <div style={{ fontSize: 10, color: muted }}>{timeAgo(movement.timestamp)}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
+          <span style={{ fontSize: 12, color: mutedLight, fontFamily: monoFont, whiteSpace: "nowrap" }}>{shortHash(movement.from)}</span>
+          {movement.fromIsTeam && <TeamWalletTag style={{ fontSize: 8, flexShrink: 0 }} />}
+          <span style={{ fontSize: 12, color: kind.color, flexShrink: 0 }}>→</span>
+          <span style={{ fontSize: 12, color: mutedLight, fontFamily: monoFont, whiteSpace: "nowrap" }}>{shortHash(movement.to)}</span>
+          {movement.toIsTeam && <TeamWalletTag style={{ fontSize: 8, flexShrink: 0 }} />}
+        </div>
+        <div style={{ fontSize: 12, color: kind.color, fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap" }}>
+          <TokenLogo address="NATIVE" label="ETN" size={14} spacing={5} />{kind.sign}{formatEtnBalance(movement.value)} ETN
+        </div>
       </div>
     </a>
   );

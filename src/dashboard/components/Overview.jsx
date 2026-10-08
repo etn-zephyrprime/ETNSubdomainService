@@ -64,7 +64,8 @@ function IndexingBadge({ status }) {
 }
 
 function TxRow({ tx, rank, cexMap }) {
-  const label = tx.from?.ens_domain_name || shortHash(tx.from?.hash);
+  const fromLabel = tx.from?.ens_domain_name || shortHash(tx.from?.hash);
+  const toLabel = tx.to?.ens_domain_name || (tx.to?.hash ? shortHash(tx.to.hash) : "contract creation");
   return (
     <a
       href={`${EXPLORER_BASE_URL}/tx/${tx.hash}`}
@@ -82,10 +83,11 @@ function TxRow({ tx, rank, cexMap }) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: mutedLight, minWidth: 0 }}>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-              {tx.method || "transfer"} · from {label}
+              {tx.method || "transfer"} · from {fromLabel} → to {toLabel}
             </span>
             <span style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               <AddressTags address={tx.from?.hash} cexMap={cexMap} />
+              {tx.to?.hash && <AddressTags address={tx.to.hash} cexMap={cexMap} />}
             </span>
           </div>
         </div>
@@ -346,13 +348,17 @@ export default function Overview({ onSelectAddress }) {
 
   // hourlyActivityCache.js publishes topTxByVolume already sorted and capped — just adapted here
   // into the same shape TxRow already renders for Recent Transactions (Blockscout's `from: {
-  // hash, ens_domain_name }` object, an ISO `timestamp`, `value`), since this is RPC-sourced and
-  // genuinely doesn't have Blockscout's richer shape (no ENS resolution, no decoded method name —
-  // "transfer" is accurate regardless, every entry here is a real value transfer by definition).
+  // hash, ens_domain_name }` / `to: { hash, ens_domain_name }` objects, an ISO `timestamp`,
+  // `value`), since this is RPC-sourced and genuinely doesn't have Blockscout's richer shape (no
+  // ENS resolution, no decoded method name — "transfer" is accurate regardless, every entry here
+  // is a real value transfer by definition). `to` included (not just `from`) so TxRow can show
+  // both sides — useHourlyActivity.js's own documented cache shape already carries it
+  // (`{ hash, from, to, valueWei, timestampMs }`), this was just never read out until now.
   const visibleTopTxByVolume = useMemo(() => {
     return (topTxByVolume || []).slice(0, topTxShowCount).map((tx) => ({
       hash: tx.hash,
       from: { hash: tx.from, ens_domain_name: null },
+      to: tx.to ? { hash: tx.to, ens_domain_name: null } : null,
       value: tx.valueWei,
       timestamp: new Date(tx.timestampMs).toISOString(),
     }));
