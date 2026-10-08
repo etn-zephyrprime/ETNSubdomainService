@@ -170,6 +170,12 @@ const BURN_TOPIC = LP_IFACE.getEvent("Burn").topicHash;
 // duplicate this address.
 export const POSITION_MANAGER_ADDRESS = "0x3a7f64c57433555b23dac4409a0ac7e84275398d";
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
+// Same address pnlPricing.js's own WETN_ADDRESS points at — duplicated as a literal here rather
+// than imported, same "a short constant isn't worth a cross-file export" call this file already
+// makes elsewhere (see e.g. knownContractLabels.js's own identical duplication of
+// POSITION_MANAGER_ADDRESS). Needed below to recognize the native-ETN-auto-wrap pattern a V3 mint
+// can use for one of its two sides.
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const V3_IFACE = new ethers.Interface([
   "event IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
   "event DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
@@ -178,6 +184,14 @@ const V3_IFACE = new ethers.Interface([
 const V3_INCREASE_TOPIC = V3_IFACE.getEvent("IncreaseLiquidity").topicHash;
 const V3_DECREASE_TOPIC = V3_IFACE.getEvent("DecreaseLiquidity").topicHash;
 const V3_COLLECT_TOPIC = V3_IFACE.getEvent("Collect").topicHash;
+// WETN's own standard WETH-style Deposit event — confirmed live (see findV3FundingLeg's own
+// comment) this is what fires, on the WETN contract itself, when a V3 mint is funded with native
+// ETN rather than pre-wrapped WETN: the position manager calls WETN.deposit() with the wallet's
+// msg.value mid-mint, landing the wrapped WETN in ITS OWN balance before forwarding it to the pool
+// — never a wallet->pool WETN transfer at all, which is exactly what the plain transfer-matching
+// below can't see.
+const WETN_DEPOSIT_IFACE = new ethers.Interface(["event Deposit(address indexed dst, uint256 wad)"]);
+const WETN_DEPOSIT_TOPIC = WETN_DEPOSIT_IFACE.getEvent("Deposit").topicHash;
 const V3_POSITIONS_VIEW_IFACE = new ethers.Interface([
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
 ]);
@@ -733,6 +747,48 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
  * increaseLiquidity()+collect() to also grab accrued fees while topping up — so every Increase/
  * Decrease/Collect log found is processed, not just the first, with same-tx Decrease+Collect pairs
  * correlated by tokenId (decreases are processed first so every collect can see them). */
+/** Confirms the wallet actually funded `amountRaw` of `tokenAddr` into a V3 mint — either a direct
+ * wallet->pool ERC20 transfer (the original, common case), or, for the native-ETN-auto-wrapped side
+ * specifically (`tokenAddr === WETN_ADDRESS`), a same-tx WETN `Deposit(dst=POSITION_MANAGER_ADDRESS,
+ * wad=amountRaw)` event. Confirmed live against a real transaction (a Core Tier member's own V3
+ * mint, reported as missing entirely from their PnL): minting with native ETN as one side has the
+ * position manager itself call WETN.deposit() using the wallet's msg.value, then forward the
+ * already-wrapped WETN to the pool — there is NO wallet->pool WETN transfer to find in that case,
+ * which is exactly why that whole mint was previously declined and dropped (see this function's
+ * own caller's "decline rather than guess" comment, which explicitly asked for a real confirmed
+ * transaction before extending the matching — this is that transaction). A same-tx Deposit for the
+ * exact needed amount is just as strong a confirmation as a direct transfer would be: the only way
+ * WETN lands in the position manager's own balance mid-mint is the caller having sent that much
+ * native ETN as msg.value — there's no other path that log could have come from.
+ *
+ * Returns a normalized `{ decimals, amountRaw, logIndex }` (decimals/amountRaw for pricing,
+ * logIndex for this leg's own synthetic-row sentinel) or null if neither check finds anything —
+ * the caller still declines the whole mint in that case, same as before. */
+function findV3FundingLeg(tokenAddr, amountRaw, tokenTransfers, walletLc, poolLc, allLogs) {
+  const transferLeg = tokenTransfers.find((t) => {
+    if (String(t.token?.address).toLowerCase() !== tokenAddr) return false;
+    return String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc;
+  });
+  if (transferLeg) {
+    return { decimals: Number(transferLeg.token.decimals), amountRaw: BigInt(transferLeg.total.value), logIndex: Number(transferLeg.log_index || 0) };
+  }
+
+  if (tokenAddr !== WETN_ADDRESS) return null;
+  const depositLog = allLogs.find((l) => {
+    if (String(l.address?.hash || l.address).toLowerCase() !== WETN_ADDRESS) return false;
+    if ((l.topics || [])[0] !== WETN_DEPOSIT_TOPIC) return false;
+    try {
+      const realTopics = (l.topics || []).filter((t) => t != null);
+      const parsed = WETN_DEPOSIT_IFACE.parseLog({ topics: realTopics, data: l.data });
+      return String(parsed.args.dst).toLowerCase() === POSITION_MANAGER_ADDRESS && BigInt(parsed.args.wad) === amountRaw;
+    } catch {
+      return false;
+    }
+  });
+  if (!depositLog) return null;
+  return { decimals: 18, amountRaw, logIndex: Number(depositLog.index ?? 0) };
+}
+
 async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, tokenTransfers, v3TxHashes, rows, priorityAssets) {
   let logsPage;
   try {
@@ -787,10 +843,7 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
     let declined = false;
     for (const [tokenAddr, amountRaw] of sides) {
       if (amountRaw === 0n) continue;
-      const leg = tokenTransfers.find((t) => {
-        if (String(t.token?.address).toLowerCase() !== tokenAddr) return false;
-        return String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc;
-      });
+      const leg = findV3FundingLeg(tokenAddr, amountRaw, tokenTransfers, walletLc, poolLc, items);
       if (!leg) {
         declined = true;
         break;
@@ -803,7 +856,7 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
     let anyUnpriced = false;
     const underlyingRows = [];
     for (const { tokenAddr, leg } of legs) {
-      const legAmount = weiToDecimal(BigInt(leg.total.value), Number(leg.token.decimals));
+      const legAmount = weiToDecimal(leg.amountRaw, leg.decimals);
       const priceUsd = await priceOrNull(tokenAddr, timestamp, priorityAssets);
       const usdValue = priceUsd != null ? legAmount * priceUsd : null;
       if (usdValue == null) anyUnpriced = true;
@@ -811,7 +864,7 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
       underlyingRows.push({
         trackedWallet,
         txHash: tx.hash,
-        logIndex: -(4000 + Number(leg.log_index || 0)), // distinct sentinel range from every other synthetic-row source in this file
+        logIndex: -(4000 + leg.logIndex), // distinct sentinel range from every other synthetic-row source in this file
         direction: "out",
         counterpartyAddress: poolLc,
         isSelfTransfer: false,
@@ -819,7 +872,7 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
         assetType: "erc20",
         tokenAddress: tokenAddr,
         tokenId: null,
-        amountRaw: BigInt(leg.total.value),
+        amountRaw: leg.amountRaw,
         amountDecimal: legAmount,
         priceUsdAtTime: priceUsd,
         usdValue,
