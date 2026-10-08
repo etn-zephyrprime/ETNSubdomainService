@@ -43,6 +43,7 @@
 import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
+import { labelKnownAddresses } from "../utils/knownContractLabels.js";
 
 const LP_LOG_INDEX_CEILING = -2000;
 
@@ -185,5 +186,26 @@ export async function getRecentActivity(trackedWallet, asOf = new Date(), limit 
   }
 
   items.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  return items.slice(0, limit);
+  const trimmed = items.slice(0, limit);
+
+  // Best-effort contract label for every plain-transfer item's counterparty (a subscription
+  // payment, a liquidity-pool deposit pnlIngestion.js's own stricter FIFO decomposition declined
+  // to unpack because one leg wasn't a direct wallet<->pool transfer — see
+  // detectAndRecordV3PositionEvent's own comment on why it declines rather than guesses there —
+  // among others) — confirmed live: without this, both of those showed as a bare "Sent X to
+  // 0xabc..." even though the counterparty is a real, identifiable contract. Batched over every
+  // DISTINCT counterparty in one pass (not resolved per-item) and self-transfers excluded (a
+  // member's own OTHER tracked wallet is never a "contract" worth labeling this way). Attaches
+  // `counterpartyLabel` only when one was actually found — absent means "ordinary wallet or
+  // unverified contract", exactly like every other "omit rather than fake" field in this app.
+  const counterpartyAddresses = trimmed.filter((i) => i.kind === "transfer" && !i.isSelfTransfer).map((i) => i.counterpartyAddress);
+  const labels = await labelKnownAddresses(counterpartyAddresses);
+  for (const item of trimmed) {
+    if (item.kind === "transfer" && !item.isSelfTransfer) {
+      const label = labels.get(item.counterpartyAddress?.toLowerCase());
+      if (label) item.counterpartyLabel = label;
+    }
+  }
+
+  return trimmed;
 }
