@@ -15,7 +15,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatUsdPricePrecise, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
+import { green, greenGlow, blue, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
@@ -91,6 +91,29 @@ const smallInputStyle = {
   boxSizing: "border-box",
   outline: "none",
   fontFamily: monoFont,
+};
+
+// The Total Portfolio Balance headline — a plain bold white "$1,234.56" read like any ordinary
+// fiat balance, which undersold the one figure this whole panel builds up to. Monospaced (ledger/
+// terminal digits, not a prose font) with a green->cyan gradient fill and a matching glow instead
+// of a flat white fill, closer to how on-chain/explorer dashboards usually treat a headline
+// balance. `WebkitBackgroundClip`/`WebkitTextFillColor` do the gradient-text clipping (no
+// standard non-prefixed equivalent has real cross-browser support yet); `filter: drop-shadow` for
+// the glow instead of `textShadow`, since a textShadow renders behind the glyph's own fill and
+// does nothing useful once that fill is transparent (which it is here, right after
+// WebkitTextFillColor) — drop-shadow filters the rendered (already-clipped) pixels instead, so it
+// actually shows.
+const headlineValueStyle = {
+  fontFamily: monoFont,
+  fontSize: 26,
+  fontWeight: 800,
+  letterSpacing: 0.5,
+  background: `linear-gradient(90deg, ${green}, ${blue})`,
+  WebkitBackgroundClip: "text",
+  WebkitTextFillColor: "transparent",
+  backgroundClip: "text",
+  filter: `drop-shadow(0 0 8px ${greenGlow})`,
+  display: "inline-block",
 };
 
 // A standing, always-visible warning (not just something shown mid-action) — the cooldown is a
@@ -1100,7 +1123,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         Total Portfolio Balance (USD)
                       </div>
                       {categoryFilterRow}
-                      <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: 0.75 }}>
+                      <div style={{ ...headlineValueStyle, opacity: 0.75 }}>
                         {cachedSummary?.hasUnpriced ? "≈ " : ""}{formatUsdPrice(cachedTotalUsd)}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: mutedLight, marginTop: 4 }}>
@@ -1129,7 +1152,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         Portfolio Composition chart further down — one control for both, since a
                         total that disagreed with its own chart would be confusing. */}
                     {categoryFilterRow}
-                    <div style={{ fontSize: 26, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}`, opacity: positionsBlocking ? (showCached ? 0.75 : 0.45) : 1, transition: "opacity 0.2s" }}>
+                    <div style={{ ...headlineValueStyle, opacity: positionsBlocking ? (showCached ? 0.75 : 0.45) : 1, transition: "opacity 0.2s" }}>
                       {showCached
                         ? `${cachedSummary?.hasUnpriced ? "≈ " : ""}${formatUsdPrice(cachedTotalUsd)}`
                         : totalPortfolioUsd != null ? `${totalPortfolioHasUnpriced || positionsBlocking ? "≈ " : ""}${formatUsdPrice(totalPortfolioUsd)}` : "—"}
