@@ -73,3 +73,17 @@ export async function getDistinctStakingContracts(trackedWallet) {
   );
   return (res?.rows || []).map((r) => r.contract_address);
 }
+
+/** Every tx hash recorded for this wallet within [fromBlock, toBlock] — used by
+ * doIngestDefiActivity (pnlIngestion.js) to assemble its returned defiTxHashes set from whatever's
+ * actually in the table, regardless of which scan attempt's checkpoint inserted which rows (some
+ * rows may have been persisted by an EARLIER, since-failed attempt via defi_scan_topic_progress's
+ * own resume logic, not this run) — a single source of truth instead of re-deriving it from
+ * in-memory logs that may no longer fully reflect what's been checkpointed so far. */
+export async function getDefiActivityTxHashes(trackedWallet, fromBlock, toBlock) {
+  const res = await query(
+    `SELECT DISTINCT tx_hash FROM defi_activity WHERE tracked_wallet = $1 AND block_number BETWEEN $2 AND $3`,
+    [trackedWallet.toLowerCase(), fromBlock, toBlock]
+  );
+  return new Set((res?.rows || []).map((r) => r.tx_hash.toLowerCase()));
+}

@@ -29,7 +29,8 @@ import { getIngestJob, startJob, updateJobProgress, completeJob, failJob } from 
 import { insertTransfers, getUnpricedTransfers, setTransferPrice } from "../db/ingestedTransfers.js";
 import { insertSwapTrades, getSwapTradesWithUnpricedLegs, setSwapLegPrices } from "../db/swapTrades.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
-import { insertDefiActivity } from "../db/defiActivity.js";
+import { insertDefiActivity, getDefiActivityTxHashes } from "../db/defiActivity.js";
+import { getDefiTopicProgress, saveDefiTopicProgress } from "../db/defiScanProgress.js";
 import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
@@ -1353,6 +1354,25 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
   return highestBlock;
 }
 
+// A non-range getLogs failure used to throw immediately with zero retry, which (via abortState)
+// kills every one of the other 5 topics' worker pools and discards the ENTIRE scan's results —
+// confirmed live as the real cause of a wallet's DeFi re-ingest failing after just ~6 minutes and
+// ~9/815 windows, repeatedly, never making further forward progress: all three RPC tiers
+// (rpcProvider.js) are confirmed to fail transiently under load but also confirmed to recover
+// within tens of seconds (same endpoint succeeding again shortly after a timeout/403 elsewhere in
+// these same logs) — so a short wait-and-retry here stands a real chance of riding out exactly
+// that kind of transient stress, instead of discarding hours of already-completed sibling-topic
+// work over one bad moment. Three attempts, increasing backoff — long enough to outlast a brief
+// burst, not so long it stalls a scan that's genuinely stuck for other reasons.
+const DEFI_WINDOW_RETRY_BACKOFFS_MS = [5000, 15000, 30000];
+
+// How often (at most) queryDefiLogsChunked flushes its contiguous-from-start completed windows to
+// defi_activity + defi_scan_topic_progress during a scan, rather than only once at the very end —
+// see that function's own onCheckpoint comment for why. A real DB write per window would be
+// excessive (815 windows/topic on a full cold-start scan); this throttles it to a cadence similar
+// to the existing progress-log/progress-callback intervals just below.
+const DEFI_CHECKPOINT_INTERVAL_MS = 30000;
+
 const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own queryLogsChunked floor
 // Bounded worker pool — see queryDefiLogsChunked's own comment. Confirmed live that 8 concurrent
 // requests, once the primary's cooldown routes all of them to the secondary at once (see
@@ -1378,12 +1398,14 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
   const logs = [];
   let size = end - start + 1;
   let curStart = start;
+  let attempt = 0; // non-range retry count for the CURRENT curStart/size — resets on any advance or shrink
   while (curStart <= end) {
     const curEnd = Math.min(curStart + size - 1, end);
     try {
       const chunk = await provider.getLogs({ topics, fromBlock: curStart, toBlock: curEnd });
       logs.push(...chunk);
       curStart = curEnd + 1;
+      attempt = 0;
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
       // Each RPC provider words its own "your range is too big" error differently — confirmed live:
@@ -1396,10 +1418,24 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
         /block range/i.test(message) || /range is too large/i.test(message) || /log response size exceeded/i.test(message);
       if (isRangeError && size > DEFI_LOG_MIN_CHUNK_SIZE) {
         size = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(size / 2));
+        attempt = 0;
         continue; // retry the same curStart with a smaller window, LOCAL to this window only
       }
-      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd}:`, err.message);
-      // A genuinely non-range failure (transient RPC issue) — skipping it just means this range
+      // A genuinely non-range failure (transient RPC issue, all 3 failover tiers down or cooling
+      // down at this exact instant) — see DEFI_WINDOW_RETRY_BACKOFFS_MS's own comment for why this
+      // retries a few times before giving up, rather than throwing immediately.
+      if (!isRangeError && attempt < DEFI_WINDOW_RETRY_BACKOFFS_MS.length) {
+        const backoffMs = DEFI_WINDOW_RETRY_BACKOFFS_MS[attempt];
+        attempt++;
+        console.warn(
+          `⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd} (retry ${attempt}/${DEFI_WINDOW_RETRY_BACKOFFS_MS.length} in ${backoffMs / 1000}s): ${err.message}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue; // retry the exact same window — rpcProvider.js's own cooldown tracking means this
+        // often lands on a different (or by-then-recovered) endpoint than the one that just failed
+      }
+      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd} after ${attempt} retries, giving up:`, err.message);
+      // Exhausted retries on a genuinely non-range failure — skipping it just means this range
       // gets picked up again next ingestion run (stopAtBlock only advances once every requested
       // window succeeds — see ingestDefiActivity below).
       throw err;
@@ -1444,8 +1480,19 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
  * own retries/failover are trying to recover from, for zero benefit (the combined result is
  * discarded either way once any one topic fails). This function sets `abortState.aborted = true`
  * itself on its OWN failure too, so whichever topic fails first stops every other one promptly,
- * not just the ones that happen to check after it specifically. */
-async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt, onProgress = null, abortState = { aborted: false }) {
+ * not just the ones that happen to check after it specifically.
+ *
+ * `onCheckpoint(contiguousToBlock, newLogs)`, if given, is called whenever the contiguous-from-
+ * the-start prefix of completed windows advances — i.e. only once windows 0..N are ALL done, never
+ * for a later window that finished first while an earlier one is still in flight, so the resume
+ * point it implies is always safe to trust — throttled to DEFI_CHECKPOINT_INTERVAL_MS, plus once,
+ * unconditionally, in a `finally` after the worker pool settles (success, sibling-triggered abort,
+ * or this topic's own exhausted-retries throw) so whatever's genuinely contiguous is never lost.
+ * This is the actual fix for a wallet's retry always restarting its ENTIRE scan from block zero —
+ * see defi_scan_topic_progress's own migration comment: the caller persists `newLogs` into
+ * defi_activity and `contiguousToBlock` as this topic's own resumable cursor, independent of its 5
+ * siblings, so a later retry only re-fetches the (usually small) tail that wasn't checkpointed yet. */
+async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt, onProgress = null, abortState = { aborted: false }, onCheckpoint = null) {
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
@@ -1464,6 +1511,27 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   let completedCount = 0;
   let lastLoggedAt = 0;
   let lastProgressAt = 0;
+  // Highest window INDEX already flushed via onCheckpoint — NOT the same as completedCount, since
+  // DEFI_LOG_CONCURRENCY > 1 means windows can finish out of order; this only ever advances through
+  // a run of CONSECUTIVE done windows starting right after the last checkpoint, so the block number
+  // it implies is always genuinely contiguous from this topic's own fromBlock.
+  let checkpointedUpTo = -1;
+  let lastCheckpointAt = 0;
+  async function maybeCheckpoint(force) {
+    if (!onCheckpoint) return;
+    const now = Date.now();
+    if (!force && now - lastCheckpointAt < DEFI_CHECKPOINT_INTERVAL_MS) return;
+    const newLogs = [];
+    let idx = checkpointedUpTo + 1;
+    while (idx < windows.length && results[idx] !== undefined) {
+      newLogs.push(...results[idx]);
+      checkpointedUpTo = idx;
+      idx++;
+    }
+    if (checkpointedUpTo < 0) return; // nothing contiguous from the start yet
+    lastCheckpointAt = now;
+    await onCheckpoint(windows[checkpointedUpTo][1], newLogs);
+  }
   async function worker() {
     while (nextIndex < windows.length) {
       if (abortState.aborted) return; // a sibling topic already failed — stop taking new windows, nothing we find now survives anyway
@@ -1487,10 +1555,18 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
         lastProgressAt = now;
         onProgress(completedCount, windows.length);
       }
+      await maybeCheckpoint(false);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
-  if (onProgress) onProgress(completedCount, windows.length); // final, unthrottled — guarantees an exact 100% at the end
+  try {
+    await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
+    if (onProgress) onProgress(completedCount, windows.length); // final, unthrottled — guarantees an exact 100% at the end
+  } finally {
+    // Unconditional final flush — runs whether this topic fully succeeded, was aborted by a
+    // sibling, or exhausted its own retries, so whatever's genuinely contiguous is checkpointed
+    // either way rather than only on the happy path.
+    await maybeCheckpoint(true);
+  }
   return results.flat();
 }
 
@@ -1541,6 +1617,79 @@ async function enrichFarmRowsWithBolt(provider, rows) {
     if (row.eventType === "farm_deposit") row.rawArgs.amountBoltAdded = amount;
     else row.rawArgs.amountBoltReturned = amount;
   }
+}
+
+/** Decodes one topic's raw getLogs results into defi_activity rows and inserts them — pulled out
+ * of doIngestDefiActivity so it can run PER TOPIC, PER CHECKPOINT (via queryDefiLogsChunked's own
+ * onCheckpoint) instead of once, combined across all 6 topics, only after every one of them fully
+ * resolves. Safe to call repeatedly for overlapping/already-inserted logs — insertDefiActivity's
+ * own ON CONFLICT (tracked_wallet, tx_hash, log_index) DO NOTHING makes this idempotent. */
+async function decodeAndPersistDefiLogs(trackedWallet, provider, logs) {
+  if (logs.length === 0) return;
+
+  const uniqueBlocks = [...new Set(logs.map((l) => l.blockNumber))];
+  const blockTimestamps = new Map();
+  await Promise.all(
+    uniqueBlocks.map(async (blockNumber) => {
+      try {
+        const block = await provider.getBlock(blockNumber);
+        blockTimestamps.set(blockNumber, block ? new Date(block.timestamp * 1000) : null);
+      } catch (err) {
+        console.warn(`⚠️  DeFi activity scan: failed to fetch timestamp for block ${blockNumber}:`, err.message);
+        blockTimestamps.set(blockNumber, null);
+      }
+    })
+  );
+
+  const rows = [];
+  for (const log of logs) {
+    const timestamp = blockTimestamps.get(log.blockNumber);
+    if (!timestamp) continue; // couldn't get a real timestamp — skip rather than fake one, same convention as every other ingest* function
+    let parsed;
+    try {
+      parsed = DEFI_IFACE.parseLog(log);
+    } catch (err) {
+      console.warn(`⚠️  DeFi activity scan: could not decode log in tx ${log.transactionHash}:`, err.message);
+      continue;
+    }
+    // FarmIncrease maps to the SAME 'farm_deposit' event_type as FarmDeposit — both are inflows
+    // into the farmer's position (a brand-new one vs. topping up an existing one), identical for
+    // FIFO/cost-basis purposes; buildDefiFarmEvents in pnlEventBuilder.js doesn't need to (and
+    // doesn't) distinguish them.
+    const eventType = {
+      FarmDeposit: "farm_deposit",
+      FarmIncrease: "farm_deposit",
+      FarmWithdrawl: "farm_withdraw",
+      CoreStaked: "core_staked",
+      CoreWithdrawn: "core_withdrawn",
+      RewardPaid: "reward_paid",
+    }[parsed.name];
+    const rawArgs = {};
+    for (const frag of parsed.fragment.inputs) {
+      const v = parsed.args[frag.name];
+      rawArgs[frag.name] = typeof v === "bigint" ? v.toString() : v;
+    }
+    rows.push({
+      trackedWallet,
+      txHash: log.transactionHash,
+      logIndex: log.index,
+      contractAddress: log.address,
+      eventType,
+      farmId: rawArgs.farmId != null ? rawArgs.farmId : null,
+      rawArgs,
+      blockNumber: log.blockNumber,
+      timestamp,
+    });
+  }
+  if (rows.length === 0) return;
+
+  // BOLT correlation only ever matters for the two event types deposit()/withdraw() legs can
+  // actually touch (see enrichFarmRowsWithBolt's own comment) — skipped entirely, no receipt
+  // fetches at all, for a wallet whose DeFi activity is only staking/rewards. Safe per-checkpoint-
+  // batch: each row's enrichment only ever looks at its OWN transaction's receipt, never another
+  // row's, so splitting a topic's logs across several checkpoints changes nothing about the result.
+  await enrichFarmRowsWithBolt(provider, rows);
+  await insertDefiActivity(rows);
 }
 
 /** Scans for yield-farm/staking activity involving `trackedWallet` — see DEFI_IFACE's own comment
@@ -1637,80 +1786,61 @@ async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = nul
   // same already-struggling RPC endpoints) for a real stretch of time after this whole scan had
   // already been written off, confirmed live.
   const abortState = { aborted: false };
-  const [farmDeposits, farmIncreases, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
-    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt, (c, t) => reportTopicProgress("FarmDeposit", c, t), abortState),
-    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt, (c, t) => reportTopicProgress("FarmIncrease", c, t), abortState),
-    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt, (c, t) => reportTopicProgress("FarmWithdrawl", c, t), abortState),
-    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt, (c, t) => reportTopicProgress("CoreStaked", c, t), abortState),
-    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt, (c, t) => reportTopicProgress("CoreWithdrawn", c, t), abortState),
-    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt, (c, t) => reportTopicProgress("RewardPaid", c, t), abortState),
-  ]);
 
-  const allLogs = [...farmDeposits, ...farmIncreases, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
-  if (allLogs.length === 0) return { highestBlock: latestBlock, defiTxHashes: new Set() };
+  // Per-topic resumable starting point — see defi_scan_topic_progress's own migration comment.
+  // `fromBlock` (this scan attempt's own lower bound) is the staleness key: a saved row from a
+  // DIFFERENT fromBlock is from an earlier span (a real later incremental scan, not a retry of
+  // this one) and must be ignored rather than misread as a head start. A topic already checkpointed
+  // all the way to (or past) latestBlock is fully done for this whole span — skip re-scanning it
+  // entirely; its rows are already in defi_activity from whichever earlier attempt finished it.
+  async function resolveTopicStart(topicLabel) {
+    const saved = await getDefiTopicProgress(trackedWallet, topicLabel);
+    if (!saved || saved.scanFromBlock !== fromBlock) return fromBlock;
+    return saved.lastCompletedBlock + 1;
+  }
+  function makeCheckpoint(topicLabel) {
+    return async (contiguousToBlock, newLogs) => {
+      await decodeAndPersistDefiLogs(trackedWallet, provider, newLogs);
+      await saveDefiTopicProgress(trackedWallet, topicLabel, fromBlock, contiguousToBlock);
+    };
+  }
 
-  const uniqueBlocks = [...new Set(allLogs.map((l) => l.blockNumber))];
-  const blockTimestamps = new Map();
+  const topicDefs = [
+    [FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, "FarmDeposit"],
+    [FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, "FarmIncrease"],
+    [FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, "FarmWithdrawl"],
+    [CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, "CoreStaked"],
+    [CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, "CoreWithdrawn"],
+    [REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, "RewardPaid"],
+  ];
   await Promise.all(
-    uniqueBlocks.map(async (blockNumber) => {
-      try {
-        const block = await provider.getBlock(blockNumber);
-        blockTimestamps.set(blockNumber, block ? new Date(block.timestamp * 1000) : null);
-      } catch (err) {
-        console.warn(`⚠️  DeFi activity scan: failed to fetch timestamp for block ${blockNumber}:`, err.message);
-        blockTimestamps.set(blockNumber, null);
+    topicDefs.map(async ([topic0, walletTopicIndex, label]) => {
+      const topicFromBlock = await resolveTopicStart(label);
+      if (topicFromBlock > latestBlock) {
+        reportTopicProgress(label, 1, 1); // already fully checkpointed in an earlier attempt — counts as 100% immediately
+        return;
       }
+      return queryDefiLogsChunked(
+        provider,
+        topic0,
+        walletTopicIndex,
+        walletTopic,
+        topicFromBlock,
+        latestBlock,
+        label,
+        startedAt,
+        (c, t) => reportTopicProgress(label, c, t),
+        abortState,
+        makeCheckpoint(label)
+      );
     })
   );
 
-  const rows = [];
-  for (const log of allLogs) {
-    const timestamp = blockTimestamps.get(log.blockNumber);
-    if (!timestamp) continue; // couldn't get a real timestamp — skip rather than fake one, same convention as every other ingest* function
-    let parsed;
-    try {
-      parsed = DEFI_IFACE.parseLog(log);
-    } catch (err) {
-      console.warn(`⚠️  DeFi activity scan: could not decode log in tx ${log.transactionHash}:`, err.message);
-      continue;
-    }
-    // FarmIncrease maps to the SAME 'farm_deposit' event_type as FarmDeposit — both are inflows
-    // into the farmer's position (a brand-new one vs. topping up an existing one), identical for
-    // FIFO/cost-basis purposes; buildDefiFarmEvents in pnlEventBuilder.js doesn't need to (and
-    // doesn't) distinguish them.
-    const eventType = {
-      FarmDeposit: "farm_deposit",
-      FarmIncrease: "farm_deposit",
-      FarmWithdrawl: "farm_withdraw",
-      CoreStaked: "core_staked",
-      CoreWithdrawn: "core_withdrawn",
-      RewardPaid: "reward_paid",
-    }[parsed.name];
-    const rawArgs = {};
-    for (const frag of parsed.fragment.inputs) {
-      const v = parsed.args[frag.name];
-      rawArgs[frag.name] = typeof v === "bigint" ? v.toString() : v;
-    }
-    rows.push({
-      trackedWallet,
-      txHash: log.transactionHash,
-      logIndex: log.index,
-      contractAddress: log.address,
-      eventType,
-      farmId: rawArgs.farmId != null ? rawArgs.farmId : null,
-      rawArgs,
-      blockNumber: log.blockNumber,
-      timestamp,
-    });
-  }
-
-  // BOLT correlation only ever matters for the two event types deposit()/withdraw() legs can
-  // actually touch (see enrichFarmRowsWithBolt's own comment) — skipped entirely, no receipt
-  // fetches at all, for a wallet whose DeFi activity is only staking/rewards.
-  await enrichFarmRowsWithBolt(provider, rows);
-
-  if (rows.length > 0) await insertDefiActivity(rows);
-  const defiTxHashes = new Set(rows.map((r) => r.txHash.toLowerCase()));
+  // Every topic either fully completed just now (checkpointed incrementally above) or was already
+  // fully checkpointed by an earlier attempt — either way, defi_activity itself is the source of
+  // truth for the complete tx-hash set, not whatever logs happened to be in memory at the end of
+  // THIS particular call (some rows may have been inserted by a previous, since-failed attempt).
+  const defiTxHashes = await getDefiActivityTxHashes(trackedWallet, fromBlock, latestBlock);
   return { highestBlock: latestBlock, defiTxHashes };
 }
 
