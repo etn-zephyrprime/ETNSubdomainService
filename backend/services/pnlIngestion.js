@@ -1562,7 +1562,17 @@ function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, lates
  * ensureDefiActivityIngested (the lighter Portfolio-page caller, which has no such shared value)
  * omits this and gets the previous behavior: a fresh, independent read. */
 async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
-  const provider = createRpcProvider();
+  // batchMaxCount: 1 — this function is the heaviest concurrent-RPC caller in this file by far:
+  // 6 topics x DEFI_LOG_CONCURRENCY (4) workers each means up to 24 simultaneous getLogs() calls on
+  // the very first tick of a cold-start scan. Without this, ethers' own default batching bundles
+  // concurrent calls into one HTTP request, which Ankr rejects outright ("Batch size too large",
+  // code -32062) — confirmed live, not theoretical. rpcProvider.js's own failover then masks this
+  // by falling back to the secondary for a full 60s per occurrence, which keeps the scan from
+  // failing outright but adds real, repeated latency on top of an already-slow whole-chain scan —
+  // the same "batch size too large" fix already applied at 25+ other concurrent/per-item-call-heavy
+  // sites in this backend (activatedDomainsCache.js, defiPositionValuation.js, lpPositionValuation.js,
+  // etc.), just never here, the single heaviest-concurrency caller of them all.
+  const provider = createRpcProvider({ batchMaxCount: 1 });
   const latestBlock = latestBlockAtStart ?? await provider.getBlockNumber();
   const fromBlock = (stopAtBlock ?? -1) + 1;
   if (fromBlock > latestBlock) return { highestBlock: stopAtBlock ?? -1, defiTxHashes: new Set() };
