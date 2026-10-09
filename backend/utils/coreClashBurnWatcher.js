@@ -50,7 +50,11 @@ async function queryLogsChunked(provider, filter, fromBlock, toBlock, chunkSize 
       start = end + 1;
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+      // See pnlIngestion.js's own queryLogsChunked/fetchDefiLogWindow comment — thirdweb's node
+      // words its own "range too big" error differently ("Log response size exceeded..."), which
+      // matched neither pattern below, so this shares that same added check.
+      const isRangeError =
+        /block range/i.test(message) || /range is too large/i.test(message) || /log response size exceeded/i.test(message);
       if (isRangeError && chunkSize > minChunkSize) {
         chunkSize = Math.max(minChunkSize, Math.floor(chunkSize / 2));
         continue;

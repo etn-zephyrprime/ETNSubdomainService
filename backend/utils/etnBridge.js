@@ -204,7 +204,12 @@ async function getLogsChunked(provider, filter, fromBlock, toBlock) {
       start = end + 1;
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-      if (chunk > 100 && /block range|range is too large|too large|limit/i.test(message)) {
+      // "log response size exceeded" — thirdweb's own range-too-large wording, which this pattern
+      // didn't already cover (no "too large"/"limit" substring in it). This function currently
+      // only ever runs against createArchiveRpcProvider (primary/Ankr only, no failover to
+      // thirdweb — see that function's own comment on why), so defensive/for-consistency only
+      // right now, not a live gap the way the shared-failover callers had.
+      if (chunk > 100 && /block range|range is too large|too large|limit|log response size exceeded/i.test(message)) {
         chunk = Math.max(100, Math.floor(chunk / 2));
         continue;
       }

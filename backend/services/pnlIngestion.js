@@ -1386,7 +1386,14 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
       curStart = curEnd + 1;
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-      const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+      // Each RPC provider words its own "your range is too big" error differently — confirmed live:
+      // thirdweb's own node rejects anything over 1000 blocks with "Log response size exceeded.
+      // Maximum allowed number of requested blocks is 1000", which matched neither of the other two
+      // patterns below (Ankr's/Electroneum's own wording) — so a window request big enough for
+      // Ankr to tolerate hard-failed against thirdweb instead of shrinking and retrying, the moment
+      // rpcProvider.js's own 3-tier failover routed a call there.
+      const isRangeError =
+        /block range/i.test(message) || /range is too large/i.test(message) || /log response size exceeded/i.test(message);
       if (isRangeError && size > DEFI_LOG_MIN_CHUNK_SIZE) {
         size = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(size / 2));
         continue; // retry the same curStart with a smaller window, LOCAL to this window only
