@@ -27,15 +27,28 @@
 // "this wallet did an add/remove-liquidity trade" (that detection is new), so a wallet with LP
 // activity but no farm/staking history isn't identifiable as "affected" from existing data alone.
 //
+// Pass explicit wallet address(es) to scope to just those instead -- needed for a wallet reported
+// individually (confirmed live: a member's wallet whose DeFi scan cursor advanced under some
+// earlier, since-fixed version of the farm-detection logic, leaving it with REAL farm activity the
+// current code can find just fine when queried directly, but zero defi_activity rows recorded —
+// meaning the default scope above would never have picked it up, since that scope requires an
+// EXISTING row to even consider a wallet "affected", and --all would reset every tracked wallet
+// app-wide just to fix one member's). Explicit wallets don't need to already be in
+// getAllActiveTrackedWalletPairs() — ingestWalletHistory handles a standalone address the same way
+// it handles any wallet's very first-ever ingestion.
+//
 // DRY RUN BY DEFAULT -- this touches real ingested transaction history and tax-relevant PnL data.
 //   node backend/scripts/resetDefiAffectedWallets.js                 # list affected wallets (defi_activity only)
 //   node backend/scripts/resetDefiAffectedWallets.js --apply         # actually reset + re-ingest them
 //   node backend/scripts/resetDefiAffectedWallets.js --all           # scope to every tracked wallet (dry run)
 //   node backend/scripts/resetDefiAffectedWallets.js --all --apply   # reset + re-ingest every tracked wallet
+//   node backend/scripts/resetDefiAffectedWallets.js <wallet...>             # scope to just these wallets (dry run)
+//   node backend/scripts/resetDefiAffectedWallets.js <wallet...> --apply     # reset + re-ingest just these wallets
 //
 // Safe to re-run: a wallet with nothing left to reset just re-ingests cleanly (same idempotent
 // resumability every other ingestWalletHistory caller already relies on).
 import dotenv from "dotenv";
+import { ethers } from "ethers";
 import { getPool, query } from "../db/pool.js";
 import { getAllActiveTrackedWalletPairs } from "../db/pnlSnapshots.js";
 import { ingestWalletHistory } from "../services/pnlIngestion.js";
@@ -45,6 +58,10 @@ dotenv.config();
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const all = args.includes("--all");
+const explicitWallets = args.filter((a) => !a.startsWith("--")).map((a) => a.toLowerCase());
+for (const w of explicitWallets) {
+  if (!ethers.isAddress(w)) throw new Error(`Not a valid address: ${w}`);
+}
 
 async function getDefiActivityWallets() {
   const res = await query("SELECT DISTINCT tracked_wallet FROM defi_activity");
@@ -57,7 +74,7 @@ async function main() {
   }
 
   const pairs = await getAllActiveTrackedWalletPairs(); // [{ owner_wallet, wallet_address }]
-  if (pairs.length === 0) {
+  if (pairs.length === 0 && explicitWallets.length === 0) {
     console.log("No actively tracked wallets found.");
     return;
   }
@@ -68,24 +85,32 @@ async function main() {
     ownerToWallets.get(owner_wallet).push(wallet_address);
   }
 
-  const distinctWallets = [...new Set(pairs.map((p) => p.wallet_address))];
-  let targetWallets = distinctWallets;
-  if (!all) {
+  let targetWallets;
+  let scopeLabel;
+  if (explicitWallets.length > 0) {
+    targetWallets = explicitWallets;
+    scopeLabel = " (explicit wallet(s))";
+  } else if (all) {
+    targetWallets = [...new Set(pairs.map((p) => p.wallet_address))];
+    scopeLabel = " (--all)";
+  } else {
     const defiWallets = await getDefiActivityWallets();
+    const distinctWallets = [...new Set(pairs.map((p) => p.wallet_address))];
     targetWallets = distinctWallets.filter((w) => defiWallets.has(w.toLowerCase()));
+    scopeLabel = " (have existing DeFi activity)";
   }
 
   if (targetWallets.length === 0) {
     console.log(
       all
         ? "No actively tracked wallets found."
-        : "No tracked wallets with existing DeFi activity found — nothing to repair.\n(Pass --all to reset every tracked wallet instead, e.g. to also catch V2 LP-only activity this app has no existing signal for.)"
+        : "No tracked wallets with existing DeFi activity found — nothing to repair.\n(Pass --all to reset every tracked wallet instead, e.g. to also catch V2 LP-only activity this app has no existing signal for, or pass explicit wallet address(es) to scope to just those.)"
     );
     await getPool().end();
     return;
   }
 
-  console.log(`${apply ? "Resetting and re-ingesting" : "Would reset and re-ingest"} ${targetWallets.length} wallet(s)${all ? " (--all)" : " (have existing DeFi activity)"}:\n`);
+  console.log(`${apply ? "Resetting and re-ingesting" : "Would reset and re-ingest"} ${targetWallets.length} wallet(s)${scopeLabel}:\n`);
   for (const w of targetWallets) console.log(`  ${w}`);
 
   if (!apply) {
