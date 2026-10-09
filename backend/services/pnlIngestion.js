@@ -1353,6 +1353,18 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
   return highestBlock;
 }
 
+// A non-range getLogs failure used to throw immediately with zero retry, which (via abortState)
+// kills every one of the other 5 topics' worker pools and discards the ENTIRE scan's results —
+// confirmed live as the real cause of a wallet's DeFi re-ingest failing after just ~6 minutes and
+// ~9/815 windows, repeatedly, never making further forward progress: all three RPC tiers
+// (rpcProvider.js) are confirmed to fail transiently under load but also confirmed to recover
+// within tens of seconds (same endpoint succeeding again shortly after a timeout/403 elsewhere in
+// these same logs) — so a short wait-and-retry here stands a real chance of riding out exactly
+// that kind of transient stress, instead of discarding hours of already-completed sibling-topic
+// work over one bad moment. Three attempts, increasing backoff — long enough to outlast a brief
+// burst, not so long it stalls a scan that's genuinely stuck for other reasons.
+const DEFI_WINDOW_RETRY_BACKOFFS_MS = [5000, 15000, 30000];
+
 const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own queryLogsChunked floor
 // Bounded worker pool — see queryDefiLogsChunked's own comment. Confirmed live that 8 concurrent
 // requests, once the primary's cooldown routes all of them to the secondary at once (see
@@ -1378,12 +1390,14 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
   const logs = [];
   let size = end - start + 1;
   let curStart = start;
+  let attempt = 0; // non-range retry count for the CURRENT curStart/size — resets on any advance or shrink
   while (curStart <= end) {
     const curEnd = Math.min(curStart + size - 1, end);
     try {
       const chunk = await provider.getLogs({ topics, fromBlock: curStart, toBlock: curEnd });
       logs.push(...chunk);
       curStart = curEnd + 1;
+      attempt = 0;
     } catch (err) {
       const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
       // Each RPC provider words its own "your range is too big" error differently — confirmed live:
@@ -1396,10 +1410,24 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
         /block range/i.test(message) || /range is too large/i.test(message) || /log response size exceeded/i.test(message);
       if (isRangeError && size > DEFI_LOG_MIN_CHUNK_SIZE) {
         size = Math.max(DEFI_LOG_MIN_CHUNK_SIZE, Math.floor(size / 2));
+        attempt = 0;
         continue; // retry the same curStart with a smaller window, LOCAL to this window only
       }
-      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd}:`, err.message);
-      // A genuinely non-range failure (transient RPC issue) — skipping it just means this range
+      // A genuinely non-range failure (transient RPC issue, all 3 failover tiers down or cooling
+      // down at this exact instant) — see DEFI_WINDOW_RETRY_BACKOFFS_MS's own comment for why this
+      // retries a few times before giving up, rather than throwing immediately.
+      if (!isRangeError && attempt < DEFI_WINDOW_RETRY_BACKOFFS_MS.length) {
+        const backoffMs = DEFI_WINDOW_RETRY_BACKOFFS_MS[attempt];
+        attempt++;
+        console.warn(
+          `⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd} (retry ${attempt}/${DEFI_WINDOW_RETRY_BACKOFFS_MS.length} in ${backoffMs / 1000}s): ${err.message}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue; // retry the exact same window — rpcProvider.js's own cooldown tracking means this
+        // often lands on a different (or by-then-recovered) endpoint than the one that just failed
+      }
+      console.warn(`⚠️  DeFi activity scan: getLogs failed for blocks ${curStart}-${curEnd} after ${attempt} retries, giving up:`, err.message);
+      // Exhausted retries on a genuinely non-range failure — skipping it just means this range
       // gets picked up again next ingestion run (stopAtBlock only advances once every requested
       // window succeeds — see ingestDefiActivity below).
       throw err;
