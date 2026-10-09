@@ -13,11 +13,19 @@ import { ethers } from "ethers";
 // once during a real wallet's unusually large cold-start DeFi scan (confirmed live: the primary
 // timing out repeatedly, which routes everything to the secondary for its own 60s cooldown window,
 // pushed enough sustained load at the secondary to trip ITS OWN rejection too — a genuine double
-// failure, not just the usual single-endpoint blip this file already handled). User-specified
-// priority: Ankr, then thirdweb, then Electroneum's own node last.
+// failure, not just the usual single-endpoint blip this file already handled).
+//
+// Priority: Ankr, then Electroneum's own node, then thirdweb LAST — thirdweb is placed last
+// (originally tried second) after its own dashboard showed its free plan's hard limit is just
+// 10 RPS, with this backend's real aggregate usage (every cache/watcher sharing this one provider
+// factory, not just one script) peaking at 189 RPS — 37.8% of requests already being rate-limited
+// even with an API key configured. Electroneum's own node has shown transient 403s under burst
+// load before, but never an explicit measured cap anywhere near that low, making it the safer
+// second choice until thirdweb's plan is upgraded (or this ever gets its own dedicated key headroom
+// sized for real aggregate backend usage, not just one script's share of it).
 const PRIMARY_RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
-const FALLBACK_RPC_URL_1 = process.env.RPC_URL_FALLBACK || "https://52014.rpc.thirdweb.com";
-const FALLBACK_RPC_URL_2 = process.env.RPC_URL_FALLBACK_2 || "https://rpc.electroneum.com";
+const FALLBACK_RPC_URL_1 = process.env.RPC_URL_FALLBACK || "https://rpc.electroneum.com";
+const FALLBACK_RPC_URL_2 = process.env.RPC_URL_FALLBACK_2 || "https://52014.rpc.thirdweb.com";
 
 // Electroneum mainnet — same value as src/config.js's CHAIN_ID. Passed as a static network to
 // the provider built here so it never does a live eth_chainId auto-detection handshake on
