@@ -1360,7 +1360,16 @@ const DEFI_LOG_MIN_CHUNK_SIZE = 50; // matches coreClashBurnWatcher.js's own que
 // published rate-limit contract). Lowered to 4 as a real reduction in burst pressure, not a
 // guaranteed-safe number — rpcProvider.js's own short retry-on-403 is the actual safety net for
 // whatever residual burst pressure remains.
-const DEFI_LOG_CONCURRENCY = 4;
+//
+// Lowered again, 4 -> 2, after a SECOND confirmed-live recurrence of the exact same symptom (both
+// the primary AND the secondary rejecting outright under sustained load) during a real wallet's
+// cold-start DeFi scan — this file's own 6 topics each run their own independent worker pool of
+// this size CONCURRENTLY, so the real peak burst is 6x this number (24 at the old value of 4, 12
+// now), not just this number alone. Slower per wallet (roughly double the wall-clock time for a
+// full cold-start scan), traded deliberately for not exhausting BOTH configured RPC endpoints at
+// once — a wallet that hits that currently has no faster path to a successful scan at all, only a
+// failed one that needs retrying, which costs far more total time than running slower once.
+const DEFI_LOG_CONCURRENCY = 2;
 
 /** Fetches one [start, end] window, shrinking ONLY within this window on a "block range too
  * large" error and never touching any other window's size — see queryDefiLogsChunked's own
@@ -1416,8 +1425,20 @@ async function fetchDefiLogWindow(provider, topics, start, end) {
 /** `onProgress(completedCount, windows.length)`, if given, is called at INGEST_PROGRESS_CALLBACK_INTERVAL_MS
  * cadence (separately from the console log's own PROGRESS_LOG_INTERVAL_MS) plus once, unconditionally,
  * right before returning — so the caller's aggregate always ends on the exact final count rather than
- * whatever the last throttled tick happened to catch. */
-async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt, onProgress = null) {
+ * whatever the last throttled tick happened to catch.
+ *
+ * `abortState` ({ aborted: boolean }, shared across all 6 of this call's siblings in
+ * doIngestDefiActivity) lets this topic's own workers stop picking up new windows the moment ANY
+ * sibling topic's scan has already failed — confirmed live as a real, wasteful gap: when one
+ * topic's Promise.all entry rejects, the other 5 topics' own worker pools were NOT cancelled, so
+ * they kept firing requests (and kept failing, repeatedly, against the SAME already-overwhelmed
+ * RPC endpoints) for a real stretch of time after doIngestDefiActivity had already given up and
+ * the whole scan had been logged as FAILED — actively worsening the RPC pressure this function's
+ * own retries/failover are trying to recover from, for zero benefit (the combined result is
+ * discarded either way once any one topic fails). This function sets `abortState.aborted = true`
+ * itself on its OWN failure too, so whichever topic fails first stops every other one promptly,
+ * not just the ones that happen to check after it specifically. */
+async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTopic, fromBlock, toBlock, label, startedAt, onProgress = null, abortState = { aborted: false }) {
   const topics = [];
   topics[0] = topic0;
   topics[walletTopicIndex] = walletTopic;
@@ -1438,9 +1459,15 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   let lastProgressAt = 0;
   async function worker() {
     while (nextIndex < windows.length) {
+      if (abortState.aborted) return; // a sibling topic already failed — stop taking new windows, nothing we find now survives anyway
       const myIndex = nextIndex++;
       const [start, end] = windows[myIndex];
-      results[myIndex] = await fetchDefiLogWindow(provider, topics, start, end);
+      try {
+        results[myIndex] = await fetchDefiLogWindow(provider, topics, start, end);
+      } catch (err) {
+        abortState.aborted = true; // tell every sibling (and our own remaining workers) to stop too
+        throw err;
+      }
       completedCount++;
       const now = Date.now();
       if (label && now - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
@@ -1598,13 +1625,18 @@ async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = nul
   }
 
   const walletTopic = ethers.zeroPadValue(trackedWallet, 32);
+  // Shared across all 6 topic scans below — see queryDefiLogsChunked's own comment on why: without
+  // this, one topic failing used to leave the other 5 running (and failing, repeatedly, against the
+  // same already-struggling RPC endpoints) for a real stretch of time after this whole scan had
+  // already been written off, confirmed live.
+  const abortState = { aborted: false };
   const [farmDeposits, farmIncreases, farmWithdrawals, staked, withdrawn, rewards] = await Promise.all([
-    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt, (c, t) => reportTopicProgress("FarmDeposit", c, t)),
-    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt, (c, t) => reportTopicProgress("FarmIncrease", c, t)),
-    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt, (c, t) => reportTopicProgress("FarmWithdrawl", c, t)),
-    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt, (c, t) => reportTopicProgress("CoreStaked", c, t)),
-    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt, (c, t) => reportTopicProgress("CoreWithdrawn", c, t)),
-    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt, (c, t) => reportTopicProgress("RewardPaid", c, t)),
+    queryDefiLogsChunked(provider, FARM_DEPOSIT_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmDeposit", startedAt, (c, t) => reportTopicProgress("FarmDeposit", c, t), abortState),
+    queryDefiLogsChunked(provider, FARM_INCREASE_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmIncrease", startedAt, (c, t) => reportTopicProgress("FarmIncrease", c, t), abortState),
+    queryDefiLogsChunked(provider, FARM_WITHDRAW_TOPIC, FARM_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "FarmWithdrawl", startedAt, (c, t) => reportTopicProgress("FarmWithdrawl", c, t), abortState),
+    queryDefiLogsChunked(provider, CORE_STAKED_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreStaked", startedAt, (c, t) => reportTopicProgress("CoreStaked", c, t), abortState),
+    queryDefiLogsChunked(provider, CORE_WITHDRAWN_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "CoreWithdrawn", startedAt, (c, t) => reportTopicProgress("CoreWithdrawn", c, t), abortState),
+    queryDefiLogsChunked(provider, REWARD_PAID_TOPIC, STAKING_EVENT_WALLET_TOPIC_INDEX, walletTopic, fromBlock, latestBlock, "RewardPaid", startedAt, (c, t) => reportTopicProgress("RewardPaid", c, t), abortState),
   ]);
 
   const allLogs = [...farmDeposits, ...farmIncreases, ...farmWithdrawals, ...staked, ...withdrawn, ...rewards];
