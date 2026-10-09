@@ -98,7 +98,7 @@ async function queryLogsChunked(contract, filter, fromBlock, toBlock, chunkSize 
           floorRetries = 0;
         } catch (err) {
           const message = err?.info?.error?.message || err?.error?.message || err?.shortMessage || err?.message || "";
-          const isRangeError = /block range/i.test(message) || /range is too large/i.test(message);
+          const isRangeError = /block range/i.test(message) || /range is too large/i.test(message) || /log response size exceeded/i.test(message); // thirdweb words its own range-too-large error differently -- see pnlIngestion.js's own comment, now in the shared RPC failover chain
           if (!isRangeError) throw err;
 
           if (size > MIN_CHUNK_SIZE) {
