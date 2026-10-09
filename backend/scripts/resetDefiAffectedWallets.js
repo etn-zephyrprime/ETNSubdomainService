@@ -51,6 +51,7 @@ import dotenv from "dotenv";
 import { ethers } from "ethers";
 import { getPool, query } from "../db/pool.js";
 import { getAllActiveTrackedWalletPairs } from "../db/pnlSnapshots.js";
+import { clearDefiTopicProgress } from "../db/defiScanProgress.js";
 import { ingestWalletHistory } from "../services/pnlIngestion.js";
 
 dotenv.config();
@@ -132,6 +133,10 @@ async function main() {
       await query("DELETE FROM ingested_transfers WHERE tracked_wallet = $1", [walletLc]);
       await query("DELETE FROM swap_trades WHERE tracked_wallet = $1", [walletLc]);
       await query("DELETE FROM defi_activity WHERE tracked_wallet = $1", [walletLc]);
+      // See defi_scan_topic_progress's own migration comment — a stale per-topic checkpoint left
+      // behind here would make the cold-start re-ingest below wrongly skip re-fetching blocks whose
+      // defi_activity rows were just deleted above.
+      await clearDefiTopicProgress(walletLc);
       // Every owner tracking this address, not just one — see this file's own header comment.
       await query("DELETE FROM pnl_snapshots WHERE wallet_address = $1", [walletLc]);
       console.log("  cleared, re-ingesting (this can take a while for a wallet with real history)...");
