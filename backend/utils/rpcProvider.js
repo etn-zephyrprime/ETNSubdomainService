@@ -8,8 +8,16 @@ import { ethers } from "ethers";
 // hit this backend's RPC endpoint being the single point of failure (see dailyBlockStatsCache.js's
 // and validatorRewardsCache.js's own header comments) — this is the fix that actually removes that
 // single point, instead of just tuning load against it.
+//
+// Three tiers now, not two — added after Ankr AND the Electroneum public node both struggled at
+// once during a real wallet's unusually large cold-start DeFi scan (confirmed live: the primary
+// timing out repeatedly, which routes everything to the secondary for its own 60s cooldown window,
+// pushed enough sustained load at the secondary to trip ITS OWN rejection too — a genuine double
+// failure, not just the usual single-endpoint blip this file already handled). User-specified
+// priority: Ankr, then thirdweb, then Electroneum's own node last.
 const PRIMARY_RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/electroneum";
-const SECONDARY_RPC_URL = process.env.RPC_URL_FALLBACK || "https://rpc.electroneum.com";
+const FALLBACK_RPC_URL_1 = process.env.RPC_URL_FALLBACK || "https://52014.rpc.thirdweb.com";
+const FALLBACK_RPC_URL_2 = process.env.RPC_URL_FALLBACK_2 || "https://rpc.electroneum.com";
 
 // Electroneum mainnet — same value as src/config.js's CHAIN_ID. Passed as a static network to
 // the provider built here so it never does a live eth_chainId auto-detection handshake on
@@ -19,66 +27,77 @@ const SECONDARY_RPC_URL = process.env.RPC_URL_FALLBACK || "https://rpc.electrone
 const CHAIN_ID = 52014;
 const network = ethers.Network.from(CHAIN_ID);
 
-// How long to skip the primary entirely after it fails, before trying it again. Deliberately NOT
+// How long to skip an endpoint entirely after it fails, before trying it again. Deliberately NOT
 // implemented with ethers' own FallbackProvider — confirmed by reading its source
 // (node_modules/ethers, provider-fallback.ts): its quorum mechanism tallies a provider's *error*
 // as a legitimate, quorum-meeting result (by design, for its own "do enough decentralized nodes
-// agree this call reverts" use case). With two equal-weight providers and the default/quorum-1
-// config this needs, the primary's very first error alone already meets quorum and gets thrown
-// immediately — the secondary is never even dispatched. That's consensus, not failover.
+// agree this call reverts" use case). With equal-weight providers and the default/quorum-1 config
+// this needs, the first one's very first error alone already meets quorum and gets thrown
+// immediately — the others are never even dispatched. That's consensus, not failover.
 //
-// This is a small hand-rolled alternative instead: try the primary, and if it fails, use the
-// secondary for every subsequent call for COOLDOWN_MS before trying the primary again — a fully
-// disabled key (this incident) fails every single request, forever, until someone fixes it
-// manually, so without a cooldown every RPC call across the whole backend would silently pay one
-// guaranteed-failing request to the dead primary first, for as long as the outage lasts.
+// This is a small hand-rolled alternative instead: try each configured endpoint in priority order,
+// skipping any still in its own cooldown, for COOLDOWN_MS after it last failed — a fully disabled
+// key (the incident that started this file) fails every single request, forever, until someone
+// fixes it manually, so without a cooldown every RPC call across the whole backend would silently
+// pay one guaranteed-failing request to the dead endpoint first, for as long as the outage lasts.
 const PRIMARY_COOLDOWN_MS = process.env.RPC_PRIMARY_COOLDOWN_MS
   ? parseInt(process.env.RPC_PRIMARY_COOLDOWN_MS, 10)
   : 60000;
 
-// Bounds how long ANY single RPC call — primary or secondary — can hang before failing out to the
-// other endpoint (or, if both are down, to the caller's own catch/fallback). Confirmed live as a
-// real gap: ethers' own FetchRequest defaults to a 300-SECOND (5 minute) timeout on the primary
-// path, but _sendViaSecondary below used a bare fetch() with no timeout at all — an unresponsive
-// (not just erroring) secondary endpoint could hang a call, and everything awaiting it, forever.
-// Traced to a real symptom: a demo-generation run sat for hours with near-zero CPU use (confirmed
-// via `ps`), and a genuine, reserve-backed LP position silently never made it into a wallet's
-// results — probeV2Pool's own catch swallowed whatever failed here with no trace (see that
-// function's own comment, now logged). 20s comfortably covers a slow-but-live node; anything
-// longer than that on either endpoint is indistinguishable from "not responding" for this app's
-// purposes, and every caller here already has its own catch/fallback for a failed call.
+// Bounds how long ANY single RPC call — on any of the three endpoints — can hang before failing
+// out to the next one (or, if all are down, to the caller's own catch/fallback). Confirmed live as
+// a real gap: ethers' own FetchRequest defaults to a 300-SECOND (5 minute) timeout on the primary
+// path, but a bare fetch() used to have no timeout at all — an unresponsive (not just erroring)
+// endpoint could hang a call, and everything awaiting it, forever. Traced to a real symptom: a
+// demo-generation run sat for hours with near-zero CPU use (confirmed via `ps`), and a genuine,
+// reserve-backed LP position silently never made it into a wallet's results — probeV2Pool's own
+// catch swallowed whatever failed here with no trace (see that function's own comment, now
+// logged). 20s comfortably covers a slow-but-live node; anything longer than that is
+// indistinguishable from "not responding" for this app's purposes, and every caller here already
+// has its own catch/fallback for a failed call.
 const RPC_TIMEOUT_MS = process.env.RPC_TIMEOUT_MS ? parseInt(process.env.RPC_TIMEOUT_MS, 10) : 20000;
 
+// Electroneum's own public node needs a plain fetch() rather than ethers' own request layer —
+// confirmed live that ethers' Node HTTP client (a raw http/https request under the hood, see
+// node_modules/ethers/utils/geturl.js) gets a 403 from this endpoint that neither curl nor Node's
+// native fetch() gets hitting the exact same URL, almost certainly a TLS/HTTP client fingerprint
+// check on their side rather than anything about the request content itself. Confirmed live that
+// Ankr and thirdweb do NOT need this workaround — a normal ethers sub-provider talks to both fine.
+const PLAIN_FETCH_URLS = new Set(["https://rpc.electroneum.com"]);
+
 class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
-  constructor(primaryUrl, secondaryUrl, options) {
+  constructor(primaryUrl, fallbackUrls, options) {
     // A FetchRequest (not a plain string) so .timeout below actually applies — JsonRpcProvider
     // wraps a bare string URL in `new FetchRequest(url)` itself with no way to configure it
     // afterward, so the request object has to be built here instead.
     const primaryRequest = new ethers.FetchRequest(primaryUrl);
     primaryRequest.timeout = RPC_TIMEOUT_MS;
     super(primaryRequest, network, options);
-    this._secondaryUrl = secondaryUrl;
-    this._primaryDownUntil = 0;
+
+    // index 0 is always this instance itself (via super._send, the primary); indexes 1..N are
+    // `fallbackUrls`, in the exact priority order given. A fallback that doesn't need the plain-
+    // fetch workaround gets its OWN real ethers provider (built once, reused for this instance's
+    // whole life, same as the primary's own super-managed one) so it benefits from ethers' own
+    // request handling (retries, JSON-RPC error shaping) rather than a bare fetch; one that DOES
+    // need the workaround (Electroneum's node) gets none — _sendViaPlainFetch handles it directly.
+    this._fallbacks = fallbackUrls.map((url) => {
+      if (PLAIN_FETCH_URLS.has(url)) return { url, plainFetch: true, provider: null };
+      const req = new ethers.FetchRequest(url);
+      req.timeout = RPC_TIMEOUT_MS;
+      return { url, plainFetch: false, provider: new ethers.JsonRpcProvider(req, network, { staticNetwork: network, ...options }) };
+    });
+    this._downUntil = new Array(1 + this._fallbacks.length).fill(0);
   }
 
-  // Deliberately plain fetch(), NOT ethers' own FetchRequest (which the primary path above uses
-  // via super._send()) — confirmed live that ethers' Node HTTP client (a raw http/https request
-  // under the hood, see node_modules/ethers/utils/geturl.js) gets a 403 from this endpoint that
-  // neither curl nor Node's native fetch() gets hitting the exact same URL, almost certainly a
-  // TLS/HTTP client fingerprint check on their side rather than anything about the request
-  // content itself. This is the one caller in this codebase that has to route around ethers' own
-  // request layer for that reason — every other fetch() elsewhere here already used the native
-  // one anyway (r2CacheProxyRouter.js, validatorRewardsCache.js, etc.), this is just the first
-  // time it mattered for an ethers provider specifically.
   // A handful of retries with a short backoff for a non-ok HTTP response specifically (never for a
   // valid JSON-RPC error response, which callers handle themselves) — confirmed live: a burst of
-  // concurrent calls to this endpoint (pnlIngestion.js's DeFi log scan, which fans out several
-  // requests at once once the primary's cooldown routes everything here) can trip a transient 403,
-  // which cleared on its own within a couple seconds on retry. This endpoint is a public node with
-  // no published rate-limit contract, so a short retry is the only real option — there's no
+  // concurrent calls to Electroneum's node (pnlIngestion.js's DeFi log scan, which fans out several
+  // requests at once once an earlier endpoint's cooldown routes everything here) can trip a
+  // transient 403, which cleared on its own within a couple seconds on retry. This is a public node
+  // with no published rate-limit contract, so a short retry is the only real option — there's no
   // documented threshold to stay under.
-  async _sendViaSecondary(payload, attempt = 0) {
-    const res = await fetch(this._secondaryUrl, {
+  async _sendViaPlainFetch(url, payload, attempt = 0) {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -87,48 +106,68 @@ class FailoverJsonRpcProvider extends ethers.JsonRpcProvider {
     if (!res.ok) {
       if (attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
-        return this._sendViaSecondary(payload, attempt + 1);
+        return this._sendViaPlainFetch(url, payload, attempt + 1);
       }
-      throw new Error(`secondary RPC server response ${res.status} ${res.statusText}`);
+      throw new Error(`fallback RPC server response ${res.status} ${res.statusText}`);
     }
     let resp = await res.json();
     if (!Array.isArray(resp)) resp = [resp];
     return resp;
   }
 
-  async _send(payload) {
-    if (Date.now() < this._primaryDownUntil) {
-      return this._sendViaSecondary(payload);
-    }
+  async _sendAtIndex(index, payload) {
+    if (index === 0) return super._send(payload);
+    const fb = this._fallbacks[index - 1];
+    return fb.plainFetch ? this._sendViaPlainFetch(fb.url, payload) : fb.provider._send(payload);
+  }
 
-    try {
-      const result = await super._send(payload);
-      this._primaryDownUntil = 0; // a working call clears any earlier cooldown
-      return result;
-    } catch (primaryErr) {
-      this._primaryDownUntil = Date.now() + PRIMARY_COOLDOWN_MS;
-      console.warn(`⚠️  Primary RPC failed, using secondary for ${PRIMARY_COOLDOWN_MS / 1000}s: ${primaryErr.message}`);
-      return this._sendViaSecondary(payload); // let this reject naturally if it also fails — same
-      // per-cycle try/catch-and-skip every cache/watcher here already has handles that, no need
-      // to duplicate a second retry-primary-anyway path for what would be a rare double outage.
+  _label(index) {
+    return index === 0 ? "primary" : `fallback #${index} (${this._fallbacks[index - 1].url})`;
+  }
+
+  async _send(payload) {
+    const now = Date.now();
+    const total = 1 + this._fallbacks.length;
+    // Priority order, skipping anything still in its own cooldown — but if that would skip EVERY
+    // endpoint (a genuine all-down moment), try them anyway in priority order rather than failing
+    // with nothing attempted at all.
+    let order = [];
+    for (let i = 0; i < total; i++) if (now >= this._downUntil[i]) order.push(i);
+    if (order.length === 0) order = Array.from({ length: total }, (_, i) => i);
+
+    let lastErr;
+    for (let pos = 0; pos < order.length; pos++) {
+      const index = order[pos];
+      try {
+        const result = await this._sendAtIndex(index, payload);
+        this._downUntil[index] = 0; // a working call clears any earlier cooldown
+        return result;
+      } catch (err) {
+        this._downUntil[index] = now + PRIMARY_COOLDOWN_MS;
+        const more = pos < order.length - 1 ? `, trying next for ${PRIMARY_COOLDOWN_MS / 1000}s` : "";
+        console.warn(`⚠️  ${this._label(index)} RPC failed${more}: ${err.message}`);
+        lastErr = err;
+      }
     }
+    throw lastErr; // every endpoint failed — let this reject naturally, same as before
   }
 }
 
 /**
- * Builds a provider for Electroneum mainnet that transparently fails over from RPC_URL (Ankr by
- * default) to RPC_URL_FALLBACK (Electroneum's own public RPC by default) on error. `options` is
- * passed straight to the underlying JsonRpcProvider — every existing caller's `{ batchMaxCount: 1 }`
- * (or no options at all) works exactly as before.
+ * Builds a provider for Electroneum mainnet that transparently fails over, in priority order,
+ * from RPC_URL (Ankr by default) to RPC_URL_FALLBACK (thirdweb by default) to RPC_URL_FALLBACK_2
+ * (Electroneum's own public node by default) on error. `options` is passed straight to the
+ * underlying JsonRpcProvider — every existing caller's `{ batchMaxCount: 1 }` (or no options at
+ * all) works exactly as before.
  */
 export function createRpcProvider(options) {
-  return new FailoverJsonRpcProvider(PRIMARY_RPC_URL, SECONDARY_RPC_URL, options);
+  return new FailoverJsonRpcProvider(PRIMARY_RPC_URL, [FALLBACK_RPC_URL_1, FALLBACK_RPC_URL_2], options);
 }
 
 /**
  * A plain provider on the PRIMARY endpoint only — no failover, and a long request timeout. For heavy
  * archive-state reads (etnBridge.js's backfill reads contract state at ~930 historical blocks): the public
- * secondary node doesn't serve old state ("missing revert data") and rate-limits bursts (403), so failing
+ * fallback nodes don't serve old state ("missing revert data") and rate-limit bursts (403), so failing
  * over mid-backfill just turns one slow call into a failed backfill — and each failover also logs a
  * "Primary RPC failed" line. A slow archive call should be retried against the same node instead.
  */
@@ -137,4 +176,3 @@ export function createArchiveRpcProvider(options) {
   request.timeout = process.env.RPC_ARCHIVE_TIMEOUT_MS ? parseInt(process.env.RPC_ARCHIVE_TIMEOUT_MS, 10) : 60000;
   return new ethers.JsonRpcProvider(request, network, { staticNetwork: network, ...options });
 }
-
