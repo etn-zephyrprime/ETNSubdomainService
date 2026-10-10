@@ -1405,44 +1405,137 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         )}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {(lpEntry.v2Positions || []).map((p) => (
-                          <div key={`${p.walletAddress || ""}-${p.tokenAddress}`} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                                <TokenPairLogo legs={p.legs} />
-                                {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
-                              </span>
-                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
-                            </div>
-                            {Number(p.lockedQuantity) > 0 && (
-                              <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                                {Math.round((Number(p.lockedQuantity) / Number(p.quantity)) * 100)}% of this position is locked in ElectroSwap's Locker — still yours, counted here.
+                        {(lpEntry.v2Positions || []).map((p) => {
+                          const posKey = `v2-${p.tokenAddress}`;
+                          // Same breakdown concept as Staked/Farming Positions above — see
+                          // lpPositionValuation.js's own resolveV2LpCandidate/finalizeV2LpPosition
+                          // comments. V2 always has a baseline once this wallet's own add/remove
+                          // history has been ingested; pendingFees stays null (fees already baked
+                          // into `amount` for a V2 pool, nothing extra to add).
+                          const canExpand = p.legs.some((leg) => leg.depositedAmount != null);
+                          const isExpanded = canExpand && expandedDefiPosition === posKey;
+                          return (
+                            <div key={posKey} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
+                              <div
+                                onClick={canExpand ? () => setExpandedDefiPosition(isExpanded ? null : posKey) : undefined}
+                                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                              >
+                                <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                                  <TokenPairLogo legs={p.legs} />
+                                  {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
+                                  {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                                </span>
+                                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                  {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                                </span>
                               </div>
-                            )}
-                          </div>
-                        ))}
-                        {(lpEntry.v3Positions || []).map((p) => (
-                          <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                                <TokenPairLogo legs={p.legs} />
-                                {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
-                                {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
-                              </span>
-                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                              </span>
+                              <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                                {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                              </div>
+                              {Number(p.lockedQuantity) > 0 && (
+                                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                                  {Math.round((Number(p.lockedQuantity) / Number(p.quantity)) * 100)}% of this position is locked in ElectroSwap's Locker — still yours, counted here.
+                                </div>
+                              )}
+
+                              {isExpanded && (
+                                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                                  <div style={{ fontSize: 9, color: muted, marginBottom: 6 }}>
+                                    Token quantity vs. what you deposited — separate from the USD figure above, which can look "up" purely from ETN's own price moving even while your underlying token split has shifted against you (impermanent loss).
+                                  </div>
+                                  {p.legs.map((leg) => {
+                                    if (leg.depositedAmount == null) {
+                                      return (
+                                        <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                                          {leg.symbol || "?"}: no deposit baseline on record (position may predate tracking).
+                                        </div>
+                                      );
+                                    }
+                                    const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                                    const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    return (
+                                      <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                          <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                                          <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                            {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                          </span>
+                                        </div>
+                                        <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                                          Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                          {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                          );
+                        })}
+                        {(lpEntry.v3Positions || []).map((p) => {
+                          const posKey = `v3-${p.tokenId}`;
+                          const canExpand = p.legs.some((leg) => leg.depositedAmount != null);
+                          const isExpanded = canExpand && expandedDefiPosition === posKey;
+                          return (
+                            <div key={posKey} style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}>
+                              <div
+                                onClick={canExpand ? () => setExpandedDefiPosition(isExpanded ? null : posKey) : undefined}
+                                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                              >
+                                <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                                  <TokenPairLogo legs={p.legs} />
+                                  {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
+                                  {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
+                                  {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                                </span>
+                                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                  {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                                {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                              </div>
+
+                              {isExpanded && (
+                                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                                  <div style={{ fontSize: 9, color: muted, marginBottom: 6 }}>
+                                    Token quantity vs. what you deposited — separate from the USD figure above, which can look "up" purely from ETN's own price moving even while your underlying token split has shifted against you (impermanent loss). Fees earned are counted toward your net amount since you could collect them right now.
+                                  </div>
+                                  {p.legs.map((leg) => {
+                                    if (leg.depositedAmount == null) {
+                                      return (
+                                        <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                                          {leg.symbol || "?"}: no deposit baseline on record (position may predate tracking).
+                                        </div>
+                                      );
+                                    }
+                                    const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                                    const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    return (
+                                      <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                          <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                                          <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                            {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                          </span>
+                                        </div>
+                                        <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                                          Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                          {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                          {Number(leg.pendingFees) > 0 && (
+                                            <>{" · "}Fees earned: <span style={{ color: green }}>+{Number(leg.pendingFees).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></>
+                                          )}
+                                          {" · "}Net: {Number(leg.netAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}
