@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, TriangleAlert, Sparkles, RefreshCw } from "lucide-react";
+import { Wallet as WalletIcon, TriangleAlert, Sparkles, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
@@ -223,6 +223,10 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // on wallet-list/walletFilter changes — a member filtering out Staking/Yield Farms to see "just
   // my liquid holdings" would otherwise lose that choice on every reconnect/tab revisit.
   const [hiddenCategories, setHiddenCategories] = useState(() => new Set());
+  // Which farm/staking position card (by its own React key) has its token-quantity breakdown
+  // expanded — at most one at a time, same "closed until opened" spirit as the old
+  // CollapsibleCoreTierPanel convention. null = none expanded.
+  const [expandedDefiPosition, setExpandedDefiPosition] = useState(null);
   // Last-known summary saved server-side (Supabase) — shown the instant the tab opens, and again
   // while liquidity/staking are still loading, so the headline total never has to be built from
   // scratch on screen. null until read (or if nothing's ever been saved). Replaced by the live
@@ -1309,25 +1313,75 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                         )}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {defiEntry.positions.map((p, i) => (
-                          <div
-                            key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`}
-                            style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                                <TokenPairLogo legs={p.legs} />
-                                {p.label}
-                              </span>
-                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                                {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                              </span>
+                        {defiEntry.positions.map((p, i) => {
+                          const posKey = `${p.contractAddress}-${p.farmId ?? "stake"}-${i}`;
+                          // Only a "farm" position carries the per-leg depositedAmount/pendingFees/
+                          // netAmount/changePercent breakdown (defiPositionValuation.js's own
+                          // valueYieldFarmPosition) — CoreAscension staking is single-token with no
+                          // comparable token-quantity-vs-deposited concept, so it stays non-expandable.
+                          const canExpand = p.kind === "farm" && p.legs.some((leg) => leg.depositedAmount != null);
+                          const isExpanded = canExpand && expandedDefiPosition === posKey;
+                          return (
+                            <div
+                              key={posKey}
+                              style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2 }}
+                            >
+                              <div
+                                onClick={canExpand ? () => setExpandedDefiPosition(isExpanded ? null : posKey) : undefined}
+                                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                              >
+                                <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                                  <TokenPairLogo legs={p.legs} />
+                                  {p.label}
+                                  {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                                </span>
+                                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                                  {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                                {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                              </div>
+
+                              {isExpanded && (
+                                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                                  <div style={{ fontSize: 9, color: muted, marginBottom: 6 }}>
+                                    Token quantity vs. what you deposited — separate from the USD figure above, which can look "up" purely from ETN's own price moving even while your underlying token split has shifted against you (impermanent loss). Fees earned are counted toward your net amount since you could collect them right now.
+                                  </div>
+                                  {p.legs.map((leg) => {
+                                    if (leg.depositedAmount == null) {
+                                      return (
+                                        <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                                          {leg.symbol || "?"}: no deposit baseline on record (position may predate tracking).
+                                        </div>
+                                      );
+                                    }
+                                    const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                                    const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    return (
+                                      <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                          <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                                          <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                            {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                          </span>
+                                        </div>
+                                        <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                                          Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                          {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                          {Number(leg.pendingFees) > 0 && (
+                                            <>{" · "}Fees earned: <span style={{ color: green }}>+{Number(leg.pendingFees).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></>
+                                          )}
+                                          {" · "}Net: {Number(leg.netAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                              {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}
