@@ -15,7 +15,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatUsdPricePrecise, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, blueGlow, muted, mutedLight, border, panel, panel2, orange, orangeGlow, gold, goldGlow, error as errorColor, monoFont } from "../../theme.js";
+import { green, greenGlow, blue, blueGlow, muted, mutedLight, border, panel, panel2, orange, orangeGlow, gold, goldGlow, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
