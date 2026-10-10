@@ -18,6 +18,7 @@ import { ethers } from "ethers";
 import { getPools, getBatchTokenPrices } from "../utils/electroSwapApi.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
+import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 
 dotenv.config();
 
@@ -54,6 +55,23 @@ async function main() {
   }
 
   const provider = createRpcProvider({ batchMaxCount: 1 });
+
+  // Same on-chain fallback tokenLiquidityCache.js now applies for a token ElectroSwap has no price
+  // for at all (see that file's own comment) — kept in sync here so this diagnostic reflects what
+  // the real cache actually does, instead of still showing SKIPPED for something the live cache
+  // now successfully prices.
+  if (Number.isFinite(etnPriceCache?.usd) && etnPriceCache.usd > 0) {
+    for (const addr of tokenAddresses) {
+      if (priceMap.get(addr)?.usd != null) continue;
+      try {
+        const etnPrice = await getTokenEtnPrice(provider, addr, { skipElectroSwap: true });
+        if (etnPrice != null) priceMap.set(addr, { usd: etnPrice * etnPriceCache.usd, etn: etnPrice });
+      } catch (err) {
+        console.warn(`⚠️  on-chain fallback price failed for ${addr}:`, err.message);
+      }
+    }
+  }
+
   let total = 0;
   console.log(`${matching.length} pool(s) pair ${target}:\n`);
 

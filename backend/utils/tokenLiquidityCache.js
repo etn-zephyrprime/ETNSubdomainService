@@ -4,6 +4,7 @@ import { getTokenLiquidityCache, setTokenLiquidityCache } from "../state/tokenLi
 import { createRpcProvider } from "./rpcProvider.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { recordTvlPoint } from "./tvlHistory.js";
+import { getTokenEtnPrice } from "./dexPriceQuote.js";
 
 // Keeps a public JSON cache of total liquidity (USD) per token — backs the free Tokens tab
 // (TokenLeaderboard.jsx) sorting/display. Confirmed live (2026-09-18, real funded key) that
@@ -86,6 +87,29 @@ async function refreshAndPublish() {
     }
 
     const provider = createRpcProvider({ batchMaxCount: 1 });
+
+    // On-chain fallback for any token ElectroSwap has NO price for at all (confirmed live: CORE —
+    // real, multi-pool liquidity, 4 real pools including 2 WETN pairs — has zero price entry from
+    // ElectroSwap whatsoever, most likely its fee-on-transfer mechanic confusing their indexer;
+    // same for FUGAZI). Without this, such a token's liquidity silently computes to $0 and it drops
+    // off the Tokens tab's default list entirely, despite genuinely having liquidity on-chain.
+    // Reuses dexPriceQuote.js's existing GeckoTerminal/on-chain pool-reserve pricing (the same path
+    // already proven for defiPositionValuation.js's farm-leg pricing) rather than re-deriving pool
+    // math here — `skipElectroSwap: true` since the batch call above already established
+    // ElectroSwap has nothing for this token; retrying the single-token endpoint would just fail
+    // again at a real credit cost for a near-guaranteed miss (same reasoning dexPriceQuote.js's own
+    // header comment gives for that flag).
+    if (Number.isFinite(etnPriceCache?.usd) && etnPriceCache.usd > 0) {
+      const unpricedTokens = [...tokenAddresses].filter((addr) => priceMap.get(addr)?.usd == null);
+      await mapWithConcurrency(unpricedTokens, RESERVE_READ_CONCURRENCY, async (addr) => {
+        try {
+          const etnPrice = await getTokenEtnPrice(provider, addr, { skipElectroSwap: true });
+          if (etnPrice != null) priceMap.set(addr, { usd: etnPrice * etnPriceCache.usd, etn: etnPrice });
+        } catch (err) {
+          console.warn(`⚠️  Token liquidity cache: on-chain fallback price failed for ${addr}:`, err.message);
+        }
+      });
+    }
     const liquidityUsd = {};
     const poolCounts = {}; // same keys as liquidityUsd — how many pools were SUMMED into that figure, for the frontend's "$X across N pools" qualifier
     let readFailures = 0;
