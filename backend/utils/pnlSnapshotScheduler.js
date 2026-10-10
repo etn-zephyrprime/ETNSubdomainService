@@ -13,6 +13,7 @@
 // since a given (owner, wallet)'s last snapshot — same "cheap DB check for anyone not yet due"
 // shape as portfolioDigestScheduler.js.
 import { getAllActiveTrackedWalletPairs, upsertPnlSnapshot } from "../db/pnlSnapshots.js";
+import { getAllActiveMemberWallets } from "../db/premiumMemberships.js";
 import { getPool, query } from "../db/pool.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { computeLivePnlSnapshot, backfillPnlHistory } from "../services/pnlSnapshotService.js";
@@ -54,15 +55,27 @@ async function checkAllWallets() {
     if (now.getUTCHours() < SNAPSHOT_HOUR_UTC) return; // not yet today's write window
     const today = todayUtcDateString();
 
-    const pairs = await getAllActiveTrackedWalletPairs();
-    if (pairs.length === 0) return;
-
     // Grouped by owner so each wallet's snapshot can pass the owner's OTHER tracked wallets as
-    // selfOwnedAddresses (see pnlSnapshotService.js's own comment on why) — one grouping pass,
-    // not a re-query per wallet.
+    // selfOwnedAddresses (see pnlSnapshotService.js's own comment on why) — one grouping pass, not
+    // a re-query per wallet. Seeded from getAllActiveMemberWallets() FIRST (every member's own
+    // wallet, unconditionally — see that function's own comment) rather than derived purely from
+    // tracked_wallets rows: confirmed live that tracked_wallets alone was missing BOTH a member's
+    // own wallet entirely (it's never a row there — only ever the owner_wallet column value) AND
+    // any member who's never explicitly tracked an additional wallet (their owner_wallet never
+    // appeared as a key at all). Net effect, silently since launch: this scheduler never wrote a
+    // pnl_snapshots row for any member's own connected wallet, and skipped zero-tracked-wallet
+    // members entirely — not a one-wallet gap, every Core Tier member's Value Over Time chart was
+    // missing its own wallet's contribution.
+    const [activeMemberWallets, pairs] = await Promise.all([getAllActiveMemberWallets(), getAllActiveTrackedWalletPairs()]);
+    if (activeMemberWallets.length === 0) return;
+
     const walletsByOwner = new Map();
+    for (const owner of activeMemberWallets) walletsByOwner.set(owner, [owner]);
     for (const { owner_wallet, wallet_address } of pairs) {
-      if (!walletsByOwner.has(owner_wallet)) walletsByOwner.set(owner_wallet, []);
+      // Defensive: a tracked_wallets row whose owner somehow isn't in activeMemberWallets (e.g.
+      // membership expired in the moment between these two queries) still gets a group — hasCoreAccess
+      // below is the real, authoritative gate either way, not this grouping step.
+      if (!walletsByOwner.has(owner_wallet)) walletsByOwner.set(owner_wallet, [owner_wallet]);
       walletsByOwner.get(owner_wallet).push(wallet_address);
     }
 

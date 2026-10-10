@@ -27,6 +27,7 @@
 import dotenv from "dotenv";
 import { getPool } from "../db/pool.js";
 import { getAllActiveTrackedWalletPairs } from "../db/pnlSnapshots.js";
+import { getAllActiveMemberWallets } from "../db/premiumMemberships.js";
 import { hasCoreAccess } from "../utils/premiumAccess.js";
 import { backfillCategoryPnlHistory } from "../services/categoryPnlService.js";
 
@@ -47,20 +48,26 @@ async function main() {
     throw new Error(`--days must be a positive number, got ${daysArg}`);
   }
 
-  const pairs = await getAllActiveTrackedWalletPairs();
-  if (pairs.length === 0) {
-    console.log("No actively tracked wallets found.");
+  // Seeded from getAllActiveMemberWallets() FIRST (every member's own wallet, unconditionally),
+  // not derived purely from tracked_wallets rows — see that function's own comment and
+  // backfillPnlHistory.js's identical fix for the full story: tracked_wallets alone misses both a
+  // member's own wallet (never a row there) and any member with zero explicitly tracked wallets.
+  const [activeMemberWallets, pairs] = await Promise.all([getAllActiveMemberWallets(), getAllActiveTrackedWalletPairs()]);
+  if (activeMemberWallets.length === 0) {
+    console.log("No active Core tier members found.");
     return;
   }
 
   const walletsByOwner = new Map();
+  for (const owner of activeMemberWallets) walletsByOwner.set(owner, [owner]);
   for (const { owner_wallet, wallet_address } of pairs) {
-    if (!walletsByOwner.has(owner_wallet)) walletsByOwner.set(owner_wallet, []);
+    if (!walletsByOwner.has(owner_wallet)) walletsByOwner.set(owner_wallet, [owner_wallet]);
     walletsByOwner.get(owner_wallet).push(wallet_address);
   }
 
-  if (onlyWallet && !pairs.some((p) => p.wallet_address.toLowerCase() === onlyWallet)) {
-    console.error(`${onlyWallet} isn't an actively tracked wallet for any Core tier member — nothing to do.`);
+  const allCoveredWallets = [...walletsByOwner.values()].flat();
+  if (onlyWallet && !allCoveredWallets.some((w) => w.toLowerCase() === onlyWallet)) {
+    console.error(`${onlyWallet} isn't covered by any Core tier member (neither their own wallet nor explicitly tracked) — nothing to do.`);
     process.exitCode = 1;
     return;
   }
@@ -88,7 +95,7 @@ async function main() {
   }
 
   if (attempted === 0) {
-    console.log(onlyWallet ? `${onlyWallet} has no active Core tier membership — nothing to do.` : "No Core tier members with active tracked wallets found.");
+    console.log(onlyWallet ? `${onlyWallet} has no active Core tier membership — nothing to do.` : "No active Core tier members found.");
   }
 
   await getPool().end();
