@@ -3,8 +3,8 @@ import DashboardHeader from "./components/DashboardHeader.jsx";
 import CurrencySelector from "./components/CurrencySelector.jsx";
 import { useCurrency } from "./hooks/useCurrency.js";
 import { Eye, Sparkles } from "lucide-react";
-import { green, greenGlow, blueGlow, mutedLight, background, panel, monoFont } from "./theme.js";
-import DashboardNav, { NavButton } from "./components/DashboardNav.jsx";
+import { green, greenGlow, blueGlow, mutedLight, background, panel, monoFont, gold, silver, border } from "./theme.js";
+import DashboardNav from "./components/DashboardNav.jsx";
 import MainSectionNav from "./components/MainSectionNav.jsx";
 import EtnPriceChart from "./components/EtnPriceChart.jsx";
 import CoreBurnedCard from "../components/CoreBurnedCard.jsx";
@@ -52,13 +52,42 @@ const DEMO_STATEMENT_REQUEST_ID = "830724ea-c676-4f17-8de1-e675e45fc995";
 // though it's not one of the 2 sub-tab buttons themselves.
 const CORE_TIER_GROUP_TABS = ["portfolio", "premium", "demo"];
 
-// The "Core Tier & PnL Statements" section's own 2 sub-tabs — same gold/silver accent convention
-// DashboardNav.jsx's ACCENTS already established for these two features, just one level higher now
-// that they have a shared parent section instead of sitting directly in the top-level nav.
+// The "Core Tier & PnL Statements" section's own 2 sub-tabs — same gold/silver color convention
+// DashboardNav.jsx's ACCENTS established for these two features (gold = Core Tier, silver = PnL
+// Statement), but a deliberately DIFFERENT shape/treatment from NavButton's own blocky, solid-fill
+// tab — these sit directly under the big, solid-filled "Core Tier & PnL Statements" parent tab, so
+// a pixel-identical child would read as a confusing repeat of the same button rather than a step
+// down into it. See CoreTierSubTabButton below.
 const CORE_TIER_SUB_TABS = [
   { id: "portfolio", label: "Multi-wallet Tracking", accent: "gold" },
   { id: "premium", label: "Profit & Loss Statements", accent: "silver" },
 ];
+
+// Small pill, outline-only even when active (vs. NavButton's larger solid-filled block) — visually
+// one step down from its MainSectionNav parent while still carrying the same gold/silver color
+// coding so "which of these two am I in" stays legible.
+function CoreTierSubTabButton({ t, isActive, onChange }) {
+  const accentColor = t.accent === "gold" ? gold : silver;
+  return (
+    <button
+      onClick={() => onChange(t.id)}
+      style={{
+        padding: "6px 16px",
+        borderRadius: 20,
+        border: `1px solid ${isActive ? accentColor : border}`,
+        background: isActive ? "rgba(255,255,255,0.04)" : "transparent",
+        color: isActive ? accentColor : mutedLight,
+        fontFamily: monoFont,
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: 0.4,
+        cursor: "pointer",
+      }}
+    >
+      {t.label}
+    </button>
+  );
+}
 
 // Free-tier Electroneum on-chain dashboard — read-only, no login required for every tab except
 // Premium (see that lazy import above). Everything else here stays exactly as walletless as
@@ -85,11 +114,16 @@ export default function DashboardApp() {
   // apart from a fresh /premium visit (same bare path either way), so this is a deliberate,
   // accepted one-time breakage for already-issued PDFs' own "Request another statement" link, not
   // an oversight. Nothing generated going forward is affected — those now use /pnl.
+  // null = neither section picked yet — the landing screen (2 parent buttons, demo buttons, ETN
+  // Price chart, CORE Burned card) shown below, with NEITHER section's content loaded. Deliberately
+  // not defaulted to "overview" (or "portfolio"): defaulting into Core Tier would eagerly load the
+  // WalletConnect/AppKit bundle for every visitor, not just ones who choose it, and defaulting into
+  // Electroneum Dashboard would make Core Tier feel secondary — a neutral landing state avoids both.
   const [tab, setTab] = useState(() => {
     const path = window.location.pathname;
     if (/^\/(statement\/[^/]+|pnl)\/?$/i.test(path)) return "premium";
     if (/^\/premium\/?$/i.test(path)) return "portfolio";
-    return "overview";
+    return null;
   });
   const [selectedToken, setSelectedToken] = useState(null);
   // Which address Address Lookup should open on next — named generically since it's fed from
@@ -140,12 +174,14 @@ export default function DashboardApp() {
   const handleExitDemo = () => setTab("portfolio");
 
   // Derived, not its own state — which of the 2 top-level sections `tab`'s current value belongs
-  // to. See MainSectionNav.jsx/CORE_TIER_GROUP_TABS's own comment.
-  const activeSection = CORE_TIER_GROUP_TABS.includes(tab) ? "coretier" : "electroneum";
+  // to, or null on the landing screen (neither picked yet). See MainSectionNav.jsx/
+  // CORE_TIER_GROUP_TABS's own comment.
+  const activeSection = tab == null ? null : CORE_TIER_GROUP_TABS.includes(tab) ? "coretier" : "electroneum";
 
   // Switching top-level section jumps to that section's own default sub-tab — but ONLY when
   // actually leaving the current section; clicking the already-active section's own button is a
-  // no-op that preserves whichever sub-tab was open, rather than resetting it every click.
+  // no-op that preserves whichever sub-tab was open, rather than resetting it every click. From the
+  // landing screen (activeSection null), either button always proceeds.
   const handleSectionChange = (sectionId) => {
     if (sectionId === activeSection) return;
     handleTabChange(sectionId === "coretier" ? "portfolio" : "overview");
@@ -240,11 +276,12 @@ export default function DashboardApp() {
           </div>
         </div>
 
-        {/* Landing-page block — always visible regardless of which top-level section/tab is
-            active below, same spirit as the Argus title above it rather than tab-specific
-            content. Demo buttons first (easiest way in for a first-time visitor who hasn't
-            connected a wallet yet), then the two free, walletless widgets every visitor can
-            already see value in immediately. */}
+        <MainSectionNav active={activeSection} onChange={handleSectionChange} />
+
+        {/* Demo buttons always sit here, right under the 2 parent tabs regardless of which (if
+            either) is picked — easiest way in for a first-time visitor who hasn't connected a
+            wallet yet. The ETN Price chart and CORE Burned card are landing-screen-only (tab ==
+            null): once a section's picked, that section's own nav/content takes over below. */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, marginBottom: 28 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
             {/* Same pill style as CoreTierPortfolio.jsx's own "View Demo" button and
@@ -278,67 +315,65 @@ export default function DashboardApp() {
             </a>
           </div>
 
-          <EtnPriceChart />
-          <CoreBurnedCard />
+          {tab == null && (
+            <>
+              <EtnPriceChart />
+              <CoreBurnedCard />
+            </>
+          )}
         </div>
 
-        <MainSectionNav active={activeSection} onChange={handleSectionChange} />
-
-        {activeSection === "coretier" ? (
-          <div style={{ marginBottom: 24 }}>
-            <style>{`
-              .core-tier-section-nav{display:grid;grid-template-columns:1fr;gap:8px;}
-              @media (min-width:560px){
-                .core-tier-section-nav{grid-template-columns:repeat(2,1fr);}
-              }
-            `}</style>
-            <div className="core-tier-section-nav">
-              {CORE_TIER_SUB_TABS.map((t) => (
-                <NavButton key={t.id} t={t} isActive={t.id === tab} onChange={handleTabChange} />
-              ))}
-            </div>
-          </div>
-        ) : (
-          <DashboardNav active={tab} onChange={handleTabChange} />
-        )}
-
-        {/* Scoped to just this tab's content, deliberately not the whole page — header/nav/footer
-            outside this boundary stay usable even if one tab's render throws, so a visitor can
-            navigate away from whatever broke instead of losing the entire dashboard. See
-            DashboardErrorBoundary's own header comment for the real incident this was built for. */}
-        <DashboardErrorBoundary key={tab}>
-          {tab === "overview" && <Overview onSelectAddress={handleSelectAddress} />}
-          {tab === "tokens" && (
-            selectedToken ? (
-              <TokenDetail
-                address={selectedToken}
-                onBack={() => setSelectedToken(null)}
-                onSelectAddress={handleSelectAddress}
-              />
+        {tab != null && (
+          <>
+            {activeSection === "coretier" ? (
+              <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                {CORE_TIER_SUB_TABS.map((t) => (
+                  <CoreTierSubTabButton key={t.id} t={t} isActive={t.id === tab} onChange={handleTabChange} />
+                ))}
+              </div>
             ) : (
-              <TokenLeaderboard onSelectToken={setSelectedToken} />
-            )
-          )}
-          {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
-          {tab === "nameservice" && <NameServiceStats />}
-          {tab === "team" && <TeamWalletsTab onSelectAddress={handleSelectAddress} />}
-          {tab === "cex" && <CexBalancesTab onSelectAddress={handleSelectAddress} />}
-          {tab === "bridge" && <EtnBridgeTab />}
-          {tab === "hyperlane" && <HyperlaneBridgeTab />}
-          {tab === "portfolio" && (
-            <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-              <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
-            </Suspense>
-          )}
-          {tab === "demo" && (
-            <CoreTierDemoPage onExitDemo={handleExitDemo} onSelectToken={handleSelectTokenFromAddress} />
-          )}
-          {tab === "premium" && (
-            <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-              <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
-            </Suspense>
-          )}
-        </DashboardErrorBoundary>
+              <DashboardNav active={tab} onChange={handleTabChange} />
+            )}
+
+            {/* Scoped to just this tab's content, deliberately not the whole page — header/nav/footer
+                outside this boundary stay usable even if one tab's render throws, so a visitor can
+                navigate away from whatever broke instead of losing the entire dashboard. See
+                DashboardErrorBoundary's own header comment for the real incident this was built for. */}
+            <DashboardErrorBoundary key={tab}>
+              {tab === "overview" && <Overview onSelectAddress={handleSelectAddress} />}
+              {tab === "tokens" && (
+                selectedToken ? (
+                  <TokenDetail
+                    address={selectedToken}
+                    onBack={() => setSelectedToken(null)}
+                    onSelectAddress={handleSelectAddress}
+                  />
+                ) : (
+                  <TokenLeaderboard onSelectToken={setSelectedToken} />
+                )
+              )}
+              {tab === "address" && <AddressLookup key={addressToLookUp} initialAddress={addressToLookUp} onSelectToken={handleSelectTokenFromAddress} />}
+              {tab === "nameservice" && <NameServiceStats />}
+              {tab === "team" && <TeamWalletsTab onSelectAddress={handleSelectAddress} />}
+              {tab === "cex" && <CexBalancesTab onSelectAddress={handleSelectAddress} />}
+              {tab === "bridge" && <EtnBridgeTab />}
+              {tab === "hyperlane" && <HyperlaneBridgeTab />}
+              {tab === "portfolio" && (
+                <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
+                  <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
+                </Suspense>
+              )}
+              {tab === "demo" && (
+                <CoreTierDemoPage onExitDemo={handleExitDemo} onSelectToken={handleSelectTokenFromAddress} />
+              )}
+              {tab === "premium" && (
+                <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
+                  <PremiumDashboardSection initialStatementRequestId={statementRequestId} />
+                </Suspense>
+              )}
+            </DashboardErrorBoundary>
+          </>
+        )}
       </div>
 
       <DashboardFooter isMobile={isMobile} />
