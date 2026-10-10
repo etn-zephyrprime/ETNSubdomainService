@@ -454,7 +454,7 @@ export default function CoreTierDiamondHands({ wallet, getAuthParams, coreTierAc
   const filteredWalletFailed = walletFilter !== "all" && (result?.failed || []).includes(walletFilter);
 
   return (
-    <CollapsibleCoreTierPanel icon={Gem} title="Diamond Hands Score">
+    <CollapsibleCoreTierPanel icon={Gem} title="Diamond Hands Score" defaultCollapsed={false}>
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}

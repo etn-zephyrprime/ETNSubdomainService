@@ -279,6 +279,7 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
     <CollapsibleCoreTierPanel
       icon={LineChart}
       title="Core Tier — Balance History"
+      defaultCollapsed={false}
       headerRight={
         active.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

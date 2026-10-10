@@ -73,7 +73,7 @@ export default function CoreTierGasSpend({ wallet, getAuthParams, coreTierAccess
   }, [data, walletFilter]);
 
   return (
-    <CollapsibleCoreTierPanel icon={Fuel} title="Core Tier — Gas Spent">
+    <CollapsibleCoreTierPanel icon={Fuel} title="Core Tier — Gas Spent" defaultCollapsed={false}>
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}

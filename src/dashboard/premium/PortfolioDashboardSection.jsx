@@ -14,7 +14,27 @@ import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
+import { NavButton } from "../components/DashboardNav.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont } from "../theme.js";
+
+// The 8 panels below used to all render stacked, each collapsed-by-default behind its own +/-
+// (CollapsibleCoreTierPanel) — replaced with this button row (same plain style as the main
+// DashboardNav's own free tabs, via the shared NavButton — no gold accent here, that's already
+// carried by the "Multi-wallet Tracking" sub-tab one level up in DashboardApp.jsx) switching
+// between them one at a time, same interaction model as every other tab/sub-tab on this dashboard.
+// Each of the 7 collapsible ones now renders with defaultCollapsed={false} (see their own files)
+// since this row is now the single show/hide control — the one-at-a-time display IS the "closed
+// until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
+const PANELS = [
+  { id: "portfolio", label: "Core Tier Portfolio" },
+  { id: "balance", label: "Core Tier — Balance History" },
+  { id: "pnl", label: "Core Tier — PnL" },
+  { id: "nftpnl", label: "Core Tier — NFT PnL" },
+  { id: "activity", label: "Core Tier — Recent Activity" },
+  { id: "diamondhands", label: "Diamond Hands Score" },
+  { id: "gas", label: "Core Tier — Gas Spent" },
+  { id: "alerts", label: "Core Tier — Alerts" },
+];
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
 // separate from PremiumDashboardSection.jsx (PnL Statements) — see that file's own header comment
@@ -24,6 +44,9 @@ import { green, greenGlow, muted, mutedLight, border, panel2, monoFont } from ".
 // dashboard for every visitor who never touches either wallet-requiring tab.
 export default function PortfolioDashboardSection({ onSelectToken, onViewDemo }) {
   const wallet = useReownWallet();
+  // Which of the 8 panels below is showing — see PANELS' own comment on why this replaced the old
+  // stacked/collapsible layout.
+  const [activePanel, setActivePanel] = useState("portfolio");
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
   // within each of those, several concurrent callers) each prompting their own wallet signature.
@@ -118,26 +141,53 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
         </div>
       )}
 
-      {/* Portfolio and Membership always render fully open — everything else (Balance History,
-          PnL, NFT PnL, Alerts) starts collapsed behind a + and opens on click, via each of those
-          components' own CollapsibleCoreTierPanel wrapper (collapse state lives inside each one,
-          nothing to coordinate here) — having every section expanded on load turned this page
-          into a wall of numbers before a member had even picked which one they cared about. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        {/* Someone who isn't (yet) a member — including a visitor with no wallet connected — sees the Premium
-            Membership panel FIRST, above the portfolio it unlocks; an active member gets it back at the bottom. */}
-        {!hasAccess && membershipPanel}
-        <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onViewDemo={onViewDemo} />
-        <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
-        {hasAccess && membershipPanel}
-        <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
+      {/* Someone who isn't (yet) a member — including a visitor with no wallet connected — sees the Premium
+          Membership panel FIRST, above the portfolio it unlocks; an active member gets it back at the bottom. */}
+      {!hasAccess && membershipPanel}
+
+      <div style={{ marginBottom: 20 }}>
+        <style>{`
+          .core-tier-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
+          @media (min-width:720px){
+            .core-tier-panel-switcher{grid-template-columns:repeat(4,1fr);}
+          }
+        `}</style>
+        <div className="core-tier-panel-switcher">
+          {PANELS.map((p) => (
+            <NavButton key={p.id} t={p} isActive={p.id === activePanel} onChange={setActivePanel} />
+          ))}
+        </div>
       </div>
+
+      <div style={{ marginBottom: 20 }}>
+        {activePanel === "portfolio" && (
+          <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onViewDemo={onViewDemo} />
+        )}
+        {activePanel === "balance" && (
+          <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "pnl" && (
+          <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "nftpnl" && (
+          <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "activity" && (
+          <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "diamondhands" && (
+          <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "gas" && (
+          <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "alerts" && (
+          <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
+        )}
+      </div>
+
+      {hasAccess && membershipPanel}
+      <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
     </div>
   );
 }

@@ -135,6 +135,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
     <CollapsibleCoreTierPanel
       icon={ImageIcon}
       title="Core Tier — NFT PnL"
+      defaultCollapsed={false}
       headerRight={
         hasAccess && active.length > 0 && (
           <DashboardButton

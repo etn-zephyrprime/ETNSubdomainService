@@ -463,6 +463,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     <CollapsibleCoreTierPanel
       icon={TrendingUp}
       title="Core Tier — PnL"
+      defaultCollapsed={false}
       headerRight={
         hasAccess && active.length > 0 && (
           <DashboardButton
