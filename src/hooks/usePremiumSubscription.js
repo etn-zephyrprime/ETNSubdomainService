@@ -54,6 +54,17 @@ export function usePremiumSubscription() {
     return await contract.isAnnualMember(address);
   }, [getReadContract]);
 
+  // Lifetime CORE (wei) burned via THIS contract's own executeSplitForPeriod ("Split & Burn" — see
+  // AdminSplitPanel.jsx) — Core Tier/PnL Statement subscription revenue specifically. A genuinely
+  // separate counter from useBurnPool.js's own totalCoreBurned, which reads MARKETPLACE_ADDRESS
+  // (ETN Subdomain Service's domain marketplace sales) — confirmed live these are two different
+  // contracts with two independent counters, not one shared total. Dashboard/CoreTierBurnedCard.jsx
+  // is the only consumer; CoreBurnedCard.jsx (the ENS site's own card) stays on the marketplace one.
+  const getTotalCoreBurned = useCallback(async () => {
+    const contract = getReadContract();
+    return await contract.totalCoreBurned();
+  }, [getReadContract]);
+
   const subscribe = useCallback(async (numMonths, priceWeiPerMonth, signer) => {
     setLoading(true);
     setError(null);
@@ -104,6 +115,7 @@ export function usePremiumSubscription() {
     getAnnualMembershipExpiry,
     getIsMembershipActive,
     getIsAnnualMember,
+    getTotalCoreBurned,
     subscribe,
     subscribeAnnual,
     loading,

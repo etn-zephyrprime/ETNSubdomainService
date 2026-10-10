@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { green, blue, orange, mutedLight, muted, monoFont } from "../../theme.js";
+import { green, greenGlow, blue, orange, mutedLight, muted, monoFont } from "../../theme.js";
 import { formatUsdPrice } from "../../utils/format.js";
 import RowLeader from "./RowLeader.jsx";
 
@@ -114,7 +114,7 @@ export default function PortfolioCompositionChart({ slices, hasUnpriced, size = 
         </svg>
         <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none", textAlign: "center" }}>
           <div style={{ fontFamily: monoFont, fontSize: 9, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color: muted }}>Total</div>
-          <div style={{ fontSize: 13, fontWeight: 900, color: "#fff" }}>
+          <div style={{ fontSize: 13, fontWeight: 900, color: green, textShadow: `0 0 8px ${greenGlow}` }}>
             {hasUnpriced ? "≈ " : ""}{formatUsdPrice(total)}
           </div>
         </div>
@@ -134,7 +134,7 @@ export default function PortfolioCompositionChart({ slices, hasUnpriced, size = 
             </span>
             <RowLeader />
             <span style={{ display: "flex", alignItems: "baseline", gap: 6, flexShrink: 0 }}>
-              <span style={{ color: "#fff", fontWeight: 700 }}>{formatUsdPrice(s.value)}</span>
+              <span style={{ color: green, fontWeight: 700 }}>{formatUsdPrice(s.value)}</span>
               <span style={{ color: muted, fontSize: 10 }}>{total > 0 ? `${Math.round((s.value / total) * 100)}%` : "—"}</span>
             </span>
           </div>

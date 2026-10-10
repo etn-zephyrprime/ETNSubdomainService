@@ -15,7 +15,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatUsdPricePrecise, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, blue, blueGlow, muted, mutedLight, border, panel, panel2, orange, orangeGlow, gold, goldGlow, error as errorColor, monoFont } from "../../theme.js";
+import { green, greenGlow, blueGlow, muted, mutedLight, border, panel, panel2, orange, orangeGlow, gold, goldGlow, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
@@ -105,27 +105,21 @@ const smallInputStyle = {
   fontFamily: monoFont,
 };
 
-// The Total Portfolio Balance headline — a plain bold white "$1,234.56" read like any ordinary
-// fiat balance, which undersold the one figure this whole panel builds up to. Monospaced (ledger/
-// terminal digits, not a prose font) with a green->cyan gradient fill and a matching glow instead
-// of a flat white fill, closer to how on-chain/explorer dashboards usually treat a headline
-// balance. `WebkitBackgroundClip`/`WebkitTextFillColor` do the gradient-text clipping (no
-// standard non-prefixed equivalent has real cross-browser support yet); `filter: drop-shadow` for
-// the glow instead of `textShadow`, since a textShadow renders behind the glyph's own fill and
-// does nothing useful once that fill is transparent (which it is here, right after
-// WebkitTextFillColor) — drop-shadow filters the rendered (already-clipped) pixels instead, so it
-// actually shows.
+// The Total Portfolio Balance headline — confirmed live that the earlier green->cyan gradient-text
+// fill (WebkitBackgroundClip trick) read as amateurish rather than premium. Replaced with the same
+// plain solid-color-plus-glow treatment every other headline figure in this app already uses
+// (CoreBurnedCard.jsx's own big CORE number, CoreTierBurnedCard.jsx, etc.) — one consistent
+// "important number" look across the whole dashboard instead of this one figure doing its own
+// different thing. Every other balance figure in this panel (Combined ETN Balance, Portfolio
+// Composition's own total and per-category legend values) now matches this exact treatment too —
+// same color+glow, each at its own existing size, not resized to match.
 const headlineValueStyle = {
   fontFamily: monoFont,
   fontSize: 26,
   fontWeight: 800,
   letterSpacing: 0.5,
-  background: `linear-gradient(90deg, ${green}, ${blue})`,
-  WebkitBackgroundClip: "text",
-  WebkitTextFillColor: "transparent",
-  backgroundClip: "text",
-  filter: `drop-shadow(0 0 8px ${greenGlow})`,
-  display: "inline-block",
+  color: green,
+  textShadow: `0 0 10px ${greenGlow}`,
 };
 
 // A standing, always-visible warning (not just something shown mid-action) — the cooldown is a
@@ -1279,7 +1273,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     </div>
                     <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                       <TokenLogo address="NATIVE" label="ETN" size={24} spacing={0} style={{ alignSelf: "center" }} />
-                      <div style={{ fontSize: 22, fontWeight: 900, color: "#fff", textShadow: `0 0 10px ${greenGlow}` }}>
+                      <div style={{ fontSize: 22, fontWeight: 900, color: green, textShadow: `0 0 10px ${greenGlow}` }}>
                         {combinedEtnRaw != null ? formatEtnBalance(combinedEtnRaw) : "0.00"} ETN
                       </div>
                       {combinedUsdValue != null && (
