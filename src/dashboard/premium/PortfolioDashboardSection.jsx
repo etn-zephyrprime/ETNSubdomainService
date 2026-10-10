@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Gem, Fuel, Bell } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -14,27 +15,60 @@ import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
-import { NavButton } from "../components/DashboardNav.jsx";
-import { green, greenGlow, muted, mutedLight, border, panel2, monoFont } from "../theme.js";
+import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
 // The 8 panels below used to all render stacked, each collapsed-by-default behind its own +/-
-// (CollapsibleCoreTierPanel) — replaced with this button row (same plain style as the main
-// DashboardNav's own free tabs, via the shared NavButton — no gold accent here, that's already
-// carried by the "Multi-wallet Tracking" sub-tab one level up in DashboardApp.jsx) switching
-// between them one at a time, same interaction model as every other tab/sub-tab on this dashboard.
+// (CollapsibleCoreTierPanel) — replaced with this button row switching between them one at a time.
+// Gold-accented with an icon per panel (see CorePanelButton below) — these are Core Tier's actual
+// paid feature set, confirmed live that the earlier plain/gray treatment (matching the free
+// Electroneum Dashboard's own tabs) read as flat/unpremium for what's meant to be the paid product.
 // Each of the 7 collapsible ones now renders with defaultCollapsed={false} (see their own files)
 // since this row is now the single show/hide control — the one-at-a-time display IS the "closed
 // until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
 const PANELS = [
-  { id: "portfolio", label: "Portfolio" },
-  { id: "balance", label: "Balance History" },
-  { id: "pnl", label: "PnL" },
-  { id: "nftpnl", label: "NFT PnL" },
-  { id: "activity", label: "Recent Activity" },
-  { id: "diamondhands", label: "Diamond Hands Score" },
-  { id: "gas", label: "Gas Spent" },
-  { id: "alerts", label: "Telegram Alerts" },
+  { id: "portfolio", label: "Portfolio", icon: WalletIcon },
+  { id: "balance", label: "Balance History", icon: LineChart },
+  { id: "pnl", label: "PnL", icon: TrendingUp },
+  { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
+  { id: "activity", label: "Recent Activity", icon: Activity },
+  { id: "diamondhands", label: "Diamond Hands Score", icon: Gem },
+  { id: "gas", label: "Gas Spent", icon: Fuel },
+  { id: "alerts", label: "Telegram Alerts", icon: Bell },
 ];
+
+// Gold-accented even when inactive (a faint tint, same convention NavButton's own accented tabs
+// use) so the whole row reads as a cohesive, premium feature set at a glance — not just whichever
+// one happens to be selected. Full gold fill + glow on the active one.
+function CorePanelButton({ p, isActive, onChange }) {
+  const Icon = p.icon;
+  return (
+    <button
+      onClick={() => onChange(p.id)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        width: "100%",
+        minWidth: 0,
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: `1px solid ${isActive ? gold : "rgba(232,191,76,0.35)"}`,
+        background: isActive ? "rgba(232,191,76,0.18)" : "rgba(232,191,76,0.06)",
+        color: isActive ? gold : "#d8c488",
+        boxShadow: isActive ? `0 0 12px ${goldGlow}` : undefined,
+        fontFamily: monoFont,
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        cursor: "pointer",
+      }}
+    >
+      <Icon size={14} />
+      {p.label}
+    </button>
+  );
+}
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
 // separate from PremiumDashboardSection.jsx (PnL Statements) — see that file's own header comment
@@ -42,7 +76,7 @@ const PANELS = [
 // loads this module lazily (React.lazy, only once the Portfolio tab is actually clicked), same
 // reasoning as PremiumDashboardSection.jsx: keeps the WalletConnect/AppKit bundle out of the base
 // dashboard for every visitor who never touches either wallet-requiring tab.
-export default function PortfolioDashboardSection({ onSelectToken, onViewDemo }) {
+export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, onAccessChange }) {
   const wallet = useReownWallet();
   // Which of the 8 panels below is showing — see PANELS' own comment on why this replaced the old
   // stacked/collapsible layout.
@@ -64,6 +98,18 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
   const coreTierAccess = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { active, hasAccess } = coreTierAccess;
   const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
+
+  // Reports confirmed membership (wallet connected + signed + backend-confirmed active Core Tier
+  // access — exactly what hasAccess===true means, see useCoreTierAccess.js's own comment) up to
+  // DashboardApp.jsx, which hides its landing-page demo buttons once this fires true: a paying
+  // member doesn't need the demo, they have the real thing. Deliberately NOT read at the top level
+  // of DashboardApp.jsx itself — that would mean importing wallet-connection code eagerly there,
+  // undoing the whole reason this component is lazy-loaded in the first place. hasAccess also
+  // naturally flips back to null/false on disconnect (the hook's own effect), so this correctly
+  // re-shows the demo buttons if a member disconnects.
+  useEffect(() => {
+    onAccessChange?.(hasAccess);
+  }, [hasAccess, onAccessChange]);
 
   // "all" | a wallet address — the one page-wide filter driving Portfolio, PnL, and Balance
   // History together (previously each had its own separate filter; consolidated per feedback that
@@ -154,7 +200,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo })
         `}</style>
         <div className="core-tier-panel-switcher">
           {PANELS.map((p) => (
-            <NavButton key={p.id} t={p} isActive={p.id === activePanel} onChange={setActivePanel} />
+            <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
           ))}
         </div>
       </div>
