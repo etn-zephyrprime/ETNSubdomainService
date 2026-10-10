@@ -26,14 +26,14 @@ import { green, greenGlow, muted, mutedLight, border, panel2, monoFont } from ".
 // since this row is now the single show/hide control — the one-at-a-time display IS the "closed
 // until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
 const PANELS = [
-  { id: "portfolio", label: "Core Tier Portfolio" },
-  { id: "balance", label: "Core Tier — Balance History" },
-  { id: "pnl", label: "Core Tier — PnL" },
-  { id: "nftpnl", label: "Core Tier — NFT PnL" },
-  { id: "activity", label: "Core Tier — Recent Activity" },
+  { id: "portfolio", label: "Portfolio" },
+  { id: "balance", label: "Balance History" },
+  { id: "pnl", label: "PnL" },
+  { id: "nftpnl", label: "NFT PnL" },
+  { id: "activity", label: "Recent Activity" },
   { id: "diamondhands", label: "Diamond Hands Score" },
-  { id: "gas", label: "Core Tier — Gas Spent" },
-  { id: "alerts", label: "Core Tier — Alerts" },
+  { id: "gas", label: "Gas Spent" },
+  { id: "alerts", label: "Telegram Alerts" },
 ];
 
 // Premium Feature #2 — Core Tier's multi-wallet portfolio tracking. Its own tab/lazy chunk,
