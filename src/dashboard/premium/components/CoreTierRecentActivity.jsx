@@ -215,6 +215,7 @@ export default function CoreTierRecentActivity({ wallet, getAuthParams, coreTier
     <CollapsibleCoreTierPanel
       icon={Activity}
       title="Core Tier — Recent Activity"
+      defaultCollapsed={false}
       headerRight={
         hasAccess && active.length > 0 && (
           <DashboardButton

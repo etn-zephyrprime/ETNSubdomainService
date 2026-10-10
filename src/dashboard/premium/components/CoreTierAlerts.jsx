@@ -402,7 +402,7 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
   };
 
   return (
-    <CollapsibleCoreTierPanel icon={Bell} title="Core Tier — Alerts">
+    <CollapsibleCoreTierPanel icon={Bell} title="Core Tier — Alerts" defaultCollapsed={false}>
       <CoreTierGate
         wallet={wallet}
         hasAccess={hasAccess}

@@ -31,6 +31,12 @@ const CURRENT_YEAR = new Date().getUTCFullYear();
 // planetzephyros.etn, generated during this feature's own end-to-end testing. Links to the
 // existing /statement/:id viewer route rather than the raw R2 PDF URL, same as createdRequests
 // links below, so it opens in-app (new tab) instead of a bare file download.
+//
+// DashboardApp.jsx's own landing-page "View Demo Statement" link duplicates this exact value
+// rather than importing it from here — this file eagerly imports ethers/usePnlPurchase, and this
+// module is only ever reached via PremiumDashboardSection.jsx's own React.lazy chunk (see that
+// file's header comment); importing anything from here at DashboardApp.jsx's own top level would
+// pull that whole chain into the base bundle for every visitor, wallet or not.
 const DEMO_STATEMENT_REQUEST_ID = "830724ea-c676-4f17-8de1-e675e45fc995";
 
 function parseAddressList(raw) {
