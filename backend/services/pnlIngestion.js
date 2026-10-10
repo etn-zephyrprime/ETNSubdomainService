@@ -258,7 +258,9 @@ async function getTokenDecimalsCached(tokenAddress) {
   return result;
 }
 
-function v3PositionAssetKey(tokenIdStr) {
+// Exported so lpPositionValuation.js's own deposited-quantity lookup can find this exact synthetic
+// fungible-lot key in ingested_transfers without duplicating the format string.
+export function v3PositionAssetKey(tokenIdStr) {
   return `${POSITION_MANAGER_ADDRESS}:${tokenIdStr}`;
 }
 
