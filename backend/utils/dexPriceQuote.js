@@ -152,6 +152,11 @@ async function priceFromV2Reserves(provider, info) {
   const [reserve0, reserve1] = await pair.getReserves();
   const [tokenReserveRaw, wetnReserveRaw] = info.tokenIsToken0 ? [reserve0, reserve1] : [reserve1, reserve0];
   if (tokenReserveRaw === 0n) return null; // drained/uninitialized pool — no meaningful price
+  // Same principle as electroSwapApi.js's own parsePriceEntry fix — a pool with real token
+  // reserve but ZERO WETN reserve is a degenerate/drained state, not a real "this token is worth
+  // nothing" price; returning null here lets the caller fall back rather than quoting a 0 that
+  // looks confident but almost certainly isn't.
+  if (wetnReserveRaw === 0n) return null;
 
   const tokenReserve = Number(ethers.formatUnits(tokenReserveRaw, info.tokenDecimals));
   const wetnReserve = Number(ethers.formatUnits(wetnReserveRaw, 18));

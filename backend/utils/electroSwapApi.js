@@ -196,8 +196,17 @@ function parsePriceEntry(entry) {
   if (!entry) return null;
   const usd = Number(entry.usd);
   const etn = Number(entry.etn);
-  if (!Number.isFinite(usd) && !Number.isFinite(etn)) return null;
-  return { usd: Number.isFinite(usd) ? usd : null, etn: Number.isFinite(etn) ? etn : null };
+  // A literal 0 is treated as "ElectroSwap has no real pricing data for this token", never a real
+  // price — confirmed live: a farm position's CLUB/DYNO legs valued at a hard $0 USD despite
+  // genuinely nonzero holdings, traced back to dexPriceQuote.js's getTokenEtnPrice taking
+  // `electroSwapPrice.etn != null` at face value (0 != null is true) and returning it directly,
+  // never falling through to the on-chain pool-reserve fallback that path exists specifically for.
+  // A real, tiny-but-nonzero price (e.g. 1e-9) still passes this check fine — only an exact 0 (or
+  // a negative, which shouldn't happen either) is treated as missing.
+  const usdValid = Number.isFinite(usd) && usd > 0;
+  const etnValid = Number.isFinite(etn) && etn > 0;
+  if (!usdValid && !etnValid) return null;
+  return { usd: usdValid ? usd : null, etn: etnValid ? etn : null };
 }
 
 /** `{ usd, etn }` price for ONE token — 50 credits per call. Prefer getBatchTokenPrices for more
