@@ -7,7 +7,7 @@ import { green, greenGlow, blueGlow, mutedLight, background, panel, panel2, mono
 import DashboardNav from "./components/DashboardNav.jsx";
 import MainSectionNav from "./components/MainSectionNav.jsx";
 import EtnPriceChart from "./components/EtnPriceChart.jsx";
-import CoreBurnedCard from "../components/CoreBurnedCard.jsx";
+import CoreTierBurnedCard from "./components/CoreTierBurnedCard.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
 import Overview from "./components/Overview.jsx";
 import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
@@ -356,7 +356,7 @@ export default function DashboardApp() {
           {tab == null && (
             <>
               <EtnPriceChart />
-              <CoreBurnedCard sourceLabel="marketplace sales" />
+              <CoreTierBurnedCard />
             </>
           )}
         </div>
