@@ -15,7 +15,7 @@ import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatTokenAmount, formatUsdPrice, formatUsdPricePrecise, formatEtnPrice, formatEtnBalance, isSpamTokenName } from "../../utils/format.js";
 import { readCachedTokenPrices, cacheTokenPrice } from "../../utils/tokenPriceCache.js";
-import { green, greenGlow, blue, muted, mutedLight, border, panel, panel2, orange, error as errorColor, monoFont } from "../../theme.js";
+import { green, greenGlow, blue, blueGlow, muted, mutedLight, border, panel, panel2, orange, orangeGlow, gold, goldGlow, error as errorColor, monoFont } from "../../theme.js";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
@@ -45,6 +45,18 @@ const HOLDING_CATEGORIES = [
   { id: "tokens", label: "Tokens" },
   { id: "nfts", label: "NFT's" },
 ];
+
+// This panel stacks a LOT of distinct sections (ETN balance, DeFi positions, LP positions,
+// token/NFT holdings) with no visual separation beyond spacing alone — confirmed live that it
+// read as one dense, undifferentiated wall rather than a sequence of distinct sections. A
+// different-colored glowing divider after each major section gives each one its own visual
+// identity (same "colored accent line" convention this app already uses for section underlines
+// elsewhere, just applied between sections here rather than under a heading) and makes it obvious
+// at a glance where one section ends and the next begins, without needing to actually read the
+// labels.
+function SectionDivider({ color, glow }) {
+  return <div style={{ height: 2, borderRadius: 2, background: color, boxShadow: `0 0 8px ${glow}`, margin: "20px 0" }} />;
+}
 // The 4 buckets Total Portfolio Balance / Portfolio Composition split into — same 4 slices
 // compositionSlices below has always shown, now individually toggleable. Order here is the
 // render order for both the filter checkboxes and (via compositionSlices) the chart legend.
@@ -1281,6 +1293,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                     </div>
                   </div>
 
+                  <SectionDivider color={green} glow={greenGlow} />
+
                   {defiPositions?.ingesting ? (
                     <IngestProgressBanner jobs={defiPositions.jobs} resolveWalletName={resolveName} />
                   ) : defiPositionsError ? (
@@ -1323,6 +1337,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       </div>
                     </div>
                   ) : null}
+
+                  <SectionDivider color={blue} glow={blueGlow} />
 
                   {lpPositionsError ? (
                     <div style={{ fontSize: 11, color: errorColor, marginBottom: 16 }}>{lpPositionsError}</div>
@@ -1382,6 +1398,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       </div>
                     </div>
                   ) : null}
+
+                  <SectionDivider color={orange} glow={orangeGlow} />
 
                   <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
                     Combined Holdings
@@ -1511,6 +1529,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       )}
                     </>
                   )}
+
+                  <SectionDivider color={gold} glow={goldGlow} />
                 </>
               )}
             </div>

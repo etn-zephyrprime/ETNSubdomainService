@@ -23,7 +23,14 @@ const CORE_TOTAL_SUPPLY = 1_000_000;
 // confirms — see App.jsx's own comment on burnRefreshSignal for why this exists on top of the
 // interval poll below (both read the exact same live on-chain totalCoreBurned() counter; this only
 // changes how soon this specific card notices a burn THIS SAME PAGE just triggered).
-export default function CoreBurnedCard({ refreshSignal } = {}) {
+//
+// `sourceLabel` (optional): the footer sentence's "burned from ___" phrase. Defaults to naming ETN
+// Subdomain Service explicitly, correct for THIS card's original home (App.jsx, the ETN Subdomain
+// Service site itself). dashboard/DashboardApp.jsx reuses this same component on Argus and passes
+// a neutral override — Argus is its own product, not ETN Subdomain Service, and that site already
+// has its own copy of this exact card with the default wording, so Argus's copy shouldn't name-drop
+// it a second time.
+export default function CoreBurnedCard({ refreshSignal, sourceLabel = "ETN Subdomain Service (ENS) marketplace sales" } = {}) {
   const { getTotalCoreBurned } = useBurnPool();
 
   const [totalBurned, setTotalBurned] = useState(null);
@@ -89,7 +96,7 @@ export default function CoreBurnedCard({ refreshSignal } = {}) {
         </div>
       )}
       <div style={{ fontSize: 11, color: mutedLight, marginTop: 6 }}>
-        Lifetime total bought back and burned from ETN Subdomain Service (ENS) marketplace sales —
+        Lifetime total bought back and burned from {sourceLabel} —
         {" "}{CORE_TOTAL_SUPPLY.toLocaleString()} CORE total starting supply.
       </div>
     </Panel>

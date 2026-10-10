@@ -3,7 +3,7 @@ import DashboardHeader from "./components/DashboardHeader.jsx";
 import CurrencySelector from "./components/CurrencySelector.jsx";
 import { useCurrency } from "./hooks/useCurrency.js";
 import { Eye, Sparkles } from "lucide-react";
-import { green, greenGlow, blueGlow, mutedLight, background, panel, monoFont, gold, silver, border } from "./theme.js";
+import { green, greenGlow, blueGlow, mutedLight, background, panel, panel2, monoFont, gold, goldGlow, silver, silverGlow, border } from "./theme.js";
 import DashboardNav from "./components/DashboardNav.jsx";
 import MainSectionNav from "./components/MainSectionNav.jsx";
 import EtnPriceChart from "./components/EtnPriceChart.jsx";
@@ -57,35 +57,61 @@ const CORE_TIER_GROUP_TABS = ["portfolio", "premium", "demo"];
 // Statement), but a deliberately DIFFERENT shape/treatment from NavButton's own blocky, solid-fill
 // tab — these sit directly under the big, solid-filled "Core Tier & PnL Statements" parent tab, so
 // a pixel-identical child would read as a confusing repeat of the same button rather than a step
-// down into it. See CoreTierSubTabButton below.
+// down into it. See CoreTierSubTabBar below.
 const CORE_TIER_SUB_TABS = [
   { id: "portfolio", label: "Multi-wallet Tracking", accent: "gold" },
   { id: "premium", label: "Profit & Loss Statements", accent: "silver" },
 ];
 
-// Small pill, outline-only even when active (vs. NavButton's larger solid-filled block) — visually
-// one step down from its MainSectionNav parent while still carrying the same gold/silver color
-// coding so "which of these two am I in" stays legible.
-function CoreTierSubTabButton({ t, isActive, onChange }) {
-  const accentColor = t.accent === "gold" ? gold : silver;
+// A joined two-segment control (one bordered pill, split in two) rather than two separate small
+// buttons — confirmed live that two independent small pills floating in open space "looked a
+// little lost" next to MainSectionNav's own large, separately-bordered blocks above. A single
+// fused unit always sits side by side (nothing to wrap onto its own line) and reads as a genuinely
+// different UI PATTERN from the parent tabs, not just a smaller copy of the same block style — the
+// active segment fills solid with its gold/silver color (bold, confident) rather than the parent's
+// outline-on-dark treatment, so the two levels are unmistakably distinct at a glance.
+function CoreTierSubTabBar({ tab, onChange }) {
   return (
-    <button
-      onClick={() => onChange(t.id)}
+    <div
       style={{
-        padding: "6px 16px",
-        borderRadius: 20,
-        border: `1px solid ${isActive ? accentColor : border}`,
-        background: isActive ? "rgba(255,255,255,0.04)" : "transparent",
-        color: isActive ? accentColor : mutedLight,
-        fontFamily: monoFont,
-        fontSize: 11,
-        fontWeight: 700,
-        letterSpacing: 0.4,
-        cursor: "pointer",
+        display: "flex",
+        width: "100%",
+        maxWidth: 420,
+        margin: "0 auto 24px",
+        borderRadius: 10,
+        border: `1px solid ${border}`,
+        overflow: "hidden",
+        background: panel2,
       }}
     >
-      {t.label}
-    </button>
+      {CORE_TIER_SUB_TABS.map((t) => {
+        const accentColor = t.accent === "gold" ? gold : silver;
+        const accentGlow = t.accent === "gold" ? goldGlow : silverGlow;
+        const isActive = t.id === tab;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            style={{
+              flex: 1,
+              padding: "10px 12px",
+              border: "none",
+              background: isActive ? accentColor : "transparent",
+              color: isActive ? panel : mutedLight,
+              boxShadow: isActive ? `0 0 14px ${accentGlow}` : undefined,
+              fontFamily: monoFont,
+              fontSize: 11,
+              fontWeight: 800,
+              letterSpacing: 0.4,
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -172,6 +198,12 @@ export default function DashboardApp() {
   // button and CoreTierDemoPage's own "Exit Demo" button.
   const handleViewDemo = () => setTab("demo");
   const handleExitDemo = () => setTab("portfolio");
+
+  // True once PortfolioDashboardSection confirms the connected wallet is a signed-in, active Core
+  // Tier member (see its own onAccessChange comment) — hides the landing-page demo buttons below.
+  // Starts false (buttons visible) since nothing wallet-related has loaded yet at that point.
+  const [isCoreTierMember, setIsCoreTierMember] = useState(false);
+  const handleCoreTierAccessChange = (hasAccess) => setIsCoreTierMember(!!hasAccess);
 
   // Derived, not its own state — which of the 2 top-level sections `tab`'s current value belongs
   // to, or null on the landing screen (neither picked yet). See MainSectionNav.jsx/
@@ -278,47 +310,53 @@ export default function DashboardApp() {
 
         <MainSectionNav active={activeSection} onChange={handleSectionChange} />
 
-        {/* Demo buttons always sit here, right under the 2 parent tabs regardless of which (if
-            either) is picked — easiest way in for a first-time visitor who hasn't connected a
-            wallet yet. The ETN Price chart and CORE Burned card are landing-screen-only (tab ==
-            null): once a section's picked, that section's own nav/content takes over below. */}
+        {/* Demo buttons sit here, right under the 2 parent tabs, for everyone EXCEPT a confirmed
+            Core Tier member (isCoreTierMember — see handleCoreTierAccessChange's own comment): a
+            paying, signed-in member doesn't need the demo, they have the real thing. Still shown
+            on the landing screen and the free Electroneum Dashboard, since membership is only ever
+            known once PortfolioDashboardSection's own lazy chunk has actually loaded and checked —
+            there's no eager, walletless way to know this any earlier. The ETN Price chart and CORE
+            Burned card are landing-screen-only (tab == null): once a section's picked, that
+            section's own nav/content takes over below. */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, marginBottom: 28 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-            {/* Same pill style as CoreTierPortfolio.jsx's own "View Demo" button and
-                PnlStatementRequest.jsx's own "View Demo Statement" link — this is the same demo,
-                just a second, more prominent entry point to it; the in-context ones stay too. */}
-            <button
-              onClick={handleViewDemo}
-              style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20,
-                border: `1px solid ${green}`, background: green, color: panel,
-                fontFamily: monoFont, fontSize: 12, fontWeight: 800, textTransform: "uppercase",
-                letterSpacing: 0.4, cursor: "pointer", boxShadow: `0 0 16px ${greenGlow}`,
-              }}
-            >
-              <Sparkles size={13} />
-              View Core Tier Demo
-            </button>
-            <a
-              href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20,
-                border: `1px solid ${green}`, background: green, color: panel,
-                fontSize: 12, fontWeight: 800, letterSpacing: 0.2, textDecoration: "none",
-                cursor: "pointer", boxShadow: `0 0 16px ${greenGlow}`,
-              }}
-            >
-              <Sparkles size={13} />
-              View Demo Statement
-            </a>
-          </div>
+          {!isCoreTierMember && (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+              {/* Same pill style as CoreTierPortfolio.jsx's own "View Demo" button and
+                  PnlStatementRequest.jsx's own "View Demo Statement" link — this is the same demo,
+                  just a second, more prominent entry point to it; the in-context ones stay too. */}
+              <button
+                onClick={handleViewDemo}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20,
+                  border: `1px solid ${green}`, background: green, color: panel,
+                  fontFamily: monoFont, fontSize: 12, fontWeight: 800, textTransform: "uppercase",
+                  letterSpacing: 0.4, cursor: "pointer", boxShadow: `0 0 16px ${greenGlow}`,
+                }}
+              >
+                <Sparkles size={13} />
+                View Core Tier Demo
+              </button>
+              <a
+                href={`/statement/${DEMO_STATEMENT_REQUEST_ID}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 20,
+                  border: `1px solid ${green}`, background: green, color: panel,
+                  fontSize: 12, fontWeight: 800, letterSpacing: 0.2, textDecoration: "none",
+                  cursor: "pointer", boxShadow: `0 0 16px ${greenGlow}`,
+                }}
+              >
+                <Sparkles size={13} />
+                View Demo Statement
+              </a>
+            </div>
+          )}
 
           {tab == null && (
             <>
               <EtnPriceChart />
-              <CoreBurnedCard />
+              <CoreBurnedCard sourceLabel="marketplace sales" />
             </>
           )}
         </div>
@@ -326,11 +364,7 @@ export default function DashboardApp() {
         {tab != null && (
           <>
             {activeSection === "coretier" ? (
-              <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-                {CORE_TIER_SUB_TABS.map((t) => (
-                  <CoreTierSubTabButton key={t.id} t={t} isActive={t.id === tab} onChange={handleTabChange} />
-                ))}
-              </div>
+              <CoreTierSubTabBar tab={tab} onChange={handleTabChange} />
             ) : (
               <DashboardNav active={tab} onChange={handleTabChange} />
             )}
@@ -360,7 +394,7 @@ export default function DashboardApp() {
               {tab === "hyperlane" && <HyperlaneBridgeTab />}
               {tab === "portfolio" && (
                 <Suspense fallback={<div style={{ textAlign: "center", color: mutedLight, fontSize: 13, padding: "40px 0" }}>Loading…</div>}>
-                  <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} />
+                  <PortfolioDashboardSection onSelectToken={handleSelectTokenFromAddress} onViewDemo={handleViewDemo} onAccessChange={handleCoreTierAccessChange} />
                 </Suspense>
               )}
               {tab === "demo" && (
