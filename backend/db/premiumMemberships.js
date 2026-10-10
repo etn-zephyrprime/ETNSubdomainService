@@ -32,3 +32,18 @@ export async function getMembership(walletAddress) {
   ]);
   return res?.rows[0] || null;
 }
+
+/** Every wallet with a currently-active Core Tier membership (either tier) — the complete universe
+ * of Core Tier members, confirmed live to be MISSING from pnlSnapshotScheduler.js's own (and
+ * several backfill scripts') prior approach of deriving "which owners to process" purely from
+ * tracked_wallets rows: a member who has never explicitly tracked an additional wallet beyond
+ * their own has NO tracked_wallets row at all, so they never appeared there — meaning the daily
+ * scheduler never wrote them a single pnl_snapshots row, for their own wallet or otherwise, since
+ * launch. Same monthly_expiry/annual_expiry "either tier, not just annual" OR logic hasCoreAccess
+ * itself uses, just for every member at once instead of checking one wallet. */
+export async function getAllActiveMemberWallets() {
+  const res = await query(
+    `SELECT wallet_address FROM premium_memberships WHERE monthly_expiry > now() OR annual_expiry > now()`
+  );
+  return (res?.rows || []).map((r) => r.wallet_address);
+}
