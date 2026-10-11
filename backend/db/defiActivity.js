@@ -74,6 +74,39 @@ export async function getDistinctStakingContracts(trackedWallet) {
   return (res?.rows || []).map((r) => r.contract_address);
 }
 
+/** Net quantity of a farm position's token0/token1 still genuinely "deposited" (not yet withdrawn)
+ * — sum of every farm_deposit row's amount0Added/amount1Added (covers both a fresh FarmDeposit and
+ * a FarmIncrease top-up — see pnlIngestion.js's own event_type mapping), minus every farm_withdraw
+ * row's amount0Withdrawn/amount1Withdrawn, for this exact (contract, farmId, wallet). This is the
+ * baseline defiPositionValuation.js's valueYieldFarmPosition compares a position's CURRENT (live,
+ * pool-math) quantity against — see that function's own comment on why a USD-only figure can hide
+ * an unfavorable token-quantity shift (confirmed live user concern: ETN pumping can make a position
+ * read as "profitable" in USD even while the underlying CLUB/DYNO split has moved against you).
+ * Raw string amounts (wei), summed as BigInt; floored at 0n per leg (a withdrawal can't legitimately
+ * exceed what was deposited, but this guards against any rounding/edge-case drift rather than ever
+ * showing a nonsensical negative baseline). */
+export async function getFarmDepositedQuantities(trackedWallet, contractAddress, farmId) {
+  const res = await query(
+    `SELECT event_type, raw_args FROM defi_activity
+     WHERE tracked_wallet = $1 AND contract_address = $2 AND farm_id = $3
+       AND event_type IN ('farm_deposit', 'farm_withdraw')`,
+    [trackedWallet.toLowerCase(), contractAddress.toLowerCase(), farmId]
+  );
+  let net0 = 0n;
+  let net1 = 0n;
+  for (const row of res?.rows || []) {
+    const raw = row.raw_args || {};
+    if (row.event_type === "farm_deposit") {
+      if (raw.amount0Added) net0 += BigInt(raw.amount0Added);
+      if (raw.amount1Added) net1 += BigInt(raw.amount1Added);
+    } else {
+      if (raw.amount0Withdrawn) net0 -= BigInt(raw.amount0Withdrawn);
+      if (raw.amount1Withdrawn) net1 -= BigInt(raw.amount1Withdrawn);
+    }
+  }
+  return { net0: net0 < 0n ? 0n : net0, net1: net1 < 0n ? 0n : net1 };
+}
+
 /** Every tx hash recorded for this wallet within [fromBlock, toBlock] — used by
  * doIngestDefiActivity (pnlIngestion.js) to assemble its returned defiTxHashes set from whatever's
  * actually in the table, regardless of which scan attempt's checkpoint inserted which rows (some

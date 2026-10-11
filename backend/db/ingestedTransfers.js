@@ -195,3 +195,97 @@ export async function getUnpricedTransfers(trackedWallet) {
 export async function setTransferPrice(id, priceUsd, usdValue) {
   await query(`UPDATE ingested_transfers SET price_usd_at_time = $2, usd_value = $3 WHERE id = $1`, [id, priceUsd, usdValue]);
 }
+
+/** Net quantity of token0/token1 still genuinely "deposited" in a directly-held V2 LP position —
+ * the LP analog of defiActivity.js's getFarmDepositedQuantities, sourced from the synthetic
+ * decomposition rows detectAndRecordLiquidityEvent (pnlIngestion.js) writes into THIS table rather
+ * than defi_activity (V2 LP add/remove isn't topic-scanned the way farm/staking activity is — see
+ * that function's own header comment). Those rows are the ONLY ones with counterparty_address set
+ * to the pool itself AND log_index in detectAndRecordLiquidityEvent's own -(2000+n) sentinel range
+ * (every other source of a wallet<->pool token0/token1 transfer — a router-less swap against the
+ * pair directly, for instance — keeps its real, non-negative log_index, so the sentinel bound here
+ * is what keeps this scoped to genuine liquidity events only, not just "touched this pool").
+ * direction 'out' = wallet funded the pool (mint leg, added); 'in' = pool paid the wallet back
+ * (burn leg, removed) — same sign convention as that function's own `isMint ? "out" : "in"`. Floored
+ * at 0n per leg, same defensive reasoning as the farm version. */
+export async function getV2LpDepositedQuantities(trackedWallet, poolAddress, token0, token1) {
+  const token0Lc = token0.toLowerCase();
+  const token1Lc = token1.toLowerCase();
+  const res = await query(
+    `SELECT direction, token_address, amount_raw FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND counterparty_address = $2 AND asset_type = 'erc20'
+       AND token_address = ANY($3::text[]) AND log_index <= -2000 AND log_index > -4000`,
+    [trackedWallet.toLowerCase(), poolAddress.toLowerCase(), [token0Lc, token1Lc]]
+  );
+  let net0 = 0n;
+  let net1 = 0n;
+  for (const row of res?.rows || []) {
+    const amt = BigInt(row.amount_raw);
+    const isToken0 = row.token_address === token0Lc;
+    if (row.direction === "out") {
+      if (isToken0) net0 += amt;
+      else net1 += amt;
+    } else {
+      if (isToken0) net0 -= amt;
+      else net1 -= amt;
+    }
+  }
+  return { net0: net0 < 0n ? 0n : net0, net1: net1 < 0n ? 0n : net1 };
+}
+
+/** Net quantity of token0/token1 still genuinely "deposited" in ONE specific V3 position (by
+ * tokenId) — the LP analog of defiActivity.js's getFarmDepositedQuantities. V3 positions are
+ * tracked in the ledger as a synthetic fungible lot keyed `v3PositionAssetKey(tokenId)` (see
+ * pnlIngestion.js); this first finds every tx_hash where THAT exact lot moved (an IncreaseLiquidity
+ * or DecreaseLiquidity for this tokenId specifically, never some other position in the same pool —
+ * a wallet can hold several V3 positions on the same token pair, each its own NFT/tokenId, and their
+ * underlying-leg rows are only distinguishable from each other by which tx they landed in), then
+ * sums the correlated token0/token1 legs in those SAME transactions:
+ *  - a lot-increase tx's underlying legs are direction 'out' (funded into the pool) — added.
+ *  - a lot-decrease tx's underlying legs are the Collect's principal portion, direction 'in' —
+ *    removed. Excludes that same tx's fee-collect legs, which detectAndRecordV3PositionEvent writes
+ *    with an explicit price_usd_at_time = 0 AND usd_value = 0 ("deliberate zero cost basis -- LP fee
+ *    income" per that function's own comment) — a real principal leg's price is never deliberately
+ *    both exactly zero AND valued at exactly zero, so this is a safe exclusion marker, not a guess. */
+export async function getV3PositionDepositedQuantities(trackedWallet, positionAssetKey, token0, token1) {
+  const wallet = trackedWallet.toLowerCase();
+  const token0Lc = token0.toLowerCase();
+  const token1Lc = token1.toLowerCase();
+
+  const lotRes = await query(
+    `SELECT tx_hash, direction FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND asset_type = 'erc20' AND token_address = $2`,
+    [wallet, positionAssetKey.toLowerCase()]
+  );
+  const increaseTxs = new Set();
+  const decreaseTxs = new Set();
+  for (const row of lotRes?.rows || []) {
+    if (row.direction === "in") increaseTxs.add(row.tx_hash);
+    else decreaseTxs.add(row.tx_hash);
+  }
+  if (increaseTxs.size === 0 && decreaseTxs.size === 0) return { net0: 0n, net1: 0n };
+
+  const allTxs = [...new Set([...increaseTxs, ...decreaseTxs])];
+  const legRes = await query(
+    `SELECT tx_hash, direction, token_address, amount_raw, price_usd_at_time, usd_value FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND asset_type = 'erc20' AND token_address = ANY($2::text[]) AND tx_hash = ANY($3::text[])`,
+    [wallet, [token0Lc, token1Lc], allTxs]
+  );
+
+  let net0 = 0n;
+  let net1 = 0n;
+  for (const row of legRes?.rows || []) {
+    const isToken0 = row.token_address === token0Lc;
+    const amt = BigInt(row.amount_raw);
+    if (increaseTxs.has(row.tx_hash) && row.direction === "out") {
+      if (isToken0) net0 += amt;
+      else net1 += amt;
+    } else if (decreaseTxs.has(row.tx_hash) && row.direction === "in") {
+      const isFeeRow = Number(row.price_usd_at_time) === 0 && Number(row.usd_value) === 0;
+      if (isFeeRow) continue;
+      if (isToken0) net0 -= amt;
+      else net1 -= amt;
+    }
+  }
+  return { net0: net0 < 0n ? 0n : net0, net1: net1 < 0n ? 0n : net1 };
+}

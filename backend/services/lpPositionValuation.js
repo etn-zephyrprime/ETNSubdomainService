@@ -38,8 +38,9 @@ import { createRpcProvider } from "../utils/rpcProvider.js";
 import { fetchBlockscoutJson } from "../utils/blockscoutClient.js";
 import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
-import { getTokenMetadata, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
+import { getTokenMetadata, POSITION_MANAGER_ADDRESS, v3PositionAssetKey } from "./pnlIngestion.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
+import { getV2LpDepositedQuantities, getV3PositionDepositedQuantities } from "../db/ingestedTransfers.js";
 
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 // Same wrapped-ETN address dexPriceQuote.js/pnlPricing.js both already use — ETN/WETN are 1:1
@@ -220,7 +221,7 @@ export async function probeV2Pool(address) {
  * amounts, which is safe to do per-candidate since it's all pure on-chain reads, none of it hits
  * GeckoTerminal or gets batched into the "too many calls" failure mode pricing did. Returns null if
  * this address isn't confirmed to be a real ElectroSwap V2 pair. */
-async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals, lockedRaw = 0n) {
+async function resolveV2LpCandidate(walletAddress, tokenAddress, rawBalance, decimals, lockedRaw = 0n) {
   const meta = await probeV2Pool(tokenAddress);
   if (!meta) return null;
 
@@ -237,6 +238,21 @@ async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals, lockedRa
   const amount0 = share.times(new Decimal(ethers.formatUnits(reserves.reserve0, decimals0)));
   const amount1 = share.times(new Decimal(ethers.formatUnits(reserves.reserve1, decimals1)));
 
+  // Original token0/token1 quantity still genuinely deposited (net of any partial removals) — see
+  // getV2LpDepositedQuantities' own header comment. V2 needs no separate "pending fees" concept:
+  // trading fees compound straight into the pool's reserves, so `amount0`/`amount1` above ALREADY
+  // reflect every fee this position has ever earned — unlike a farm (debt-accounted) or a V3
+  // position (explicit tokensOwed field), there is nothing left to add on top here.
+  let depositedAmount0 = null;
+  let depositedAmount1 = null;
+  try {
+    const { net0, net1 } = await getV2LpDepositedQuantities(walletAddress, tokenAddress, meta.token0, meta.token1);
+    depositedAmount0 = new Decimal(ethers.formatUnits(net0, decimals0));
+    depositedAmount1 = new Decimal(ethers.formatUnits(net1, decimals1));
+  } catch (err) {
+    console.warn(`⚠️  LP position valuation: couldn't load deposited quantities for ${tokenAddress}:`, err.message);
+  }
+
   return {
     tokenAddress: tokenAddress.toLowerCase(),
     quantity: walletBalance.toString(),
@@ -246,10 +262,17 @@ async function resolveV2LpCandidate(tokenAddress, rawBalance, decimals, lockedRa
     token1: meta.token1,
     amount0,
     amount1,
+    depositedAmount0,
+    depositedAmount1,
   };
 }
 
-/** Turns a resolveV2LpCandidate result into the final priced row, using the shared priceMap. */
+/** Turns a resolveV2LpCandidate result into the final priced row, using the shared priceMap. Each
+ * leg gets the same deposited/current/change breakdown PR #405 shipped for farm positions — see
+ * this file's own header comment and that PR's defiPositionValuation.js changes for the concept
+ * (a USD-only figure can hide an unfavorable token-quantity shift if the OTHER side of the pair
+ * moved in price). `pendingFees` is omitted for V2 (always null) since, per resolveV2LpCandidate's
+ * own comment, `amount` already includes every fee earned — there's no separate figure to show. */
 async function finalizeV2LpPosition(candidate, priceMap) {
   const [meta0, meta1] = await Promise.all([getTokenMetadata(candidate.token0), getTokenMetadata(candidate.token1)]);
   const price0 = priceMap.get(candidate.token0) ?? null;
@@ -257,14 +280,31 @@ async function finalizeV2LpPosition(candidate, priceMap) {
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
   const usd1 = price1 != null ? candidate.amount1.times(price1) : null;
 
+  function buildLeg(tokenAddress, symbol, amount, usdValue, depositedAmount) {
+    const changePercent =
+      depositedAmount != null && depositedAmount.gt(0)
+        ? amount.minus(depositedAmount).div(depositedAmount).times(100).toString()
+        : null;
+    return {
+      tokenAddress,
+      symbol,
+      amount: amount.toString(),
+      usdValue: usdValue?.toString() ?? null,
+      depositedAmount: depositedAmount?.toString() ?? null,
+      pendingFees: null,
+      netAmount: amount.toString(),
+      changePercent,
+    };
+  }
+
   return {
     kind: "v2_lp",
     tokenAddress: candidate.tokenAddress,
     quantity: candidate.quantity,
     lockedQuantity: candidate.lockedQuantity,
     legs: [
-      { tokenAddress: candidate.token0, symbol: meta0?.symbol || null, amount: candidate.amount0.toString(), usdValue: usd0?.toString() ?? null },
-      { tokenAddress: candidate.token1, symbol: meta1?.symbol || null, amount: candidate.amount1.toString(), usdValue: usd1?.toString() ?? null },
+      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.depositedAmount0),
+      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.depositedAmount1),
     ],
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,
@@ -374,7 +414,7 @@ async function getHeldV3TokenIds(walletAddress) {
  * resolveV2LpCandidate's own comment on why this split exists) — position/pool state and the
  * amount0/amount1 math, all pure on-chain reads. Returns null if fully withdrawn or any read
  * fails. Never throws — a single bad position shouldn't blank the rest of a wallet's valuation. */
-async function resolveV3Candidate(tokenId) {
+async function resolveV3Candidate(walletAddress, tokenId) {
   try {
     const npm = new ethers.Contract(POSITION_MANAGER_ADDRESS, V3_POSITIONS_IFACE, getProvider());
     const pos = await npm.positions(tokenId);
@@ -398,14 +438,50 @@ async function resolveV3Candidate(tokenId) {
     const amt1 = new Decimal(ethers.formatUnits(amount1, decimals1));
     const inRange = Number(pos.tickLower) <= Number(slot0.tick) && Number(slot0.tick) < Number(pos.tickUpper);
 
-    return { tokenId: String(tokenId), token0, token1, amount0: amt0, amount1: amt1, inRange };
+    // Accrued-but-not-yet-collected fees — already a direct field on the same `positions()` struct
+    // read above, no extra RPC call needed (unlike the farm case, which needed its own
+    // accFeesXPerShare/feesXDebt formula verified against real contract source — see
+    // defiPositionValuation.js's own header comment). pos.tokensOwed0/1 is denominated in the same
+    // raw units as pos.liquidity's derived amount0/1, so it formats the same way.
+    const pendingFees0 = new Decimal(ethers.formatUnits(pos.tokensOwed0, decimals0));
+    const pendingFees1 = new Decimal(ethers.formatUnits(pos.tokensOwed1, decimals1));
+
+    // Original token0/token1 quantity still genuinely deposited (net of any partial decreases'
+    // principal, excluding fee collects) — see getV3PositionDepositedQuantities' own header comment.
+    let depositedAmount0 = null;
+    let depositedAmount1 = null;
+    try {
+      const positionKey = v3PositionAssetKey(String(tokenId));
+      const { net0, net1 } = await getV3PositionDepositedQuantities(walletAddress, positionKey, token0, token1);
+      depositedAmount0 = new Decimal(ethers.formatUnits(net0, decimals0));
+      depositedAmount1 = new Decimal(ethers.formatUnits(net1, decimals1));
+    } catch (err) {
+      console.warn(`⚠️  LP position valuation: couldn't load deposited quantities for V3 position #${tokenId}:`, err.message);
+    }
+
+    return {
+      tokenId: String(tokenId),
+      token0,
+      token1,
+      amount0: amt0,
+      amount1: amt1,
+      pendingFees0,
+      pendingFees1,
+      depositedAmount0,
+      depositedAmount1,
+      inRange,
+    };
   } catch (err) {
     console.warn(`⚠️  LP position valuation: failed for V3 position #${tokenId}:`, err.message);
     return null;
   }
 }
 
-/** Turns a resolveV3Candidate result into the final priced row, using the shared priceMap. */
+/** Turns a resolveV3Candidate result into the final priced row, using the shared priceMap. Same
+ * deposited/fees/net/change breakdown as the V2 and farm versions, except here `pendingFees` is a
+ * real, non-null figure — V3's tokensOwed0/1 field (unlike V2's "already baked into amount" and
+ * unlike the farm's debt-accounting) represents fees accrued but not yet collected, genuinely on
+ * top of `amount` — so `netAmount = amount + pendingFees` here, matching the farm convention. */
 async function finalizeV3Position(candidate, priceMap) {
   const [meta0, meta1] = await Promise.all([getTokenMetadata(candidate.token0), getTokenMetadata(candidate.token1)]);
   const price0 = priceMap.get(candidate.token0) ?? null;
@@ -413,13 +489,31 @@ async function finalizeV3Position(candidate, priceMap) {
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
   const usd1 = price1 != null ? candidate.amount1.times(price1) : null;
 
+  function buildLeg(tokenAddress, symbol, amount, usdValue, pendingFees, depositedAmount) {
+    const netAmount = amount.plus(pendingFees);
+    const changePercent =
+      depositedAmount != null && depositedAmount.gt(0)
+        ? netAmount.minus(depositedAmount).div(depositedAmount).times(100).toString()
+        : null;
+    return {
+      tokenAddress,
+      symbol,
+      amount: amount.toString(),
+      usdValue: usdValue?.toString() ?? null,
+      depositedAmount: depositedAmount?.toString() ?? null,
+      pendingFees: pendingFees.toString(),
+      netAmount: netAmount.toString(),
+      changePercent,
+    };
+  }
+
   return {
     kind: "v3_position",
     tokenId: candidate.tokenId,
     inRange: candidate.inRange,
     legs: [
-      { tokenAddress: candidate.token0, symbol: meta0?.symbol || null, amount: candidate.amount0.toString(), usdValue: usd0?.toString() ?? null },
-      { tokenAddress: candidate.token1, symbol: meta1?.symbol || null, amount: candidate.amount1.toString(), usdValue: usd1?.toString() ?? null },
+      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0),
+      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1),
     ],
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,
@@ -516,7 +610,7 @@ export async function computeLpPositionsLive(walletAddress, heldFungibleTokens, 
         // SAME known Blockscout gotcha already worked around elsewhere in this codebase (see
         // CoreTierDemo.jsx's own token-pricing effect).
         const decimals = Number(t.decimals ?? 18);
-        return resolveV2LpCandidate(t.address, BigInt(t.rawBalance), decimals, t.lockedRaw).catch((err) => {
+        return resolveV2LpCandidate(walletAddress, t.address, BigInt(t.rawBalance), decimals, t.lockedRaw).catch((err) => {
           console.warn(`⚠️  LP position valuation: resolveV2LpCandidate failed for ${t.address} (treated as not-a-pair):`, err.message);
           return null;
         });
@@ -528,7 +622,7 @@ export async function computeLpPositionsLive(walletAddress, heldFungibleTokens, 
     }),
   ]);
   const v2CandidatesResolved = v2Candidates.filter((c) => c != null);
-  const v3Candidates = (await Promise.all(v3TokenIds.map((id) => resolveV3Candidate(id)))).filter((c) => c != null);
+  const v3Candidates = (await Promise.all(v3TokenIds.map((id) => resolveV3Candidate(walletAddress, id)))).filter((c) => c != null);
 
   if (v2CandidatesResolved.length === 0 && v3Candidates.length === 0) {
     return { v2Positions: [], v3Positions: [], totalUsd: null, hasUnpriced: false, lpTokenAddresses: [] };

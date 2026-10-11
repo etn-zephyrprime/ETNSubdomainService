@@ -48,7 +48,7 @@ import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getLastKnownPrice, recordLastKnownPrice } from "../utils/lastKnownPrices.js";
 import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
-import { getDistinctFarmPositions, getDistinctStakingContracts } from "../db/defiActivity.js";
+import { getDistinctFarmPositions, getDistinctStakingContracts, getFarmDepositedQuantities } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 
@@ -63,6 +63,11 @@ const CORE_ASCENSION_ABI = [
 ];
 
 const Q96 = 2n ** 96n;
+// Confirmed via this farm contract's own verified source (_collectRewardsAndFees): pendingFeesX =
+// (farmer.liquidity * farm.accFeesXPerShare / CALC_PRECISION) - farmer.feesXDebt. Not guessed from
+// the ABI struct's field names alone — this exact constant and formula were read directly off the
+// deployed, verified contract (Blockscout) before trusting them for a user-facing figure.
+const CALC_PRECISION = 10n ** 18n;
 // Guard for the simplified full-range formula (see this file's own header comment) — a farm's own
 // tick bounds have to be at LEAST this extreme in both directions to trust it. Comfortably inside
 // the true Uniswap V3 min/max tick (±887272) while still excluding anything that's a genuinely
@@ -188,7 +193,18 @@ const POSITION_FAILED = Symbol("position-failed");
 
 /** One open YieldFarm position's current value, or null if it's fully withdrawn (liquidity 0),
  * isn't full-range (see isFullRangeFarm — never guesses), or any read along the way fails. Never
- * throws — a single bad position shouldn't blank the rest of a wallet's DeFi valuation. */
+ * throws — a single bad position shouldn't blank the rest of a wallet's DeFi valuation.
+ *
+ * Each leg also carries a token-QUANTITY breakdown (depositedAmount/pendingFees/netAmount/
+ * changePercent), separate from and in addition to the existing USD valuation — confirmed live
+ * user concern: a position's USD value can read as "profitable" purely from ETN itself pumping,
+ * even while the underlying token split has shifted unfavorably (classic impermanent loss, which a
+ * USD-only figure hides). depositedAmount is the net "still locked" baseline (getFarmDepositedQuantities
+ * — every deposit/top-up minus every withdrawal's principal, from this wallet's own defi_activity
+ * ledger); pendingFees is this leg's trading fees accrued but not yet collected (confirmed via this
+ * farm contract's own verified source — see CALC_PRECISION's own comment); netAmount is what you'd
+ * walk away with if you collected and withdrew everything right now (current pool-attributable
+ * amount + pending fees); changePercent compares netAmount against depositedAmount. */
 async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
   try {
     const farm = new ethers.Contract(contractAddress, YIELD_FARM_ABI, getProvider());
@@ -217,6 +233,45 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     const amount0 = new Decimal(ethers.formatUnits(amount0Raw, decimals0));
     const amount1 = new Decimal(ethers.formatUnits(amount1Raw, decimals1));
 
+    // Pending (accrued, not yet collected) trading fees — see this function's own header comment
+    // and CALC_PRECISION's. accFeesXPerShare changes continuously as the pool trades, so this needs
+    // its own FRESH read every call — getFarmMeta's own cache only ever holds the farm's static
+    // fields (poolAddr/token0/token1/tick bounds/name), deliberately never this. A failed read
+    // degrades to "no fees counted" (0) rather than failing the whole position — the live USD/token
+    // amounts above are still real and worth showing even if this one extra figure is unavailable.
+    let pendingFees0 = new Decimal(0);
+    let pendingFees1 = new Decimal(0);
+    try {
+      const farmState = await farm.getFarmById(farmId);
+      let fees0Raw = (farmer.liquidity * farmState.accFees0PerShare) / CALC_PRECISION - farmer.fees0Debt;
+      let fees1Raw = (farmer.liquidity * farmState.accFees1PerShare) / CALC_PRECISION - farmer.fees1Debt;
+      if (fees0Raw < 0n) fees0Raw = 0n; // shouldn't happen given the contract's own debt accounting, but never show a negative "earned"
+      if (fees1Raw < 0n) fees1Raw = 0n;
+      pendingFees0 = new Decimal(ethers.formatUnits(fees0Raw, decimals0));
+      pendingFees1 = new Decimal(ethers.formatUnits(fees1Raw, decimals1));
+    } catch (err) {
+      console.warn(`⚠️  DeFi position valuation: couldn't read pending fees for farm ${farmId}@${contractAddress}:`, err.message);
+    }
+
+    // Original "still locked" baseline — see getFarmDepositedQuantities's own comment.
+    let depositedAmount0 = null;
+    let depositedAmount1 = null;
+    try {
+      const { net0, net1 } = await getFarmDepositedQuantities(walletAddress, contractAddress, farmId);
+      depositedAmount0 = new Decimal(ethers.formatUnits(net0, decimals0));
+      depositedAmount1 = new Decimal(ethers.formatUnits(net1, decimals1));
+    } catch (err) {
+      console.warn(`⚠️  DeFi position valuation: couldn't read deposited baseline for farm ${farmId}@${contractAddress}:`, err.message);
+    }
+
+    const netAmount0 = amount0.plus(pendingFees0);
+    const netAmount1 = amount1.plus(pendingFees1);
+    // null (not 0%) when there's no sane baseline to compare against — a zero/negative deposited
+    // amount (ledger gap, or a position opened before this wallet's own cold-start cursor) would
+    // otherwise divide by zero or show a nonsensical figure.
+    const changePercent0 = depositedAmount0 != null && depositedAmount0.gt(0) ? netAmount0.minus(depositedAmount0).dividedBy(depositedAmount0).times(100).toString() : null;
+    const changePercent1 = depositedAmount1 != null && depositedAmount1.gt(0) ? netAmount1.minus(depositedAmount1).dividedBy(depositedAmount1).times(100).toString() : null;
+
     const [price0, price1] = await Promise.all([getLiveTokenUsdPrice(meta.token0), getLiveTokenUsdPrice(meta.token1)]);
     const usd0 = price0 != null ? amount0.times(price0) : null;
     const usd1 = price1 != null ? amount1.times(price1) : null;
@@ -228,8 +283,14 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
       contractAddress,
       farmId,
       legs: [
-        { tokenAddress: meta.token0, symbol: meta0?.symbol || null, amount: amount0.toString(), usdValue: usd0?.toString() ?? null },
-        { tokenAddress: meta.token1, symbol: meta1?.symbol || null, amount: amount1.toString(), usdValue: usd1?.toString() ?? null },
+        {
+          tokenAddress: meta.token0, symbol: meta0?.symbol || null, amount: amount0.toString(), usdValue: usd0?.toString() ?? null,
+          depositedAmount: depositedAmount0?.toString() ?? null, pendingFees: pendingFees0.toString(), netAmount: netAmount0.toString(), changePercent: changePercent0,
+        },
+        {
+          tokenAddress: meta.token1, symbol: meta1?.symbol || null, amount: amount1.toString(), usdValue: usd1?.toString() ?? null,
+          depositedAmount: depositedAmount1?.toString() ?? null, pendingFees: pendingFees1.toString(), netAmount: netAmount1.toString(), changePercent: changePercent1,
+        },
       ],
       totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
       hasUnpriced: usd0 == null || usd1 == null,
