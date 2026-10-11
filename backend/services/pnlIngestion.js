@@ -608,6 +608,45 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
   return true;
 }
 
+/** Finds the WETN leg of a router-mediated native-ETN add/remove-liquidity call — confirmed
+ * against ElectroSwapRouter's real verified source AND two live transactions (one add, one
+ * remove) before this existed, not assumed from the textbook Uniswap V2 router:
+ *  - add (`addLiquidityETH`): `IWETH(WETH).deposit{value: amountETH}(); IWETH(WETH).transfer(pair,
+ *    amountETH);` — the router wraps the wallet's own msg.value, then forwards it to the pool
+ *    itself. The wallet never touches WETN directly; the only visible trace is a WETN Transfer
+ *    ROUTER -> POOL.
+ *  - remove (`removeLiquidityETH`/`...WithPermit`): `pair.burn(address(this))` sends WETN to the
+ *    ROUTER (never the wallet), which the router then unwraps via `IWETH(WETH).withdraw(amountETH)`
+ *    — WETN's own withdraw() burns that balance back to the zero address (`Transfer(router, 0x0,
+ *    wad)`, confirmed live) before sending the wallet its native ETN directly (no ERC20 trace for
+ *    that final hop at all). The WETN Transfer ROUTER -> ZERO is the only visible signal, and its
+ *    amount is exactly what the wallet receives as native ETN a moment later in the same tx.
+ * `routerLc` is `tx.to` — the contract this tx's wallet actually called — not a hardcoded address,
+ * so this isn't tied to one specific router deployment. */
+function findV2WetnRouterLeg(isMint, poolLc, routerLc, tokenTransfers) {
+  const targetTo = isMint ? poolLc : ethers.ZeroAddress.toLowerCase();
+  return tokenTransfers.find((t) => {
+    if (String(t.token?.address).toLowerCase() !== WETN_ADDRESS) return false;
+    if (String(t.from?.hash).toLowerCase() !== routerLc) return false;
+    return String(t.to?.hash).toLowerCase() === targetTo;
+  });
+}
+
+/** Finds remove-liquidity-ETH's OTHER (non-WETN) underlying leg — same router-custody hop as
+ * findV2WetnRouterLeg's remove case, just forwarded on as a plain ERC20 transfer (`safeTransfer`)
+ * instead of unwrapped: `pair.burn(address(this))` sends it to the router first, which then
+ * forwards it to the wallet. Confirmed against the same real remove transaction findV2WetnRouterLeg
+ * was verified against. Excludes WETN and the pool's own LP token so this can never double-match
+ * either of those legs' own dedicated handling. */
+function findV2RouterForwardedLeg(poolLc, routerLc, walletLc, tokenTransfers) {
+  return tokenTransfers.find((t) => {
+    const tokenLc = String(t.token?.address).toLowerCase();
+    if (tokenLc === WETN_ADDRESS || tokenLc === poolLc) return false;
+    if (String(t.from?.hash).toLowerCase() !== routerLc) return false;
+    return String(t.to?.hash).toLowerCase() === walletLc;
+  });
+}
+
 /** Detects whether `tx` is a V2 add/remove-liquidity call — same per-tx log-fetch approach as
  * detectAndRecordSwap (only called when that already ruled the tx out as a swap; a real add/
  * remove-liquidity tx never also has a Swap log). See LP_IFACE's own comment for why the pair
@@ -616,8 +655,11 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
  * LP-token leg; every OTHER token transfer between the wallet and that same pool address in the
  * same tx is one of the two underlying legs (token0/token1, in whatever order Blockscout lists
  * them — this never needs to know which is which). Reads amounts straight from tokenTransfers, not
- * the Mint/Burn event's own data — the event is only used as a confirming signal that this really
- * is an add/remove-liquidity tx, not a coincidental double-transfer-to-a-contract pattern.
+ * the Mint/Burn event's own data for the DIRECT-match case — the event is only used as a confirming
+ * signal that this really is an add/remove-liquidity tx, not a coincidental double-transfer-to-a-
+ * contract pattern. The router-mediated fallback below (findV2WetnRouterLeg/
+ * findV2RouterForwardedLeg) is the one case that DOES cross-check against the event's own
+ * amount0/amount1 before trusting it — see that block's own comment for why.
  *
  * The LP token has no market price feed of its own (nothing prices an ElectroSwap pair token
  * directly) — its cost basis (add) / proceeds (remove) is the combined FMV of what was actually
@@ -657,25 +699,69 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
     const toLc = String(t.to?.hash).toLowerCase();
     return fromLc === walletLc || toLc === walletLc;
   });
-  const underlyingLegs = tokenTransfers.filter((t) => {
+  let underlyingLegs = tokenTransfers.filter((t) => {
     const tokenLc = String(t.token?.address).toLowerCase();
     if (tokenLc === poolLc) return false;
     const fromLc = String(t.from?.hash).toLowerCase();
     const toLc = String(t.to?.hash).toLowerCase();
     return (fromLc === walletLc && toLc === poolLc) || (fromLc === poolLc && toLc === walletLc);
   });
-  // Requires BOTH underlying legs to be directly identifiable as wallet<->pool token transfers,
-  // not just "at least one" — a router-mediated add/remove using native ETN (auto-wrapped to WETN
-  // by the router, then transferred router->pool rather than wallet->pool — same "one side isn't a
-  // direct wallet<->pool token transfer" shape detectAndRecordSwap's own native-ETN fallback
-  // handles for swaps) would otherwise silently decompose with only ONE underlying leg accounted
-  // for, understating the LP token's true combined cost basis. Rather than guess at that shape
-  // without a real confirmed transaction to verify it against, this simply declines to decompose an
-  // ambiguous case at all — it falls through to the existing plain-transfer handling instead, which
-  // isn't perfect either (an undecomposed LP-token receipt gets no cost basis, since nothing prices
-  // it) but is no WORSE than this app's behavior before this function existed, for exactly the case
-  // this function can't yet confidently handle.
+
+  // Router-mediated native-ETN fallback — a direct wallet<->pool add/remove (handled above) covers
+  // a plain token/token pair fine, but ElectroSwapRouter's ETH-variant calls route BOTH of an
+  // add's "wrap" hop and a remove's "unwrap" hop through itself, never the wallet (see
+  // findV2WetnRouterLeg's own comment for the confirmed mechanics). Only engaged when the direct
+  // match above didn't already find both legs — never replaces an already-found direct leg, only
+  // completes whatever's still missing.
+  let usedRouterFallback = false;
+  if (underlyingLegs.length < 2) {
+    const routerLc = String(tx.to?.hash || tx.to || "").toLowerCase();
+    if (routerLc && routerLc !== poolLc && routerLc !== walletLc) {
+      if (!underlyingLegs.some((t) => String(t.token?.address).toLowerCase() === WETN_ADDRESS)) {
+        const wetnLeg = findV2WetnRouterLeg(isMint, poolLc, routerLc, tokenTransfers);
+        if (wetnLeg) {
+          underlyingLegs = [...underlyingLegs, wetnLeg];
+          usedRouterFallback = true;
+        }
+      }
+      if (!isMint && underlyingLegs.length < 2 && !underlyingLegs.some((t) => String(t.token?.address).toLowerCase() !== WETN_ADDRESS)) {
+        const otherLeg = findV2RouterForwardedLeg(poolLc, routerLc, walletLc, tokenTransfers);
+        if (otherLeg) {
+          underlyingLegs = [...underlyingLegs, otherLeg];
+          usedRouterFallback = true;
+        }
+      }
+    }
+  }
+
+  // Requires BOTH underlying legs to be identifiable (directly, or via the router fallback above),
+  // not just "at least one" — an add/remove with only one side accounted for would understate the
+  // LP token's true combined cost basis. Rather than guess at a shape without a real confirmed
+  // transaction to verify it against, this simply declines to decompose an ambiguous case at all —
+  // it falls through to the existing plain-transfer handling instead, which isn't perfect either
+  // (an undecomposed LP-token receipt gets no cost basis, since nothing prices it) but is no WORSE
+  // than this app's behavior before this function existed, for exactly the case this function can't
+  // yet confidently handle.
   if (!lpLeg || underlyingLegs.length !== 2) return false;
+
+  // Extra cross-check, ONLY for the router-fallback path (the direct-match case above is already
+  // unambiguous by construction — two real wallet<->pool transfers can't be anything else). The
+  // fallback's own legs are identified by CONTRACT ROLE (router-forwarded), not by direct wallet
+  // participation, so before trusting them: parse the Mint/Burn event actually confirmed this is a
+  // liquidity tx (eventLog) and verify its own amount0/amount1 — in whichever order — match the two
+  // fallback-derived amounts as a set. A mismatch means this wasn't the router-mediated shape this
+  // was built for; decline rather than record a wrong cost basis.
+  if (usedRouterFallback) {
+    try {
+      const realTopics = (eventLog.topics || []).filter((t) => t != null);
+      const parsed = LP_IFACE.parseLog({ topics: realTopics, data: eventLog.data });
+      const eventAmounts = [BigInt(parsed.args.amount0), BigInt(parsed.args.amount1)].sort().join(",");
+      const legAmounts = underlyingLegs.map((t) => BigInt(t.total.value)).sort().join(",");
+      if (eventAmounts !== legAmounts) return false;
+    } catch {
+      return false; // couldn't parse the event to cross-check — decline rather than trust unverified
+    }
+  }
 
   const timestamp = new Date(tx.timestamp);
   const lpQuantity = weiToDecimal(BigInt(lpLeg.total.value), Number(lpLeg.token.decimals));
