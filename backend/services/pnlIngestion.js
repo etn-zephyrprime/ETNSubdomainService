@@ -1172,6 +1172,30 @@ export function isFailedTransaction(tx) {
   return tx.status === "error" || (typeof tx.result === "string" && tx.result !== "success");
 }
 
+/** Fetches a transaction's real token-transfer legs from the dedicated endpoint, rather than
+ * trusting `/addresses/{wallet}/transactions`' own list item to embed them. This file used to rely
+ * on that embedded field being populated ("confirmed live" when first written) — confirmed, live,
+ * on 2026-10-11, that it now ALWAYS comes back null on this Blockscout instance, even for a
+ * same-day swap on the busiest router address on this chain. Silent, not a crash: with tokenTransfers
+ * always `[]`, isContractCallWithTransfers below could never be true, so detectAndRecordSwap/
+ * detectAndRecordLiquidityEvent/detectAndRecordV3PositionEvent simply never ran, for any wallet, for
+ * however long this has actually been broken on Blockscout's end. Not a data-loss bug — the
+ * untouched legs still land as plain transfers via ingestTokenTransfers (a separate endpoint/
+ * function, unaffected) — just a silent downgrade from "this is a correlated trade/add/remove" to
+ * "these are two unrelated transfers", breaking FIFO cost-basis pairing for every swap/LP/V3 event
+ * in that window. Costs one extra request per contract-interaction transaction (there's no way to
+ * know in advance whether it has any transfers without asking), where the embedded field used to
+ * make this free when it worked. */
+async function fetchTokenTransfersForTx(txHash) {
+  try {
+    const page = await fetchPage(`/transactions/${txHash}/token-transfers`, null);
+    return page.items || [];
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not fetch token-transfers for tx ${txHash}:`, err.message);
+    return [];
+  }
+}
+
 async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets, latestBlockAtStart = null, onProgress = null) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
@@ -1188,13 +1212,14 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
       const toLc = String(tx.to?.hash || "").toLowerCase();
       const timestamp = new Date(tx.timestamp);
 
-      // Only worth checking transactions that are actually contract interactions with token
-      // transfers attached — Blockscout's /transactions items already embed a token_transfers
-      // array per tx (confirmed live), which is exactly the filter needed here without a second
-      // per-tx fetch for every plain ETN send.
+      // Only worth fetching token-transfers for transactions that are actually contract
+      // interactions — a plain ETN send to a non-contract address can never carry any (see
+      // fetchTokenTransfersForTx's own comment for why this can't be filtered any cheaper than
+      // "is this even a contract call" without an extra fetch).
       const txFailed = isFailedTransaction(tx);
-      const tokenTransfers = tx.token_transfers || [];
-      const isContractCallWithTransfers = !txFailed && tokenTransfers.length > 0 && tx.to?.is_contract;
+      const isContractCall = !txFailed && Boolean(tx.to?.is_contract);
+      const tokenTransfers = isContractCall ? await fetchTokenTransfersForTx(tx.hash) : [];
+      const isContractCallWithTransfers = isContractCall && tokenTransfers.length > 0;
       const isSwap = isContractCallWithTransfers
         ? await detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, swapTxHashes, swapRows, priorityAssets)
         : false;
