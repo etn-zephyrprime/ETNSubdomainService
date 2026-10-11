@@ -119,16 +119,25 @@ async function checkBalanceThresholdAlerts(alerts, walletAddress, addressInfo, t
 
 /** If `tx` also moved a token the OPPOSITE direction from its native-ETN leg, this wasn't really
  * "ETN sent to"/"received from" the tx's `to` address — that address is just the router/pool
- * contract that facilitated a swap. Detected without any extra fetch: Blockscout's
- * /addresses/{wallet}/transactions items already embed each tx's own token_transfers (confirmed
- * live — see pnlIngestion.js's identical observation on this same endpoint). Deliberately router-
- * agnostic (no hardcoded ElectroSwap/Universal Router address list, unlike burnSourceLabels.js's
- * classification) — any tx where the wallet's ETN moved one way and some token moved the other way
- * in the same transaction reads as a swap for notification purposes, regardless of which contract
- * mediated it. Returns null (not a swap leg) if this tx has no token movement to pair with the ETN
- * side, or none directly touching the wallet's own address. */
+ * contract that facilitated a swap. Needs its own per-tx fetch to the dedicated token-transfers
+ * endpoint — `/addresses/{wallet}/transactions` items' own embedded `token_transfers` field used to
+ * make this free, but confirmed live (2026-10-11) it now always comes back null on this Blockscout
+ * instance (see pnlIngestion.js's identical, same-day finding on this same endpoint, which also
+ * switched off trusting it). Deliberately router-agnostic (no hardcoded ElectroSwap/Universal
+ * Router address list, unlike burnSourceLabels.js's classification) — any tx where the wallet's ETN
+ * moved one way and some token moved the other way in the same transaction reads as a swap for
+ * notification purposes, regardless of which contract mediated it. Returns null (not a swap leg) if
+ * this tx has no token movement to pair with the ETN side, or none directly touching the wallet's
+ * own address. */
 async function describeSwapLeg(tx, walletAddress, direction) {
-  const tokenTransfers = tx.token_transfers || [];
+  let tokenTransfers;
+  try {
+    const page = await fetchJson(`/transactions/${tx.hash}/token-transfers`);
+    tokenTransfers = page?.items || [];
+  } catch (err) {
+    console.warn(`⚠️  Wallet alert: token-transfers fetch failed for tx ${tx.hash}:`, err.message);
+    return null;
+  }
   if (tokenTransfers.length === 0) return null;
 
   // direction 'out' (ETN sent) pairs with the wallet RECEIVING a token in the same tx (bought it);
