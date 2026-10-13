@@ -280,11 +280,15 @@ async function finalizeV2LpPosition(candidate, priceMap) {
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
   const usd1 = price1 != null ? candidate.amount1.times(price1) : null;
 
-  function buildLeg(tokenAddress, symbol, amount, usdValue, depositedAmount) {
+  function buildLeg(tokenAddress, symbol, amount, usdValue, depositedAmount, priceUsd) {
     const changePercent =
       depositedAmount != null && depositedAmount.gt(0)
         ? amount.minus(depositedAmount).div(depositedAmount).times(100).toString()
         : null;
+    // USD value of just the token-quantity drift, priced at today's rate — see
+    // defiPositionValuation.js's valueYieldFarmPosition own identical changeUsd comment for why this
+    // is a separate figure from usdValue above.
+    const changeUsd = depositedAmount != null && priceUsd != null ? amount.minus(depositedAmount).times(priceUsd).toString() : null;
     return {
       tokenAddress,
       symbol,
@@ -294,6 +298,7 @@ async function finalizeV2LpPosition(candidate, priceMap) {
       pendingFees: null,
       netAmount: amount.toString(),
       changePercent,
+      changeUsd,
     };
   }
 
@@ -303,8 +308,8 @@ async function finalizeV2LpPosition(candidate, priceMap) {
     quantity: candidate.quantity,
     lockedQuantity: candidate.lockedQuantity,
     legs: [
-      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.depositedAmount0),
-      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.depositedAmount1),
+      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.depositedAmount0, price0),
+      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.depositedAmount1, price1),
     ],
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,
@@ -489,12 +494,16 @@ async function finalizeV3Position(candidate, priceMap) {
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
   const usd1 = price1 != null ? candidate.amount1.times(price1) : null;
 
-  function buildLeg(tokenAddress, symbol, amount, usdValue, pendingFees, depositedAmount) {
+  function buildLeg(tokenAddress, symbol, amount, usdValue, pendingFees, depositedAmount, priceUsd) {
     const netAmount = amount.plus(pendingFees);
     const changePercent =
       depositedAmount != null && depositedAmount.gt(0)
         ? netAmount.minus(depositedAmount).div(depositedAmount).times(100).toString()
         : null;
+    // USD value of just the token-quantity drift, priced at today's rate — see
+    // defiPositionValuation.js's valueYieldFarmPosition own identical changeUsd comment for why this
+    // is a separate figure from usdValue above.
+    const changeUsd = depositedAmount != null && priceUsd != null ? netAmount.minus(depositedAmount).times(priceUsd).toString() : null;
     return {
       tokenAddress,
       symbol,
@@ -504,6 +513,7 @@ async function finalizeV3Position(candidate, priceMap) {
       pendingFees: pendingFees.toString(),
       netAmount: netAmount.toString(),
       changePercent,
+      changeUsd,
     };
   }
 
@@ -512,8 +522,8 @@ async function finalizeV3Position(candidate, priceMap) {
     tokenId: candidate.tokenId,
     inRange: candidate.inRange,
     legs: [
-      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0),
-      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1),
+      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0, price0),
+      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1, price1),
     ],
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,

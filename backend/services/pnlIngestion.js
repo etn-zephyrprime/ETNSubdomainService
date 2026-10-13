@@ -1732,6 +1732,54 @@ async function enrichFarmRowsWithBolt(provider, rows) {
   }
 }
 
+// Decodes a withdraw() call's own calldata — see enrichFarmWithdrawalsWithLiquidity's own comment
+// for why this is the only way to learn how much liquidity a withdrawal actually removed (confirmed
+// against the real verified YieldFarm source: FarmWithdrawl's event never reports it at all, only
+// the token amounts/fees that resulted from it).
+const WITHDRAW_FUNCTION_IFACE = new ethers.Interface(["function withdraw(uint256 _farmId, uint256 _liquidityAmt, bool _asNative)"]);
+
+/** For every farm_withdraw row, decodes the REAL liquidity amount removed straight from the
+ * withdraw() call's own calldata and stores it as rawArgs.liquidityWithdrawn. Needed for
+ * getFarmPositionCycles (defiActivity.js) to track a running liquidity balance and detect exactly
+ * when a farm position cycle closes (liquidity returns to 0) — FarmWithdrawl's event reports the
+ * token amounts/fees a withdrawal produced, never the liquidity amount itself (confirmed against
+ * the real verified YieldFarm source: `farmer.liquidity -= _liquidityAmt` uses the FUNCTION
+ * ARGUMENT directly, nothing about it is re-emitted), so there's no way to reconstruct this from
+ * logs alone. One transaction fetch per distinct tx hash needing it (not per row — a tx can only
+ * ever contain one farm_withdraw log for this wallet), same dedup shape as
+ * enrichFarmRowsWithBolt's own receipt cache. A tx whose calldata doesn't decode against this exact
+ * selector (shouldn't happen for a genuine FarmWithdrawl log, but left defensive rather than assumed)
+ * is left unenriched — getFarmPositionCycles treats a missing value as "can't determine, skip this
+ * row for cycle-boundary purposes" rather than guessing. */
+async function enrichFarmWithdrawalsWithLiquidity(provider, rows) {
+  const relevant = rows.filter((r) => r.eventType === "farm_withdraw");
+  if (relevant.length === 0) return;
+
+  const txCache = new Map(); // txHash (lowercase) -> tx | null
+  for (const row of relevant) {
+    const txHashLc = row.txHash.toLowerCase();
+    if (!txCache.has(txHashLc)) {
+      try {
+        txCache.set(txHashLc, await provider.getTransaction(row.txHash));
+      } catch (err) {
+        console.warn(`⚠️  DeFi activity scan: could not fetch tx ${row.txHash} (liquidity decode skipped):`, err.message);
+        txCache.set(txHashLc, null);
+      }
+    }
+    const tx = txCache.get(txHashLc);
+    if (!tx) continue;
+    try {
+      const parsed = WITHDRAW_FUNCTION_IFACE.parseTransaction({ data: tx.data, value: tx.value });
+      if (parsed?.name === "withdraw" && String(parsed.args._farmId) === String(row.farmId)) {
+        row.rawArgs.liquidityWithdrawn = parsed.args._liquidityAmt.toString();
+      }
+    } catch {
+      // Calldata doesn't decode against this selector (e.g. routed through some wrapper this app
+      // doesn't know about) — leave unenriched rather than guess.
+    }
+  }
+}
+
 /** Decodes one topic's raw getLogs results into defi_activity rows and inserts them — pulled out
  * of doIngestDefiActivity so it can run PER TOPIC, PER CHECKPOINT (via queryDefiLogsChunked's own
  * onCheckpoint) instead of once, combined across all 6 topics, only after every one of them fully
@@ -1802,6 +1850,7 @@ async function decodeAndPersistDefiLogs(trackedWallet, provider, logs) {
   // batch: each row's enrichment only ever looks at its OWN transaction's receipt, never another
   // row's, so splitting a topic's logs across several checkpoints changes nothing about the result.
   await enrichFarmRowsWithBolt(provider, rows);
+  await enrichFarmWithdrawalsWithLiquidity(provider, rows);
   await insertDefiActivity(rows);
 }
 

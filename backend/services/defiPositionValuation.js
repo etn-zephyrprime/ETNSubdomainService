@@ -48,7 +48,7 @@ import { getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getLastKnownPrice, recordLastKnownPrice } from "../utils/lastKnownPrices.js";
 import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js";
-import { getDistinctFarmPositions, getDistinctStakingContracts, getFarmDepositedQuantities } from "../db/defiActivity.js";
+import { getDistinctFarmPositions, getDistinctStakingContracts, getFarmDepositedQuantities, getFarmPositionCycles } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 
@@ -277,6 +277,14 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     const usd1 = price1 != null ? amount1.times(price1) : null;
     const [meta0, meta1] = await Promise.all([getTokenMetadata(meta.token0), getTokenMetadata(meta.token1)]);
 
+    // USD value of JUST the token-quantity drift (netAmount - depositedAmount), priced at today's
+    // rate — isolates "this many extra/fewer tokens is worth $X right now" from the overall totalUsd
+    // figure above, which also moves with the token's own price and so can't be read as "the
+    // quantity shift's dollar effect" on its own. Null whenever either input needed to compute it is
+    // (no deposited baseline, or no live price) — never fabricated from a partial calculation.
+    const changeUsd0 = depositedAmount0 != null && price0 != null ? netAmount0.minus(depositedAmount0).times(price0).toString() : null;
+    const changeUsd1 = depositedAmount1 != null && price1 != null ? netAmount1.minus(depositedAmount1).times(price1).toString() : null;
+
     return {
       kind: "farm",
       label: meta.name || `Yield Farm #${farmId}`,
@@ -285,11 +293,11 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
       legs: [
         {
           tokenAddress: meta.token0, symbol: meta0?.symbol || null, amount: amount0.toString(), usdValue: usd0?.toString() ?? null,
-          depositedAmount: depositedAmount0?.toString() ?? null, pendingFees: pendingFees0.toString(), netAmount: netAmount0.toString(), changePercent: changePercent0,
+          depositedAmount: depositedAmount0?.toString() ?? null, pendingFees: pendingFees0.toString(), netAmount: netAmount0.toString(), changePercent: changePercent0, changeUsd: changeUsd0,
         },
         {
           tokenAddress: meta.token1, symbol: meta1?.symbol || null, amount: amount1.toString(), usdValue: usd1?.toString() ?? null,
-          depositedAmount: depositedAmount1?.toString() ?? null, pendingFees: pendingFees1.toString(), netAmount: netAmount1.toString(), changePercent: changePercent1,
+          depositedAmount: depositedAmount1?.toString() ?? null, pendingFees: pendingFees1.toString(), netAmount: netAmount1.toString(), changePercent: changePercent1, changeUsd: changeUsd1,
         },
       ],
       totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
@@ -299,6 +307,82 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     console.warn(`⚠️  DeFi position valuation: failed for farm ${farmId}@${contractAddress}:`, err.message);
     return POSITION_FAILED;
   }
+}
+
+/** One farm's CLOSED position cycles — the history counterpart to valueYieldFarmPosition above,
+ * for a farm the wallet has fully exited (possibly more than once, if it deposited, withdrew
+ * everything, then deposited again later — see getFarmPositionCycles' own comment for why each such
+ * cycle is tracked and shown separately rather than blended into one lifetime figure). No live
+ * farmer-state read needed (there's nothing currently open to read) — only the farm's static
+ * metadata (token0/token1/name, same cached getFarmMeta as the open-position path) and a CURRENT
+ * token price, used the same way valueYieldFarmPosition's own changeUsd does: "what this cycle's
+ * net token-quantity effect would be worth if priced today," not a historical-at-the-time figure.
+ * Returns [] (not null) for a farm with no completed cycles — this is a list, callers don't need to
+ * special-case "none". */
+async function getClosedFarmCycles(contractAddress, farmId, walletAddress) {
+  try {
+    const cycles = await getFarmPositionCycles(walletAddress, contractAddress, farmId);
+    if (cycles.length === 0) return [];
+
+    const meta = await getFarmMeta(contractAddress, farmId);
+    if (!meta) return []; // metadata read failed (logged in getFarmMeta) — can't label/decimal this farm's cycles at all
+
+    const [decimals0, decimals1] = await Promise.all([decimalsFor(meta.token0), decimalsFor(meta.token1)]);
+    const [price0, price1] = await Promise.all([getLiveTokenUsdPrice(meta.token0), getLiveTokenUsdPrice(meta.token1)]);
+    const [meta0, meta1] = await Promise.all([getTokenMetadata(meta.token0), getTokenMetadata(meta.token1)]);
+
+    function buildLeg(decimals, depositedRaw, withdrawnPrincipalRaw, feesRaw, priceUsd, tokenAddress, symbol) {
+      const deposited = new Decimal(ethers.formatUnits(depositedRaw, decimals));
+      const withdrawnPrincipal = new Decimal(ethers.formatUnits(withdrawnPrincipalRaw, decimals));
+      const fees = new Decimal(ethers.formatUnits(feesRaw, decimals));
+      const netAmount = withdrawnPrincipal.plus(fees);
+      const changePercent = deposited.gt(0) ? netAmount.minus(deposited).dividedBy(deposited).times(100).toString() : null;
+      const changeUsd = priceUsd != null ? netAmount.minus(deposited).times(priceUsd).toString() : null;
+      return {
+        tokenAddress,
+        symbol,
+        depositedAmount: deposited.toString(),
+        withdrawnAmount: withdrawnPrincipal.toString(),
+        pendingFees: fees.toString(), // "pending" naming kept consistent with the open-position shape — these are already-collected here, not still-accruing
+        netAmount: netAmount.toString(),
+        changePercent,
+        changeUsd,
+      };
+    }
+
+    return cycles.map((c) => {
+      const leg0 = buildLeg(decimals0, c.deposited0, c.withdrawnPrincipal0, c.fees0, price0, meta.token0, meta0?.symbol || null);
+      const leg1 = buildLeg(decimals1, c.deposited1, c.withdrawnPrincipal1, c.fees1, price1, meta.token1, meta1?.symbol || null);
+      const totalChangeUsd = leg0.changeUsd != null && leg1.changeUsd != null ? (Number(leg0.changeUsd) + Number(leg1.changeUsd)).toString() : null;
+      return {
+        kind: "farm_closed",
+        label: meta.name || `Yield Farm #${farmId}`,
+        contractAddress,
+        farmId,
+        startTimestamp: c.startTimestamp,
+        endTimestamp: c.endTimestamp,
+        legs: [leg0, leg1],
+        totalChangeUsd,
+        hasUnpriced: price0 == null || price1 == null,
+      };
+    });
+  } catch (err) {
+    console.warn(`⚠️  DeFi position valuation: failed to build closed cycles for farm ${farmId}@${contractAddress}:`, err.message);
+    return [];
+  }
+}
+
+/** Every closed farm-position cycle across every farm this wallet has ever deposited into — the
+ * "Show closed positions" data source. Deliberately no caching layer (unlike getOpenDefiPositionsUsd):
+ * this is lazy, user-triggered (a toggle click), not loaded on every page view, and history doesn't
+ * change on its own the way a live position's value does, so there's much less to gain from one. */
+export async function getClosedFarmPositionsUsd(trackedWallet) {
+  const candidates = await getDistinctFarmPositions(trackedWallet);
+  if (candidates.length === 0) return { positions: [] };
+
+  const perFarm = await Promise.all(candidates.map((c) => getClosedFarmCycles(c.contractAddress, c.farmId, trackedWallet)));
+  const positions = perFarm.flat().sort((a, b) => new Date(b.endTimestamp) - new Date(a.endTimestamp)); // most recently closed first
+  return { positions };
 }
 
 /** One open CoreAscension staking position's current value, or null if fully withdrawn or any read
