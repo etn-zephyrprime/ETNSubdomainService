@@ -29,7 +29,7 @@ import {
   MAX_TRACKED_WALLETS,
   TRACK_COOLDOWN_DAYS,
 } from "../db/trackedWallets.js";
-import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
+import { getOpenDefiPositionsUsd, getClosedFarmPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
@@ -318,6 +318,43 @@ router.get("/premium/defi-positions", async (req, res) => {
   // behind a progress banner the way `ingesting` (genuinely nothing to show yet) does.
   const refreshing = perWallet.some((w) => w.refreshing);
   res.json({ perWallet, combined: { positions: allPositions, totalUsd, hasUnpriced }, ingesting: jobs.length > 0, jobs, refreshing });
+});
+
+// Closed farm-position history — lazily fetched (the frontend only calls this behind a "Show closed
+// positions" toggle, not on every page load, since this is a nice-to-have history view, not the
+// live figures the rest of this router prioritizes). No ingestion-progress reporting the way
+// /defi-positions has: a wallet still mid cold-start scan just comes back with whatever closed
+// cycles have been found SO FAR, same "partial results over blocking" posture as everywhere else in
+// this router, without needing its own job-polling UI for what's explicitly a secondary view.
+router.get("/premium/defi-closed-positions", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  try {
+    const active = await getCoveredWallets(wallet);
+    const perWallet = await Promise.all(
+      active.map(async (w) => {
+        try {
+          const result = await getClosedFarmPositionsUsd(w.address);
+          return { walletAddress: w.address, ...result };
+        } catch (err) {
+          console.error(`Closed DeFi position lookup failed for wallet ${w.address}:`, err);
+          return { walletAddress: w.address, positions: [], failed: true };
+        }
+      })
+    );
+    const allPositions = perWallet.flatMap((w) => w.positions.map((p) => ({ ...p, walletAddress: w.walletAddress })));
+    res.json({ perWallet, combined: { positions: allPositions } });
+  } catch (err) {
+    console.error("Closed DeFi position lookup failed:", err);
+    res.status(500).json({ error: "Failed to load closed DeFi positions" });
+  }
 });
 
 // Live value of every LP/V3 position covered wallets DIRECTLY hold (not locked in a farm/staking

@@ -6,6 +6,7 @@ import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useCombinedPortfolio } from "../../hooks/useCombinedPortfolio.js";
 import { useDefiPositions } from "../../hooks/useDefiPositions.js";
+import { useClosedDefiPositions } from "../../hooks/useClosedDefiPositions.js";
 import { useAvgCostBasis } from "../../hooks/useAvgCostBasis.js";
 import { useLiquidityPositions } from "../../hooks/useLiquidityPositions.js";
 import { usePortfolioSummary } from "../../hooks/usePortfolioSummary.js";
@@ -162,6 +163,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   } = coreTierAccess;
   const { getCombinedPortfolio } = useCombinedPortfolio();
   const { getDefiPositions } = useDefiPositions();
+  const { getClosedDefiPositions } = useClosedDefiPositions();
   const { getAvgCostBasis } = useAvgCostBasis();
   const { getLiquidityPositions } = useLiquidityPositions();
   const { getPortfolioSummary, savePortfolioSummary } = usePortfolioSummary();
@@ -200,6 +202,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // real wait for members who actually have something staked/farmed.
   const [defiPositions, setDefiPositions] = useState(null);
   const [defiPositionsError, setDefiPositionsError] = useState(null);
+  // Closed farm-position history — lazily loaded ONLY once the user clicks "Show closed positions"
+  // (see useClosedDefiPositions.js's own comment on why this has no auto-load/polling the way
+  // defiPositions above does). null = not yet fetched; { perWallet, combined } once it has.
+  const [showClosedPositions, setShowClosedPositions] = useState(false);
+  const [closedDefiPositions, setClosedDefiPositions] = useState(null);
+  const [closedDefiPositionsError, setClosedDefiPositionsError] = useState(null);
+  const [closedDefiPositionsLoading, setClosedDefiPositionsLoading] = useState(false);
   const [avgCostByToken, setAvgCostByToken] = useState(null); // { [lowercased tokenAddress]: { avgCostUsd, avgCostEtn } } | null while loading
   // Live value of directly-held LP/V3 positions — { perWallet, combined } | null while loading.
   // Same "separate, independent load" reasoning as defiPositions above (real on-chain reads, not
@@ -351,6 +360,42 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     const id = setInterval(() => loadDefiPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [defiPositions?.ingesting, defiPositions?.refreshing, loadDefiPositions]);
+
+  // Closed farm-position history — fetched once, the first time the user actually expands "Show
+  // closed positions" (see the showClosedPositions toggle below), not on mount and not polled —
+  // history doesn't change the way a live position's value does, so there's nothing to keep
+  // refreshing here the way defiPositions above needs to.
+  const loadClosedDefiPositions = useCallback(async () => {
+    setClosedDefiPositionsLoading(true);
+    setClosedDefiPositionsError(null);
+    try {
+      const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+      const res = await getClosedDefiPositions(wallet.account, signature, timestamp);
+      setClosedDefiPositions(res);
+    } catch (err) {
+      console.error("Failed to load closed DeFi positions:", err);
+      setClosedDefiPositionsError("Couldn't load closed positions — try again shortly.");
+    } finally {
+      setClosedDefiPositionsLoading(false);
+    }
+  }, [getAuthParams, getClosedDefiPositions, wallet.account]);
+
+  const handleToggleClosedPositions = useCallback(() => {
+    setShowClosedPositions((prev) => {
+      const next = !prev;
+      if (next && closedDefiPositions == null && !closedDefiPositionsLoading) loadClosedDefiPositions();
+      return next;
+    });
+  }, [closedDefiPositions, closedDefiPositionsLoading, loadClosedDefiPositions]);
+
+  // A reconnect/wallet-list change invalidates whatever was already fetched — same reasoning as
+  // defiPositions's own hasAccess/active reset, just without re-fetching eagerly (stays collapsed
+  // and empty until the user asks for it again).
+  useEffect(() => {
+    setShowClosedPositions(false);
+    setClosedDefiPositions(null);
+    setClosedDefiPositionsError(null);
+  }, [hasAccess, active]);
 
   // Average purchase price per token (USD + ETN) for Combined Holdings below — loads alongside the
   // combined portfolio, independently; a slow/failed lookup here never blocks the holdings list
@@ -657,6 +702,11 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     walletFilter === "all" ? defiPositions?.combined : defiPositions?.perWallet?.find((w) => w.walletAddress === walletFilter);
   const defiUsd = defiEntry?.totalUsd != null ? Number(defiEntry.totalUsd) : null;
   const defiHasUnpriced = Boolean(defiEntry?.hasUnpriced);
+
+  // Closed farm-position history, same walletFilter scoping — NOT folded into any total (there's
+  // nothing live to value here, see getClosedFarmPositionsUsd's own comment), purely a history list.
+  const closedDefiEntry =
+    walletFilter === "all" ? closedDefiPositions?.combined : closedDefiPositions?.perWallet?.find((w) => w.walletAddress === walletFilter);
 
   // Live value of directly-held LP/V3 positions, same walletFilter scoping and "fold into the
   // total" reasoning as defiEntry above — a member holding LP/V3 positions shouldn't see a total
@@ -1358,12 +1408,16 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                     }
                                     const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
                                     const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
                                     return (
                                       <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                                           <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
                                           <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
                                             {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                            {changeUsdNum != null && (
+                                              <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                            )}
                                           </span>
                                         </div>
                                         <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
@@ -1385,6 +1439,94 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                       </div>
                     </div>
                   ) : null}
+
+                  <div style={{ marginBottom: 16 }}>
+                    <button
+                      onClick={handleToggleClosedPositions}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 4, background: "none", border: "none",
+                        color: mutedLight, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5,
+                        cursor: "pointer", padding: 0,
+                      }}
+                    >
+                      {showClosedPositions ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                      {showClosedPositions ? "Hide closed positions" : "Show closed positions"}
+                    </button>
+
+                    {showClosedPositions && (
+                      <div style={{ marginTop: 8 }}>
+                        {closedDefiPositionsLoading ? (
+                          <div style={{ fontSize: 10, color: mutedLight }}>Loading closed positions…</div>
+                        ) : closedDefiPositionsError ? (
+                          <div style={{ fontSize: 10, color: errorColor }}>{closedDefiPositionsError}</div>
+                        ) : closedDefiEntry?.positions?.length > 0 ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {closedDefiEntry.positions.map((p, i) => {
+                              const posKey = `closed-${p.contractAddress}-${p.farmId}-${p.endTimestamp}-${i}`;
+                              const isExpanded = expandedDefiPosition === posKey;
+                              const totalChangeNum = p.totalChangeUsd != null ? Number(p.totalChangeUsd) : null;
+                              const totalChangeColor = totalChangeNum == null ? mutedLight : totalChangeNum >= 0 ? green : errorColor;
+                              const dateRange = `${new Date(p.startTimestamp).toLocaleDateString()} – ${new Date(p.endTimestamp).toLocaleDateString()}`;
+                              return (
+                                <div
+                                  key={posKey}
+                                  style={{ padding: "8px 10px", borderRadius: 4, border: `1px solid ${border}`, background: panel2, opacity: 0.85 }}
+                                >
+                                  <div
+                                    onClick={() => setExpandedDefiPosition(isExpanded ? null : posKey)}
+                                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+                                  >
+                                    <span style={{ fontSize: 12, color: mutedLight, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                                      <TokenPairLogo legs={p.legs} />
+                                      {p.label}
+                                      {isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />}
+                                    </span>
+                                    <span style={{ fontSize: 12, color: totalChangeColor, fontWeight: 700 }}>
+                                      {totalChangeNum != null ? `${totalChangeNum >= 0 ? "+" : "-"}${formatUsdPrice(Math.abs(totalChangeNum))}` : "—"}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>Closed {dateRange}</div>
+
+                                  {isExpanded && (
+                                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                                      {p.legs.map((leg) => {
+                                        const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                                        const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                        const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
+                                        return (
+                                          <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                              <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                                              <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                                {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                                {changeUsdNum != null && (
+                                                  <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                                )}
+                                              </span>
+                                            </div>
+                                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                                              Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                              {" · "}Withdrawn: {Number(leg.withdrawnAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                              {Number(leg.pendingFees) > 0 && (
+                                                <>{" · "}Fees: <span style={{ color: green }}>+{Number(leg.pendingFees).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></>
+                                              )}
+                                              {" · "}Net: {Number(leg.netAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 10, color: mutedLight }}>No closed farm positions on record for this wallet.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   <SectionDivider color={blue} glow={blueGlow} />
 
@@ -1453,12 +1595,16 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                     }
                                     const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
                                     const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
                                     return (
                                       <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                                           <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
                                           <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
                                             {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                            {changeUsdNum != null && (
+                                              <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                            )}
                                           </span>
                                         </div>
                                         <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
@@ -1512,12 +1658,16 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                     }
                                     const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
                                     const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                                    const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
                                     return (
                                       <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
                                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                                           <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
                                           <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
                                             {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                            {changeUsdNum != null && (
+                                              <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                            )}
                                           </span>
                                         </div>
                                         <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
