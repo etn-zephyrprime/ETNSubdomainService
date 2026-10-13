@@ -1,13 +1,61 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
-import { Crown } from "lucide-react";
+import { Crown, TriangleAlert } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import { usePremiumSubscription } from "../../../hooks/usePremiumSubscription.js";
-import { green, mutedLight, border, panel2, error as errorColor, monoFont } from "../../theme.js";
+import { green, mutedLight, border, panel2, error as errorColor, orange, orangeGlow, monoFont } from "../../theme.js";
 
 const MONTH_OPTIONS = [1, 3, 6, 12];
 const YEAR_OPTIONS = [1, 2, 3];
+
+// How many days out each tier's "renew soon" warning kicks in — a monthly sub gets a 7-day heads
+// up (roughly a quarter of its own billing cycle), an annual sub gets 30 (same proportion would be
+// ~91 days, but 30 keeps the warning from firing for most of the year on a sub nobody's actually
+// at risk of losing yet) — exact thresholds per the user's own request.
+const MONTHLY_RENEWAL_WARNING_DAYS = 7;
+const ANNUAL_RENEWAL_WARNING_DAYS = 30;
+const SECONDS_PER_DAY = 86400;
+
+/** Whichever tier is actually keeping Core Tier access alive right now, and how close ITS expiry
+ * is — not just "is monthly expiring soon", since a member who ALSO holds a far-out annual sub
+ * isn't at any real risk of losing access just because their monthly happens to lapse first. When
+ * both are simultaneously active, the LATER of the two is the one that matters (it's what access
+ * actually depends on); its own tier's threshold applies. Returns null when neither tier is
+ * currently active (nothing to warn about — PortfolioDashboardSection already shows the full
+ * "not a member" panel in that case). */
+function computeExpiryStatus(monthlyExpiry, annualExpiry) {
+  const nowSec = Date.now() / 1000;
+  const monthlyActive = monthlyExpiry != null && Number(monthlyExpiry) > nowSec;
+  const annualActive = annualExpiry != null && Number(annualExpiry) > nowSec;
+  if (!monthlyActive && !annualActive) return null;
+
+  let effectiveTier;
+  let effectiveExpiry;
+  if (monthlyActive && annualActive) {
+    if (Number(annualExpiry) >= Number(monthlyExpiry)) {
+      effectiveTier = "annual";
+      effectiveExpiry = annualExpiry;
+    } else {
+      effectiveTier = "monthly";
+      effectiveExpiry = monthlyExpiry;
+    }
+  } else if (annualActive) {
+    effectiveTier = "annual";
+    effectiveExpiry = annualExpiry;
+  } else {
+    effectiveTier = "monthly";
+    effectiveExpiry = monthlyExpiry;
+  }
+
+  const daysRemaining = (Number(effectiveExpiry) - nowSec) / SECONDS_PER_DAY;
+  const warningThresholdDays = effectiveTier === "annual" ? ANNUAL_RENEWAL_WARNING_DAYS : MONTHLY_RENEWAL_WARNING_DAYS;
+  return {
+    effectiveTier,
+    daysRemaining,
+    isEndingSoon: daysRemaining <= warningThresholdDays,
+  };
+}
 
 // Shows the connected wallet's current membership status for both independent tiers and lets
 // them extend either. Both tiers now unlock Core Tier's multi-wallet portfolio tracking (see
@@ -15,7 +63,13 @@ const YEAR_OPTIONS = [1, 2, 3];
 // membership additionally grants the 50% PnL statement discount (see PnlStatementRequest.jsx) —
 // see PremiumSubscription.sol's header comment for why a cheap monthly signup deliberately can't
 // reach that discount.
-export default function MembershipPurchase({ wallet, onMembershipChange }) {
+//
+// `onExpiryStatusChange`, if given, is called with computeExpiryStatus's own result (or null)
+// every time it changes — PortfolioDashboardSection.jsx uses this to move this WHOLE panel back up
+// to the top of the page (same spot a non-member sees it) once access is genuinely at risk of
+// lapsing soon, not just to decide whether to show the alert below (which this component always
+// renders itself, regardless of where its caller places it).
+export default function MembershipPurchase({ wallet, onMembershipChange, onExpiryStatusChange }) {
   const {
     isConfigured,
     getMembershipPricePerMonth,
@@ -63,6 +117,15 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Recomputed from scratch on every monthlyExpiry/annualExpiry change rather than stored in its
+  // own state — it's a pure derivation of the two expiries already held above, nothing about it
+  // needs independent state.
+  const expiryStatus = computeExpiryStatus(monthlyExpiry, annualExpiry);
+  useEffect(() => {
+    onExpiryStatusChange?.(expiryStatus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expiryStatus?.isEndingSoon, expiryStatus?.effectiveTier, expiryStatus?.daysRemaining]);
 
   if (!isConfigured) {
     return (
@@ -131,6 +194,37 @@ export default function MembershipPurchase({ wallet, onMembershipChange }) {
           Premium Membership
         </div>
       </div>
+
+      {/* Renewal warning — see computeExpiryStatus's own comment for exactly when this fires
+          (7 days out for a monthly sub, 30 for annual, whichever tier is the one actually keeping
+          access alive right now). PortfolioDashboardSection.jsx also moves this whole panel to the
+          top of the page while this is showing — this banner is what makes that move make sense
+          once the member gets there, not just a "why is this panel here" surprise. */}
+      {expiryStatus?.isEndingSoon && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            padding: "10px 12px",
+            borderRadius: 6,
+            border: `1px solid ${orange}`,
+            background: "rgba(232,145,30,0.12)",
+            boxShadow: `0 0 10px ${orangeGlow}`,
+            marginBottom: 16,
+          }}
+        >
+          <TriangleAlert size={16} color={orange} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div style={{ fontSize: 12, color: "#fff", lineHeight: 1.5 }}>
+            <b style={{ color: orange }}>
+              {/* daysRemaining is always > 0 here — computeExpiryStatus only ever derives it from
+                  a tier it already confirmed is still active (expiry > now). */}
+              Your {expiryStatus.effectiveTier} membership expires in {Math.max(1, Math.ceil(expiryStatus.daysRemaining))} day{Math.ceil(expiryStatus.daysRemaining) === 1 ? "" : "s"}.
+            </b>{" "}
+            Renew now to keep your Argus Core Tier access — multi-wallet portfolio tracking, PnL, and everything else on this page.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <button onClick={() => setTier("annual")} style={tabStyle(isAnnual)}>Annual</button>
