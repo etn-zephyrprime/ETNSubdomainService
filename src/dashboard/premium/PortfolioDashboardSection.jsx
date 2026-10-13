@@ -123,7 +123,22 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
     setWalletFilter("all");
   }, [wallet.isConnected, wallet.account]);
 
-  const membershipPanel = <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} />;
+  // Reported by MembershipPurchase itself (see that component's own computeExpiryStatus comment)
+  // — null until it's loaded the connected wallet's actual expiry data, then { effectiveTier,
+  // daysRemaining, isEndingSoon }. Drives moving the WHOLE panel back to the top of the page (see
+  // showMembershipAtTop below) once a member's access is genuinely close to lapsing, so the
+  // renewal reminder isn't buried at the bottom of a page they may not scroll all the way down.
+  const [expiryStatus, setExpiryStatus] = useState(null);
+  const isEndingSoon = Boolean(expiryStatus?.isEndingSoon);
+
+  const membershipPanel = (
+    <MembershipPurchase wallet={wallet} onMembershipChange={() => setMembershipVersion((v) => v + 1)} onExpiryStatusChange={setExpiryStatus} />
+  );
+  // Top placement: a non-member (same as always) OR an active member whose access is about to
+  // lapse — the whole point of the user-requested move being THIS condition is that someone who's
+  // comfortably renewed for months still gets the normal "it's down at the bottom" treatment;
+  // this is specifically for the narrow, time-sensitive window where they need to actually notice it.
+  const showMembershipAtTop = !hasAccess || isEndingSoon;
 
   return (
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
@@ -188,8 +203,10 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
       )}
 
       {/* Someone who isn't (yet) a member — including a visitor with no wallet connected — sees the Premium
-          Membership panel FIRST, above the portfolio it unlocks; an active member gets it back at the bottom. */}
-      {!hasAccess && membershipPanel}
+          Membership panel FIRST, above the portfolio it unlocks. An active member normally gets it back at
+          the bottom instead (see below) — UNLESS their access is about to lapse (showMembershipAtTop), in
+          which case the renewal reminder belongs right here too, not buried under everything else. */}
+      {showMembershipAtTop && membershipPanel}
 
       <div style={{ marginBottom: 20 }}>
         <style>{`
@@ -232,7 +249,10 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         )}
       </div>
 
-      {hasAccess && membershipPanel}
+      {/* Only render it again down here if it ISN'T already showing at the top — hasAccess alone
+          would duplicate the panel for a member whose access is ending soon (showMembershipAtTop
+          already covers that case above). */}
+      {hasAccess && !showMembershipAtTop && membershipPanel}
       <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
     </div>
   );
