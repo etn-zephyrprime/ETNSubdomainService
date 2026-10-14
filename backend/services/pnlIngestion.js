@@ -714,6 +714,10 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
   // match above didn't already find both legs — never replaces an already-found direct leg, only
   // completes whatever's still missing.
   let usedRouterFallback = false;
+  // The router-wrapped WETN leg, if one was used — the wallet itself never held that WETN (the
+  // router wrapped the wallet's msg.value, or unwrapped the pool's payout and sent native ETN on),
+  // so it's recorded below as the native ETN the wallet really sent/received, not as WETN.
+  let nativeWetnLeg = null;
   if (underlyingLegs.length < 2) {
     const routerLc = String(tx.to?.hash || tx.to || "").toLowerCase();
     if (routerLc && routerLc !== poolLc && routerLc !== walletLc) {
@@ -722,6 +726,7 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
         if (wetnLeg) {
           underlyingLegs = [...underlyingLegs, wetnLeg];
           usedRouterFallback = true;
+          nativeWetnLeg = wetnLeg;
         }
       }
       if (!isMint && underlyingLegs.length < 2 && !underlyingLegs.some((t) => String(t.token?.address).toLowerCase() !== WETN_ADDRESS)) {
@@ -771,9 +776,17 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
   let anyUnpriced = false;
   const underlyingRows = [];
   for (const leg of underlyingLegs) {
+    // Confirmed live: recording the router's WETN hop as the wallet's own WETN left the ledger
+    // holding WETN the wallet never had (152,362 phantom WETN from one removeLiquidityETHWithPermit)
+    // while the native ETN really sent/received was never booked at all — the caller skips this
+    // tx's plain tx.value row and ingestInternalTransactions excludes its internal ETN payout,
+    // because this function claims the tx. The amount is exact either way: on an add it's the ETN
+    // the router actually used (any refund of unused msg.value never left the wallet in effect),
+    // on a remove it's exactly what WETN.withdraw() sent on.
+    const isNativeLeg = leg === nativeWetnLeg;
     const legAddress = leg.token.address;
     const legAmount = weiToDecimal(BigInt(leg.total.value), Number(leg.token.decimals));
-    const priceUsd = await priceOrNull(legAddress, timestamp, priorityAssets);
+    const priceUsd = await priceOrNull(isNativeLeg ? "NATIVE" : legAddress, timestamp, priorityAssets);
     const usdValue = priceUsd != null ? legAmount * priceUsd : null;
     if (usdValue == null) anyUnpriced = true;
     else underlyingUsdTotal += usdValue;
@@ -785,8 +798,8 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
       counterpartyAddress: poolLc,
       isSelfTransfer: false,
       isCex: false,
-      assetType: "erc20",
-      tokenAddress: legAddress,
+      assetType: isNativeLeg ? "native" : "erc20",
+      tokenAddress: isNativeLeg ? null : legAddress,
       tokenId: null,
       amountRaw: BigInt(leg.total.value),
       amountDecimal: legAmount,
@@ -850,16 +863,17 @@ async function detectAndRecordLiquidityEvent(trackedWallet, walletLc, tx, tokenT
  * WETN lands in the position manager's own balance mid-mint is the caller having sent that much
  * native ETN as msg.value — there's no other path that log could have come from.
  *
- * Returns a normalized `{ decimals, amountRaw, logIndex }` (decimals/amountRaw for pricing,
- * logIndex for this leg's own synthetic-row sentinel) or null if neither check finds anything —
- * the caller still declines the whole mint in that case, same as before. */
+ * Returns a normalized `{ decimals, amountRaw, logIndex, native }` (decimals/amountRaw for pricing,
+ * logIndex for this leg's own synthetic-row sentinel, `native` true for the Deposit case — the wallet
+ * paid native ETN, never WETN, so the caller records it as native) or null if neither check finds
+ * anything — the caller still declines the whole mint in that case, same as before. */
 function findV3FundingLeg(tokenAddr, amountRaw, tokenTransfers, walletLc, poolLc, allLogs) {
   const transferLeg = tokenTransfers.find((t) => {
     if (String(t.token?.address).toLowerCase() !== tokenAddr) return false;
     return String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc;
   });
   if (transferLeg) {
-    return { decimals: Number(transferLeg.token.decimals), amountRaw: BigInt(transferLeg.total.value), logIndex: Number(transferLeg.log_index || 0) };
+    return { decimals: Number(transferLeg.token.decimals), amountRaw: BigInt(transferLeg.total.value), logIndex: Number(transferLeg.log_index || 0), native: false };
   }
 
   if (tokenAddr !== WETN_ADDRESS) return null;
@@ -875,7 +889,7 @@ function findV3FundingLeg(tokenAddr, amountRaw, tokenTransfers, walletLc, poolLc
     }
   });
   if (!depositLog) return null;
-  return { decimals: 18, amountRaw, logIndex: Number(depositLog.index ?? 0) };
+  return { decimals: 18, amountRaw, logIndex: Number(depositLog.index ?? 0), native: true };
 }
 
 async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, tokenTransfers, v3TxHashes, rows, priorityAssets) {
@@ -946,7 +960,7 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
     const underlyingRows = [];
     for (const { tokenAddr, leg } of legs) {
       const legAmount = weiToDecimal(leg.amountRaw, leg.decimals);
-      const priceUsd = await priceOrNull(tokenAddr, timestamp, priorityAssets);
+      const priceUsd = await priceOrNull(leg.native ? "NATIVE" : tokenAddr, timestamp, priorityAssets);
       const usdValue = priceUsd != null ? legAmount * priceUsd : null;
       if (usdValue == null) anyUnpriced = true;
       else underlyingUsdTotal += usdValue;
@@ -958,8 +972,10 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
         counterpartyAddress: poolLc,
         isSelfTransfer: false,
         isCex: false,
-        assetType: "erc20",
-        tokenAddress: tokenAddr,
+        // Native-funded side: booked as the ETN the wallet actually sent (see findV3FundingLeg) — as
+        // WETN it left the real ETN lots untouched (the caller also skips this tx's tx.value row).
+        assetType: leg.native ? "native" : "erc20",
+        tokenAddress: leg.native ? null : tokenAddr,
         tokenId: null,
         amountRaw: leg.amountRaw,
         amountDecimal: legAmount,
@@ -1086,11 +1102,20 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
     const matching = decreaseByTokenId.get(tokenIdStr);
 
     const collectRows = [];
+    // A WETN side collected to the position manager and unwrapped (multicall collect +
+    // unwrapWETH9) reaches the wallet as native ETN — no WETN transfer to the wallet exists in the
+    // tx at all. Booked as native, same reasoning as findV3FundingLeg's Deposit case; otherwise the
+    // ledger gains WETN the wallet never held and the real ETN payout (excluded from the internal-
+    // transaction walk, since this tx is claimed here) is never recorded.
+    const wetnReachedWallet = tokenTransfers.some(
+      (t) => String(t.token?.address).toLowerCase() === WETN_ADDRESS && String(t.to?.hash).toLowerCase() === walletLc
+    );
     for (const [tokenAddr, collectedRaw, matchedRaw, matchedPriceUsd] of [
       [token0, amount0Raw, matching?.amount0Raw ?? 0n, matching?.priceUsd0 ?? null],
       [token1, amount1Raw, matching?.amount1Raw ?? 0n, matching?.priceUsd1 ?? null],
     ]) {
       if (collectedRaw === 0n) continue;
+      const isNativeSide = tokenAddr === WETN_ADDRESS && !wetnReachedWallet;
       const decimals = await getTokenDecimalsCached(tokenAddr);
       const principalRaw = collectedRaw < matchedRaw ? collectedRaw : matchedRaw;
       const feeRaw = collectedRaw - principalRaw;
@@ -1105,8 +1130,8 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
           counterpartyAddress: POSITION_MANAGER_ADDRESS,
           isSelfTransfer: false,
           isCex: false,
-          assetType: "erc20",
-          tokenAddress: tokenAddr,
+          assetType: isNativeSide ? "native" : "erc20",
+          tokenAddress: isNativeSide ? null : tokenAddr,
           tokenId: null,
           amountRaw: principalRaw,
           amountDecimal: principalAmount,
@@ -1127,8 +1152,8 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
           counterpartyAddress: POSITION_MANAGER_ADDRESS,
           isSelfTransfer: false,
           isCex: false,
-          assetType: "erc20",
-          tokenAddress: tokenAddr,
+          assetType: isNativeSide ? "native" : "erc20",
+          tokenAddress: isNativeSide ? null : tokenAddr,
           tokenId: null,
           amountRaw: feeRaw,
           amountDecimal: feeAmount,

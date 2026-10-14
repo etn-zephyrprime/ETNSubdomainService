@@ -6,6 +6,18 @@ import { query, chunkArray } from "./pool.js";
 // actually broke.
 const BATCH_SIZE = 500;
 
+// Wrapped ETN — same literal pnlIngestion.js's own WETN_ADDRESS uses. A pool's WETN side funded or
+// paid out as native ETN (router addLiquidityETH/removeLiquidityETH, a V3 mint with msg.value, a
+// collect+unwrapWETH9) is stored as an asset_type 'native' row with no token_address — see
+// pnlIngestion.js's detectAndRecordLiquidityEvent/detectAndRecordV3PositionEvent. The deposited-
+// quantity queries below read those rows back as the pool's WETN side.
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
+
+/** token_address for a synthetic LP/V3 leg row, with a native row standing in for WETN. */
+function legTokenAddress(row) {
+  return row.asset_type === "native" ? WETN_ADDRESS : row.token_address;
+}
+
 // Raw per-wallet transfer history — dedup key (tracked_wallet, tx_hash, log_index) mirrors
 // nftSalesCache.js's composite-key pattern. log_index is -1 for a plain top-level/internal native
 // transfer, which has no log of its own.
@@ -213,15 +225,16 @@ export async function getV2LpDepositedQuantities(trackedWallet, poolAddress, tok
   const token1Lc = token1.toLowerCase();
   const res = await query(
     `SELECT direction, token_address, amount_raw FROM ingested_transfers
-     WHERE tracked_wallet = $1 AND counterparty_address = $2 AND asset_type = 'erc20'
-       AND token_address = ANY($3::text[]) AND log_index <= -2000 AND log_index > -4000`,
-    [trackedWallet.toLowerCase(), poolAddress.toLowerCase(), [token0Lc, token1Lc]]
+     WHERE tracked_wallet = $1 AND counterparty_address = $2
+       AND ((asset_type = 'erc20' AND token_address = ANY($3::text[])) OR (asset_type = 'native' AND $4::boolean))
+       AND log_index <= -2000 AND log_index > -4000`,
+    [trackedWallet.toLowerCase(), poolAddress.toLowerCase(), [token0Lc, token1Lc], token0Lc === WETN_ADDRESS || token1Lc === WETN_ADDRESS]
   );
   let net0 = 0n;
   let net1 = 0n;
   for (const row of res?.rows || []) {
     const amt = BigInt(row.amount_raw);
-    const isToken0 = row.token_address === token0Lc;
+    const isToken0 = legTokenAddress(row) === token0Lc;
     if (row.direction === "out") {
       if (isToken0) net0 += amt;
       else net1 += amt;
@@ -267,15 +280,17 @@ export async function getV3PositionDepositedQuantities(trackedWallet, positionAs
 
   const allTxs = [...new Set([...increaseTxs, ...decreaseTxs])];
   const legRes = await query(
-    `SELECT tx_hash, direction, token_address, amount_raw, price_usd_at_time, usd_value FROM ingested_transfers
-     WHERE tracked_wallet = $1 AND asset_type = 'erc20' AND token_address = ANY($2::text[]) AND tx_hash = ANY($3::text[])`,
-    [wallet, [token0Lc, token1Lc], allTxs]
+    `SELECT tx_hash, direction, asset_type, token_address, amount_raw, price_usd_at_time, usd_value FROM ingested_transfers
+     WHERE tracked_wallet = $1 AND tx_hash = ANY($3::text[])
+       AND ((asset_type = 'erc20' AND token_address = ANY($2::text[]))
+         OR (asset_type = 'native' AND $4::boolean AND log_index <= -4000))`,
+    [wallet, [token0Lc, token1Lc], allTxs, token0Lc === WETN_ADDRESS || token1Lc === WETN_ADDRESS]
   );
 
   let net0 = 0n;
   let net1 = 0n;
   for (const row of legRes?.rows || []) {
-    const isToken0 = row.token_address === token0Lc;
+    const isToken0 = legTokenAddress(row) === token0Lc;
     const amt = BigInt(row.amount_raw);
     if (increaseTxs.has(row.tx_hash) && row.direction === "out") {
       if (isToken0) net0 += amt;

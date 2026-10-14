@@ -149,18 +149,26 @@ export function buildNftEvents(transfers) {
   return { events, consumedRowIds, unmatchedCount };
 }
 
+/** Lowercases a swap leg's token address — same reasoning as transferToEvent — EXCEPT the native
+ * leg, which swap_trades stores as the literal NATIVE_SENTINEL ("NATIVE", see swapTrades.js).
+ * Confirmed live: lowercasing that too turned it into "native", a separate FIFO bucket from the
+ * "NATIVE" one every plain ETN transfer feeds — so ETN spent in a swap was disposed from an empty
+ * bucket (a shortfall) while the real ETN lots were never reduced, leaving millions of phantom ETN
+ * in the ledger (a member's PnL showing $7.7k of ETN against $5 actually held). */
+function normalizeSwapLegAddress(address) {
+  if (!address || address.toUpperCase() === NATIVE_SENTINEL) return address ? NATIVE_SENTINEL : address;
+  return address.toLowerCase();
+}
+
 export function swapToEvent(s) {
-  // Same lowercasing reasoning as transferToEvent — passed through unchanged if null/undefined
-  // (whatever a native-ETN leg's actual representation is here, this doesn't change it, only
-  // normalizes casing when a real address string is present).
   return {
     kind: "swap",
     txHash: s.tx_hash,
     timestamp: new Date(s.timestamp),
-    soldTokenAddress: s.token_sold_address ? s.token_sold_address.toLowerCase() : s.token_sold_address,
+    soldTokenAddress: normalizeSwapLegAddress(s.token_sold_address),
     soldQuantity: s.amount_sold,
     soldProceedsUsd: new Decimal(s.amount_sold).times(s.price_usd_sold_leg ?? 0).toString(),
-    boughtTokenAddress: s.token_bought_address ? s.token_bought_address.toLowerCase() : s.token_bought_address,
+    boughtTokenAddress: normalizeSwapLegAddress(s.token_bought_address),
     boughtQuantity: s.amount_bought,
     boughtUnitCostUsd: s.price_usd_bought_leg ?? 0,
   };
