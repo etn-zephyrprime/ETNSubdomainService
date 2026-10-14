@@ -27,6 +27,11 @@
 // "this wallet did an add/remove-liquidity trade" (that detection is new), so a wallet with LP
 // activity but no farm/staking history isn't identifiable as "affected" from existing data alone.
 //
+// Pass --wetn-legs to reset only wallets whose existing V2 LP / V3 position legs include WETN —
+// the scope for the native-ETN-as-WETN fix (router addLiquidityETH/removeLiquidityETH, V3 mint with
+// msg.value, collect+unwrapWETH9 used to be booked as WETN, leaving phantom WETN and ETN that was
+// never deducted/credited).
+//
 // Pass explicit wallet address(es) to scope to just those instead -- needed for a wallet reported
 // individually (confirmed live: a member's wallet whose DeFi scan cursor advanced under some
 // earlier, since-fixed version of the farm-detection logic, leaving it with REAL farm activity the
@@ -59,9 +64,22 @@ dotenv.config();
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const all = args.includes("--all");
+const wetnLegs = args.includes("--wetn-legs");
 const explicitWallets = args.filter((a) => !a.startsWith("--")).map((a) => a.toLowerCase());
 for (const w of explicitWallets) {
   if (!ethers.isAddress(w)) throw new Error(`Not a valid address: ${w}`);
+}
+
+// Wallets with a synthetic V2 LP / V3 position leg (log_index <= -2000) recorded as WETN — the ones
+// a native-ETN add/remove-liquidity or V3 mint/collect could have been mis-booked for, before those
+// legs were recorded as native ETN instead (see pnlIngestion.js's nativeWetnLeg / leg.native /
+// isNativeSide). Over-inclusive on purpose (a genuine WETN-token LP leg also matches): a re-ingest
+// of a wallet that was already right changes nothing.
+async function getWetnLegWallets() {
+  const res = await query(
+    "SELECT DISTINCT tracked_wallet FROM ingested_transfers WHERE token_address = '0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77' AND log_index <= -2000"
+  );
+  return new Set((res?.rows || []).map((r) => r.tracked_wallet));
 }
 
 async function getDefiActivityWallets() {
@@ -91,6 +109,10 @@ async function main() {
   if (explicitWallets.length > 0) {
     targetWallets = explicitWallets;
     scopeLabel = " (explicit wallet(s))";
+  } else if (wetnLegs) {
+    const affected = await getWetnLegWallets();
+    targetWallets = [...new Set(pairs.map((p) => p.wallet_address))].filter((w) => affected.has(w.toLowerCase()));
+    scopeLabel = " (have WETN liquidity/V3 legs)";
   } else if (all) {
     targetWallets = [...new Set(pairs.map((p) => p.wallet_address))];
     scopeLabel = " (--all)";

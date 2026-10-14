@@ -138,7 +138,12 @@ async function main() {
 
   const txs = await getAllPages(`/addresses/${walletLc}/transactions`);
   const methodByHash = new Map(txs.map((t) => [t.hash.toLowerCase(), t.method || "(none)"]));
-  const valueByHash = new Map(txs.filter((t) => t.from?.hash?.toLowerCase() === walletLc).map((t) => [t.hash.toLowerCase(), Number(ethers.formatEther(BigInt(t.value || "0")))]));
+  // Successful txs only — a reverted tx moved no value (see pnlIngestion.js's isFailedTransaction).
+  const valueByHash = new Map(
+    txs
+      .filter((t) => t.from?.hash?.toLowerCase() === walletLc && t.status !== "error" && (typeof t.result !== "string" || t.result === "success"))
+      .map((t) => [t.hash.toLowerCase(), Number(ethers.formatEther(BigInt(t.value || "0")))])
+  );
 
   const internalNet = new Map(); // tx hash -> net ETN the wallet received via internal txs
   for (const i of await getAllPages(`/addresses/${walletLc}/internal-transactions`)) {
@@ -154,7 +159,13 @@ async function main() {
 
   const byClass = new Map();
   const perTx = [];
-  for (const [hash, chainNet] of internalNet) {
+  // Every tx that moved native ETN either way — internal transfers AND ETN sent as tx.value. Walking
+  // internalNet alone missed every tx whose only native movement was the wallet's own tx.value (an
+  // ETN->token swap, a plain addLiquidityETH with no refund), which is where a swap's unrecorded ETN
+  // disposal hides.
+  const nativeTxHashes = new Set([...internalNet.keys(), ...[...valueByHash].filter(([, v]) => v > 0).map(([h]) => h)]);
+  for (const hash of nativeTxHashes) {
+    const chainNet = internalNet.get(hash) ?? 0;
     const cls = classify(hash);
     // On-chain net native for this tx = internal net − tx.value the wallet sent (gas excluded from both sides).
     const trueNet = chainNet - (valueByHash.get(hash) ?? 0);

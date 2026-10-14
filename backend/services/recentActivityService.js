@@ -70,7 +70,9 @@ function isPureGasMarkerRow(row) {
 }
 
 function categorizeTransferRow(row) {
-  if (row.asset_type === "native") return "native";
+  // A liquidity/V3 leg funded or paid out as native ETN (see pnlIngestion.js's router/unwrap
+  // handling) carries the same synthetic log_index range as its ERC20 siblings — keep it with them.
+  if (row.asset_type === "native") return Number(row.log_index) <= LP_LOG_INDEX_CEILING ? "liquidity" : "native";
   if (row.asset_type === "erc721" || row.asset_type === "erc1155") return "nft";
   if (row.asset_type === "erc20") return Number(row.log_index) <= LP_LOG_INDEX_CEILING ? "liquidity" : "tokens";
   return "tokens"; // defensive — every real asset_type is covered above
@@ -83,7 +85,7 @@ function isPositionLotLeg(row) {
 function summarizeLiquidityGroup(txHash, legs) {
   const lotLeg = legs.find(isPositionLotLeg);
   const underlyingLegs = legs.filter((l) => !isPositionLotLeg(l));
-  const tokenAddresses = [...new Set(underlyingLegs.map((l) => l.token_address).filter(Boolean))];
+  const tokenAddresses = [...new Set(underlyingLegs.map((l) => (l.asset_type === "native" ? "NATIVE" : l.token_address)).filter(Boolean))];
   const usdTotal = underlyingLegs.reduce((sum, l) => sum + (l.usd_value != null ? Number(l.usd_value) : 0), 0);
   const direction = lotLeg ? lotLeg.direction : "in";
   const label = !lotLeg ? "Collected Fees" : direction === "in" ? "Added Liquidity" : "Removed Liquidity";

@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { LineChart, TrendingUp, Image as ImageIcon, Sparkles, Gem } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Gem, ChevronDown, ChevronUp } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
-import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
@@ -19,7 +18,7 @@ import { mergeBalanceHistories, buildEtnPriceLookup, convertSeriesToUsd, buildDa
 import { getHistoricalBalance } from "../../utils/historicalBalance.js";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import { formatChartDate, formatUsdPrice, formatTokenAmount, isSpamTokenName } from "../../utils/format.js";
-import { green, mutedLight, orange, muted, border, panel2, error as errorColor } from "../../theme.js";
+import { green, greenGlow, mutedLight, orange, orangeGlow, blue, blueGlow, gold, goldGlow, muted, border, panel2, error as errorColor, monoFont } from "../../theme.js";
 
 // Three real, unrelated wallets with genuine on-chain activity — MUST stay in sync with
 // coreTierDemoRouter.js's own copy of this same list (no shared build step between frontend/
@@ -111,6 +110,59 @@ function fmtSigned(v) {
 }
 const sectionHeaderStyle = { fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 const selectStyle = { padding: "8px 12px", borderRadius: 10, border: `1px solid ${border}`, background: panel2, color: "#fff", fontSize: 12, fontWeight: 600, outline: "none" };
+
+// Deliberately hand-duplicated from PortfolioDashboardSection.jsx/CoreTierPortfolio.jsx rather than
+// imported — this file's own header comment (and CoreTierDemoPage.jsx's identical one) already
+// documents why: CoreTierDemo.jsx is loaded EAGERLY, not lazily, specifically because it has zero
+// wallet-connection dependency, keeping the WalletConnect/AppKit bundle out of every visitor's base
+// load. Confirmed live importing CorePanelButton/SectionDivider/headlineValueStyle directly from
+// those two files (both of which DO depend on useReownWallet) pulled that whole bundle in anyway —
+// DashboardApp's own chunk grew by ~126KB and the WalletConnect chunk by ~275KB in one build, for a
+// component a disconnected visitor sees before ever touching a wallet-requiring tab. Same "hand-sync
+// a small constant rather than share an import across this particular boundary" reasoning
+// DEMO_WALLET_ADDRESSES' own comment already established — if the real versions' styling changes,
+// this needs updating to match by hand, not automatically.
+function CorePanelButton({ p, isActive, onChange }) {
+  const Icon = p.icon;
+  return (
+    <button
+      onClick={() => onChange(p.id)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        width: "100%",
+        minWidth: 0,
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: `1px solid ${isActive ? gold : "rgba(232,191,76,0.35)"}`,
+        background: isActive ? "rgba(232,191,76,0.18)" : "rgba(232,191,76,0.06)",
+        color: isActive ? gold : "#d8c488",
+        boxShadow: isActive ? `0 0 12px ${goldGlow}` : undefined,
+        fontFamily: monoFont,
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        cursor: "pointer",
+      }}
+    >
+      <Icon size={14} />
+      {p.label}
+    </button>
+  );
+}
+function SectionDivider({ color, glow }) {
+  return <div style={{ height: 2, borderRadius: 2, background: color, boxShadow: `0 0 8px ${glow}`, margin: "20px 0" }} />;
+}
+const headlineValueStyle = {
+  fontFamily: monoFont,
+  fontSize: 26,
+  fontWeight: 800,
+  letterSpacing: 0.5,
+  color: green,
+  textShadow: `0 0 10px ${greenGlow}`,
+};
 
 /** ETN Balance History, combined across all three demo wallets — same Blockscout coin-balance-
  * history-by-day + historicalBalance.js backfill + /api/etn-price-history CoreTierBalanceHistory.jsx
@@ -256,6 +308,10 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
   const trackedCountLabel = walletFilter === "all" ? "3 tracked wallets" : WALLET_LABELS[Number(walletFilter)];
   const { resolve: resolveTokenName, isSpam: isSpamToken } = useTokenNames((data.combinedHoldings.tokens || []).map((t) => t.tokenAddress));
   const [holdingsShown, setHoldingsShown] = useState(10);
+  // Which farm/LP position card (by its own React key) has its token-quantity breakdown expanded —
+  // same "closed until opened, at most one at a time" behavior as CoreTierPortfolio.jsx's own
+  // identical state.
+  const [expandedPosition, setExpandedPosition] = useState(null);
 
   // Same exclusion CoreTierPortfolio.jsx's own allVisibleTokens applies for a real member: an LP
   // pool token has no price feed of its own and already has its own dedicated, correctly-valued
@@ -360,19 +416,15 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-        <Sparkles size={18} color={green} />
-        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: "#fff" }}>
-          Core Tier — Portfolio (Demo)
-        </div>
-      </div>
-
+      {/* No internal "Portfolio" title here — same as the real page, where the gold switcher
+          button above already labels which panel is showing (see CoreTierPortfolio.jsx, which has
+          no equivalent duplicate header of its own either). */}
       <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
         <div style={sectionHeaderStyle}>
           Total Portfolio Balance (USD)
           <InfoTooltip text={`Everything this dashboard can price: native ETN, tokens, liquidity positions, and anything staked or farming — added together, across ${walletFilter === "all" ? "all 3 demo wallets" : walletCountLabel}.`} />
         </div>
-        <div style={{ fontSize: 26, fontWeight: 900, color: "#fff" }}>
+        <div style={headlineValueStyle}>
           {totalHasUnpriced ? "≈ " : ""}{formatUsdPrice(totalPortfolioUsd)}
         </div>
         {totalChange24h && (
@@ -416,12 +468,17 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <TokenLogo address="NATIVE" label="ETN" size={24} spacing={0} style={{ alignSelf: "center" }} />
-          <div style={{ fontSize: 22, fontWeight: 900, color: "#fff" }}>{fmtEtn(combinedEtnAmount)}</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: green, textShadow: `0 0 10px ${greenGlow}` }}>{fmtEtn(combinedEtnAmount)}</div>
           {combinedEtnUsd != null && <div style={{ fontSize: 13, color: mutedLight, fontWeight: 600 }}>{formatUsdPrice(combinedEtnUsd)}</div>}
         </div>
         <div style={{ fontSize: 11, color: mutedLight, marginTop: 4 }}>Across {trackedCountLabel}</div>
       </div>
 
+      <SectionDivider color={green} glow={greenGlow} />
+
+      {/* Same per-leg deposited/fees/net/change%/USD-effect breakdown a real subscriber's farm
+          position cards show (CoreTierPortfolio.jsx) — click a card to expand it. Only a "farm"
+          position carries this (CoreAscension staking is single-token, nothing to compare against). */}
       {data.defiPositions.positions.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={sectionHeaderStyle}>
@@ -429,26 +486,81 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
             <InfoTooltip text="Funds currently locked in a yield farm or staking contract — valued live from the contract's own state." />
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {data.defiPositions.positions.map((p, i) => (
-              <div key={`${p.contractAddress}-${p.farmId ?? "stake"}-${i}`} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                    <TokenPairLogo legs={p.legs} />
-                    {p.label}
-                  </span>
-                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                  </span>
+            {data.defiPositions.positions.map((p, i) => {
+              const posKey = `farm-${p.contractAddress}-${p.farmId ?? "stake"}-${i}`;
+              const canExpand = p.kind === "farm" && p.legs.some((leg) => leg.depositedAmount != null);
+              const isExpanded = canExpand && expandedPosition === posKey;
+              return (
+                <div key={posKey} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                  <div
+                    onClick={canExpand ? () => setExpandedPosition(isExpanded ? null : posKey) : undefined}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                  >
+                    <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                      <TokenPairLogo legs={p.legs} />
+                      {p.label}
+                      {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                    </span>
+                    <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                      {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                    {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                  </div>
+
+                  {isExpanded && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                      <div style={{ fontSize: 9, color: muted, marginBottom: 6 }}>
+                        Token quantity vs. what was deposited — separate from the USD figure above, which can look "up" purely from ETN's own price moving even while the underlying token split has shifted against it (impermanent loss). Fees earned are counted toward the net amount.
+                      </div>
+                      {p.legs.map((leg) => {
+                        if (leg.depositedAmount == null) {
+                          return (
+                            <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                              {leg.symbol || "?"}: no deposit baseline on record.
+                            </div>
+                          );
+                        }
+                        const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                        const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                        const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
+                        return (
+                          <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                              <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                              <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                {changeUsdNum != null && (
+                                  <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                )}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                              Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              {Number(leg.pendingFees) > 0 && (
+                                <>{" · "}Fees earned: <span style={{ color: green }}>+{Number(leg.pendingFees).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></>
+                              )}
+                              {" · "}Net: {Number(leg.netAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
+      <SectionDivider color={blue} glow={blueGlow} />
+
+      {/* Same per-leg breakdown as the farm cards above, for directly-held V2/V3 positions (see
+          CoreTierPortfolio.jsx's own identical Liquidity Positions cards). V2 never carries
+          pendingFees (its fees are already baked into the live amount, nothing extra to show). */}
       {(data.liquidityPositions.v2Positions.length > 0 || data.liquidityPositions.v3Positions.length > 0) && (
         <div style={{ marginBottom: 16 }}>
           <div style={sectionHeaderStyle}>
@@ -456,42 +568,134 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
             <InfoTooltip text="LP pool tokens and concentrated-liquidity (V3) positions held directly — valued live from each pool's own current reserves/price." />
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {data.liquidityPositions.v2Positions.map((p) => (
-              <div key={p.tokenAddress} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                    <TokenPairLogo legs={p.legs} />
-                    {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
-                  </span>
-                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                  </span>
+            {data.liquidityPositions.v2Positions.map((p) => {
+              const posKey = `v2-${p.tokenAddress}`;
+              const canExpand = p.legs.some((leg) => leg.depositedAmount != null);
+              const isExpanded = canExpand && expandedPosition === posKey;
+              return (
+                <div key={posKey} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                  <div
+                    onClick={canExpand ? () => setExpandedPosition(isExpanded ? null : posKey) : undefined}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                  >
+                    <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                      <TokenPairLogo legs={p.legs} />
+                      {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
+                      {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                    </span>
+                    <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                      {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                    {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                  </div>
+
+                  {isExpanded && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                      {p.legs.map((leg) => {
+                        if (leg.depositedAmount == null) {
+                          return (
+                            <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                              {leg.symbol || "?"}: no deposit baseline on record.
+                            </div>
+                          );
+                        }
+                        const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                        const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                        const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
+                        return (
+                          <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                              <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                              <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                {changeUsdNum != null && (
+                                  <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                )}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                              Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+              );
+            })}
+            {data.liquidityPositions.v3Positions.map((p) => {
+              const posKey = `v3-${p.tokenId}`;
+              const canExpand = p.legs.some((leg) => leg.depositedAmount != null);
+              const isExpanded = canExpand && expandedPosition === posKey;
+              return (
+                <div key={posKey} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
+                  <div
+                    onClick={canExpand ? () => setExpandedPosition(isExpanded ? null : posKey) : undefined}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: canExpand ? "pointer" : "default" }}
+                  >
+                    <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                      <TokenPairLogo legs={p.legs} />
+                      {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
+                      {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
+                      {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
+                    </span>
+                    <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
+                      {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
+                    {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
+                  </div>
+
+                  {isExpanded && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
+                      {p.legs.map((leg) => {
+                        if (leg.depositedAmount == null) {
+                          return (
+                            <div key={leg.tokenAddress} style={{ fontSize: 10, color: mutedLight, marginBottom: 6 }}>
+                              {leg.symbol || "?"}: no deposit baseline on record.
+                            </div>
+                          );
+                        }
+                        const changeNum = leg.changePercent != null ? Number(leg.changePercent) : null;
+                        const changeColor = changeNum == null ? mutedLight : changeNum >= 0 ? green : errorColor;
+                        const changeUsdNum = leg.changeUsd != null ? Number(leg.changeUsd) : null;
+                        return (
+                          <div key={leg.tokenAddress} style={{ marginBottom: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                              <span style={{ fontSize: 11, color: "#fff", fontWeight: 700 }}>{leg.symbol || "?"}</span>
+                              <span style={{ fontSize: 11, color: changeColor, fontWeight: 700 }}>
+                                {changeNum != null ? `${changeNum >= 0 ? "+" : ""}${changeNum.toFixed(2)}%` : "—"}
+                                {changeUsdNum != null && (
+                                  <span style={{ fontWeight: 400 }}> ({changeUsdNum >= 0 ? "+" : "-"}{formatUsdPrice(Math.abs(changeUsdNum))})</span>
+                                )}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: mutedLight, marginTop: 2, lineHeight: 1.6 }}>
+                              Deposited: {Number(leg.depositedAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              {" · "}Now: {Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              {Number(leg.pendingFees) > 0 && (
+                                <>{" · "}Fees: <span style={{ color: green }}>+{Number(leg.pendingFees).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span></>
+                              )}
+                              {" · "}Net: {Number(leg.netAmount).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
-            {data.liquidityPositions.v3Positions.map((p) => (
-              <div key={p.tokenId} style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${border}`, background: panel2 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "#fff", fontWeight: 700 }}>
-                    <TokenPairLogo legs={p.legs} />
-                    {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
-                    {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
-                  </span>
-                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
-                    {p.totalUsd != null ? `${p.hasUnpriced ? "≈ " : ""}${formatUsdPrice(Number(p.totalUsd))}` : "price unavailable"}
-                  </span>
-                </div>
-                <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
-                  {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
+
+      <SectionDivider color={orange} glow={orangeGlow} />
 
       <div>
         <div style={sectionHeaderStyle}>
@@ -539,6 +743,8 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
           </>
         )}
       </div>
+
+      <SectionDivider color={gold} glow={goldGlow} />
     </div>
   );
 }
@@ -715,17 +921,32 @@ function DemoNftPnl({ data }) {
   );
 }
 
+// Same 5 panels PortfolioDashboardSection.jsx's own PANELS switches between, minus Recent
+// Activity/Gas Spent/Telegram Alerts — those either need data this demo's own snapshot doesn't
+// compute, or are tied to a real authenticated identity (see this component's own header comment).
+// Diamond Hands is appended conditionally below (older snapshots predate it — see that panel's own
+// comment), not listed here unconditionally.
+const DEMO_BASE_PANELS = [
+  { id: "portfolio", label: "Portfolio", icon: WalletIcon },
+  { id: "balance", label: "Balance History", icon: LineChart },
+  { id: "pnl", label: "PnL", icon: TrendingUp },
+  { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
+];
+const DEMO_DIAMOND_HANDS_PANEL = { id: "diamondhands", label: "Diamond Hands Score", icon: Gem };
+
 /** Core Tier's actual value proposition, previewed for three real wallets — available to anyone,
  * including a visitor with no wallet connected at all. See CoreTierPortfolio.jsx's own "View Demo"
  * toggle, which renders this in place of CoreTierGate's connect/subscribe messaging.
  *
- * Mirrors the real Portfolio page's own structure as closely as a fixed, read-only preview
- * reasonably can: Portfolio (composition chart, ETN balance, DeFi/Liquidity positions, Combined
- * Holdings) stays always open, same as the real page; Balance History/PnL/NFT PnL collapse behind
- * a + the same way CollapsibleCoreTierPanel already does for a real member. Deliberately does NOT
- * include Alerts, adding/removing tracked wallets, or Membership Purchase — those are WRITE actions
- * tied to a real, authenticated identity (a Telegram link, a subscription, a tracked-wallet list),
- * not data a demo can meaningfully or safely fake; a plain Subscribe note stands in for them. */
+ * Mirrors the real Portfolio page's own current structure, not just its data: the same gold
+ * panel-switcher (CorePanelButton, imported from PortfolioDashboardSection.jsx) a real subscriber
+ * sees, showing one panel at a time, replaces the older stacked-collapsible-panel layout this file
+ * used before the real page's own redesign — a visitor previewing the demo should see exactly what
+ * they'd be buying, not a dated version of it. Deliberately does NOT include Recent Activity, Gas
+ * Spent, Telegram Alerts, adding/removing tracked wallets, or Membership Purchase — those either
+ * need data this demo doesn't compute, or are WRITE actions tied to a real, authenticated identity
+ * (a Telegram link, a subscription, a tracked-wallet list), not data a demo can meaningfully or
+ * safely fake; a plain Subscribe note stands in for them. */
 export default function CoreTierDemo({ onSelectToken }) {
   const { getDemoPnl } = useCoreTierDemo();
   const [data, setData] = useState(null);
@@ -736,6 +957,9 @@ export default function CoreTierDemo({ onSelectToken }) {
   // show, only the fixed WALLET_LABELS slots. Same "page-wide filter driving every section
   // together" spirit as PortfolioDashboardSection.jsx's own walletFilter, just index-keyed.
   const [walletFilter, setWalletFilter] = useState("all");
+  // Which of the panels below is showing — same single-panel-at-a-time behavior as the real page's
+  // own activePanel.
+  const [activePanel, setActivePanel] = useState("portfolio");
 
   useEffect(() => {
     let cancelled = false;
@@ -802,35 +1026,39 @@ export default function CoreTierDemo({ onSelectToken }) {
             </div>
           </div>
 
+          <div style={{ marginBottom: 20 }}>
+            <style>{`
+              .core-tier-demo-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
+              @media (min-width:720px){
+                .core-tier-demo-panel-switcher{grid-template-columns:repeat(4,1fr);}
+              }
+            `}</style>
+            <div className="core-tier-demo-panel-switcher">
+              {/* Static snapshot of the real panel's own body (CoreTierDiamondHands.jsx's
+                  DiamondHandsBody) — appended only when present, same "absent from snapshots
+                  generated before this shipped" caveat as before (re-run generateDemoSnapshot.js
+                  and it appears). */}
+              {(data.diamondHands ? [...DEMO_BASE_PANELS, DEMO_DIAMOND_HANDS_PANEL] : DEMO_BASE_PANELS).map((p) => (
+                <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
+              ))}
+            </div>
+          </div>
+
           <DashboardPanel>
-            <DemoPortfolio data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} priceChanges={data.priceChanges24h || {}} />
-          </DashboardPanel>
-
-          <CollapsibleCoreTierPanel icon={LineChart} title="Core Tier — Balance History (Demo)">
-            <DemoBalanceHistory walletFilter={walletFilter} />
-          </CollapsibleCoreTierPanel>
-
-          <CollapsibleCoreTierPanel icon={TrendingUp} title="Core Tier — PnL (Demo)">
-            <DemoPnl data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />
-          </CollapsibleCoreTierPanel>
-
-          <CollapsibleCoreTierPanel icon={ImageIcon} title="Core Tier — NFT PnL (Demo)">
-            <DemoNftPnl data={source} />
-          </CollapsibleCoreTierPanel>
-
-          {/* Static snapshot of the real panel's own body (CoreTierDiamondHands.jsx's
-              DiamondHandsBody). Same "pooled perAsset regardless of wallet filter" behavior as the
-              real panel. Absent from snapshots generated before this shipped -- re-run
-              generateDemoSnapshot.js and it appears. */}
-          {data.diamondHands && (
-            <CollapsibleCoreTierPanel icon={Gem} title="Core Tier — Diamond Hands Score (Demo)">
+            {activePanel === "portfolio" && (
+              <DemoPortfolio data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} priceChanges={data.priceChanges24h || {}} />
+            )}
+            {activePanel === "balance" && <DemoBalanceHistory walletFilter={walletFilter} />}
+            {activePanel === "pnl" && <DemoPnl data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />}
+            {activePanel === "nftpnl" && <DemoNftPnl data={source} />}
+            {activePanel === "diamondhands" && data.diamondHands && (
               <DiamondHandsBody
                 scopeResult={walletFilter === "all" ? data.diamondHands.portfolio : data.diamondHands.perWallet.find((w) => w.walletIndex === Number(walletFilter))}
                 perAsset={data.diamondHands.perAsset}
                 isPortfolio={walletFilter === "all"}
               />
-            </CollapsibleCoreTierPanel>
-          )}
+            )}
+          </DashboardPanel>
 
           <DashboardPanel>
             <div style={{ fontSize: 12, color: mutedLight, textAlign: "center", lineHeight: 1.6 }}>
