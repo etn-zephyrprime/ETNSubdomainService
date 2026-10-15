@@ -52,12 +52,21 @@
 //
 // Safe to re-run: a wallet with nothing left to reset just re-ingests cleanly (same idempotent
 // resumability every other ingestWalletHistory caller already relies on).
+//
+// CHECKPOINTED (--apply only): the target list is stored in maintenance_run_wallets when a run
+// starts and each wallet is marked done as it finishes, so re-running the SAME command after the
+// instance restarts (which kills the job and wipes its log -- see migration 021) resumes with the
+// wallets that aren't done yet, from the stored list rather than a recomputed scope. Once every
+// wallet is done, the next run of that command starts a fresh pass.
+//   node backend/scripts/resetDefiAffectedWallets.js --wetn-legs --status    # progress of that run
+//   node backend/scripts/resetDefiAffectedWallets.js --wetn-legs --apply --restart  # discard checkpoint, start over
 import dotenv from "dotenv";
 import { ethers } from "ethers";
 import { getPool, query } from "../db/pool.js";
 import { getAllActiveTrackedWalletPairs } from "../db/pnlSnapshots.js";
 import { clearDefiTopicProgress } from "../db/defiScanProgress.js";
 import { ingestWalletHistory } from "../services/pnlIngestion.js";
+import { ensureMaintenanceRunTable, getRunWallets, startRun, markRunWalletDone } from "../db/maintenanceRuns.js";
 
 dotenv.config();
 
@@ -65,6 +74,8 @@ const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const all = args.includes("--all");
 const wetnLegs = args.includes("--wetn-legs");
+const statusOnly = args.includes("--status");
+const restart = args.includes("--restart");
 const explicitWallets = args.filter((a) => !a.startsWith("--")).map((a) => a.toLowerCase());
 for (const w of explicitWallets) {
   if (!ethers.isAddress(w)) throw new Error(`Not a valid address: ${w}`);
@@ -87,9 +98,35 @@ async function getDefiActivityWallets() {
   return new Set((res?.rows || []).map((r) => r.tracked_wallet));
 }
 
+// One checkpoint per distinct command, so e.g. a --wetn-legs run and an --all run never resume
+// each other's lists.
+function jobKey() {
+  if (explicitWallets.length > 0) return `resetDefiAffectedWallets:wallets:${[...explicitWallets].sort().join(",")}`;
+  if (wetnLegs) return "resetDefiAffectedWallets:wetn-legs";
+  if (all) return "resetDefiAffectedWallets:all";
+  return "resetDefiAffectedWallets:defi";
+}
+
 async function main() {
   if (!getPool()) {
     throw new Error("DATABASE_URL not set — nothing to repair.");
+  }
+
+  await ensureMaintenanceRunTable();
+  const key = jobKey();
+  const checkpoint = await getRunWallets(key);
+  const pendingInCheckpoint = checkpoint.filter((r) => r.status !== "done");
+
+  if (statusOnly) {
+    if (checkpoint.length === 0) {
+      console.log(`No checkpointed run for ${key}.`);
+    } else {
+      console.log(`${key}: ${checkpoint.length - pendingInCheckpoint.length}/${checkpoint.length} wallet(s) done${pendingInCheckpoint.length === 0 ? " — run complete." : ""}
+`);
+      for (const r of checkpoint) console.log(`  ${r.status === "done" ? "done   " : "pending"}  ${r.wallet}`);
+    }
+    await getPool().end();
+    return;
   }
 
   const pairs = await getAllActiveTrackedWalletPairs(); // [{ owner_wallet, wallet_address }]
@@ -123,6 +160,16 @@ async function main() {
     scopeLabel = " (have existing DeFi activity)";
   }
 
+  // Resume an unfinished checkpointed run from its STORED list — the recomputed scope above can't be
+  // trusted mid-run: a wallet cleared but not yet re-ingested when the last run died has lost the
+  // very rows that put it in scope.
+  let resuming = false;
+  if (apply && !restart && pendingInCheckpoint.length > 0) {
+    resuming = true;
+    targetWallets = pendingInCheckpoint.map((r) => r.wallet);
+    scopeLabel = ` (resuming checkpoint — ${checkpoint.length - pendingInCheckpoint.length}/${checkpoint.length} already done)`;
+  }
+
   if (targetWallets.length === 0) {
     console.log(
       all
@@ -145,6 +192,8 @@ async function main() {
     return;
   }
 
+  if (!resuming) await startRun(key, targetWallets.map((w) => w.toLowerCase()));
+
   let succeeded = 0;
   let failed = 0;
   for (const walletAddress of targetWallets) {
@@ -163,9 +212,10 @@ async function main() {
       await query("DELETE FROM pnl_snapshots WHERE wallet_address = $1", [walletLc]);
       console.log("  cleared, re-ingesting (this can take a while for a wallet with real history)...");
 
-      const owner = pairs.find((p) => p.wallet_address === walletAddress)?.owner_wallet;
-      const siblings = owner ? (ownerToWallets.get(owner) || []).filter((a) => a !== walletAddress) : [];
+      const owner = pairs.find((p) => p.wallet_address.toLowerCase() === walletLc)?.owner_wallet;
+      const siblings = owner ? (ownerToWallets.get(owner) || []).filter((a) => a.toLowerCase() !== walletLc) : [];
       await ingestWalletHistory(walletAddress, siblings);
+      await markRunWalletDone(key, walletLc);
       console.log("  done.");
       succeeded++;
     } catch (err) {
