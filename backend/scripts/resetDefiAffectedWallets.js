@@ -60,6 +60,17 @@
 // wallet is done, the next run of that command starts a fresh pass.
 //   node backend/scripts/resetDefiAffectedWallets.js --wetn-legs --status    # progress of that run
 //   node backend/scripts/resetDefiAffectedWallets.js --wetn-legs --apply --restart  # discard checkpoint, start over
+//
+// SELF-OWNED SET: each re-ingest is given every OTHER wallet its owner(s) cover — the owner's own
+// connected wallet included, same as getCoveredWallets / the PnL panel / the snapshot scheduler.
+// Before 2026-10-16 this script left the owner's connected wallet out (and gave an owner's own
+// wallet no siblings at all), so a transfer between e.g. a tracked wallet and its owner's wallet was
+// ingested as an external sale + buy rather than a self-transfer. is_self_transfer depends only on
+// the counterparty, so that's repaired in place, without a re-ingest, by:
+//   node backend/scripts/resetDefiAffectedWallets.js --fix-self-flags          # dry run: count rows
+//   node backend/scripts/resetDefiAffectedWallets.js --fix-self-flags --apply  # flip them + clear chart rows
+// Scopes (--all, --wetn-legs, default) also include owners' own connected wallets now, not just
+// wallets someone added as tracked.
 import dotenv from "dotenv";
 import { ethers } from "ethers";
 import { getPool, query } from "../db/pool.js";
@@ -76,6 +87,7 @@ const all = args.includes("--all");
 const wetnLegs = args.includes("--wetn-legs");
 const statusOnly = args.includes("--status");
 const restart = args.includes("--restart");
+const fixSelfFlags = args.includes("--fix-self-flags");
 const explicitWallets = args.filter((a) => !a.startsWith("--")).map((a) => a.toLowerCase());
 for (const w of explicitWallets) {
   if (!ethers.isAddress(w)) throw new Error(`Not a valid address: ${w}`);
@@ -107,6 +119,43 @@ function jobKey() {
   return "resetDefiAffectedWallets:defi";
 }
 
+// Flags a covered wallet's transfers to/from its own sibling wallets as self-transfers — exactly what
+// a re-ingest with the correct self-owned set would produce, since ingestion sets is_self_transfer
+// purely from counterparty membership (and is_cex only when it isn't self). pnl_snapshots are
+// cleared for any wallet that changed, so the next backfillPnlHistory recomputes its chart.
+async function repairSelfTransferFlags(coveredWallets, selfOwnedFor) {
+  let total = 0;
+  for (const walletLc of coveredWallets) {
+    const siblings = selfOwnedFor(walletLc);
+    if (siblings.length === 0) continue;
+    const res = apply
+      ? await query(
+          `UPDATE ingested_transfers SET is_self_transfer = true, is_cex = false
+           WHERE tracked_wallet = $1 AND NOT is_self_transfer AND lower(counterparty_address) = ANY($2)`,
+          [walletLc, siblings]
+        )
+      : await query(
+          `SELECT count(*)::int AS n FROM ingested_transfers
+           WHERE tracked_wallet = $1 AND NOT is_self_transfer AND lower(counterparty_address) = ANY($2)`,
+          [walletLc, siblings]
+        );
+    const n = apply ? res.rowCount : res.rows[0].n;
+    if (n === 0) continue;
+    total += n;
+    if (apply) await query("DELETE FROM pnl_snapshots WHERE wallet_address = $1", [walletLc]);
+    console.log(`  ${walletLc}: ${n} transfer(s) with its own sibling wallets ${apply ? "re-flagged as self-transfers" : "not flagged as self-transfers"}`);
+  }
+  console.log(
+    total === 0
+      ? "Every covered wallet's self-transfers are already flagged — nothing to repair."
+      : apply
+        ? `
+Done — ${total} row(s) re-flagged. Run node backend/scripts/backfillPnlHistory.js to recompute the affected wallets' charts.`
+        : `
+Dry run — ${total} row(s) would be re-flagged. Re-run with --apply.`
+  );
+}
+
 async function main() {
   if (!getPool()) {
     throw new Error("DATABASE_URL not set — nothing to repair.");
@@ -135,10 +184,28 @@ async function main() {
     return;
   }
 
-  const ownerToWallets = new Map();
+  // owner -> every wallet the PnL panel covers for that owner: their own connected wallet plus
+  // each tracked one (getCoveredWallets).
+  const ownerGroups = new Map();
   for (const { owner_wallet, wallet_address } of pairs) {
-    if (!ownerToWallets.has(owner_wallet)) ownerToWallets.set(owner_wallet, []);
-    ownerToWallets.get(owner_wallet).push(wallet_address);
+    const owner = owner_wallet.toLowerCase();
+    if (!ownerGroups.has(owner)) ownerGroups.set(owner, new Set([owner]));
+    ownerGroups.get(owner).add(wallet_address.toLowerCase());
+  }
+  const coveredWallets = [...new Set([...ownerGroups.values()].flatMap((g) => [...g]))];
+  // A wallet covered by more than one owner gets the union — its ingested rows are shared by all.
+  const selfOwnedFor = (walletLc) => {
+    const set = new Set();
+    for (const group of ownerGroups.values()) {
+      if (group.has(walletLc)) for (const a of group) if (a !== walletLc) set.add(a);
+    }
+    return [...set];
+  };
+
+  if (fixSelfFlags) {
+    await repairSelfTransferFlags(coveredWallets, selfOwnedFor);
+    await getPool().end();
+    return;
   }
 
   let targetWallets;
@@ -148,15 +215,14 @@ async function main() {
     scopeLabel = " (explicit wallet(s))";
   } else if (wetnLegs) {
     const affected = await getWetnLegWallets();
-    targetWallets = [...new Set(pairs.map((p) => p.wallet_address))].filter((w) => affected.has(w.toLowerCase()));
+    targetWallets = coveredWallets.filter((w) => affected.has(w));
     scopeLabel = " (have WETN liquidity/V3 legs)";
   } else if (all) {
-    targetWallets = [...new Set(pairs.map((p) => p.wallet_address))];
+    targetWallets = coveredWallets;
     scopeLabel = " (--all)";
   } else {
     const defiWallets = await getDefiActivityWallets();
-    const distinctWallets = [...new Set(pairs.map((p) => p.wallet_address))];
-    targetWallets = distinctWallets.filter((w) => defiWallets.has(w.toLowerCase()));
+    targetWallets = coveredWallets.filter((w) => defiWallets.has(w));
     scopeLabel = " (have existing DeFi activity)";
   }
 
@@ -212,9 +278,7 @@ async function main() {
       await query("DELETE FROM pnl_snapshots WHERE wallet_address = $1", [walletLc]);
       console.log("  cleared, re-ingesting (this can take a while for a wallet with real history)...");
 
-      const owner = pairs.find((p) => p.wallet_address.toLowerCase() === walletLc)?.owner_wallet;
-      const siblings = owner ? (ownerToWallets.get(owner) || []).filter((a) => a.toLowerCase() !== walletLc) : [];
-      await ingestWalletHistory(walletAddress, siblings);
+      await ingestWalletHistory(walletAddress, selfOwnedFor(walletLc));
       await markRunWalletDone(key, walletLc);
       console.log("  done.");
       succeeded++;
