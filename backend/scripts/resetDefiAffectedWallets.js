@@ -89,6 +89,15 @@ const statusOnly = args.includes("--status");
 const restart = args.includes("--restart");
 const fixSelfFlags = args.includes("--fix-self-flags");
 const explicitWallets = args.filter((a) => !a.startsWith("--")).map((a) => a.toLowerCase());
+// An unrecognized flag is an error, never ignored: this script used to treat any flag it didn't know
+// (a typo, or a flag only a newer deploy has, like --fix-self-flags on an older one) as absent, which
+// silently turned the command into a default-scope reset of real wallets.
+const KNOWN_FLAGS = new Set(["--apply", "--all", "--wetn-legs", "--status", "--restart", "--fix-self-flags"]);
+const unknownFlags = args.filter((a) => a.startsWith("--") && !KNOWN_FLAGS.has(a));
+if (unknownFlags.length > 0) {
+  console.error(`Unknown flag(s): ${unknownFlags.join(", ")} — nothing done. Known: ${[...KNOWN_FLAGS].join(", ")}`);
+  process.exit(1);
+}
 for (const w of explicitWallets) {
   if (!ethers.isAddress(w)) throw new Error(`Not a valid address: ${w}`);
 }

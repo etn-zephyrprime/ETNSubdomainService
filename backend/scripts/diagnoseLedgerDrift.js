@@ -65,6 +65,7 @@ async function getAllPages(path) {
   return items;
 }
 
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const fmt = (n, d = 2) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 
 async function main() {
@@ -90,6 +91,9 @@ async function main() {
     if (!b.token?.address || b.token.type !== "ERC-20") continue;
     balances.set(b.token.address.toLowerCase(), Number(ethers.formatUnits(b.value || "0", Number(b.token.decimals ?? 18))));
   }
+  // The ledger books WETN as ETN (pnlEventBuilder.js's canonicalTokenKey), so compare against both combined.
+  balances.set(NATIVE_SENTINEL, nativeBalance + (balances.get(WETN_ADDRESS) ?? 0));
+  balances.delete(WETN_ADDRESS);
 
   console.log(`\nLedger vs on-chain — ${walletLc}\n`);
   console.log("asset".padEnd(14), "on-chain".padStart(20), "ledger".padStart(20), "ledger − chain".padStart(20));
@@ -103,7 +107,7 @@ async function main() {
   }
   rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   for (const r of rows.slice(0, 25)) {
-    console.log(String(r.key === NATIVE_SENTINEL ? "ETN (native)" : r.key.slice(0, 12)).padEnd(14), fmt(r.chain, 4).padStart(20), fmt(r.led, 4).padStart(20), fmt(r.diff, 4).padStart(20));
+    console.log(String(r.key === NATIVE_SENTINEL ? "ETN + WETN" : r.key.slice(0, 12)).padEnd(14), fmt(r.chain, 4).padStart(20), fmt(r.led, 4).padStart(20), fmt(r.diff, 4).padStart(20));
   }
   if (rows.length === 0) console.log("(no drift — ledger matches on-chain for every asset)");
 
@@ -121,19 +125,21 @@ async function main() {
   const classify = (hash) =>
     swapHashes.has(hash) ? "swap" : lpHashes.has(hash) ? "liquidity" : v3Hashes.has(hash) ? "v3-position" : defiHashes.has(hash) ? "defi-farm-stake" : "plain";
 
-  // What the ledger has for native ETN, per tx (net: in − out, excluding gas rows which carry 0 value).
+  // What the ledger has for ETN (WETN included), per tx — read from the assembled FIFO events, so
+  // it reflects exactly what the PnL replays (WETN folded in, farm-owned V3 rows dropped, same-tx
+  // round trips netted), plus locks/unlocks into and out of farms/stakes.
   const recordedNet = new Map();
-  for (const t of transfers) {
-    if (t.asset_type !== "native") continue;
-    const h = String(t.tx_hash).toLowerCase();
-    const amt = Number(t.amount_decimal) || 0;
-    recordedNet.set(h, (recordedNet.get(h) || 0) + (t.direction === "in" ? amt : -amt));
-  }
-  // Swaps record their native leg in swap_trades, not ingested_transfers.
-  for (const s of await getAllSwapTradesBefore(walletLc, now)) {
-    const h = String(s.tx_hash).toLowerCase();
-    if (String(s.token_bought_address).toUpperCase() === "NATIVE") recordedNet.set(h, (recordedNet.get(h) || 0) + Number(s.amount_bought));
-    if (String(s.token_sold_address).toUpperCase() === "NATIVE") recordedNet.set(h, (recordedNet.get(h) || 0) - Number(s.amount_sold));
+  const bump = (h, q) => recordedNet.set(String(h).toLowerCase(), (recordedNet.get(String(h).toLowerCase()) || 0) + q);
+  for (const e of events) {
+    if (e.kind === "swap") {
+      if (e.boughtTokenAddress === NATIVE_SENTINEL) bump(e.txHash, Number(e.boughtQuantity) || 0);
+      if (e.soldTokenAddress === NATIVE_SENTINEL) bump(e.txHash, -(Number(e.soldQuantity) || 0));
+      continue;
+    }
+    if (e.tokenAddress !== NATIVE_SENTINEL) continue;
+    const q = Number(e.quantity) || 0;
+    if (["in", "self_in", "unlock"].includes(e.kind)) bump(e.txHash, q);
+    else if (["out", "self_out", "lock"].includes(e.kind)) bump(e.txHash, -q);
   }
 
   const txs = await getAllPages(`/addresses/${walletLc}/transactions`);
@@ -154,6 +160,17 @@ async function main() {
     const v = Number(ethers.formatEther(BigInt(i.value || "0")));
     if (v === 0) continue;
     const h = String(i.transaction_hash).toLowerCase();
+    internalNet.set(h, (internalNet.get(h) || 0) + (to === walletLc ? v : -v));
+  }
+
+  // WETN moves too, since the ledger counts it as ETN: a wrap is ETN out + WETN in (net 0 either way).
+  for (const t of await getAllPages(`/addresses/${walletLc}/token-transfers?token=${WETN_ADDRESS}`)) {
+    const from = String(t.from?.hash || "").toLowerCase();
+    const to = String(t.to?.hash || "").toLowerCase();
+    if (from === to || (from !== walletLc && to !== walletLc)) continue;
+    const v = Number(ethers.formatUnits(BigInt(t.total?.value || "0"), 18));
+    if (v === 0) continue;
+    const h = String(t.transaction_hash || t.tx_hash).toLowerCase();
     internalNet.set(h, (internalNet.get(h) || 0) + (to === walletLc ? v : -v));
   }
 

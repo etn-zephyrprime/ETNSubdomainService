@@ -907,6 +907,15 @@ async function detectAndRecordV3PositionEvent(trackedWallet, walletLc, tx, token
   const collectLogs = items.filter((l) => onPositionManager(l) && (l.topics || [])[0] === V3_COLLECT_TOPIC);
   if (increaseLogs.length === 0 && decreaseLogs.length === 0 && collectLogs.length === 0) return false;
 
+  // A YieldFarm deposit()/withdraw() drives a V3 position the FARM owns (it wraps the wallet's ETN,
+  // mints/increases/decreases/collects as itself, and pays out to the wallet) — its position-manager
+  // logs are the farm's, not the wallet's. That activity is booked from the farm's own
+  // FarmDeposit/FarmIncrease/FarmWithdrawl events as lock/unlock (buildDefiFarmEvents) instead.
+  // Confirmed live: booking it here as well credited the wallet the farm's own fee collect as ETN
+  // and, by claiming the tx, suppressed the real tx.value ETN payment — burny.etn's farm #4 deposit.
+  // Returned truthy (not recorded) so the caller still skips the tx.value row: the farm lock owns it.
+  if (items.some((l) => [FARM_DEPOSIT_TOPIC, FARM_INCREASE_TOPIC, FARM_WITHDRAW_TOPIC].includes((l.topics || [])[0]))) return "farm";
+
   const timestamp = new Date(tx.timestamp);
   let recorded = false;
 
