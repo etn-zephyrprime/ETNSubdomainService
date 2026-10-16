@@ -32,9 +32,8 @@ import { getBatchPricesUsd } from "../utils/tokenChartRouter.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { computeLivePositionValuation, addLockedPositionsToValuation } from "./pnlPositionValuation.js";
 import {
-  transferToEvent,
+  assembleLedgerEvents,
   buildNftEvents,
-  swapToEvent,
   buildDefiFarmEvents,
   computeGasFeesUsd,
   valueInventoryAtTimestamp,
@@ -93,12 +92,7 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
 
   const { events: nftEvents, consumedRowIds: nftConsumedRowIds } = buildNftEvents(transfers);
   const { events: defiEvents } = await buildDefiFarmEvents(defiActivity, priorityAssets);
-  const events = [
-    ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
-    ...swaps.map(swapToEvent),
-    ...nftEvents,
-    ...defiEvents,
-  ].sort((a, b) => a.timestamp - b.timestamp);
+  const events = assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity });
 
   // defiActivity is returned too (not just folded into events) so a caller that also needs the RAW
   // rows -- categoryPnlService.js's own resolveCategoryTokenKeys, to tell which tokens are

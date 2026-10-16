@@ -174,6 +174,90 @@ export function swapToEvent(s) {
   };
 }
 
+// ---- Ledger assembly: WETN is ETN ----------------------------------------------------------
+//
+// WETN is ETN wrapped 1:1 and redeemable 1:1 at any time, so the PnL ledger books both as ONE
+// asset (NATIVE_SENTINEL). Every phantom-balance bug found so far was the same mistake in a new
+// place — ETN booked as WETN or the other way round: router addLiquidityETH/removeLiquidityETH legs,
+// V3 mints paid with msg.value, collect+unwrapWETH9, and a YieldFarm deposit/withdraw(_asNative)
+// whose events report WETN while the wallet paid and received ETN. Treating them as one asset makes
+// that whole class of error impossible rather than fixing each source in turn, and because it's
+// applied here, when events are built, it corrects already-ingested history with no re-ingest.
+const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
+
+/** The FIFO lot key for a token address: WETN folds into native ETN, everything else unchanged. */
+export function canonicalTokenKey(tokenAddress) {
+  return tokenAddress && String(tokenAddress).toLowerCase() === WETN_ADDRESS ? NATIVE_SENTINEL : tokenAddress;
+}
+
+function canonicalizeEvent(e) {
+  if (e.kind === "swap") {
+    return { ...e, soldTokenAddress: canonicalTokenKey(e.soldTokenAddress), boughtTokenAddress: canonicalTokenKey(e.boughtTokenAddress) };
+  }
+  return e.tokenAddress ? { ...e, tokenAddress: canonicalTokenKey(e.tokenAddress) } : e;
+}
+
+/** Nets native ETN flowing both ways inside ONE transaction down to the single net movement. With
+ * WETN folded into ETN, wrapping (ETN out to the WETN contract, WETN minted back) or unwrapping is
+ * an ETN-out plus an ETN-in of the same amount in one tx — without netting, FIFO would dispose the
+ * ETN at market and reacquire it at market, realizing a gain/loss on what is economically nothing
+ * and resetting its cost basis. The same netting is equally right for any other same-tx round trip
+ * (ETN sent to a contract with part refunded): only the net ever left or arrived. Self-transfers,
+ * locks/unlocks, swaps and zero-quantity rows (gas) are left untouched. */
+function netNativeWithinTx(events) {
+  const groups = new Map(); // txHash -> indices of plain native in/out events with quantity > 0
+  events.forEach((e, i) => {
+    if ((e.kind !== "in" && e.kind !== "out") || e.tokenAddress !== NATIVE_SENTINEL) return;
+    if (!(new Decimal(e.quantity || 0).gt(0))) return;
+    const h = String(e.txHash).toLowerCase();
+    if (!groups.has(h)) groups.set(h, []);
+    groups.get(h).push(i);
+  });
+
+  const drop = new Set();
+  const replacements = [];
+  for (const indices of groups.values()) {
+    const ins = indices.filter((i) => events[i].kind === "in");
+    const outs = indices.filter((i) => events[i].kind === "out");
+    if (ins.length === 0 || outs.length === 0) continue;
+    const inQty = ins.reduce((a, i) => a.plus(events[i].quantity), new Decimal(0));
+    const outQty = outs.reduce((a, i) => a.plus(events[i].quantity), new Decimal(0));
+    indices.forEach((i) => drop.add(i));
+    const first = events[indices[0]];
+    if (inQty.gt(outQty)) {
+      const inCost = ins.reduce((a, i) => a.plus(new Decimal(events[i].quantity).times(events[i].unitCostUsd ?? 0)), new Decimal(0));
+      replacements.push({ kind: "in", tokenAddress: NATIVE_SENTINEL, txHash: first.txHash, timestamp: first.timestamp, quantity: inQty.minus(outQty).toString(), unitCostUsd: inCost.div(inQty).toNumber() });
+    } else if (outQty.gt(inQty)) {
+      const proceeds = outs.reduce((a, i) => a.plus(events[i].proceedsUsd ?? 0), new Decimal(0));
+      const net = outQty.minus(inQty);
+      replacements.push({ kind: "out", tokenAddress: NATIVE_SENTINEL, txHash: first.txHash, timestamp: first.timestamp, quantity: net.toString(), proceedsUsd: proceeds.times(net).div(outQty).toNumber() });
+    }
+  }
+  return [...events.filter((_, i) => !drop.has(i)), ...replacements];
+}
+
+/** The one place a wallet's FIFO event list is assembled from its ingested rows — shared by the live
+ * snapshot/history (pnlSnapshotService.js) and the PnL Statement (pnlStatementGenerator.js) so they
+ * can never disagree. On top of the per-source builders it:
+ *   - drops synthetic V2-liquidity/V3-position rows (log_index <= -2000) on any tx that is also a
+ *     farm/stake tx: a YieldFarm drives its OWN V3 position, and that tx is already booked as a
+ *     lock/unlock from the farm's events — confirmed live (burny.etn's farm #4 deposit) that keeping
+ *     both credited the wallet the farm's fee collect and double-counted the withdrawal. Rows
+ *     ingested before pnlIngestion.js started declining these are filtered here, so no re-ingest.
+ *   - folds WETN into ETN, drops ETN<->WETN "swaps" (now same-asset no-ops), and nets same-tx ETN
+ *     round trips (see the section comment above, and netNativeWithinTx). */
+export function assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity }) {
+  const defiTxHashes = new Set(defiActivity.map((d) => String(d.tx_hash).toLowerCase()));
+  const transferEvents = transfers
+    .filter((t) => !nftConsumedRowIds.has(t.id))
+    .filter((t) => !(Number(t.log_index) <= -2000 && defiTxHashes.has(String(t.tx_hash).toLowerCase())))
+    .map(transferToEvent);
+  const events = [...transferEvents, ...swaps.map(swapToEvent), ...nftEvents, ...defiEvents]
+    .map(canonicalizeEvent)
+    .filter((e) => !(e.kind === "swap" && e.soldTokenAddress === e.boughtTokenAddress));
+  return netNativeWithinTx(events).sort((a, b) => a.timestamp - b.timestamp);
+}
+
 // ---- DeFi (yield farm / staking) activity -------------------------------------------------
 //
 // Raw events detected via topic-signature scanning in pnlIngestion.js's ingestDefiActivity — see

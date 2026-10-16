@@ -26,6 +26,7 @@ import { ethers } from "ethers";
 import { computeLpPositionsLive } from "./lpPositionValuation.js";
 import { getOpenDefiPositionsUsd } from "./defiPositionValuation.js";
 import { POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
+import { canonicalTokenKey } from "./pnlEventBuilder.js";
 
 const NATIVE = "NATIVE";
 
@@ -128,7 +129,8 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
     for (const position of defi.positions || []) {
       for (const leg of position.legs || []) {
         if (!leg.tokenAddress || leg.usdValue == null) continue; // an unpriced leg is left out, same convention as elsewhere
-        const key = String(leg.tokenAddress).toLowerCase();
+        // Same lot key the ledger uses — a farm's WETN leg matches the locked ETN lots (canonicalTokenKey).
+        const key = canonicalTokenKey(String(leg.tokenAddress).toLowerCase());
         const agg = live.get(key) || { amount: new Decimal(0), value: new Decimal(0) };
         agg.amount = agg.amount.plus(leg.amount);
         agg.value = agg.value.plus(leg.usdValue);

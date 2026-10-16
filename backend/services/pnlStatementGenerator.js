@@ -25,11 +25,10 @@ import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js
 // divergence-prone implementation. See that file's own header comment.
 import {
   NATIVE_SENTINEL,
-  transferToEvent,
+  assembleLedgerEvents,
   NFT_ASSET_TYPES,
   nftAssetKey,
   buildNftEvents,
-  swapToEvent,
   buildDefiFarmEvents,
   computeGasFeesUsd,
   valueInventoryAtTimestamp,
@@ -913,12 +912,7 @@ export async function generateStatement(requestId) {
   // above), not just this period, so opening inventory correctly reflects farm/stake activity from
   // prior periods too.
   const { events: defiEvents } = await buildDefiFarmEvents(defiActivity);
-  const events = [
-    ...transfers.filter((t) => !nftConsumedRowIds.has(t.id)).map(transferToEvent),
-    ...swaps.map(swapToEvent),
-    ...nftEvents,
-    ...defiEvents,
-  ].sort((a, b) => a.timestamp - b.timestamp);
+  const events = assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity });
   const { opening, closing } = replayFifo(events, periodStart, periodEnd);
 
   const transfersInPeriod = transfers.filter((t) => {
