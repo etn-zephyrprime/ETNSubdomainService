@@ -16,6 +16,9 @@
 //    with a large "unrecorded" figure are where the missing ETN went; the top offending transactions
 //    are listed so they can be inspected by hand.
 //
+// 3. For every drifting ERC-20 (top 6), the same per-tx comparison against the wallet's Blockscout
+//    token-transfer history, so token drift can be traced to specific transactions too.
+//
 // Usage: node backend/scripts/diagnoseLedgerDrift.js <wallet> [otherTrackedWallet ...]
 //   (pass the member's OTHER tracked wallets too if there are any — same selfOwned handling as the
 //    live snapshot.)
@@ -63,6 +66,27 @@ async function getAllPages(path) {
     extra = `${path.includes("?") ? "&" : "?"}${new URLSearchParams(Object.fromEntries(Object.entries(res.next_page_params).map(([k, v]) => [k, String(v)])))}`;
   }
   return items;
+}
+
+/** Net quantity of `tokenKey` the assembled FIFO events record per tx hash — exactly what the PnL
+ * replays (WETN folded into ETN, farm-owned V3 rows dropped, same-tx round trips netted), plus
+ * locks/unlocks into and out of farms/stakes. */
+function recordedNetByTx(events, tokenKey) {
+  const net = new Map();
+  const bump = (h, q) => net.set(String(h).toLowerCase(), (net.get(String(h).toLowerCase()) || 0) + q);
+  const is = (addr) => String(addr).toLowerCase() === tokenKey.toLowerCase();
+  for (const e of events) {
+    if (e.kind === "swap") {
+      if (is(e.boughtTokenAddress)) bump(e.txHash, Number(e.boughtQuantity) || 0);
+      if (is(e.soldTokenAddress)) bump(e.txHash, -(Number(e.soldQuantity) || 0));
+      continue;
+    }
+    if (!is(e.tokenAddress)) continue;
+    const q = Number(e.quantity) || 0;
+    if (["in", "self_in", "unlock"].includes(e.kind)) bump(e.txHash, q);
+    else if (["out", "self_out", "lock"].includes(e.kind)) bump(e.txHash, -q);
+  }
+  return net;
 }
 
 const WETN_ADDRESS = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
@@ -128,19 +152,7 @@ async function main() {
   // What the ledger has for ETN (WETN included), per tx — read from the assembled FIFO events, so
   // it reflects exactly what the PnL replays (WETN folded in, farm-owned V3 rows dropped, same-tx
   // round trips netted), plus locks/unlocks into and out of farms/stakes.
-  const recordedNet = new Map();
-  const bump = (h, q) => recordedNet.set(String(h).toLowerCase(), (recordedNet.get(String(h).toLowerCase()) || 0) + q);
-  for (const e of events) {
-    if (e.kind === "swap") {
-      if (e.boughtTokenAddress === NATIVE_SENTINEL) bump(e.txHash, Number(e.boughtQuantity) || 0);
-      if (e.soldTokenAddress === NATIVE_SENTINEL) bump(e.txHash, -(Number(e.soldQuantity) || 0));
-      continue;
-    }
-    if (e.tokenAddress !== NATIVE_SENTINEL) continue;
-    const q = Number(e.quantity) || 0;
-    if (["in", "self_in", "unlock"].includes(e.kind)) bump(e.txHash, q);
-    else if (["out", "self_out", "lock"].includes(e.kind)) bump(e.txHash, -q);
-  }
+  const recordedNet = recordedNetByTx(events, NATIVE_SENTINEL);
 
   const txs = await getAllPages(`/addresses/${walletLc}/transactions`);
   const methodByHash = new Map(txs.map((t) => [t.hash.toLowerCase(), t.method || "(none)"]));
@@ -213,6 +225,51 @@ async function main() {
       "(swap / liquidity / v3-position / defi-farm-stake) is ETN that arrived but was never recorded anywhere. A large figure in\n" +
       '"plain" points at something else (ingestion gaps, pagination, price/quantity rounding) — inspect the listed transactions.'
   );
+
+  // ---- 3. same breakdown for each drifting ERC-20 ----
+  // A farm deposit is a real transfer out on-chain and a 'lock' in the ledger, so both sides net the
+  // same way per tx — any leftover is a tx the ledger booked wrong (or twice, or not at all).
+  const tokenRows = rows.filter((r) => r.key !== NATIVE_SENTINEL && Math.abs(r.diff) > 1e-6).slice(0, 6);
+  for (const r of tokenRows) {
+    const recorded = recordedNetByTx(events, r.key);
+    const chain = new Map();
+    let decimals = 18;
+    for (const t of await getAllPages(`/addresses/${walletLc}/token-transfers?token=${r.key}`)) {
+      const from = String(t.from?.hash || "").toLowerCase();
+      const to = String(t.to?.hash || "").toLowerCase();
+      if (from === to || (from !== walletLc && to !== walletLc)) continue;
+      decimals = Number(t.total?.decimals ?? t.token?.decimals ?? decimals);
+      const v = Number(ethers.formatUnits(BigInt(t.total?.value || "0"), decimals));
+      if (v === 0) continue;
+      const h = String(t.transaction_hash || t.tx_hash).toLowerCase();
+      chain.set(h, (chain.get(h) || 0) + (to === walletLc ? v : -v));
+    }
+    const tokenByClass = new Map();
+    const tokenPerTx = [];
+    for (const hash of new Set([...chain.keys(), ...recorded.keys()])) {
+      const trueNet = chain.get(hash) ?? 0;
+      const rec = recorded.get(hash) ?? 0;
+      const over = rec - trueNet; // > 0: the ledger booked more than really arrived
+      const cls = classify(hash);
+      const agg = tokenByClass.get(cls) || { txs: 0, chainNet: 0, recorded: 0, over: 0 };
+      agg.txs++;
+      agg.chainNet += trueNet;
+      agg.recorded += rec;
+      agg.over += over;
+      tokenByClass.set(cls, agg);
+      if (Math.abs(over) > Math.max(1e-6, Math.abs(r.diff) * 0.001)) tokenPerTx.push({ hash, cls, method: methodByHash.get(hash) ?? "(tx from another wallet)", trueNet, rec, over });
+    }
+    console.log(`\nToken ${r.key} (ledger − chain ${fmt(r.diff, 4)}), by class:\n`);
+    console.log("class".padEnd(18), "txs".padStart(6), "on-chain net".padStart(18), "ledger recorded".padStart(18), "LEDGER EXCESS".padStart(18));
+    for (const [cls, a] of [...tokenByClass.entries()].sort((x, y) => Math.abs(y[1].over) - Math.abs(x[1].over))) {
+      console.log(cls.padEnd(18), String(a.txs).padStart(6), fmt(a.chainNet, 4).padStart(18), fmt(a.recorded, 4).padStart(18), fmt(a.over, 4).padStart(18));
+    }
+    tokenPerTx.sort((a, b) => Math.abs(b.over) - Math.abs(a.over));
+    console.log("\n  largest per-tx differences (ledger booked more than arrived is positive):");
+    for (const t of tokenPerTx.slice(0, 15)) {
+      console.log(" ", t.hash, t.cls.padEnd(16), String(t.method).slice(0, 30).padEnd(32), "chain", fmt(t.trueNet, 4).padStart(14), "ledger", fmt(t.rec, 4).padStart(14));
+    }
+  }
 
   await getPool().end();
 }
