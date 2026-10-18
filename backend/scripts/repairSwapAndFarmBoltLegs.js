@@ -53,15 +53,23 @@ for (const w of wallets) if (!ethers.isAddress(w)) throw new Error(`--wallet is 
 const BLOCKSCOUT = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Blockscout rate-limits a long run like this one (confirmed: three parallel requests per tx with a
+// ~7s retry budget had whole runs of txs skipped). Requests go one at a time, and a 429 waits for
+// Retry-After (or a long backoff) rather than burning through the retries.
 async function getJson(path) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     try {
       const res = await fetch(`${BLOCKSCOUT}${path}`, { signal: AbortSignal.timeout(20000) });
       if (res.ok) return await res.json();
+      if (res.status === 429) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 5000 * (attempt + 1));
+        continue;
+      }
     } catch {
       // retry below
     }
-    await sleep(500 * (attempt + 1));
+    await sleep(1000 * 2 ** Math.min(attempt, 5));
   }
   throw new Error(`Blockscout request failed after retries: ${path}`);
 }
@@ -115,55 +123,73 @@ async function repairSwaps(changedWallets) {
   let changed = 0;
   let notSwap = 0;
   let failed = 0;
+  let retryLater = [];
+  let isRetryPass = false;
 
-  for (const [i, row] of rows.entries()) {
-    if (i > 0 && i % 100 === 0) console.log(`  …${i}/${rows.length}`);
-    const hash = String(row.tx_hash).toLowerCase();
-    let data = txCache.get(hash);
-    if (!data) {
-      try {
-        const [tx, logs, transfers] = await Promise.all([
-          getJson(`/transactions/${hash}`),
-          getAllItems(`/transactions/${hash}/logs`),
-          getAllItems(`/transactions/${hash}/token-transfers`),
-        ]);
-        data = { tx, logs, transfers };
-      } catch (err) {
-        console.log(`  ⚠️  ${hash} skipped — ${err.message}`);
-        failed++;
+  // Second pass: rows whose tx couldn't be fetched get one more try at the end, after a pause, once
+  // whatever rate limit hit them has had time to clear.
+  for (let pass = 0; pass < 2; pass++) {
+    const passRows = pass === 0 ? rows : retryLater;
+    if (pass === 1) {
+      if (passRows.length === 0) break;
+      console.log(`\n  retrying ${passRows.length} row(s) whose tx couldn't be fetched, after a 60s pause…`);
+      await sleep(60000);
+      isRetryPass = true;
+      retryLater = [];
+    }
+    for (const [i, row] of passRows.entries()) {
+      if (i > 0 && i % 100 === 0) console.log(`  …${i}/${passRows.length}`);
+      const hash = String(row.tx_hash).toLowerCase();
+      let data = txCache.get(hash);
+      if (!data) {
+        try {
+          const tx = await getJson(`/transactions/${hash}`);
+          const logs = await getAllItems(`/transactions/${hash}/logs`);
+          const transfers = await getAllItems(`/transactions/${hash}/token-transfers`);
+          data = { tx, logs, transfers };
+        } catch (err) {
+          if (!isRetryPass) {
+            retryLater.push(row);
+            continue;
+          }
+          console.log(`  ⚠️  ${hash} skipped — ${err.message}`);
+          failed++;
+          continue;
+        }
+        txCache.set(hash, data);
+        await sleep(250);
+      }
+
+      const legs = deriveSwapLegs(String(row.tracked_wallet).toLowerCase(), data.tx, data.logs, data.transfers);
+      if (!legs) {
+        console.log(`  ?  ${row.tracked_wallet.slice(0, 10)} ${hash} no longer a one-for-one swap — left unchanged (needs a re-ingest)`);
+        notSwap++;
         continue;
       }
-      txCache.set(hash, data);
-      await sleep(100);
-    }
+      const soldSame = sameToken(legs.soldAddress, row.token_sold_address) && sameAmount(legs.soldAmount, row.amount_sold);
+      const boughtSame = sameToken(legs.boughtAddress, row.token_bought_address) && sameAmount(legs.boughtAmount, row.amount_bought);
+      if (soldSame && boughtSame) continue;
 
-    const legs = deriveSwapLegs(String(row.tracked_wallet).toLowerCase(), data.tx, data.logs, data.transfers);
-    if (!legs) {
-      console.log(`  ?  ${row.tracked_wallet.slice(0, 10)} ${hash} no longer a one-for-one swap — left unchanged (needs a re-ingest)`);
-      notSwap++;
-      continue;
-    }
-    const soldSame = sameToken(legs.soldAddress, row.token_sold_address) && sameAmount(legs.soldAmount, row.amount_sold);
-    const boughtSame = sameToken(legs.boughtAddress, row.token_bought_address) && sameAmount(legs.boughtAmount, row.amount_bought);
-    if (soldSame && boughtSame) continue;
+      changed++;
+      changedWallets.add(String(row.tracked_wallet).toLowerCase());
+      console.log(
+        `  ✎  ${row.tracked_wallet.slice(0, 10)} ${hash}\n` +
+          `       was ${fmt(row.amount_sold)} ${short(row.token_sold_address)} -> ${fmt(row.amount_bought)} ${short(row.token_bought_address)}\n` +
+          `       now ${fmt(legs.soldAmount)} ${short(legs.soldAddress)} -> ${fmt(legs.boughtAmount)} ${short(legs.boughtAddress)}`
+      );
+      if (!apply) continue;
 
-    changed++;
-    changedWallets.add(String(row.tracked_wallet).toLowerCase());
-    console.log(
-      `  ✎  ${row.tracked_wallet.slice(0, 10)} ${hash}\n` +
-        `       was ${fmt(row.amount_sold)} ${short(row.token_sold_address)} -> ${fmt(row.amount_bought)} ${short(row.token_bought_address)}\n` +
-        `       now ${fmt(legs.soldAmount)} ${short(legs.soldAddress)} -> ${fmt(legs.boughtAmount)} ${short(legs.boughtAddress)}`
-    );
-    if (!apply) continue;
-
-    const soldPrice = sameToken(legs.soldAddress, row.token_sold_address) ? row.price_usd_sold_leg : await priceOrNull(legs.soldAddress, row.timestamp);
-    const boughtPrice = sameToken(legs.boughtAddress, row.token_bought_address) ? row.price_usd_bought_leg : await priceOrNull(legs.boughtAddress, row.timestamp);
-    const norm = (a) => (a === "NATIVE" ? "NATIVE" : a.toLowerCase());
-    await query(
-      `UPDATE swap_trades SET token_sold_address = $2, amount_sold = $3, token_bought_address = $4, amount_bought = $5,
+      const soldPrice = sameToken(legs.soldAddress, row.token_sold_address) ? row.price_usd_sold_leg : await priceOrNull(legs.soldAddress, row.timestamp);
+      const boughtPrice = sameToken(legs.boughtAddress, row.token_bought_address)
+        ? row.price_usd_bought_leg
+        : await priceOrNull(legs.boughtAddress, row.timestamp);
+      const norm = (a) => (a === "NATIVE" ? "NATIVE" : a.toLowerCase());
+      await query(
+        `UPDATE swap_trades SET token_sold_address = $2, amount_sold = $3, token_bought_address = $4, amount_bought = $5,
               price_usd_sold_leg = $6, price_usd_bought_leg = $7 WHERE id = $1`,
-      [row.id, norm(legs.soldAddress), legs.soldAmount, norm(legs.boughtAddress), legs.boughtAmount, soldPrice, boughtPrice]
-    );
+        [row.id, norm(legs.soldAddress), legs.soldAmount, norm(legs.boughtAddress), legs.boughtAmount, soldPrice, boughtPrice]
+      );
+    }
   }
   console.log(`\nswap_trades: ${changed} ${apply ? "corrected" : "would be corrected"}, ${notSwap} left for re-ingest, ${failed} skipped (fetch failed).`);
 }
