@@ -15,6 +15,7 @@ import { ethers } from "ethers";
 import Decimal from "decimal.js";
 import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
+import { isIgnoredAsset } from "./ignoredAssets.js";
 
 // A fixed sentinel string (not an address) standing in for native ETN wherever an "asset" needs a
 // single identifying key alongside real token addresses — see formatAssetLabel's exact-match
@@ -597,18 +598,64 @@ export async function resolveFarmStakingTokenKeys(defiActivity) {
 // caused real confusion once the others started sharing it).
 export async function computeGasFeesUsd(transfersInPeriod) {
   const gasRows = transfersInPeriod.filter((t) => t.gas_fee_wei != null);
+  const priceForDay = makeDailyEtnPriceLookup();
   let totalGasWei = 0n;
   let totalGasUsd = new Decimal(0);
   for (const row of gasRows) {
     totalGasWei += BigInt(row.gas_fee_wei);
-    try {
-      const priceUsd = await getHistoricalPriceUsd(NATIVE_SENTINEL, new Date(row.timestamp));
-      totalGasUsd = totalGasUsd.plus(new Decimal(ethers.formatEther(row.gas_fee_wei)).times(priceUsd));
-    } catch (err) {
-      console.warn(`⚠️  computeGasFeesUsd: could not price gas fee for tx ${row.tx_hash}:`, err.message);
-    }
+    const usd = await gasRowUsd(row, priceForDay);
+    if (usd) totalGasUsd = totalGasUsd.plus(usd);
   }
   return { totalGasEtn: ethers.formatEther(totalGasWei), totalGasUsd };
+}
+
+/** getHistoricalPriceUsd(ETN) memoized per UTC day for one caller's run. ETN's historical price is
+ * per day anyway (pnlPricing.js buckets every lookup to the day), but each call still costs a
+ * backfill-state and a price_points query — for a wallet with thousands of gas rows that was
+ * thousands of identical queries per computation. A failed day is remembered as null. */
+function makeDailyEtnPriceLookup() {
+  const byDay = new Map(); // "YYYY-MM-DD" -> Promise<number | null>
+  return (timestamp) => {
+    const day = new Date(timestamp).toISOString().slice(0, 10);
+    if (!byDay.has(day)) {
+      byDay.set(
+        day,
+        getHistoricalPriceUsd(NATIVE_SENTINEL, new Date(timestamp)).catch((err) => {
+          console.warn(`⚠️  computeGasFeesUsd: could not price gas on ${day}:`, err.message);
+          return null;
+        })
+      );
+    }
+    return byDay.get(day);
+  };
+}
+
+async function gasRowUsd(row, priceForDay) {
+  const priceUsd = await priceForDay(row.timestamp);
+  return priceUsd == null ? null : new Decimal(ethers.formatEther(row.gas_fee_wei)).times(priceUsd);
+}
+
+/** Cumulative gas USD paid up to (exclusive) each checkpoint, in the order `checkpointsMs` is given
+ * — the same figure computeGasFeesUsd(transfers before checkpoint).totalGasUsd gives, but pricing
+ * every gas row once in total instead of once per checkpoint. backfillPnlHistory used to call
+ * computeGasFeesUsd on the whole history-so-far for each of up to 365 days: O(days × gas rows)
+ * price lookups, the bulk of a backfill's run time for an active wallet. */
+export async function computeCumulativeGasUsdAtCheckpoints(transfers, checkpointsMs) {
+  const gasRows = transfers.filter((t) => t.gas_fee_wei != null).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const priceForDay = makeDailyEtnPriceLookup();
+  const order = checkpointsMs.map((ms, i) => [ms, i]).sort((a, b) => a[0] - b[0]);
+  const result = new Array(checkpointsMs.length);
+  let running = new Decimal(0);
+  let next = 0;
+  for (const [ms, i] of order) {
+    while (next < gasRows.length && new Date(gasRows[next].timestamp).getTime() < ms) {
+      const usd = await gasRowUsd(gasRows[next], priceForDay);
+      if (usd) running = running.plus(usd);
+      next++;
+    }
+    result[i] = running;
+  }
+  return result;
 }
 
 /** Values a set of lots (opening or closing inventory) at a given point in time — quantity, cost
@@ -646,9 +693,18 @@ export async function valueInventoryAtTimestamp(lots, timestamp, livePricesUsd =
     const quantity = tokenLots.reduce((sum, l) => sum.plus(l.quantityRemaining), new Decimal(0));
     const costBasis = tokenLots.reduce((sum, l) => sum.plus(l.quantityRemaining.times(l.unitCostUsd)), new Decimal(0));
     let marketValue = null;
+    const live = livePricesUsd ? livePricesUsd[tokenAddress] ?? livePricesUsd[tokenAddress.toLowerCase()] : null;
+    const hasLivePrice = Number.isFinite(live) && live > 0;
+    // Junk (see ignoredAssets.js) contributes nothing, and is left out of perToken entirely. An NFT
+    // lot with no live price has no market price feed at all (getHistoricalPriceUsd would only throw)
+    // — skipped quietly instead of a warning per NFT per valued day.
+    if (await isIgnoredAsset(tokenAddress, { hasLivePrice })) continue;
+    if (!hasLivePrice && String(tokenAddress).includes(":")) {
+      perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: null });
+      continue;
+    }
     try {
-      const live = livePricesUsd ? livePricesUsd[tokenAddress] ?? livePricesUsd[tokenAddress.toLowerCase()] : null;
-      const priceUsd = Number.isFinite(live) && live > 0 ? live : await getHistoricalPriceUsd(tokenAddress, timestamp);
+      const priceUsd = hasLivePrice ? live : await getHistoricalPriceUsd(tokenAddress, timestamp);
       marketValue = quantity.times(priceUsd);
       totalMarketValueUsd = totalMarketValueUsd.plus(marketValue);
       totalUnrealizedUsd = totalUnrealizedUsd.plus(marketValue.minus(costBasis));

@@ -36,6 +36,7 @@ import {
   buildNftEvents,
   buildDefiFarmEvents,
   computeGasFeesUsd,
+  computeCumulativeGasUsdAtCheckpoints,
   valueInventoryAtTimestamp,
   NATIVE_SENTINEL,
   groupNftHoldingsByCollection,
@@ -584,6 +585,8 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
   // convention, so a backfilled day's figures mean exactly what a scheduler-written day's do.
   const checkpoints = missingDays.map((d) => new Date(d.getTime() + 24 * 60 * 60 * 1000).getTime());
   const snapshots = replayFifoCheckpoints(events, checkpoints);
+  // Gas paid up to each day, priced once across the whole run (see computeCumulativeGasUsdAtCheckpoints).
+  const gasUsdByCheckpoint = await computeCumulativeGasUsdAtCheckpoints(transfers, checkpoints);
 
   for (let i = 0; i < missingDays.length; i++) {
     const day = missingDays[i];
@@ -592,12 +595,8 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
     const { lots, realizedPnlUsdCumulative } = snapshots[i];
 
     try {
-      const transfersUpToDay = transfers.filter((t) => new Date(t.timestamp) < dayEndExclusive);
-      const [valuation, gas] = await Promise.all([
-        valueInventoryAtTimestamp(lots, dayEndExclusive),
-        computeGasFeesUsd(transfersUpToDay),
-      ]);
-      const realizedPnlUsd = realizedPnlUsdCumulative.minus(gas.totalGasUsd);
+      const valuation = await valueInventoryAtTimestamp(lots, dayEndExclusive);
+      const realizedPnlUsd = realizedPnlUsdCumulative.minus(gasUsdByCheckpoint[i]);
 
       await upsertPnlSnapshot(ownerWallet, trackedWallet, dateStr, {
         totalValueUsd: valuation.totalMarketValueUsd.toString(),
