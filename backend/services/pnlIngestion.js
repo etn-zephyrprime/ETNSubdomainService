@@ -33,6 +33,7 @@ import { insertDefiActivity, getDefiActivityTxHashes } from "../db/defiActivity.
 import { getDefiTopicProgress, saveDefiTopicProgress } from "../db/defiScanProgress.js";
 import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
 import { getFarmTokens, getFarmRewardToken, getThirdPartyRewardToken } from "./pnlEventBuilder.js";
+import { isTestNamedToken } from "./ignoredAssets.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 
@@ -1476,6 +1477,12 @@ async function ingestTokenTransfers(trackedWallet, selfOwnedSet, cexAddressSet, 
       // position must NEVER be treated as a collectible NFT, whether or not its own dedicated
       // detection above happened to recognize the tx.
       if (String(tokenAddress).toLowerCase() === POSITION_MANAGER_ADDRESS) continue;
+
+      // Test items (name/symbol containing "test" or starting "TSA" — see ignoredAssets.js) never
+      // become plain transfer rows: no price lookup, no lot, nothing to value later. Swap/liquidity
+      // txs never reach here (excludeTxHashes above), so the real ETN/token leg of e.g. buying a
+      // test token is still recorded.
+      if (isTestNamedToken(tt.token)) continue;
 
       if (tokenType === "ERC-721" || tokenType === "ERC-1155") {
         // NFTs have no `total.value`/decimals at all (confirmed live: total is

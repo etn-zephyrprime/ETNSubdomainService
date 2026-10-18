@@ -3,7 +3,8 @@
 // Junk assets the PnL valuation skips instead of trying to price. Each one used to cost a price
 // lookup per valued day (up to 365 in a history backfill) — usually a doomed one, since these never
 // have a real market — and if it did resolve, its "value" was noise rather than holdings.
-//   - any ERC-20 token or NFT collection whose name or symbol contains "test" (any case);
+//   - any ERC-20 token or NFT collection whose name or symbol contains "test" (any case) or starts
+//     with "TSA" (the owner's own test items) — see isTestNamedToken, which ingestion also uses;
 //   - an ERC-20 token with fewer than MIN_HOLDERS holders. That rule is only applied where there's
 //     no live price for the token (see valueInventoryAtTimestamp): V2 LP pair tokens often have
 //     only a handful of holders but are valued from live pool reserves, and must not drop out.
@@ -14,7 +15,14 @@ const NATIVE_SENTINEL = "NATIVE";
 
 const BLOCKSCOUT = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 const MIN_HOLDERS = 5;
-const TEST_PATTERN = /test/i;
+const TEST_PATTERNS = [/test/i, /^TSA/];
+
+/** True if a token/collection's name or symbol marks it as a test item. Also used by ingestion
+ * (pnlIngestion.js) to never record plain transfers of these in the first place. */
+export function isTestNamedToken(token) {
+  const { name, symbol } = token || {};
+  return [name, symbol].some((v) => TEST_PATTERNS.some((re) => re.test(String(v || "").trim())));
+}
 
 const infoCache = new Map(); // lowercase address -> Promise<{ isTest, holders } | null>
 
@@ -30,7 +38,7 @@ function fetchTokenInfo(address) {
           const t = await res.json();
           const holders = Number(t.holders_count ?? t.holders);
           return {
-            isTest: TEST_PATTERN.test(String(t.name || "")) || TEST_PATTERN.test(String(t.symbol || "")),
+            isTest: isTestNamedToken(t),
             holders: Number.isFinite(holders) ? holders : null,
           };
         } catch {
