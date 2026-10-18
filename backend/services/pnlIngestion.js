@@ -32,6 +32,7 @@ import { listCexAddresses } from "../db/cexAddresses.js";
 import { insertDefiActivity, getDefiActivityTxHashes } from "../db/defiActivity.js";
 import { getDefiTopicProgress, saveDefiTopicProgress } from "../db/defiScanProgress.js";
 import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
+import { getFarmTokens, getFarmRewardToken, getThirdPartyRewardToken } from "./pnlEventBuilder.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 
@@ -99,6 +100,10 @@ const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,addre
 const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
 ]);
+// ElectroSwap V3 pools' Swap event (standard Uniswap V3 shape). Only used to recognise which
+// addresses in a tx are pools, so a multi-pool route's legs can all be attributed to the trade —
+// see deriveSwapLegs.
+const V3_SWAP_TOPIC = ethers.id("Swap(address,address,int256,int256,uint160,uint128,int24)");
 
 // V2 add/remove-liquidity — ElectroSwap's V2 pairs are unmodified standard UniswapV2Pair contracts
 // (confirmed live against a real deployed pair's verified/bytecode-matched ABI on Blockscout, not
@@ -526,9 +531,82 @@ async function priceOrNull(asset, timestamp, priorityAssets) {
   }
 }
 
+/** Works out the sold/bought legs of a swap tx from its Blockscout logs and token transfers, or
+ * returns null if the tx isn't one of this wallet's swaps (or can't be expressed as one sold token
+ * and one bought token). Pure: shared by detectAndRecordSwap and scripts/repairSwapAndFarmBoltLegs.js.
+ *
+ * The tx counts as the wallet's swap when some V2 Swap log names the wallet as sender or `to`. The
+ * legs are then the wallet's NET flow per token across every transfer between the wallet and any
+ * pool in the tx (V2 or V3 — any address that emitted a Swap log) or the router it called. Matching
+ * against one pool only (what this used to do) was confirmed wrong on burny.etn's history:
+ *  - a split route (ETN -> BOLT through a V2 pair AND a V3 pool) recorded only the V2 part of the
+ *    BOLT bought (788 of 7,868);
+ *  - a multi-hop route that starts in V3 (BOLT -> WETN in V3, WETN -> ZEPH in V2) recorded the
+ *    bought token but never the sold one, because the wallet paid the V3 pool, not the V2 pair.
+ * Transfers with any other address (e.g. a buyBackAndBurn's burn-to-zero leg) are still ignored.
+ * A tx that nets out more than one token, or nets in more than one, returns null so its legs fall
+ * through to plain transfers instead of being forced into a one-for-one trade. */
+export function deriveSwapLegs(walletLc, tx, logs, tokenTransfers) {
+  let swapLog = null;
+  const pools = new Set();
+  for (const l of logs) {
+    const topic0 = (l.topics || [])[0];
+    if (topic0 !== SWAP_TOPIC && topic0 !== V3_SWAP_TOPIC) continue;
+    pools.add(String(l.address?.hash || l.address).toLowerCase());
+    if (topic0 !== SWAP_TOPIC || swapLog) continue;
+    try {
+      // Blockscout pads `topics` to a fixed length with trailing nulls for unused slots (confirmed
+      // live) — ethers' parseLog expects exactly as many topics as the event actually uses (1
+      // signature + N indexed params), not a padded array.
+      const realTopics = (l.topics || []).filter((t) => t != null);
+      const parsed = SWAP_IFACE.parseLog({ topics: realTopics, data: l.data });
+      const sender = String(parsed.args.sender).toLowerCase();
+      const to = String(parsed.args.to).toLowerCase();
+      if (sender === walletLc || to === walletLc) swapLog = l;
+    } catch {
+      // not decodable as a V2 Swap — ignore
+    }
+  }
+  if (!swapLog) return null; // no Swap log here is this wallet's trade
+
+  const routerLc = String(tx.to?.hash || "").toLowerCase();
+  const counterparties = new Set([...pools, ...(routerLc ? [routerLc] : [])]);
+  const net = new Map(); // token address -> { wei (BigInt, + = into the wallet), decimals }
+  for (const t of tokenTransfers) {
+    const from = String(t.from?.hash).toLowerCase();
+    const to = String(t.to?.hash).toLowerCase();
+    let sign;
+    if (from === walletLc && counterparties.has(to)) sign = -1n;
+    else if (to === walletLc && counterparties.has(from)) sign = 1n;
+    else continue;
+    const token = t.token?.address;
+    if (!token) continue;
+    const entry = net.get(token) || { wei: 0n, decimals: Number(t.token.decimals) };
+    entry.wei += sign * BigInt(t.total?.value || "0");
+    net.set(token, entry);
+  }
+  const outs = [...net].filter(([, e]) => e.wei < 0n);
+  const ins = [...net].filter(([, e]) => e.wei > 0n);
+  if (outs.length > 1 || ins.length > 1 || (outs.length === 0 && ins.length === 0)) return null;
+
+  // A pure ETN<->token swap has only one token leg; the other is the tx's own native value (the
+  // caller skips this tx's plain native-transfer rows, since it's a swap leg instead).
+  const nativeValue = BigInt(tx.value || "0");
+  const [soldAddress, soldEntry] = outs[0] || ["NATIVE", null];
+  const [boughtAddress, boughtEntry] = ins[0] || ["NATIVE", null];
+  return {
+    swapLog,
+    soldAddress,
+    soldAmount: soldEntry ? weiToDecimal(-soldEntry.wei, soldEntry.decimals) : weiToDecimal(nativeValue),
+    boughtAddress,
+    boughtAmount: boughtEntry ? weiToDecimal(boughtEntry.wei, boughtEntry.decimals) : weiToDecimal(nativeValue),
+  };
+}
+
 /** Detects whether a single /transactions item `tx` is an ElectroSwap trade — same heuristic as
  * before (see this file's header comment): fetch the tx's logs, look for a Swap topic naming the
- * tracked wallet as sender/to, then match the sold/bought legs against its own token_transfers.
+ * tracked wallet as sender/to, then work out the sold/bought legs from its token transfers (see
+ * deriveSwapLegs).
  * Only ever called for contract-interaction txs that already have token transfers attached
  * (checked by the caller), so this is never wasted on a plain ETN send. On a match, records the
  * trade into `swapRows` and the tx hash into `swapTxHashes`, and returns true so the caller skips
@@ -542,48 +620,10 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
     return false;
   }
 
-  const swapLog = (logsPage.items || []).find((l) => (l.topics || [])[0] === SWAP_TOPIC);
-  if (!swapLog) return false;
-
-  let parsed;
-  try {
-    // Blockscout pads `topics` to a fixed length with trailing nulls for unused slots (confirmed
-    // live) — ethers' parseLog expects exactly as many topics as the event actually uses (1
-    // signature + N indexed params), not a padded array.
-    const realTopics = (swapLog.topics || []).filter((t) => t != null);
-    parsed = SWAP_IFACE.parseLog({ topics: realTopics, data: swapLog.data });
-  } catch {
-    return false;
-  }
-
-  const sender = String(parsed.args.sender).toLowerCase();
-  const to = String(parsed.args.to).toLowerCase();
-  if (sender !== walletLc && to !== walletLc) return false; // this Swap log isn't this wallet's trade
-
-  // Determine which leg the wallet actually sold/bought via the tx's own decoded token transfers —
-  // restricted to transfers directly between the wallet and THIS pool (swapLog.address), not just
-  // "any transfer from/to the wallet anywhere in the tx". Confirmed live this distinction matters:
-  // a tx can contain unrelated later transfers (e.g. a buyBackAndBurn's burn-to-zero-address leg)
-  // that would otherwise be misattributed as a swap leg if matched by wallet address alone. A pure
-  // ETN<->token swap has only one pool<->wallet token-transfer leg; the other leg is the tx's own
-  // native value (handled by the caller's plain-native-transfer logic being skipped for this tx
-  // hash, since this function returning true means it's a swap leg instead).
-  const poolLc = String(swapLog.address?.hash || swapLog.address).toLowerCase();
-  const sold = tokenTransfers.find(
-    (t) => String(t.from?.hash).toLowerCase() === walletLc && String(t.to?.hash).toLowerCase() === poolLc
-  );
-  const bought = tokenTransfers.find(
-    (t) => String(t.to?.hash).toLowerCase() === walletLc && String(t.from?.hash).toLowerCase() === poolLc
-  );
-  if (!sold && !bought) return false; // couldn't identify either leg — don't fabricate a trade
-
+  const legs = deriveSwapLegs(walletLc, tx, logsPage.items || [], tokenTransfers);
+  if (!legs) return false;
+  const { swapLog, soldAddress, soldAmount, boughtAddress, boughtAmount } = legs;
   const timestamp = new Date(tx.timestamp);
-  const nativeValue = BigInt(tx.value || "0");
-
-  const soldAddress = sold ? sold.token.address : "NATIVE";
-  const soldAmount = sold ? weiToDecimal(BigInt(sold.total.value), Number(sold.token.decimals)) : weiToDecimal(nativeValue);
-  const boughtAddress = bought ? bought.token.address : "NATIVE";
-  const boughtAmount = bought ? weiToDecimal(BigInt(bought.total.value), Number(bought.token.decimals)) : weiToDecimal(nativeValue);
 
   const [priceSold, priceBought] = await Promise.all([
     priceOrNull(soldAddress, timestamp, priorityAssets),
@@ -1717,14 +1757,73 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   return results.flat();
 }
 
-/** For every farm_deposit/farm_withdraw row, looks for a same-tx BOLT ERC20 Transfer log matching
- * the expected direction (farmer -> farm contract for a deposit, farm contract -> farmer for a
- * withdrawal that closed the position entirely — see YieldFarm.sol's own withdraw(), which only
- * returns BOLT once farmer.liquidity reaches 0) and merges the amount into that row's rawArgs as
- * amountBoltAdded/amountBoltReturned. One receipt fetch per DISTINCT transaction hash needing it
- * (deduped — a tx can only ever contain one farm_deposit/farm_withdraw log for this wallet), not
- * per row. Most farm deposits/withdrawals never touch BOLT at all (it's an optional multiplier
- * boost) — a tx with no matching Transfer just gets no enrichment, not an error. */
+/** The BOLT multiplier amount a farm_deposit added / a farm_withdraw returned, as a raw uint256
+ * string, or null if none. `farm` is { token0, token1, rewardToken, thirdPartyToken } (lowercase,
+ * any may be null). Pure: shared by enrichFarmRowsWithBolt and scripts/repairSwapAndFarmBoltLegs.js.
+ *
+ * BOLT can also be one of the farm's own pool tokens (the BOLT/ETN farm) or arrive as its fees, so
+ * "the first BOLT Transfer between farmer and farm" is not the multiplier. Confirmed on burny.etn's
+ * farm #3 deposit (0x6f9bbcb7…): the wallet sent the farm 171,539 BOLT for the V3 liquidity leg and
+ * THEN 100,000 BOLT as the multiplier — the first-match version booked 171,539 twice and lost the
+ * 100,000. And every harvest (amount0/1Withdrawn = 0) paid its BOLT fees0Collected in a farm ->
+ * farmer Transfer that got booked a second time as "returned BOLT". So the multiplier is whatever
+ * net BOLT moved between farmer and farm that the event's own amounts don't already account for. */
+export function computeFarmBoltAmount(eventType, rawArgs, contractLc, logs, farm) {
+  const farmerLc = String(rawArgs.farmer || "").toLowerCase();
+  const isBolt = (token) => token && String(token).toLowerCase() === BOLT_TOKEN_ADDRESS;
+  let toFarm = 0n;
+  for (const l of logs) {
+    if (String(l.address?.hash || l.address).toLowerCase() !== BOLT_TOKEN_ADDRESS) continue;
+    const topics = (l.topics || []).filter((t) => t != null);
+    if (topics[0] !== ERC20_TRANSFER_TOPIC) continue;
+    let parsed;
+    try {
+      parsed = ERC20_TRANSFER_IFACE.parseLog({ topics, data: l.data });
+    } catch {
+      continue;
+    }
+    const from = String(parsed.args.from).toLowerCase();
+    const to = String(parsed.args.to).toLowerCase();
+    if (from === farmerLc && to === contractLc) toFarm += parsed.args.value;
+    else if (from === contractLc && to === farmerLc) toFarm -= parsed.args.value;
+  }
+  const amt = (v) => (v ? BigInt(v) : 0n);
+  let accounted = 0n;
+  let moved;
+  if (eventType === "farm_deposit") {
+    if (isBolt(farm.token0)) accounted += amt(rawArgs.amount0Added);
+    if (isBolt(farm.token1)) accounted += amt(rawArgs.amount1Added);
+    moved = toFarm;
+  } else {
+    if (isBolt(farm.token0)) accounted += amt(rawArgs.amount0Withdrawn) + amt(rawArgs.fees0Collected);
+    if (isBolt(farm.token1)) accounted += amt(rawArgs.amount1Withdrawn) + amt(rawArgs.fees1Collected);
+    if (isBolt(farm.rewardToken)) accounted += amt(rawArgs.amountRewards);
+    if (isBolt(farm.thirdPartyToken)) accounted += amt(rawArgs.thirdPartyRewardsCollected);
+    moved = -toFarm;
+  }
+  const multiplier = moved - accounted;
+  return multiplier > 0n ? multiplier.toString() : null;
+}
+
+/** Everything computeFarmBoltAmount needs to know about a farm, or null if a lookup failed. */
+export async function getFarmBoltContext(contractAddress, farmId) {
+  try {
+    const { token0, token1 } = await getFarmTokens(contractAddress, farmId);
+    const rewardToken = await getFarmRewardToken(contractAddress).catch(() => null);
+    const thirdPartyToken = await getThirdPartyRewardToken(contractAddress, farmId).catch(() => null);
+    return { token0, token1, rewardToken, thirdPartyToken };
+  } catch {
+    return null;
+  }
+}
+
+/** For every farm_deposit/farm_withdraw row, works out the BOLT multiplier it added/returned (see
+ * computeFarmBoltAmount) from the tx's receipt and merges it into rawArgs as
+ * amountBoltAdded/amountBoltReturned. YieldFarm.sol's withdraw() only returns BOLT once
+ * farmer.liquidity reaches 0. One receipt fetch per DISTINCT transaction hash needing it, not per
+ * row. Most farm deposits/withdrawals never touch BOLT at all (it's an optional multiplier boost) —
+ * those just get no enrichment, not an error. A row whose farm tokens can't be read is skipped too,
+ * rather than guessed at. */
 async function enrichFarmRowsWithBolt(provider, rows) {
   const relevant = rows.filter((r) => r.eventType === "farm_deposit" || r.eventType === "farm_withdraw");
   if (relevant.length === 0) return;
@@ -1742,25 +1841,14 @@ async function enrichFarmRowsWithBolt(provider, rows) {
     }
     const receipt = receiptCache.get(txHashLc);
     if (!receipt) continue;
+    const farm = await getFarmBoltContext(row.contractAddress, row.farmId);
+    if (!farm) {
+      console.warn(`⚠️  DeFi activity scan: could not read farm ${row.contractAddress}#${row.farmId} tokens (BOLT correlation skipped for ${row.txHash})`);
+      continue;
+    }
 
-    const farmerLc = row.rawArgs.farmer?.toLowerCase();
-    const contractLc = row.contractAddress.toLowerCase();
-    const boltTransfer = receipt.logs.find((l) => {
-      if (String(l.address).toLowerCase() !== BOLT_TOKEN_ADDRESS) return false;
-      if ((l.topics || [])[0] !== ERC20_TRANSFER_TOPIC) return false;
-      let parsed;
-      try {
-        parsed = ERC20_TRANSFER_IFACE.parseLog(l);
-      } catch {
-        return false;
-      }
-      const from = String(parsed.args.from).toLowerCase();
-      const to = String(parsed.args.to).toLowerCase();
-      return row.eventType === "farm_deposit" ? from === farmerLc && to === contractLc : from === contractLc && to === farmerLc;
-    });
-    if (!boltTransfer) continue;
-
-    const amount = ERC20_TRANSFER_IFACE.parseLog(boltTransfer).args.value.toString();
+    const amount = computeFarmBoltAmount(row.eventType, row.rawArgs, row.contractAddress.toLowerCase(), receipt.logs, farm);
+    if (!amount) continue;
     if (row.eventType === "farm_deposit") row.rawArgs.amountBoltAdded = amount;
     else row.rawArgs.amountBoltReturned = amount;
   }

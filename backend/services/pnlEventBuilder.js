@@ -298,7 +298,7 @@ function getDefiRpcProvider() {
 // elsewhere in a member's history — a farm/staking event whose own tokenAddress came back
 // checksummed would silently reopen that exact bug for every farm/staking token.
 const farmTokensCache = new Map(); // `${contract}:${farmId}` -> { token0, token1, name }
-async function getFarmTokens(contractAddress, farmId) {
+export async function getFarmTokens(contractAddress, farmId) {
   const key = `${contractAddress.toLowerCase()}:${farmId}`;
   if (farmTokensCache.has(key)) return farmTokensCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
@@ -309,7 +309,7 @@ async function getFarmTokens(contractAddress, farmId) {
 }
 
 const rewardTokenCache = new Map(); // contractAddress -> address
-async function getFarmRewardToken(contractAddress) {
+export async function getFarmRewardToken(contractAddress) {
   const key = contractAddress.toLowerCase();
   if (rewardTokenCache.has(key)) return rewardTokenCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
@@ -319,7 +319,7 @@ async function getFarmRewardToken(contractAddress) {
 }
 
 const thirdPartyRewardCache = new Map(); // `${contract}:${farmId}` -> address | null
-async function getThirdPartyRewardToken(contractAddress, farmId) {
+export async function getThirdPartyRewardToken(contractAddress, farmId) {
   const key = `${contractAddress.toLowerCase()}:${farmId}`;
   if (thirdPartyRewardCache.has(key)) return thirdPartyRewardCache.get(key);
   const contract = new ethers.Contract(contractAddress, DEFI_VIEW_IFACE, getDefiRpcProvider());
