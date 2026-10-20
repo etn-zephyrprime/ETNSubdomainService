@@ -10,6 +10,7 @@ import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { DiamondHandsCard } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import ImpermanentLossLine from "./ImpermanentLossLine.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
 import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
@@ -61,7 +62,7 @@ const SCALED_FIELDS = new Set([
   "currentValueUsd", "unrealizedPnlUsd", "realizedPnlUsd", "totalValueUsd", "totalMarketValueUsd",
   "totalUnrealizedUsd", "costBasisUsd", "marketValueUsd", "quantity", "rawBalance", "totalCoinBalance",
   "amount", "usdValue", "etnUsdValue", "totalUsd", "totalCostBasisUsd", "heldCostBasisUsd", "soldCostBasisUsd",
-  "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd",
+  "proceedsUsd", "unitCostUsd", "gasUsd", "totalGasUsd", "lossUsd",
 ]);
 
 /** Recursively scales every SCALED_FIELDS value in `node` by DEMO_DISPLAY_SCALE, leaving every
@@ -508,6 +509,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
                   <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                     {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                   </div>
+                  <ImpermanentLossLine il={p.impermanentLoss} />
 
                   {isExpanded && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
@@ -590,6 +592,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
                   <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                     {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                   </div>
+                  <ImpermanentLossLine il={p.impermanentLoss} />
 
                   {isExpanded && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
@@ -650,6 +653,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
                   <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                     {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                   </div>
+                  <ImpermanentLossLine il={p.impermanentLoss} />
 
                   {isExpanded && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>

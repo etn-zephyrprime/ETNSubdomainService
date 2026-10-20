@@ -52,6 +52,7 @@ import { getDistinctFarmPositions, getDistinctStakingContracts, getFarmDeposited
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 import { setBounded, registerCache } from "../utils/boundedMap.js";
+import { computeImpermanentLoss } from "./impermanentLoss.js";
 
 const YIELD_FARM_ABI = [
   "function getFarmById(uint256 _farmId) view returns (tuple(uint256 id, uint8 version, string name, address poolAddr, uint256 liquidity, uint256 allocPoint, uint256 lastCalcBlock, uint256 accRewardsPerShare, uint256 accThirdPartyRewardsPerShare, address[] farmers, uint256 farmerCount, address token0, address token1, uint256 tokenId, int24 tickLower, int24 tickUpper, uint24 fee, uint256 accFees0PerShare, uint256 accFees1PerShare, bool active))",
@@ -302,6 +303,14 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
           depositedAmount: depositedAmount1?.toString() ?? null, pendingFees: pendingFees1.toString(), netAmount: netAmount1.toString(), changePercent: changePercent1, changeUsd: changeUsd1,
         },
       ],
+      // Farm positions are always full-range (isFullRangeFarm above) — see impermanentLoss.js.
+      impermanentLoss: computeImpermanentLoss(
+        [
+          { amount: amount0, pendingFees: pendingFees0, depositedAmount: depositedAmount0, priceUsd: price0 },
+          { amount: amount1, pendingFees: pendingFees1, depositedAmount: depositedAmount1, priceUsd: price1 },
+        ],
+        { fullRange: true }
+      ),
       totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
       hasUnpriced: usd0 == null || usd1 == null,
     };
