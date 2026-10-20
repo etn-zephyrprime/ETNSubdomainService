@@ -216,3 +216,67 @@ export async function getTokenEtnPrice(provider, tokenAddress, { skipElectroSwap
 
   return info.poolType === "v2" ? priceFromV2Reserves(provider, info) : priceFromV3Slot0(provider, info);
 }
+
+const ROUTER_QUOTE_ABI = ["function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)"];
+
+/** Exact ElectroSwap V2 router quote for selling `amountInRaw` (BigInt, the token's own units) of
+ * `tokenAddress` into WETN/ETN via its direct V2 WETN pair — the router's own getAmountsOut, so the
+ * 0.3% fee and the price impact of the pair's reserves are both already in it. Returns
+ * { pairAddress, routerAddress, amountOutRaw (BigInt, 18 decimals) } or null when there's no V2 WETN
+ * pair (the token may still trade in a V3 pool, which this doesn't quote). Never throws. */
+export async function quoteV2SellToEtn(provider, tokenAddress, amountInRaw) {
+  try {
+    const pairAddress = await findViaV2Factory(provider, tokenAddress);
+    if (!pairAddress) return null;
+    const router = new ethers.Contract(ROUTER_ADDRESS, ROUTER_QUOTE_ABI, provider);
+    const amounts = await router.getAmountsOut(amountInRaw, [tokenAddress, WETN_ADDRESS]);
+    return { pairAddress, routerAddress: ROUTER_ADDRESS, amountOutRaw: amounts[amounts.length - 1] };
+  } catch (err) {
+    console.warn(`⚠️  V2 sell quote failed for ${tokenAddress}:`, err.message);
+    return null;
+  }
+}
+
+/** The pool type ('v2' | 'v3') of the token's main WETN pool, or null if none — see resolvePairInfo. */
+export async function getMainWetnPoolType(provider, tokenAddress) {
+  try {
+    return (await resolvePairInfo(provider, tokenAddress))?.poolType ?? null;
+  } catch {
+    return null;
+  }
+}
+export const ELECTROSWAP_ROUTER_ADDRESS = ROUTER_ADDRESS;
+
+// ElectroSwap V3 — found 2026-10-20 via Blockscout's verified-contract search ("QuoterV2" returns
+// three; only this one's factory() is ElectroSwap's V3 factory, the one its NonfungiblePositionManager
+// 0x3a7f…398d reports). The other two belong to another V3 deployment on the chain.
+const V3_FACTORY_ADDRESS = process.env.ELECTROSWAP_V3_FACTORY_ADDRESS || "0xbF6Bcbe2be545135391777F3B4698be92E2EB8cA";
+const V3_QUOTER_ADDRESS = process.env.ELECTROSWAP_V3_QUOTER_ADDRESS || "0xba3CAfCc197E71b9d114E515E75c037dA09A6312";
+const V3_FEE_TIERS = [100, 500, 3000, 10000];
+const V3_FACTORY_ABI = ["function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)"];
+const V3_QUOTER_ABI = [
+  "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
+];
+
+/** Best ElectroSwap V3 quote for selling `amountInRaw` of `tokenAddress` into WETN across every fee
+ * tier with a direct WETN pool — QuoterV2.quoteExactInputSingle (a staticCall: the quoter simulates
+ * the swap and reverts with the result), so fee and price impact are both in it. A tier whose pool
+ * can't fill (no liquidity in range) reverts and is skipped. Returns { poolAddress, fee, amountOutRaw,
+ * gasEstimate } or null. Never throws. */
+export async function quoteV3SellToEtn(provider, tokenAddress, amountInRaw) {
+  const factory = new ethers.Contract(V3_FACTORY_ADDRESS, V3_FACTORY_ABI, provider);
+  const quoter = new ethers.Contract(V3_QUOTER_ADDRESS, V3_QUOTER_ABI, provider);
+  const results = await Promise.all(
+    V3_FEE_TIERS.map(async (fee) => {
+      try {
+        const poolAddress = await factory.getPool(tokenAddress, WETN_ADDRESS, fee);
+        if (!poolAddress || poolAddress === ethers.ZeroAddress) return null;
+        const r = await quoter.quoteExactInputSingle.staticCall({ tokenIn: tokenAddress, tokenOut: WETN_ADDRESS, amountIn: amountInRaw, fee, sqrtPriceLimitX96: 0 });
+        return { poolAddress, fee, amountOutRaw: r.amountOut, gasEstimate: r.gasEstimate };
+      } catch {
+        return null; // no pool at this tier, or it can't fill this size
+      }
+    })
+  );
+  return results.filter(Boolean).reduce((best, r) => (!best || r.amountOutRaw > best.amountOutRaw ? r : best), null);
+}
