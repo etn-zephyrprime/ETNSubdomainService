@@ -1,6 +1,9 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import CoreTierDemo from "./CoreTierDemo.jsx";
+
+// Lazy — the one wallet-dependent piece of this page; see DemoMembershipBlock.jsx.
+const DemoMembershipBlock = lazy(() => import("./DemoMembershipBlock.jsx"));
 import { green, greenGlow, muted, mutedLight, border, panel2 } from "../../theme.js";
 
 // Full-page Core Tier demo — reached only via CoreTierPortfolio.jsx's "View Demo" button (its
@@ -66,6 +69,12 @@ export default function CoreTierDemoPage({ onExitDemo, onSelectToken }) {
           <ArrowLeft size={13} />
           Exit Demo
         </button>
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <Suspense fallback={null}>
+          <DemoMembershipBlock />
+        </Suspense>
       </div>
 
       <CoreTierDemo onSelectToken={onSelectToken} />

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Gem, Fuel, Bell } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -11,13 +11,13 @@ import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
 import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
 import CoreTierRecentActivity from "./components/CoreTierRecentActivity.jsx";
-import CoreTierDiamondHands from "./components/CoreTierDiamondHands.jsx";
+import CoreTierDiamondHandsCard from "./components/CoreTierDiamondHands.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
-// The 8 panels below used to all render stacked, each collapsed-by-default behind its own +/-
+// The panels below used to all render stacked, each collapsed-by-default behind its own +/-
 // (CollapsibleCoreTierPanel) — replaced with this button row switching between them one at a time.
 // Gold-accented with an icon per panel (see CorePanelButton below) — these are Core Tier's actual
 // paid feature set, confirmed live that the earlier plain/gray treatment (matching the free
@@ -25,14 +25,14 @@ import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, go
 // Each of the 7 collapsible ones now renders with defaultCollapsed={false} (see their own files)
 // since this row is now the single show/hide control — the one-at-a-time display IS the "closed
 // until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
+// Gas Spent and Diamond Hands Score used to be panels here too — they're now the summary row under
+// the wallet filter (a gas ticker and a Diamond Hands card), since each is one headline figure.
 const PANELS = [
   { id: "portfolio", label: "Portfolio", icon: WalletIcon },
   { id: "balance", label: "Balance History", icon: LineChart },
   { id: "pnl", label: "PnL", icon: TrendingUp },
   { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
   { id: "activity", label: "Recent Activity", icon: Activity },
-  { id: "diamondhands", label: "Diamond Hands Score", icon: Gem },
-  { id: "gas", label: "Gas Spent", icon: Fuel },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
 ];
 
@@ -78,7 +78,7 @@ function CorePanelButton({ p, isActive, onChange }) {
 // dashboard for every visitor who never touches either wallet-requiring tab.
 export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, onAccessChange }) {
   const wallet = useReownWallet();
-  // Which of the 8 panels below is showing — see PANELS' own comment on why this replaced the old
+  // Which of the panels below is showing — see PANELS' own comment on why this replaced the old
   // stacked/collapsible layout.
   const [activePanel, setActivePanel] = useState("portfolio");
   // One signed-ownership proof for the whole tab, not one per child component — see
@@ -202,6 +202,15 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         </div>
       )}
 
+      {/* Summary row, right under the wallet filter: total gas spent and the Diamond Hands card —
+          both follow the same page-wide walletFilter as every panel below. */}
+      {hasAccess && active.length > 0 && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+          <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} active={active} walletFilter={walletFilter} />
+          <CoreTierDiamondHandsCard wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} active={active} walletFilter={walletFilter} />
+        </div>
+      )}
+
       {/* Someone who isn't (yet) a member — including a visitor with no wallet connected — sees the Premium
           Membership panel FIRST, above the portfolio it unlocks. An active member normally gets it back at
           the bottom instead (see below) — UNLESS their access is about to lapse (showMembershipAtTop), in
@@ -212,7 +221,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         <style>{`
           .core-tier-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
           @media (min-width:720px){
-            .core-tier-panel-switcher{grid-template-columns:repeat(4,1fr);}
+            .core-tier-panel-switcher{grid-template-columns:repeat(3,1fr);}
           }
         `}</style>
         <div className="core-tier-panel-switcher">
@@ -237,12 +246,6 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         )}
         {activePanel === "activity" && (
           <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        )}
-        {activePanel === "diamondhands" && (
-          <CoreTierDiamondHands wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
-        )}
-        {activePanel === "gas" && (
-          <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
         {activePanel === "alerts" && (
           <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />

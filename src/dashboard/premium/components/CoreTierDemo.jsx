@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Gem, ChevronDown, ChevronUp } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, ChevronDown, ChevronUp } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import { PnlValueToggle, PnlSubModeToggle, pnlOverTimeValue } from "./CoreTierPnl.jsx";
 import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
-import { DiamondHandsBody } from "./CoreTierDiamondHands.jsx";
+import { DiamondHandsCard } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
@@ -924,15 +924,13 @@ function DemoNftPnl({ data }) {
 // Same 5 panels PortfolioDashboardSection.jsx's own PANELS switches between, minus Recent
 // Activity/Gas Spent/Telegram Alerts — those either need data this demo's own snapshot doesn't
 // compute, or are tied to a real authenticated identity (see this component's own header comment).
-// Diamond Hands is appended conditionally below (older snapshots predate it — see that panel's own
-// comment), not listed here unconditionally.
+// Diamond Hands isn't a panel any more — it's the card under the wallet filter, same as the real page.
 const DEMO_BASE_PANELS = [
   { id: "portfolio", label: "Portfolio", icon: WalletIcon },
   { id: "balance", label: "Balance History", icon: LineChart },
   { id: "pnl", label: "PnL", icon: TrendingUp },
   { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
 ];
-const DEMO_DIAMOND_HANDS_PANEL = { id: "diamondhands", label: "Diamond Hands Score", icon: Gem };
 
 /** Core Tier's actual value proposition, previewed for three real wallets — available to anyone,
  * including a visitor with no wallet connected at all. See CoreTierPortfolio.jsx's own "View Demo"
@@ -1026,6 +1024,18 @@ export default function CoreTierDemo({ onSelectToken }) {
             </div>
           </div>
 
+          {/* Same summary-row spot as the real page. No gas ticker here: the demo snapshot doesn't
+              compute gas spend. Diamond Hands only when the snapshot has it (older ones predate it —
+              re-run generateDemoSnapshot.js and it appears). */}
+          {data.diamondHands && (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <DiamondHandsCard
+                result={(walletFilter === "all" ? data.diamondHands.portfolio : data.diamondHands.perWallet.find((w) => w.walletIndex === Number(walletFilter))) || null}
+                label={walletFilter === "all" ? "Portfolio" : "This Wallet"}
+              />
+            </div>
+          )}
+
           <div style={{ marginBottom: 20 }}>
             <style>{`
               .core-tier-demo-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
@@ -1034,11 +1044,7 @@ export default function CoreTierDemo({ onSelectToken }) {
               }
             `}</style>
             <div className="core-tier-demo-panel-switcher">
-              {/* Static snapshot of the real panel's own body (CoreTierDiamondHands.jsx's
-                  DiamondHandsBody) — appended only when present, same "absent from snapshots
-                  generated before this shipped" caveat as before (re-run generateDemoSnapshot.js
-                  and it appears). */}
-              {(data.diamondHands ? [...DEMO_BASE_PANELS, DEMO_DIAMOND_HANDS_PANEL] : DEMO_BASE_PANELS).map((p) => (
+              {DEMO_BASE_PANELS.map((p) => (
                 <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
               ))}
             </div>
@@ -1051,13 +1057,6 @@ export default function CoreTierDemo({ onSelectToken }) {
             {activePanel === "balance" && <DemoBalanceHistory walletFilter={walletFilter} />}
             {activePanel === "pnl" && <DemoPnl data={source} walletFilter={walletFilter} onSelectToken={onSelectToken} />}
             {activePanel === "nftpnl" && <DemoNftPnl data={source} />}
-            {activePanel === "diamondhands" && data.diamondHands && (
-              <DiamondHandsBody
-                scopeResult={walletFilter === "all" ? data.diamondHands.portfolio : data.diamondHands.perWallet.find((w) => w.walletIndex === Number(walletFilter))}
-                perAsset={data.diamondHands.perAsset}
-                isPortfolio={walletFilter === "all"}
-              />
-            )}
           </DashboardPanel>
 
           <DashboardPanel>
