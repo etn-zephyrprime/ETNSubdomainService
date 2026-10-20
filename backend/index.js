@@ -53,6 +53,7 @@ import { startPortfolioAlertScheduler } from "./utils/portfolioAlertScheduler.js
 import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.js";
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
+import { startPriceTopUpScheduler } from "./utils/priceTopUpScheduler.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import diamondHandsRouter from "./utils/diamondHandsRouter.js";
 import adminSplitRouter from "./utils/adminSplitRouter.js";
@@ -182,4 +183,5 @@ app.listen(PORT, () => {
   safeStart("Portfolio digest scheduler", startPortfolioDigestScheduler);
   safeStart("Subscription reminder scheduler", startSubscriptionReminderScheduler);
   safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);
+  safeStart("Price top-up scheduler", startPriceTopUpScheduler);
 });

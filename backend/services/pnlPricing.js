@@ -40,9 +40,10 @@
 // still be exercised end-to-end on testnet without real market data.
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
 import { resolveTokenPools } from "../utils/wetnPoolResolver.js";
-import { getCandles, isElectroSwapConfigured } from "../utils/electroSwapApi.js";
+import { getCandles, isElectroSwapConfigured, electroSwapPausedForMs } from "../utils/electroSwapApi.js";
 import { getPricePoint, upsertPricePoint, getLatestPricePointBetween } from "../db/pricePoints.js";
-import { getBackfillState, markBackfilled } from "../db/priceHistoryBackfillState.js";
+import { getBackfillState, markBackfilled, listBackfilledAssets } from "../db/priceHistoryBackfillState.js";
+import { isIgnoredAsset } from "./ignoredAssets.js";
 
 const NETWORK = "electroneum";
 // Same wrapped-Electroneum address tokenChartRouter.js prefers pools against — see that file's
@@ -590,4 +591,104 @@ export async function getCachedHistoricalPriceUsd(asset, timestamp) {
 
   const cached = await getPricePoint(cacheAsset, bucketed);
   return cached ? Number(cached.price_usd) : null;
+}
+
+// ---- Daily top-up -------------------------------------------------------------------------------
+// ensureBackfilled fetches an asset's history once, ever, so price_points stops at that day. Every
+// day after it was priced by a live GeckoTerminal call per (token, day), which a history backfill
+// rate-limits by the dozen. This appends the last few days' closes for every already-backfilled
+// asset once a day instead: one ElectroSwap /candles call per token (100 + 1 credit per candle, so
+// ~110 credits at the default window) and one free KuCoin call for ETN. Today's candle is skipped —
+// it's still moving, and a stored day's price is treated as final.
+const TOP_UP_DEFAULT_DAYS = 10;
+const TOP_UP_GAP_MS = 500; // between ElectroSwap calls — spread out, not a burst (see electroSwapApi.js's suspension history)
+const TOP_UP_MAX_PAUSE_WAIT_MS = 5 * 60 * 1000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function topUpEtnFromKucoin(days, todayStart) {
+  const startAt = Math.floor(todayStart.getTime() / 1000) - days * 86400;
+  const endAt = Math.floor(todayStart.getTime() / 1000) - 1;
+  const res = await fetch(`${KUCOIN_CANDLES_URL}?type=1day&symbol=${KUCOIN_SYMBOL}&startAt=${startAt}&endAt=${endAt}`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`KuCoin HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.code !== "200000") throw new Error(`KuCoin error ${json.code}: ${json.msg || "unknown"}`);
+  let written = 0;
+  for (const row of json.data || []) {
+    const day = new Date(Number(row[0]) * 1000); // [time, open, close, ...] — see backfillEtnFromKucoin
+    day.setUTCHours(0, 0, 0, 0);
+    const close = Number(row[2]);
+    if (day >= todayStart || !(close > 0)) continue;
+    await upsertPricePoint("ETN", day, close, "kucoin");
+    written++;
+  }
+  return written;
+}
+
+async function topUpTokenFromElectroSwap(asset, days, todayStart) {
+  const candles = await getCandles(asset, "1d", days + 1);
+  if (!candles) return null;
+  let written = 0;
+  for (const c of candles) {
+    const day = new Date(c.time * 1000);
+    day.setUTCHours(0, 0, 0, 0);
+    if (day >= todayStart || !(c.close > 0)) continue;
+    await upsertPricePoint(asset, day, c.close, "electroswap-topup");
+    written++;
+  }
+  return written;
+}
+
+/** Writes the last `days` completed UTC days' closing prices into price_points for every
+ * backfilled asset (test-named tokens skipped — see ignoredAssets.js). Never throws per asset;
+ * returns counts for logging. */
+export async function topUpRecentPrices({ days = TOP_UP_DEFAULT_DAYS, log = console.log } = {}) {
+  const todayStart = bucketToDay(new Date());
+  const assets = await listBackfilledAssets();
+  const result = { assets: assets.length, updated: 0, pricesWritten: 0, noData: 0, skipped: 0, failed: 0 };
+
+  for (const asset of assets) {
+    try {
+      if (asset === "ETN") {
+        const n = await topUpEtnFromKucoin(days, todayStart);
+        result.pricesWritten += n;
+        if (n > 0) result.updated++;
+        else result.noData++;
+        continue;
+      }
+      if (!isElectroSwapConfigured()) {
+        result.skipped++;
+        continue;
+      }
+      if (await isIgnoredAsset(asset, { hasLivePrice: true })) {
+        result.skipped++;
+        continue;
+      }
+      // Wait out the shared ElectroSwap circuit breaker rather than burning the rest of the list
+      // into it; give up on this run if it stays open.
+      const pausedMs = electroSwapPausedForMs();
+      if (pausedMs > 0) {
+        if (pausedMs > TOP_UP_MAX_PAUSE_WAIT_MS) {
+          log(`  ElectroSwap paused for ${Math.round(pausedMs / 1000)}s — stopping this top-up early`);
+          result.skipped += assets.length - assets.indexOf(asset);
+          break;
+        }
+        await sleep(pausedMs);
+      }
+      const n = await topUpTokenFromElectroSwap(asset, days, todayStart);
+      if (n == null) result.failed++;
+      else if (n === 0) result.noData++;
+      else {
+        result.updated++;
+        result.pricesWritten += n;
+      }
+      await sleep(TOP_UP_GAP_MS);
+    } catch (err) {
+      result.failed++;
+      console.warn(`⚠️  Price top-up failed for ${asset}:`, err.message);
+    }
+  }
+  return result;
 }
