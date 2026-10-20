@@ -26,7 +26,7 @@ async function tick() {
     const r = await topUpRecentPrices();
     lastRunDay = today;
     console.log(
-      `💱 Price top-up: ${r.updated}/${r.assets} assets updated, ${r.pricesWritten} daily prices written ` +
+      `💱 Price top-up: ${r.updated}/${r.assets} assets updated, ${r.pricesWritten} daily prices written + ${r.carried} carried forward ` +
         `(${r.noData} no data, ${r.skipped} skipped, ${r.failed} failed) in ${Math.round((Date.now() - startedAt) / 1000)}s`
     );
   } catch (err) {
