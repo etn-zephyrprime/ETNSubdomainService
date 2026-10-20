@@ -126,7 +126,13 @@ export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, sel
   });
   if (missingDays.length === 0) return; // every category's window is already fully caught up through today
 
-  const { events, defiActivity } = precomputed || (await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()));
+  const built = precomputed || (await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()));
+  // Same reason as backfillPnlHistory: never persist days from a ledger missing DeFi events.
+  if (built.incomplete) {
+    console.warn(`⚠️  Category PnL backfill for ${trackedWallet} skipped: ${built.unresolvedCount} DeFi event(s) unresolved — will retry on the next run.`);
+    return;
+  }
+  const { events, defiActivity } = built;
   const categoryTokenKeys = await resolveCategoryTokenKeys(events, defiActivity);
 
   // Each checkpoint is the EXCLUSIVE end of its calendar day — same convention as
