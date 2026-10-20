@@ -13,7 +13,7 @@
 // see that file's own header comment.
 import { ethers } from "ethers";
 import Decimal from "decimal.js";
-import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd } from "./pnlPricing.js";
+import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd, getRecentCachedPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { isIgnoredAsset } from "./ignoredAssets.js";
 
@@ -703,13 +703,19 @@ export async function valueInventoryAtTimestamp(lots, timestamp, livePricesUsd =
       perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: null });
       continue;
     }
+    let priceUsd = null;
     try {
-      const priceUsd = hasLivePrice ? live : await getHistoricalPriceUsd(tokenAddress, timestamp);
+      priceUsd = hasLivePrice ? live : await getHistoricalPriceUsd(tokenAddress, timestamp);
+    } catch (err) {
+      // That day's price couldn't be fetched — carry the latest cached price from the week before
+      // forward (see getRecentCachedPriceUsd) rather than valuing the holding at nothing.
+      priceUsd = await getRecentCachedPriceUsd(tokenAddress, timestamp).catch(() => null);
+      if (priceUsd == null) console.warn(`⚠️  valueInventoryAtTimestamp: could not price ${tokenAddress} at ${timestamp.toISOString()}:`, err.message);
+    }
+    if (priceUsd != null) {
       marketValue = quantity.times(priceUsd);
       totalMarketValueUsd = totalMarketValueUsd.plus(marketValue);
       totalUnrealizedUsd = totalUnrealizedUsd.plus(marketValue.minus(costBasis));
-    } catch (err) {
-      console.warn(`⚠️  valueInventoryAtTimestamp: could not price ${tokenAddress} at ${timestamp.toISOString()}:`, err.message);
     }
     perToken.push({ tokenAddress, quantity: quantity.toString(), costBasisUsd: costBasis.toString(), marketValueUsd: marketValue?.toString() ?? null });
   }

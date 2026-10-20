@@ -49,6 +49,17 @@ export async function upsertPricePoint(asset, timestamp, priceUsd, source) {
   );
 }
 
+/** The most recent cached price point for `asset` at or before `timestamp`, but no older than
+ * `notBefore` — or null. A range lookup, unlike getPricePoint's exact-timestamp one; see
+ * pnlPricing.js's getRecentCachedPriceUsd for what it's for. */
+export async function getLatestPricePointBetween(asset, notBefore, timestamp) {
+  const res = await query(
+    `SELECT "timestamp", price_usd FROM price_points WHERE asset = $1 AND "timestamp" <= $2 AND "timestamp" >= $3 ORDER BY "timestamp" DESC LIMIT 1`,
+    [asset, timestamp, notBefore]
+  );
+  return res?.rows[0] || null;
+}
+
 /** Every cached price point for `asset` from `sinceTimestamp` onward (inclusive), oldest first.
  * Powers the dashboard's long-range ETN price chart (see tokenChartRouter.js) — unlike
  * getPricePoint above, this is a genuine range scan, not an exact-timestamp cache lookup, so it's
