@@ -27,12 +27,14 @@ import { replayFifoCheckpoints } from "./fifoLotEngine.js";
 import { valueInventoryAtTimestamp } from "./pnlEventBuilder.js";
 import { buildEventsForWallet } from "./pnlSnapshotService.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
+import { setBounded, registerCache } from "../utils/boundedMap.js";
 
 // Short-lived cache, same shape/reasoning as pnlSnapshotService.js's own snapshotCache — a member
 // toggling the token filter (or a component re-rendering) shouldn't repeat this same replay within
 // a few seconds. Invalidated the moment real new ingestion lands for this wallet, same as that
 // cache, not just by time.
-const tokenHistoryCache = new Map(); // cacheKey -> { points, computedAt: ms, ingestionUpdatedAt: ms|null }
+const tokenHistoryCache = registerCache("tokenPnlHistory", new Map()); // cacheKey -> { points, computedAt: ms, ingestionUpdatedAt: ms|null }
+const TOKEN_HISTORY_CACHE_MAX_ENTRIES = 100; // one per (wallet, token, window) viewed — unbounded before
 const TOKEN_HISTORY_CACHE_TTL_MS = process.env.PNL_TOKEN_HISTORY_CACHE_TTL_MS
   ? parseInt(process.env.PNL_TOKEN_HISTORY_CACHE_TTL_MS, 10)
   : 10 * 60 * 1000; // 10 min: history is fixed data plus today's live price — the whole-history read behind it is the expensive part (see pnlSnapshotService.js's getLedgerState comment)
@@ -109,7 +111,7 @@ export async function computeTokenPnlHistory(trackedWallet, selfOwnedAddresses =
     });
   }
 
-  tokenHistoryCache.set(key, { points, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+  setBounded(tokenHistoryCache, key, { points, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs }, TOKEN_HISTORY_CACHE_MAX_ENTRIES);
   return points;
 }
 

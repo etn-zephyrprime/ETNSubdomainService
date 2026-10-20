@@ -1,4 +1,5 @@
 import pg from "pg";
+import { registerCache } from "../utils/boundedMap.js";
 
 // Single shared Postgres connection pool for the PnL statement feature — the first relational
 // database this backend has ever used (everything else is R2 JSON blobs; see backend/state/*.js).
@@ -53,7 +54,7 @@ export async function query(text, params) {
 // return 20+ rows are sized (a JSON.stringify of a huge result is itself real CPU), and the per-row
 // size is sampled from the first 5 rows and extrapolated rather than serializing everything.
 // Tallies are per process and reset on restart/deploy.
-const queryUsage = new Map(); // normalized statement -> { calls, rows, bytes }
+const queryUsage = registerCache("queryUsage", new Map()); // normalized statement -> { calls, rows, bytes }
 const SIZE_SAMPLE_MIN_ROWS = 20;
 
 function normalizeStatement(text) {

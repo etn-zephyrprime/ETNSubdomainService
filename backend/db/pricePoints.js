@@ -1,4 +1,5 @@
 import { query } from "./pool.js";
+import { registerCache } from "../utils/boundedMap.js";
 
 // Cache in front of the live price source (GeckoTerminal/CoinGecko — see pnlPricing.js). Exact
 // timestamp keying: pnlPricing.js is responsible for rounding/bucketing timestamps before calling
@@ -13,7 +14,7 @@ import { query } from "./pool.js";
 // fetch + upsert, after which the next lookup finds it), and upsertPricePoint below refreshes the
 // entry, so this can't serve a value older than what was last written by THIS process. Bounded so it
 // can't grow without limit on a 512MB instance; oldest entries drop first.
-const pricePointMemo = new Map(); // "asset|ms" -> row
+const pricePointMemo = registerCache("pricePoints", new Map()); // "asset|ms" -> row
 const PRICE_POINT_MEMO_MAX = 60000;
 
 function pricePointKey(asset, timestamp) {

@@ -43,6 +43,7 @@ import {
   groupNftRealizedByCollection,
   convertRealizedEventsToEtn,
 } from "./pnlEventBuilder.js";
+import { setBounded, registerCache } from "../utils/boundedMap.js";
 
 // Short-lived cache for computeLivePnlSnapshot's own result — see this file's own header comment
 // for why. Keyed by (trackedWallet, selfOwnedAddresses) rather than trackedWallet alone: the same
@@ -56,7 +57,10 @@ import {
 // scoping assumption pnlIngestion.js's own inFlightIngestions/inFlightDefiScans already make), and
 // bounded by the number of distinct (wallet, self-owned-set) combinations ever queried, not by
 // request volume — a cache entry is replaced in place on each fresh computation, never accumulated.
-const snapshotCache = new Map(); // cacheKey -> { snapshot, computedAt: ms, ingestionUpdatedAt: ms|null }
+const snapshotCache = registerCache("pnlSnapshot", new Map()); // cacheKey -> { snapshot, computedAt: ms, ingestionUpdatedAt: ms|null }
+// Cap for snapshotCache and persistedMemo below: a changed self-owned set is a new key, and the old
+// entry (a full snapshot, tens of KB) was never dropped.
+const SNAPSHOT_MEMO_MAX_ENTRIES = 48;
 // How long a cached result stays eligible to be reused at all, as a hard ceiling — in practice the
 // ingestionUpdatedAt check below invalidates far sooner than this whenever real new data lands;
 // this just bounds how stale LIVE PRICING (fetched fresh each real computation) is allowed to get
@@ -124,7 +128,7 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
 // Stores only the compact result: `closing` (open + locked lots) and the realized disposals, plus the
 // summed gas — NOT the raw events/transfers, which are the large part. Callers must treat it as
 // READ-ONLY; getLedgerState hands out copies of the arrays for exactly that reason.
-const ledgerCache = new Map(); // key -> { ingestionUpdatedAt, closing: { lots, lockedLots, realizedEvents }, gasTotalUsd: Decimal }
+const ledgerCache = registerCache("pnlLedger", new Map()); // key -> { ingestionUpdatedAt, closing: { lots, lockedLots, realizedEvents }, gasTotalUsd: Decimal }
 const LEDGER_CACHE_MAX_ENTRIES = 24; // ~ a handful of members x up to 4 wallets; each entry is a few hundred KB at most
 
 function rememberLedger(key, entry) {
@@ -374,10 +378,10 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   // Not cached during cold start — see the cache-read guard above for why (a priority-scoped
   // result must never be handed back later as if it were a complete one).
   if (!isColdStart) {
-    snapshotCache.set(cacheKey, { snapshot: result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+    setBounded(snapshotCache, cacheKey, { snapshot: result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs }, SNAPSHOT_MEMO_MAX_ENTRIES);
     // Persisted too (see getSnapshotFast) — fire-and-forget, a failed write must never fail a
     // snapshot that was just computed successfully.
-    persistedMemo.set(cacheKey, { payload: result, computedAt: new Date().toISOString() });
+    setBounded(persistedMemo, cacheKey, { payload: result, computedAt: new Date().toISOString() }, SNAPSHOT_MEMO_MAX_ENTRIES);
     upsertPersistedPnlSnapshot(cacheKey, result).catch((err) =>
       console.warn(`⚠️  PnL snapshot: couldn't persist snapshot for ${trackedWallet}:`, err.message)
     );
@@ -391,7 +395,7 @@ const inFlightSnapshotRefresh = new Map(); // cacheKey -> Promise, so a burst of
 // re-read a tens-of-KB JSONB row from Postgres on every tick (Supabase egress has been a real concern
 // here — see the snapshot cache header above). Filled on the first DB read and on every fresh
 // computation (see computeLivePnlSnapshot), so it never lags the row it mirrors.
-const persistedMemo = new Map(); // cacheKey -> { payload, computedAt: ISO string }
+const persistedMemo = registerCache("pnlPersistedMemo", new Map()); // cacheKey -> { payload, computedAt: ISO string }
 
 /**
  * The fast path for the PnL tab: returns a snapshot WITHOUT waiting for a full computation whenever
@@ -420,7 +424,7 @@ export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
   let persisted = persistedMemo.get(cacheKey) || null;
   if (!persisted) {
     persisted = await getPersistedPnlSnapshot(cacheKey).catch(() => null);
-    if (persisted) persistedMemo.set(cacheKey, { payload: persisted.payload, computedAt: new Date(persisted.computedAt).toISOString() });
+    if (persisted) setBounded(persistedMemo, cacheKey, { payload: persisted.payload, computedAt: new Date(persisted.computedAt).toISOString() }, SNAPSHOT_MEMO_MAX_ENTRIES);
   }
   if (!persisted) return null;
 

@@ -21,6 +21,7 @@
 // are served via <img src>, which never needed CORS at all, so those stay a direct R2 read).
 import express from "express";
 import { noteTokenPricesRequested } from "./tokenPriceCache.js";
+import { registerCache } from "./boundedMap.js";
 
 // Same env var R2Upload.js already reads (process.env, not the frontend's import.meta.env —
 // this is a plain Node backend module, not a Vite-processed one) — the bucket's public r2.dev
@@ -60,7 +61,7 @@ const ALLOWED_FILES = new Set([
 // from R2 directly, while cutting repeat-visitor R2 reads to once per window instead of once per
 // page load.
 const CACHE_TTL_MS = 60 * 1000;
-const cache = new Map(); // filename -> { expiresAt, status, body }
+const cache = registerCache("r2Proxy", new Map()); // filename -> { expiresAt, status, body }
 
 const router = express.Router();
 
