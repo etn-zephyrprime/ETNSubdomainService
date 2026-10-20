@@ -43,6 +43,7 @@ import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCac
 import { getV2LpDepositedQuantities, getV3PositionDepositedQuantities } from "../db/ingestedTransfers.js";
 import { registerCache } from "../utils/boundedMap.js";
 import { ELECTROSWAP_LOCKER_ADDRESS } from "../utils/electroSwapLocker.js";
+import { computeImpermanentLoss } from "./impermanentLoss.js";
 
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 // Same wrapped-ETN address dexPriceQuote.js/pnlPricing.js both already use — ETN/WETN are 1:1
@@ -326,6 +327,14 @@ async function finalizeV2LpPosition(candidate, priceMap) {
       buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.depositedAmount0, price0),
       buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.depositedAmount1, price1),
     ],
+    // vs. holding what was deposited — see impermanentLoss.js (null when there's no baseline/price).
+    impermanentLoss: computeImpermanentLoss(
+      [
+        { amount: candidate.amount0, depositedAmount: candidate.depositedAmount0, priceUsd: price0 },
+        { amount: candidate.amount1, depositedAmount: candidate.depositedAmount1, priceUsd: price1 },
+      ],
+      { fullRange: true }
+    ),
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,
   };
@@ -540,6 +549,14 @@ async function finalizeV3Position(candidate, priceMap) {
       buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0, price0),
       buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1, price1),
     ],
+    // Concentrated range, so the value-vs-hold method — see impermanentLoss.js.
+    impermanentLoss: computeImpermanentLoss(
+      [
+        { amount: candidate.amount0, pendingFees: candidate.pendingFees0, depositedAmount: candidate.depositedAmount0, priceUsd: price0 },
+        { amount: candidate.amount1, pendingFees: candidate.pendingFees1, depositedAmount: candidate.depositedAmount1, priceUsd: price1 },
+      ],
+      { fullRange: false }
+    ),
     totalUsd: usd0 != null && usd1 != null ? usd0.plus(usd1).toString() : null,
     hasUnpriced: usd0 == null || usd1 == null,
   };

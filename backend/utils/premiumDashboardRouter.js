@@ -34,6 +34,7 @@ import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
+import { simulateSell, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
 import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
@@ -171,6 +172,62 @@ router.get("/premium/gas-spend", async (req, res) => {
   } catch (err) {
     console.error("Gas spend lookup failed:", err);
     res.status(500).json({ error: "Failed to load gas spend" });
+  }
+});
+
+// What-If simulator's token picker: what one covered wallet can sell (freely-held ledger lots).
+router.get("/premium/what-if-holdings", async (req, res) => {
+  const { wallet, signature, timestamp, walletAddress } = req.query;
+  if (!wallet || !ethers.isAddress(wallet) || !walletAddress || !ethers.isAddress(walletAddress)) {
+    return res.status(400).json({ error: "wallet and walletAddress must be valid addresses" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
+    const target = walletAddress.toLowerCase();
+    if (!addresses.includes(target)) {
+      return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+    }
+    res.json({ holdings: await listSellableHoldings(target, addresses.filter((a) => a !== target)) });
+  } catch (err) {
+    console.error("What-if holdings lookup failed:", err);
+    res.status(500).json({ error: "Couldn't load this wallet's holdings" });
+  }
+});
+
+// What-If sell simulator (whatIfSimulator.js): read-only — which FIFO lots a sale of `quantity` of
+// `tokenAddress` from ONE covered wallet would consume, what the V2 router would pay for it, and the
+// realized P&L in USD and ETN, before and after gas. A POST only because it carries a body.
+router.post("/premium/what-if-sell", async (req, res) => {
+  const { wallet, signature, timestamp, walletAddress, tokenAddress, quantity } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!walletAddress || !ethers.isAddress(walletAddress)) {
+    return res.status(400).json({ error: "walletAddress must be a valid address" });
+  }
+  if (!tokenAddress || !(tokenAddress === "NATIVE" || ethers.isAddress(tokenAddress))) {
+    return res.status(400).json({ error: "tokenAddress must be a token address or NATIVE" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
+    const target = walletAddress.toLowerCase();
+    if (!addresses.includes(target)) {
+      return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+    }
+    const result = await simulateSell(target, addresses.filter((a) => a !== target), tokenAddress, quantity);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof WhatIfInputError) return res.status(400).json({ error: err.message });
+    console.error("What-if simulation failed:", err);
+    res.status(500).json({ error: "Couldn't run the simulation right now" });
   }
 });
 

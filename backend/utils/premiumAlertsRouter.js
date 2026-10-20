@@ -1,6 +1,7 @@
 // backend/utils/premiumAlertsRouter.js
 //
-// HTTP surface for Core tier's Telegram alerts (wallet balance/activity + token price moves) — see
+// HTTP surface for Core tier's Telegram alerts (wallet balance/activity, token price moves, portfolio
+// moves, position health) — see
 // migrations/009_alerts.sql, walletAlertScheduler.js, tokenPriceAlertScheduler.js. Same auth shape
 // as premiumDashboardRouter.js: signed proof of wallet ownership (walletAuth.js) plus an active
 // Core tier membership (hasCoreAccess) on every route. Mounted at /api/premium in
@@ -17,6 +18,7 @@ import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getWalletAlerts, addWalletAlert, removeWalletAlert, MAX_WALLET_ALERTS_PER_OWNER } from "../db/walletAlerts.js";
 import { getTokenPriceAlerts, addTokenPriceAlert, removeTokenPriceAlert, MAX_TOKEN_PRICE_ALERTS_PER_OWNER } from "../db/tokenPriceAlerts.js";
 import { getPortfolioAlerts, addPortfolioAlert, removePortfolioAlert, MAX_PORTFOLIO_ALERTS_PER_OWNER } from "../db/portfolioAlerts.js";
+import { getPositionAlerts, upsertPositionAlert, removePositionAlert, POSITION_ALERT_TYPES, MIN_IL_THRESHOLD_PCT, MAX_IL_THRESHOLD_PCT, IL_REARM_POINTS } from "../db/positionAlerts.js";
 import { getDigestSubscription, setDigestEnabled } from "../db/portfolioDigestSubscriptions.js";
 import { getReminderSubscription, setReminderEnabled } from "../db/subscriptionReminderSubscriptions.js";
 import { getTokenEtnPrice } from "./dexPriceQuote.js";
@@ -306,6 +308,67 @@ router.delete("/premium/portfolio-alerts", async (req, res) => {
 
   try {
     await removePortfolioAlert(wallet, alertId);
+    res.json({ removed: true });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// ---- Position health alerts (IL threshold, V3 range, farm multiplier) — positionAlertScheduler.js ----
+// One alert per type per owner, covering every position in their covered wallets; POST creates or
+// updates it.
+
+router.get("/premium/position-alerts", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  const alerts = await getPositionAlerts(wallet);
+  res.json({ alerts, ilRearmPoints: IL_REARM_POINTS, minIlThresholdPct: MIN_IL_THRESHOLD_PCT, maxIlThresholdPct: MAX_IL_THRESHOLD_PCT });
+});
+
+router.post("/premium/position-alerts", async (req, res) => {
+  const { wallet, signature, timestamp, alertType, thresholdPct } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!POSITION_ALERT_TYPES.includes(alertType)) {
+    return res.status(400).json({ error: `alertType must be one of ${POSITION_ALERT_TYPES.join(", ")}` });
+  }
+  let pct = null;
+  if (alertType === "il_threshold") {
+    pct = Number(thresholdPct);
+    if (!Number.isFinite(pct) || pct < MIN_IL_THRESHOLD_PCT || pct > MAX_IL_THRESHOLD_PCT) {
+      return res.status(400).json({ error: `thresholdPct must be between ${MIN_IL_THRESHOLD_PCT} and ${MAX_IL_THRESHOLD_PCT}` });
+    }
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  try {
+    const alert = await upsertPositionAlert(wallet, { alertType, thresholdPct: pct });
+    res.json({ alert });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete("/premium/position-alerts", async (req, res) => {
+  const { wallet, signature, timestamp, alertId } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!alertId) {
+    return res.status(400).json({ error: "alertId is required" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await requireCoreAccess(res, wallet))) return;
+
+  try {
+    await removePositionAlert(wallet, alertId);
     res.json({ removed: true });
   } catch (err) {
     res.status(404).json({ error: err.message });

@@ -23,6 +23,7 @@ import RowLeader from "./RowLeader.jsx";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
 import { IngestProgressBanner } from "./CoreTierPnl.jsx";
 
 // Same poll cadence as CoreTierPnl.jsx's own identical constant — see that file's own comment for
@@ -1392,6 +1393,8 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                                 {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                               </div>
+                              <ImpermanentLossLine il={p.impermanentLoss} />
+                              <FarmMultiplierLine multipliers={p.multipliers} />
 
                               {isExpanded && (
                                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
@@ -1574,6 +1577,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                                 {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                               </div>
+                              <ImpermanentLossLine il={p.impermanentLoss} />
                               {Number(p.lockedQuantity) > 0 && (
                                 <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                                   {Math.round((Number(p.lockedQuantity) / Number(p.quantity)) * 100)}% of this position is locked in ElectroSwap's Locker — still yours, counted here.
@@ -1642,6 +1646,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               <div style={{ fontSize: 10, color: mutedLight, marginTop: 2 }}>
                                 {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                               </div>
+                              <ImpermanentLossLine il={p.impermanentLoss} />
 
                               {isExpanded && (
                                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>
