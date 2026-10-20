@@ -731,8 +731,15 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
                   {t.heldByCount > 1 && <span style={{ display: "block", fontSize: 10, color: muted }}>Held in {t.heldByCount} of 3 wallets</span>}
                 </span>
                 <span style={{ textAlign: "right" }}>
-                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(BigInt(t.rawBalance), t.decimals ?? 18)}</span>
-                  {t.usdValue != null && <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(t.usdValue)}</span>}
+                  {/* USD first, token amount underneath — same as the real Combined Holdings. */}
+                  {t.usdValue != null ? (
+                    <>
+                      <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatUsdPrice(t.usdValue)}</span>
+                      <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatTokenAmount(BigInt(t.rawBalance), t.decimals ?? 18)}</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(BigInt(t.rawBalance), t.decimals ?? 18)}</span>
+                  )}
                 </span>
               </div>
             ))}
