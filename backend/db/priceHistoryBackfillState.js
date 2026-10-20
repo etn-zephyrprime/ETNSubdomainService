@@ -32,3 +32,10 @@ export async function markBackfilled(asset, { earliestAvailableDate, poolCount }
     [asset, earliestAvailableDate, poolCount]
   );
 }
+
+/** Every asset whose bulk backfill found real price data — the set the daily top-up keeps current
+ * (see pnlPricing.js's topUpRecentPrices). */
+export async function listBackfilledAssets() {
+  const res = await query("SELECT asset FROM price_history_backfill_state WHERE earliest_available_date IS NOT NULL ORDER BY asset");
+  return (res?.rows || []).map((r) => r.asset);
+}
