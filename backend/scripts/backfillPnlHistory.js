@@ -17,8 +17,11 @@
 //                                                                 # across every Core tier member
 //   node backend/scripts/backfillPnlHistory.js <walletAddress>  # just that one tracked wallet
 //   node backend/scripts/backfillPnlHistory.js <walletAddress> --days=90   # shorter window
+//   node backend/scripts/backfillPnlHistory.js --redo-days=7    # first delete each wallet's last 7
+//                                                                 # days' rows so they're recomputed
+//                                                                 # (e.g. after a pricing fix)
 import dotenv from "dotenv";
-import { getPool } from "../db/pool.js";
+import { getPool, query } from "../db/pool.js";
 import { getAllActiveTrackedWalletPairs, upsertPnlSnapshot } from "../db/pnlSnapshots.js";
 import { getAllActiveMemberWallets } from "../db/premiumMemberships.js";
 import { hasCoreAccess } from "../utils/premiumAccess.js";
@@ -31,7 +34,10 @@ const DEFAULT_WINDOW_DAYS = 365;
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const daysArg = process.argv.find((a) => a.startsWith("--days="));
 const windowDays = daysArg ? parseInt(daysArg.split("=")[1], 10) : DEFAULT_WINDOW_DAYS;
+const redoArg = process.argv.find((a) => a.startsWith("--redo-days="));
+const redoDays = redoArg ? parseInt(redoArg.split("=")[1], 10) : 0;
 const onlyWallet = args[0]?.toLowerCase();
+const unknownFlags = process.argv.slice(2).filter((a) => a.startsWith("--") && !a.startsWith("--days=") && !a.startsWith("--redo-days="));
 
 function todayUtcDateString() {
   return new Date().toISOString().slice(0, 10);
@@ -43,6 +49,12 @@ async function main() {
   }
   if (!Number.isFinite(windowDays) || windowDays <= 0) {
     throw new Error(`--days must be a positive number, got ${daysArg}`);
+  }
+  if (!Number.isFinite(redoDays) || redoDays < 0) {
+    throw new Error(`--redo-days must be a non-negative number, got ${redoArg}`);
+  }
+  if (unknownFlags.length > 0) {
+    throw new Error(`Unknown flag(s): ${unknownFlags.join(", ")}`);
   }
 
   // Seeded from getAllActiveMemberWallets() FIRST (every member's own wallet, unconditionally —
@@ -104,6 +116,16 @@ async function main() {
         console.log(`  today: value=$${snapshot.currentValueUsd} unrealized=$${snapshot.unrealizedPnlUsd} realized=$${snapshot.realizedPnlUsd}`);
       } catch (err) {
         console.warn(`  ⚠️  couldn't compute today's snapshot: ${err.message}`);
+      }
+
+      if (redoDays > 0) {
+        // backfillPnlHistory only fills MISSING days, so a day it already wrote is never revisited.
+        // Today's row is excluded — it was just recomputed above.
+        const res = await query(
+          `DELETE FROM pnl_snapshots WHERE owner_wallet = $1 AND wallet_address = $2 AND snapshot_date >= ($3::date - $4::int) AND snapshot_date < $3::date`,
+          [ownerWallet.toLowerCase(), walletAddress.toLowerCase(), today, redoDays]
+        );
+        console.log(`  cleared ${res?.rowCount ?? 0} snapshot row(s) from the last ${redoDays} day(s) for recomputation`);
       }
 
       try {

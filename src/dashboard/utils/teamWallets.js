@@ -37,6 +37,7 @@ export const TEAM_WALLET_ADDRESSES = [
   "0x90e5B91d961d3E1288311389d6cBA5cE6b053551",
   "0xB62d61E4077dD40d3a152E60F9f678860bAf026F",
   "0xC25CfD4901aA9b43ab81A57b423fd5D17ace9545", // added 2026-09-25 — suspected, not SEAS-verified yet
+  "0x3CFa6D6E7e1216393C2cb9393Bc0f411492E33e9", // added 2026-10-19 — confirmed team wallet by the owner
 ];
 
 const TEAM_WALLET_SET = new Set(TEAM_WALLET_ADDRESSES.map((a) => a.toLowerCase()));

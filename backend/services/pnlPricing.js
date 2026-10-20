@@ -41,7 +41,7 @@
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
 import { resolveTokenPools } from "../utils/wetnPoolResolver.js";
 import { getCandles, isElectroSwapConfigured } from "../utils/electroSwapApi.js";
-import { getPricePoint, upsertPricePoint } from "../db/pricePoints.js";
+import { getPricePoint, upsertPricePoint, getLatestPricePointBetween } from "../db/pricePoints.js";
 import { getBackfillState, markBackfilled } from "../db/priceHistoryBackfillState.js";
 
 const NETWORK = "electroneum";
@@ -547,6 +547,23 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
 
   await upsertPricePoint(cacheAsset, bucketed, priceUsd, source);
   return priceUsd;
+}
+
+/** Carry-forward for valuation only: the latest cached price for `asset` within `maxAgeDays` before
+ * `timestamp`, or null. price_points only reaches as far as the last bulk backfill, so the newest
+ * days of a history backfill fall through to one live GeckoTerminal call per (token, day) — confirmed
+ * live: those got rate-limited and BOLT, DYNO and others were valued at nothing for the last three
+ * days of burny.etn's chart. A days-old price is a far better estimate of a holding than $0. Never
+ * used for cost basis or proceeds, which still need the real day's price. */
+export async function getRecentCachedPriceUsd(asset, timestamp, maxAgeDays = 7) {
+  if (asset.includes(":")) return null;
+  const isNative = asset === NATIVE_SENTINEL || asset.toUpperCase() === "ETN";
+  const cacheAsset = isNative ? "ETN" : asset.toLowerCase();
+  const bucketed = bucketToDay(timestamp);
+  const notBefore = new Date(bucketed.getTime() - maxAgeDays * 86400000);
+  const row = await getLatestPricePointBetween(cacheAsset, notBefore, bucketed);
+  const price = row ? Number(row.price_usd) : null;
+  return Number.isFinite(price) && price > 0 ? price : null;
 }
 
 /**
