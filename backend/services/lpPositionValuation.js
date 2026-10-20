@@ -576,6 +576,19 @@ const LOCKER_ABI = [
 ];
 const MAX_LOCKS_PER_WALLET = 50; // sanity bound, not an expected limit (a wallet has a handful at most)
 
+const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
+
+/** A wallet's fungible token balances from Blockscout, in the `heldFungibleTokens` shape
+ * getLiquidityPositionsUsd takes — for server-side callers (position alerts, the What-If simulator)
+ * that don't have the client's own token list. Same mapping the Core Tier demo router uses. */
+export async function fetchHeldFungibleTokens(walletAddress) {
+  const raw = await fetchBlockscoutJson(`/addresses/${walletAddress}/token-balances`);
+  const items = Array.isArray(raw) ? raw : raw?.items || [];
+  return items
+    .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
+    .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
+}
+
 /** Map of lowercased pair address -> total LP amount (BigInt, raw) this wallet has locked in
  * ElectroSwapLockerV2. Never throws: a failed lookup just means locked liquidity isn't counted this
  * call (logged) — the same behavior as before this existed, not a failed valuation. */

@@ -57,6 +57,10 @@ import { computeImpermanentLoss } from "./impermanentLoss.js";
 const YIELD_FARM_ABI = [
   "function getFarmById(uint256 _farmId) view returns (tuple(uint256 id, uint8 version, string name, address poolAddr, uint256 liquidity, uint256 allocPoint, uint256 lastCalcBlock, uint256 accRewardsPerShare, uint256 accThirdPartyRewardsPerShare, address[] farmers, uint256 farmerCount, address token0, address token1, uint256 tokenId, int24 tickLower, int24 tickUpper, uint24 fee, uint256 accFees0PerShare, uint256 accFees1PerShare, bool active))",
   "function getFarmerByFarmIdAndAddress(uint256 _farmId, address _farmerAddress) view returns (tuple(address addr, uint256 liquidity, uint256 boltMultiplier, uint256 boltDeposited, uint256 durationMultiplier, uint256 startingBlock, uint256 rewards, uint256 rewardDebt, uint256 thirdPartyRewards, uint256 thirdPartyRewardDebt, uint256 fees0, uint256 fees0Debt, uint256 fees1, uint256 fees1Debt))",
+  "function rewardPerBlock() view returns (uint256)",
+  "function totalAllocPoint() view returns (uint256)",
+  "function rewardToken() view returns (address)",
+  "function getThirdPartyRewardConfigByFarmId(uint256 _farmId) view returns (tuple(address token, uint256 tokensPerBlock, uint256 endBlock))",
 ];
 const POOL_V3_ABI = ["function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, uint8, bool)"];
 const CORE_ASCENSION_ABI = [
@@ -270,8 +274,36 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     // amounts above are still real and worth showing even if this one extra figure is unavailable.
     let pendingFees0 = new Decimal(0);
     let pendingFees1 = new Decimal(0);
+    let pendingRewards = null; // { tokenAddress, symbol, amount } — the farm's own reward token
+    let hasThirdPartyRewards = false;
     try {
       const farmState = await farm.getFarmById(farmId);
+      // Pending farm rewards, replicating the contract's _updateFarmRewardsAndFees +
+      // _collectRewardsAndFees (verified source) as of the current block: bring accRewardsPerShare
+      // forward, take this farmer's share minus its debt, then apply BOLT x duration multipliers.
+      try {
+        const [rewardPerBlock, totalAllocPoint, rewardTokenAddress, thirdParty] = await Promise.all([
+          farm.rewardPerBlock(),
+          farm.totalAllocPoint(),
+          farm.rewardToken(),
+          farm.getThirdPartyRewardConfigByFarmId(farmId).catch(() => null),
+        ]);
+        let acc = farmState.accRewardsPerShare;
+        if (farmState.liquidity > 0n && farmState.active && totalAllocPoint > 0n && BigInt(currentBlock) > farmState.lastCalcBlock) {
+          const rewards = (BigInt(currentBlock) - farmState.lastCalcBlock) * ((rewardPerBlock * farmState.allocPoint) / totalAllocPoint);
+          acc += (rewards * CALC_PRECISION) / farmState.liquidity;
+        }
+        let earned = (farmer.liquidity * acc) / CALC_PRECISION - farmer.rewardDebt;
+        if (earned < 0n) earned = 0n;
+        const blocksServed = BigInt(currentBlock) - BigInt(farmer.startingBlock);
+        const durationRaw = blocksServed >= BigInt(MAX_BLOCKS_FOR_BONUS) ? BigInt(DURATION_MULTIPLIER_MAX) : BigInt(DURATION_MULTIPLIER_BASE) + (BigInt(DURATION_MULTIPLIER_RANGE) * blocksServed) / BigInt(MAX_BLOCKS_FOR_BONUS);
+        const collected = (earned * farmer.boltMultiplier * durationRaw) / 100000000n;
+        const [rewardDecimals, rewardMeta] = await Promise.all([decimalsFor(rewardTokenAddress), getTokenMetadata(rewardTokenAddress)]);
+        pendingRewards = { tokenAddress: rewardTokenAddress, symbol: rewardMeta?.symbol || null, amount: ethers.formatUnits(collected, rewardDecimals) };
+        hasThirdPartyRewards = Boolean(thirdParty && thirdParty.token !== ethers.ZeroAddress && (thirdParty.tokensPerBlock > 0n || farmer.thirdPartyRewardDebt > 0n));
+      } catch (err) {
+        console.warn(`⚠️  DeFi position valuation: couldn't compute pending rewards for farm ${farmId}@${contractAddress}:`, err?.shortMessage || err?.message);
+      }
       let fees0Raw = (farmer.liquidity * farmState.accFees0PerShare) / CALC_PRECISION - farmer.fees0Debt;
       let fees1Raw = (farmer.liquidity * farmState.accFees1PerShare) / CALC_PRECISION - farmer.fees1Debt;
       if (fees0Raw < 0n) fees0Raw = 0n; // shouldn't happen given the contract's own debt accounting, but never show a negative "earned"
@@ -320,6 +352,11 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
       contractAddress,
       farmId,
       multipliers: farmMultipliers(farmer, currentBlock),
+      // Farm rewards accrued but not yet minted (collected on ANY withdrawal), and the BOLT staked for
+      // the multiplier (returned only when the position is withdrawn in full — verified source).
+      pendingRewards,
+      hasThirdPartyRewards,
+      boltDeposited: ethers.formatUnits(farmer.boltDeposited, 18),
       legs: [
         {
           tokenAddress: meta.token0, symbol: meta0?.symbol || null, amount: amount0.toString(), usdValue: usd0?.toString() ?? null,
@@ -444,6 +481,8 @@ async function valueStakingPosition(contractAddress, walletAddress) {
       label: "Core Ascension Staking",
       contractAddress,
       farmId: null,
+      // Withdrawing while this is true incurs the contract's early-exit penalty (getUser().currentlyEarly).
+      currentlyEarly: Boolean(user.currentlyEarly),
       legs: [{ tokenAddress: coreTokenAddress, symbol: meta?.symbol || null, amount: amount.toString(), usdValue: usdValue?.toString() ?? null }],
       totalUsd: usdValue?.toString() ?? null,
       hasUnpriced: usdValue == null,
