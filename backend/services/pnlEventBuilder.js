@@ -16,6 +16,7 @@ import Decimal from "decimal.js";
 import { getHistoricalPriceUsd, getCachedHistoricalPriceUsd, getRecentCachedPriceUsd } from "./pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { isIgnoredAsset } from "./ignoredAssets.js";
+import { ELECTROSWAP_LOCKER_ADDRESS } from "../utils/electroSwapLocker.js";
 
 // A fixed sentinel string (not an address) standing in for native ETN wherever an "asset" needs a
 // single identifying key alongside real token addresses — see formatAssetLabel's exact-match
@@ -35,6 +36,15 @@ export function transferToEvent(t) {
     return t.direction === "out"
       ? { kind: "self_out", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal }
       : { kind: "self_in", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal, unitCostUsd: t.price_usd_at_time ?? 0 };
+  }
+  // LP tokens locked in ElectroSwapLockerV2 are still the owner's — the same lock()/unlock() a farm
+  // deposit gets, so cost basis carries through. Booked as a plain "out" they were disposed of at
+  // $0 (an LP token has no price feed): a realized loss of their whole cost, and gone from Current
+  // Value. Confirmed live on the demo wallets: 808k of 918k CORE/WETN LP tokens, ~$12k.
+  if (tokenAddress !== NATIVE_SENTINEL && String(t.counterparty_address || "").toLowerCase() === ELECTROSWAP_LOCKER_ADDRESS) {
+    return t.direction === "out"
+      ? { kind: "lock", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal }
+      : { kind: "unlock", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal, fallbackUnitCostUsd: t.price_usd_at_time ?? 0 };
   }
   return t.direction === "out"
     ? { kind: "out", tokenAddress, txHash: t.tx_hash, timestamp, quantity: t.amount_decimal, proceedsUsd: t.usd_value ?? 0 }

@@ -42,6 +42,7 @@ import { getTokenMetadata, POSITION_MANAGER_ADDRESS, v3PositionAssetKey } from "
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 import { getV2LpDepositedQuantities, getV3PositionDepositedQuantities } from "../db/ingestedTransfers.js";
 import { registerCache } from "../utils/boundedMap.js";
+import { ELECTROSWAP_LOCKER_ADDRESS } from "../utils/electroSwapLocker.js";
 
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 // Same wrapped-ETN address dexPriceQuote.js/pnlPricing.js both already use — ETN/WETN are 1:1
@@ -551,7 +552,7 @@ async function finalizeV3Position(candidate, priceMap) {
 // wallet owning 99.9% of the CORE/WETN pool held only 109k of 918k LP tokens directly; 808k were in
 // two locks (ids 28 and 32) it owns, so the pool showed ~$860 instead of ~$14k. The locker records
 // ownership on-chain: getLockIDsByOwner(owner) -> ids, getLockById(id) -> { pair, owner, amount, ... }.
-const LOCKER_ADDRESS = process.env.ELECTROSWAP_LOCKER_ADDRESS || "0x16ca736c8B181772009e598F37f137e9cD36AFAE";
+const LOCKER_ADDRESS = ELECTROSWAP_LOCKER_ADDRESS;
 const LOCKER_ABI = [
   "function getLockIDsByOwner(address _owner) view returns (uint256[])",
   "function getLockById(uint256 _lockID) view returns (tuple(uint256 lockID, address pair, address owner, uint256 initial, uint256 amount, uint256 created, uint256 duration))",

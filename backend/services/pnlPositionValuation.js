@@ -64,7 +64,7 @@ export function combineLockedPositionValue({ lockedQuantity, lockedCostUsd, posi
 
 /** Live valuation inputs for `trackedWallet`'s positions, matched against its ledger.
  *  `openLots`   — closing.lots (freely-held lots; includes LP-token and V3-position lots)
- *  `lockedLots` — closing.lockedLots (farm/stake principal)
+ *  `lockedLots` — closing.lockedLots (farm/stake principal, and V2 LP tokens in ElectroSwapLockerV2)
  * Returns { livePricesUsd, lockedByToken }:
  *  - livePricesUsd: `{ [lot key]: usd per unit }` for every LP token / V3 position it could value
  *  - lockedByToken: Map(tokenAddress -> { quantity, costBasisUsd, marketValueUsd }) to add on top of
@@ -75,7 +75,17 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
   const livePricesUsd = {};
   const lockedByToken = new Map();
 
-  // ---- open lots: V2 LP tokens + V3 positions ----
+  // Locked lots summed per token — farm/stake principal, and V2 LP tokens locked in ElectroSwapLockerV2.
+  const locked = new Map(); // token -> { quantity, cost }
+  for (const lot of lockedLots) {
+    if (lot.quantityRemaining.lte(0)) continue;
+    const agg = locked.get(lot.tokenAddress) || { quantity: new Decimal(0), cost: new Decimal(0) };
+    agg.quantity = agg.quantity.plus(lot.quantityRemaining);
+    agg.cost = agg.cost.plus(lot.quantityRemaining.times(lot.unitCostUsd));
+    locked.set(lot.tokenAddress, agg);
+  }
+
+  // ---- open lots: V2 LP tokens + V3 positions; locked V2 LP tokens ----
   try {
     const qtyByKey = new Map();
     for (const lot of openLots) {
@@ -91,17 +101,31 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
       if (key === NATIVE || key.includes(":")) continue;
       candidates.push({ address: key, decimals: 18, rawBalance: ethers.parseUnits(qty.toFixed(18), 18).toString() });
     }
+    // A pair held ONLY locked has no open lot; the locker read above adds it back by itself.
 
-    // includeLocked:false — this file prices each LEDGER lot per unit (position value / quantity), and
-    // the ledger's quantity is just what the wallet holds; the per-unit price is the same either way, so
-    // skip the extra locker RPC calls.
-    const lp = await computeLpPositionsLive(trackedWallet, candidates, { includeLocked: false });
+    // includeLocked (the default): the live locker read adds the wallet's locked LP to each pair (or
+    // makes a pair it ONLY holds locked a candidate of its own). Each position is then split back
+    // into the freely-held part (a per-unit price for the open lots) and the locked part (valued
+    // against the ledger's locked LP lots, below).
+    const lp = await computeLpPositionsLive(trackedWallet, candidates);
     for (const p of lp.v2Positions) {
       const key = String(p.tokenAddress).toLowerCase();
+      const total = new Decimal(p.quantity || 0);
+      if (p.totalUsd == null || p.hasUnpriced || total.lte(0)) continue;
+      const unitUsd = new Decimal(p.totalUsd).div(total);
       const qty = qtyByKey.get(key);
-      if (p.totalUsd == null || p.hasUnpriced || !qty || qty.lte(0)) continue;
-      // Per-unit price of the pair token, from the position valued at the SAME quantity the ledger holds.
-      livePricesUsd[key] = new Decimal(p.totalUsd).div(qty).toNumber();
+      if (qty && qty.gt(0)) livePricesUsd[key] = unitUsd.toNumber();
+      const lockedQty = new Decimal(p.lockedQuantity || 0);
+      if (lockedQty.gt(0)) {
+        const ledger = locked.get(key) || { quantity: new Decimal(0), cost: new Decimal(0) };
+        const combined = combineLockedPositionValue({
+          lockedQuantity: ledger.quantity,
+          lockedCostUsd: ledger.cost,
+          positionAmount: lockedQty,
+          positionValueUsd: lockedQty.times(unitUsd),
+        });
+        if (combined) lockedByToken.set(key, combined);
+      }
     }
     for (const p of lp.v3Positions) {
       const key = `${POSITION_MANAGER_ADDRESS}:${p.tokenId}`;
@@ -115,15 +139,6 @@ export async function computeLivePositionValuation(trackedWallet, openLots, lock
 
   // ---- locked lots: farm / stake principal ----
   try {
-    const locked = new Map(); // token -> { quantity, cost }
-    for (const lot of lockedLots) {
-      if (lot.quantityRemaining.lte(0)) continue;
-      const agg = locked.get(lot.tokenAddress) || { quantity: new Decimal(0), cost: new Decimal(0) };
-      agg.quantity = agg.quantity.plus(lot.quantityRemaining);
-      agg.cost = agg.cost.plus(lot.quantityRemaining.times(lot.unitCostUsd));
-      locked.set(lot.tokenAddress, agg);
-    }
-
     const defi = await getOpenDefiPositionsUsd(trackedWallet);
     const live = new Map(); // token -> { amount, value }
     for (const position of defi.positions || []) {
