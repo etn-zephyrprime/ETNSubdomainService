@@ -34,7 +34,7 @@ import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
 import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
-import { simulateSell, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
+import { simulateSell, simulateExit, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
 import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
@@ -191,10 +191,38 @@ router.get("/premium/what-if-holdings", async (req, res) => {
     if (!addresses.includes(target)) {
       return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
     }
-    res.json({ holdings: await listSellableHoldings(target, addresses.filter((a) => a !== target)) });
+    res.json(await listSellableHoldings(target, addresses.filter((a) => a !== target))); // { tokens, positions }
   } catch (err) {
     console.error("What-if holdings lookup failed:", err);
     res.status(500).json({ error: "Couldn't load this wallet's holdings" });
+  }
+});
+
+// What-If position exit (whatIfSimulator.js simulateExit): read-only — what exiting `exitPct` of one
+// LP / farm / staking position would return, optionally all sold to ETN, against its cost basis.
+router.post("/premium/what-if-exit", async (req, res) => {
+  const { wallet, signature, timestamp, walletAddress, positionKey, exitPct, sellToEtn } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet) || !walletAddress || !ethers.isAddress(walletAddress)) {
+    return res.status(400).json({ error: "wallet and walletAddress must be valid addresses" });
+  }
+  if (typeof positionKey !== "string" || !/^(farm|staking|v2|v3):/.test(positionKey)) {
+    return res.status(400).json({ error: "positionKey is required" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
+    const target = walletAddress.toLowerCase();
+    if (!addresses.includes(target)) {
+      return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+    }
+    res.json(await simulateExit(target, addresses.filter((a) => a !== target), positionKey, exitPct, sellToEtn !== false));
+  } catch (err) {
+    if (err instanceof WhatIfInputError) return res.status(400).json({ error: err.message });
+    console.error("What-if exit simulation failed:", err);
+    res.status(500).json({ error: "Couldn't run the simulation right now" });
   }
 });
 

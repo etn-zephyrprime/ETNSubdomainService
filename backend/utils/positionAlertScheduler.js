@@ -17,8 +17,7 @@ import { getPool } from "../db/pool.js";
 import { getAllActivePositionAlerts, savePositionAlertState, IL_REARM_POINTS } from "../db/positionAlerts.js";
 import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
-import { getLiquidityPositionsUsd } from "../services/lpPositionValuation.js";
-import { fetchBlockscoutJson } from "./blockscoutClient.js";
+import { getLiquidityPositionsUsd, fetchHeldFungibleTokens } from "../services/lpPositionValuation.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 
@@ -26,7 +25,6 @@ const CHECK_INTERVAL_MS = process.env.POSITION_ALERT_CHECK_INTERVAL_MS
   ? parseInt(process.env.POSITION_ALERT_CHECK_INTERVAL_MS, 10)
   : 10 * 60 * 1000; // position valuation is on-chain reads per position — heavier than a price check, and IL/range/multiplier move slowly
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
-const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 
 export const FARM_MULTIPLIER_MILESTONES = [1.25, 1.5, 1.75, 2.0, 2.25, 2.5];
 
@@ -123,14 +121,6 @@ const TITLES = {
   farm_multiplier: "Farm multiplier milestone",
 };
 
-async function heldFungibleTokens(wallet) {
-  const raw = await fetchBlockscoutJson(`/addresses/${wallet}/token-balances`);
-  const items = Array.isArray(raw) ? raw : raw?.items || [];
-  return items
-    .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type))
-    .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
-}
-
 /** All of `ownerWallet`'s positions across covered wallets. `needLp` false skips the LP read (only
  * farm alerts configured). Returns { positions, complete }. */
 async function loadOwnerPositions(ownerWallet, needLp) {
@@ -142,7 +132,7 @@ async function loadOwnerPositions(ownerWallet, needLp) {
     try {
       const [defi, lp] = await Promise.all([
         getOpenDefiPositionsUsd(wallet),
-        needLp ? heldFungibleTokens(wallet).then((tokens) => getLiquidityPositionsUsd(wallet, tokens)) : null,
+        needLp ? fetchHeldFungibleTokens(wallet).then((tokens) => getLiquidityPositionsUsd(wallet, tokens)) : null,
       ]);
       if (!defi || defi.failedCount > 0) complete = false;
       positions.push(...collectPositions(wallet, lp, defi));
