@@ -369,7 +369,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
       }
     })();
     return () => { cancelled = true; };
-  }, [hasAccess, active, getAuthParams, getCategoryHistory, wallet.account, selectedCategory]);
+    // Not keyed on getAuthParams: it's rebuilt on every parent render (see CoreTierGasSpend.jsx's
+    // load effect), which re-fetched on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccess, active, selectedCategory]);
 
   // A per-wallet snapshot entry has the exact same shape as the combined one (perWallet.push in
   // pnlSnapshotRouter.js spreads the full snapshot alongside walletAddress) — same for a
