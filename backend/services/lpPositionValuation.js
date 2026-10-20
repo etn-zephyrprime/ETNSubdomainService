@@ -41,6 +41,7 @@ import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { getTokenMetadata, POSITION_MANAGER_ADDRESS, v3PositionAssetKey } from "./pnlIngestion.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
 import { getV2LpDepositedQuantities, getV3PositionDepositedQuantities } from "../db/ingestedTransfers.js";
+import { registerCache } from "../utils/boundedMap.js";
 
 const V3_FACTORY_ADDRESS = "0xbf6bcbe2be545135391777f3b4698be92e2eb8ca";
 // Same wrapped-ETN address dexPriceQuote.js/pnlPricing.js both already use — ETN/WETN are 1:1
@@ -74,7 +75,12 @@ const MAX_TICK = 887272n;
 // accepted bound, same "TTL as staleness ceiling for an otherwise-quiet wallet" reasoning
 // pnlSnapshotService.js's own cache documents, just resolved by a background refresh here instead of
 // a hard TTL wall alone.
-const positionsCache = new Map(); // cacheKey (wallet+fingerprint) -> { result, computedAt: ms }
+// Keyed by wallet ALONE, with the fingerprint stored in the entry: it used to be keyed by
+// wallet+fingerprint, so every balance change left the previous entry behind forever (a slow leak on
+// a long-running instance — the fingerprint is the wallet's whole token-balance list, so the keys
+// alone were often kilobytes). Capped too, since any looked-up wallet can land here.
+const positionsCache = registerCache("lpPositions", new Map()); // walletAddress (lowercase) -> { fingerprint, result, computedAt: ms }
+const POSITIONS_CACHE_MAX_ENTRIES = 200;
 const POSITIONS_CACHE_TTL_MS = process.env.LP_POSITIONS_CACHE_TTL_MS
   ? parseInt(process.env.LP_POSITIONS_CACHE_TTL_MS, 10)
   : 30000;
@@ -101,8 +107,16 @@ function tokensFingerprint(heldFungibleTokens) {
     .join(",");
 }
 
-function positionsCacheKey(walletAddress, fingerprint) {
-  return `${walletAddress.toLowerCase()}|${fingerprint}`;
+function getL1(walletAddress, fingerprint) {
+  const entry = positionsCache.get(walletAddress.toLowerCase());
+  return entry && entry.fingerprint === fingerprint ? entry : null;
+}
+
+function setL1(walletAddress, fingerprint, result) {
+  const key = walletAddress.toLowerCase();
+  positionsCache.delete(key); // re-insert so Map order is recency order
+  positionsCache.set(key, { fingerprint, result, computedAt: Date.now() });
+  while (positionsCache.size > POSITIONS_CACHE_MAX_ENTRIES) positionsCache.delete(positionsCache.keys().next().value);
 }
 
 let sharedProvider = null;
@@ -669,7 +683,7 @@ export async function computeLpPositionsLive(walletAddress, heldFungibleTokens, 
 async function recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens, fingerprint) {
   try {
     const result = await computeLpPositionsLive(walletAddress, heldFungibleTokens);
-    positionsCache.set(positionsCacheKey(walletAddress, fingerprint), { result, computedAt: Date.now() });
+    setL1(walletAddress, fingerprint, result);
     await upsertCachedPosition(walletAddress, "lp", result, fingerprint).catch((err) =>
       console.warn(`⚠️  LP position valuation: failed to persist cache for ${walletAddress}:`, err.message)
     );
@@ -700,10 +714,9 @@ async function recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens,
  */
 export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens = []) {
   const fingerprint = tokensFingerprint(heldFungibleTokens);
-  const cacheKey = positionsCacheKey(walletAddress, fingerprint);
 
-  // L1 — in-memory, exact fingerprint match (part of the key itself) required.
-  const l1 = positionsCache.get(cacheKey);
+  // L1 — in-memory, exact fingerprint match required.
+  const l1 = getL1(walletAddress, fingerprint);
   if (l1 && Date.now() - l1.computedAt < POSITIONS_CACHE_TTL_MS) {
     return l1.result;
   }
@@ -718,7 +731,7 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
     if (persisted.fingerprint === fingerprint && l2Age < L2_MAX_AGE_MS) {
       // The wallet's held tokens haven't changed and the row is recent (see L2_MAX_AGE_MS) — safe to
       // remember in L1 too.
-      positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now() });
+      setL1(walletAddress, fingerprint, persisted.payload);
       return persisted.payload;
     }
 
@@ -746,7 +759,7 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
 
   // L3 — nothing cached anywhere for this wallet yet (genuinely first time). No shortcut available.
   const result = await computeLpPositionsLive(walletAddress, heldFungibleTokens);
-  positionsCache.set(cacheKey, { result, computedAt: Date.now() });
+  setL1(walletAddress, fingerprint, result);
   await upsertCachedPosition(walletAddress, "lp", result, fingerprint).catch((err) =>
     console.warn(`⚠️  LP position valuation: failed to persist cache for ${walletAddress}:`, err.message)
   );

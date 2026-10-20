@@ -19,6 +19,7 @@ import { getPricePointsSince } from "../db/pricePoints.js";
 import { getCandles as getElectroSwapCandles, getBatchTokenPrices, isElectroSwapPaused } from "./electroSwapApi.js";
 import { ETN_CANDLE_RANGES, fetchEtnCandles } from "./etnCandles.js";
 import { getTokenBurnHistory } from "../services/tokenBurnService.js";
+import { setBounded, sweepExpired, registerCache } from "./boundedMap.js";
 
 const GECKOTERMINAL_API_BASE = "https://api.geckoterminal.com/api/v2";
 const NETWORK = "electroneum";
@@ -40,7 +41,8 @@ const FETCH_TIMEOUT_MS = process.env.PNL_FETCH_TIMEOUT_MS ? parseInt(process.env
 // point of this cache is cutting down *repeat* views of the same token, not just the first one,
 // since that's the case a shared rate limit actually gets exhausted by.
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const cache = new Map(); // `${address}:${range}` -> { expiresAt, payload }
+const cache = registerCache("tokenCharts", new Map()); // `${address}:${range}` -> { expiresAt, payload }
+const CHART_CACHE_MAX_ENTRIES = 300;
 
 // Separate, longer-lived cache for the *pool lookup* specifically — confirmed live this was a
 // real gap: the 7D/30D/90D pills this UI ships re-run the exact same pool lookup for every range
@@ -434,7 +436,10 @@ router.get("/token-chart", async (req, res) => {
 
   try {
     const payload = await loadTokenChart(address, range, currency);
-    cache.set(cacheKey, { payload, expiresAt: Date.now() + CACHE_TTL_MS });
+    // Chart payloads are the large entries here, one per (token, range) ever viewed — expired ones
+    // used to stay in memory until that same chart was opened again.
+    sweepExpired(cache);
+    setBounded(cache, cacheKey, { payload, expiresAt: Date.now() + CACHE_TTL_MS }, CHART_CACHE_MAX_ENTRIES);
     res.json(payload);
   } catch (err) {
     if (err.rateLimited) {

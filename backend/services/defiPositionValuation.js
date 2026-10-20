@@ -51,6 +51,7 @@ import { getTokenMetadata, ensureDefiActivityIngested } from "./pnlIngestion.js"
 import { getDistinctFarmPositions, getDistinctStakingContracts, getFarmDepositedQuantities, getFarmPositionCycles } from "../db/defiActivity.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { getCachedPosition, upsertCachedPosition } from "../db/walletPositionCache.js";
+import { setBounded, registerCache } from "../utils/boundedMap.js";
 
 const YIELD_FARM_ABI = [
   "function getFarmById(uint256 _farmId) view returns (tuple(uint256 id, uint8 version, string name, address poolAddr, uint256 liquidity, uint256 allocPoint, uint256 lastCalcBlock, uint256 accRewardsPerShare, uint256 accThirdPartyRewardsPerShare, address[] farmers, uint256 farmerCount, address token0, address token1, uint256 tokenId, int24 tickLower, int24 tickUpper, uint24 fee, uint256 accFees0PerShare, uint256 accFees1PerShare, bool active))",
@@ -102,7 +103,8 @@ const FULL_RANGE_TICK_ABS_MIN = 800000n;
 // cache-key comment. Live PRICE movement is the only thing that can still have drifted, which is
 // why a stale-fingerprint hit is served immediately (still real, still close) while a background
 // refresh brings it fully current within moments.
-const positionsCache = new Map(); // walletAddress (lowercase) -> { result, computedAt: ms, ingestionUpdatedAt: ms|null }
+const positionsCache = registerCache("defiPositions", new Map()); // walletAddress (lowercase) -> { result, computedAt: ms, ingestionUpdatedAt: ms|null }
+const POSITIONS_CACHE_MAX_ENTRIES = 200; // any looked-up wallet can land here
 const POSITIONS_CACHE_TTL_MS = process.env.DEFI_POSITIONS_CACHE_TTL_MS
   ? parseInt(process.env.DEFI_POSITIONS_CACHE_TTL_MS, 10)
   : 30000;
@@ -474,7 +476,7 @@ async function recomputeAndPersistDefiPositions(trackedWallet, ingestionUpdatedA
   const cacheKey = trackedWallet.toLowerCase();
   try {
     const result = await computeDefiPositionsLive(trackedWallet);
-    positionsCache.set(cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+    setBounded(positionsCache, cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs }, POSITIONS_CACHE_MAX_ENTRIES);
     await upsertCachedPosition(trackedWallet, "defi", result, String(ingestionUpdatedAtMs)).catch((err) =>
       console.warn(`⚠️  DeFi position valuation: failed to persist cache for ${trackedWallet}:`, err.message)
     );
@@ -527,7 +529,7 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
   if (persisted) {
     // Populate L1 either way — even a stale L2 row is worth remembering for THIS process's own
     // in-memory hits until the background refresh below lands a fresher one.
-    positionsCache.set(cacheKey, { result: persisted.payload, computedAt: Date.now(), ingestionUpdatedAt: Number(persisted.fingerprint) || null });
+    setBounded(positionsCache, cacheKey, { result: persisted.payload, computedAt: Date.now(), ingestionUpdatedAt: Number(persisted.fingerprint) || null }, POSITIONS_CACHE_MAX_ENTRIES);
 
     if (persisted.fingerprint === ingestionFingerprint) {
       // Nothing's been ingested since this was computed — the payload's quantities are still exactly
@@ -551,7 +553,7 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
   // premiumDashboardRouter.js's checkAndStartDefiIngestIfNeeded) already has a progress banner for
   // exactly this situation.
   const result = await computeDefiPositionsLive(trackedWallet);
-  positionsCache.set(cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs });
+  setBounded(positionsCache, cacheKey, { result, computedAt: Date.now(), ingestionUpdatedAt: ingestionUpdatedAtMs }, POSITIONS_CACHE_MAX_ENTRIES);
   await upsertCachedPosition(trackedWallet, "defi", result, ingestionFingerprint).catch((err) =>
     console.warn(`⚠️  DeFi position valuation: failed to persist cache for ${trackedWallet}:`, err.message)
   );

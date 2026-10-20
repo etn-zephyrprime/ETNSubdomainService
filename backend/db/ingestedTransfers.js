@@ -1,4 +1,5 @@
 import { query, chunkArray } from "./pool.js";
+import { registerCache } from "../utils/boundedMap.js";
 
 // Max rows per INSERT statement — see pool.js's own chunkArray comment for why this exists at
 // all (a real production crash, not a preemptive guess) and why 500 is comfortably safe here:
@@ -160,7 +161,7 @@ export async function getTransfersInRange(trackedWallet, fromTs, toTs) {
 // serve pre-ingestion data to a caller that specifically woke up BECAUSE ingestion advanced.
 const MEMO_TTL_MS = 20000;
 const MEMO_MAX_ENTRIES = 12; // small — each entry holds a wallet's FULL raw transfer history, not a compact summary
-const transfersMemo = new Map(); // trackedWallet (lowercase) -> { rows, beforeTsMs, fetchedAtMs }
+const transfersMemo = registerCache("transfersMemo", new Map()); // trackedWallet (lowercase) -> { rows, beforeTsMs, fetchedAtMs }
 
 function rememberTransfers(trackedWallet, beforeTsMs, rows) {
   transfersMemo.delete(trackedWallet); // re-insert so Map order is recency order

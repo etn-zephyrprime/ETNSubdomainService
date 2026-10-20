@@ -26,6 +26,7 @@ import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { buildNftEvents, convertRealizedEventsToEtn } from "./pnlEventBuilder.js";
+import { registerCache } from "../utils/boundedMap.js";
 
 function parseNftKey(compositeKey) {
   const idx = compositeKey.lastIndexOf(":");
@@ -202,7 +203,7 @@ export function buildRollups(byToken, unmatchedCount) {
 // (see upsertIngestionState). It used to be recomputed from a full-history SELECT on EVERY call with no
 // cache at all — one of the biggest sources of Supabase egress (see pnlSnapshotService.js's
 // getLedgerState comment for the full story). Small entry (per-collection/token rollups), LRU-capped.
-const nftSnapshotCache = new Map(); // key -> { ingestionUpdatedAt, snapshot }
+const nftSnapshotCache = registerCache("nftPnlSnapshot", new Map()); // key -> { ingestionUpdatedAt, snapshot }
 const NFT_CACHE_MAX_ENTRIES = 24;
 
 export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresses = []) {
