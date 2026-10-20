@@ -1776,9 +1776,16 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               )}
                             </span>
                             <span style={{ textAlign: "right" }}>
-                              <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
-                              {usdValue != null && (
-                                <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatUsdPrice(usdValue)}</span>
+                              {/* USD first — the figure that matters across tokens; the token amount
+                                  underneath. A token with no resolved price keeps its amount as the
+                                  headline rather than showing an empty one. */}
+                              {usdValue != null ? (
+                                <>
+                                  <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatUsdPrice(usdValue)}</span>
+                                  <span style={{ display: "block", fontSize: 11, color: mutedLight }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
+                                </>
+                              ) : (
+                                <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>{formatTokenAmount(t.value, t.token?.decimals)}</span>
                               )}
                               {holdingsCategory === "tokens" && avgCostByToken?.[t.token?.address?.toLowerCase()] && (
                                 <span style={{ display: "block", fontSize: 10, color: muted, marginTop: 2 }}>
