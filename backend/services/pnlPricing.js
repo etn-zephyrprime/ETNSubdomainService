@@ -444,6 +444,10 @@ export async function getEarliestAvailableDate(asset) {
 // process lifetime like failedBackfillThisRun, for the identical reason: a live fetch failure here
 // might be transient and shouldn't become a permanent "no price data" claim for a future run.
 const failedPriceLookupThisRun = new Set();
+// asset -> latest day (ms) GeckoTerminal has answered 401 for; see getHistoricalPriceUsd.
+const geckoDeniedThroughThisRun = new Map();
+// Same tolerance fetchNearestCandleUsd uses for "nearest candle is still this day's price".
+const NEAREST_CANDLE_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000;
 
 // One bounded retry on 429, honoring Retry-After when CoinGecko sends it (else a flat 3s) — same
 // "bounded retry, not a runaway loop" philosophy as tokenChartRouter.js's GeckoTerminal queue, but
@@ -519,17 +523,47 @@ export async function getHistoricalPriceUsd(asset, timestamp) {
     throw new Error(`Could not resolve historical USD price for ${cacheAsset} at ${bucketed.toISOString()} (cached failure this run)`);
   }
 
+  // A day BEFORE the bulk backfill ran is a day it already fetched every candle for: a missing day
+  // there is a no-trade day (GeckoTerminal and ElectroSwap both omit those), not a gap a live call
+  // can fill. Confirmed live: those live calls came back 401 (or were rate-limited) every time, and
+  // queueing them took a fresh process 5+ minutes to rebuild burny.etn's ledger vs ~1.4s warm. So
+  // never go live for such a day — use the nearest earlier stored price within the same 3-day
+  // tolerance fetchNearestCandleUsd applies, stored as that day's price so this is a one-off, or
+  // fail fast. Only days after the backfill ran (not yet covered by the daily top-up) still go live.
+  const backfilledDay = backfillState?.backfilled_at ? bucketToDay(backfillState.backfilled_at) : null;
+  if (backfilledDay && bucketed < backfilledDay) {
+    const near = await getLatestPricePointBetween(cacheAsset, new Date(bucketed.getTime() - NEAREST_CANDLE_TOLERANCE_MS), bucketed);
+    const nearPrice = near ? Number(near.price_usd) : null;
+    if (nearPrice > 0) {
+      await upsertPricePoint(cacheAsset, bucketed, nearPrice, "carry-forward");
+      return nearPrice;
+    }
+    failedPriceLookupThisRun.add(failKey);
+    throw new Error(`No ${cacheAsset} price within 3 days before ${bucketed.toISOString().slice(0, 10)} (already covered by its bulk backfill — no live lookup)`);
+  }
+
+  // GeckoTerminal answers 401 for a pool's dates older than it serves. That floor only moves back
+  // in time, so one 401 means every earlier date for the same pool is pointless too — remembered
+  // here for the rest of the run instead of asked again day by day.
+  const denied = geckoDeniedThroughThisRun.get(cacheAsset);
+  const skipGecko = denied != null && bucketed.getTime() <= denied;
+
   let priceUsd = null;
   let source = null;
 
-  try {
-    const pool = await resolvePoolAddress(tokenAddress);
-    if (pool) {
-      priceUsd = await fetchNearestCandleUsd(pool.poolAddress, pool.tokenIsBase, bucketed);
-      if (priceUsd != null) source = "geckoterminal";
+  if (!skipGecko) {
+    try {
+      const pool = await resolvePoolAddress(tokenAddress);
+      if (pool) {
+        priceUsd = await fetchNearestCandleUsd(pool.poolAddress, pool.tokenIsBase, bucketed);
+        if (priceUsd != null) source = "geckoterminal";
+      }
+    } catch (err) {
+      if (/returned 401/.test(err.message)) {
+        geckoDeniedThroughThisRun.set(cacheAsset, Math.max(denied ?? 0, bucketed.getTime()));
+      }
+      console.warn(`⚠️  GeckoTerminal historical price lookup failed for ${cacheAsset} @ ${bucketed.toISOString()}:`, err.message);
     }
-  } catch (err) {
-    console.warn(`⚠️  GeckoTerminal historical price lookup failed for ${cacheAsset} @ ${bucketed.toISOString()}:`, err.message);
   }
 
   if (priceUsd == null && isNative) {
