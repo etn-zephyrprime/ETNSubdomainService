@@ -604,9 +604,11 @@ export async function getCachedHistoricalPriceUsd(asset, timestamp) {
 // ElectroSwap only emits a candle for a day that had trades, so a quiet token's series has gaps
 // (seen live: 863 prices over 52 tokens on a 30-day run, ~17 days each). No trade means the price
 // didn't move, so each missing day gets the previous day's close (source "carry-forward"), seeded
-// from the latest stored price before the window. A carried day never overwrites a stored price,
-// and a real candle for that day later overwrites the carried one.
-const CARRY_SEED_LOOKBACK_DAYS = 90;
+// from the latest price before the window (stored, or an older candle in the same response). A
+// carried day never overwrites a stored price, and a real candle for that day later overwrites the
+// carried one. The seed may be up to a year old: 90 days left 37 of 68 assets with nothing to carry
+// on the first run, since many of these tokens trade only every few months.
+const CARRY_SEED_LOOKBACK_DAYS = 365;
 const DAY_MS = 86400000;
 const TOP_UP_DEFAULT_DAYS = 10;
 const TOP_UP_GAP_MS = 500; // between ElectroSwap calls — spread out, not a burst (see electroSwapApi.js's suspension history)
@@ -640,12 +642,26 @@ async function topUpTokenFromElectroSwap(asset, days, todayStart) {
  * previous day's price (see the carry-forward note above). Returns { real, carried }. */
 async function writeDailyCloses(asset, closesByDayMs, days, todayStart, source) {
   const windowStart = todayStart.getTime() - days * DAY_MS;
-  const stored = new Map(); // day ms -> price, everything already in price_points from the seed lookback on
-  for (const r of await getPricePointsSince(asset, new Date(windowStart - CARRY_SEED_LOOKBACK_DAYS * DAY_MS))) {
+  const stored = new Map(); // day ms -> price, everything already in price_points inside the window
+  for (const r of await getPricePointsSince(asset, new Date(windowStart))) {
     stored.set(new Date(r.timestamp).getTime(), Number(r.price_usd));
   }
+
+  // Seed: the most recent price before the window — the newer of the latest stored one and any
+  // older candle in this same response (a quiet token's last-N candles reach back past the window).
+  let seedMs = -Infinity;
   let last = null;
-  for (const [ms, price] of stored) if (ms < windowStart && price > 0) last = price; // rows come back oldest first
+  const seedRow = await getLatestPricePointBetween(asset, new Date(windowStart - CARRY_SEED_LOOKBACK_DAYS * DAY_MS), new Date(windowStart - DAY_MS));
+  if (seedRow && Number(seedRow.price_usd) > 0) {
+    seedMs = new Date(seedRow.timestamp).getTime();
+    last = Number(seedRow.price_usd);
+  }
+  for (const [ms, close] of closesByDayMs) {
+    if (ms < windowStart && ms > seedMs && close > 0) {
+      seedMs = ms;
+      last = close;
+    }
+  }
 
   let real = 0;
   let carried = 0;
