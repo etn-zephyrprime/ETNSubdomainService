@@ -414,6 +414,9 @@ const BOLT_TOKEN_ADDRESS = "0x043faa1b5c5fc9a7dc35171f290c29ecde0ccff1";
  * informational context for the PDF now that neither one is a realized-PnL event on its own. */
 export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
   const events = [];
+  // Rows whose contract lookups failed (RPC down) — their lock/unlock events are MISSING from
+  // `events`, so a caller must not cache a ledger built from this (getLedgerState checks it).
+  let unresolvedCount = 0;
   const perLabel = new Map(); // label -> { depositedUsd, withdrawnUsd, rewardsUsd (Decimal), unpriced count }
   const bumpLabel = (label) => {
     if (!perLabel.has(label)) perLabel.set(label, { depositedUsd: new Decimal(0), withdrawnUsd: new Decimal(0), rewardsUsd: new Decimal(0), unpriced: 0 });
@@ -541,11 +544,16 @@ export async function buildDefiFarmEvents(defiActivity, priorityAssets = null) {
         }
       }
     } catch (err) {
-      console.warn(`⚠️  Statement generator: could not resolve DeFi event ${row.event_type} for tx ${txHash} (contract ${row.contract_address}):`, err.message);
+      unresolvedCount++;
+      // ethers RPC errors often have an empty .message — fall back to what does say something.
+      console.warn(
+        `⚠️  Statement generator: could not resolve DeFi event ${row.event_type} for tx ${txHash} (contract ${row.contract_address}):`,
+        err?.shortMessage || err?.message || err?.code || String(err)
+      );
     }
   }
 
-  return { events, perLabel };
+  return { events, perLabel, unresolvedCount };
 }
 
 /** Every token address that's ever been part of a wallet's farm/staking activity — the "Staking /

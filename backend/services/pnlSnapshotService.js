@@ -96,7 +96,7 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
   ]);
 
   const { events: nftEvents, consumedRowIds: nftConsumedRowIds } = buildNftEvents(transfers);
-  const { events: defiEvents } = await buildDefiFarmEvents(defiActivity, priorityAssets);
+  const { events: defiEvents, unresolvedCount } = await buildDefiFarmEvents(defiActivity, priorityAssets);
   const events = assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity });
 
   // defiActivity is returned too (not just folded into events) so a caller that also needs the RAW
@@ -110,7 +110,9 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
   // the Core Tier demo snapshot (coreTierDemoRouter.js runs the backfill pair concurrently per
   // wallet), and the exact same duplication happens once a day, for every actively tracked wallet,
   // in pnlSnapshotScheduler.js's own backfill pair.
-  return { events, transfers, defiActivity };
+  // `incomplete`: some DeFi rows couldn't be resolved (their farm lock/unlock events are missing),
+  // so the ledger built from this is wrong until a retry succeeds — never cache it.
+  return { events, transfers, defiActivity, incomplete: unresolvedCount > 0, unresolvedCount };
 }
 
 // ---- Shared ledger-state cache ------------------------------------------------------------------
@@ -137,6 +139,13 @@ function rememberLedger(key, entry) {
   while (ledgerCache.size > LEDGER_CACHE_MAX_ENTRIES) ledgerCache.delete(ledgerCache.keys().next().value);
 }
 
+// One in-flight build per (wallet, self-owned set, ingestion version): concurrent callers share it.
+// Confirmed live (2026-10-20): after a restart every ledger cache is empty, and the PnL page,
+// Diamond Hands, avg cost, NFT PnL and their polls each started their OWN full rebuild of the same
+// wallet. With the RPC stalling, dozens piled up — each holding the wallet's whole history — and the
+// heap ran out ~90s after boot (exit 134, twice). Priority-scoped builds aren't shared (partial by design).
+const inFlightLedgerBuilds = new Map(); // `${key}|${updatedAtMs}` -> Promise
+
 /**
  * `{ closing, gasTotalUsd, asOf }` for one wallet — closing = { lots, lockedLots, realizedEvents }.
  * Call AFTER ingestion has run (every existing caller already does). Cache hit -> no database read at
@@ -144,6 +153,7 @@ function rememberLedger(key, entry) {
  * Never cached for a cold-start wallet or a priority-scoped run (`priorityAssets`): that result is a
  * deliberately partial view (see computeLivePnlSnapshot's SAFETY BOUNDARY comment).
  */
+
 export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
   const now = new Date();
   const state = await getIngestionState(trackedWallet).catch(() => null);
@@ -167,7 +177,31 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
     }
   }
 
-  const { events, transfers } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
+  if (!priorityAssets) {
+    const flightKey = `${key}|${updatedAtMs}`;
+    let flight = inFlightLedgerBuilds.get(flightKey);
+    if (!flight) {
+      flight = buildLedger(trackedWallet, selfOwnedAddresses, null, now, cacheable, key, updatedAtMs).finally(() => inFlightLedgerBuilds.delete(flightKey));
+      inFlightLedgerBuilds.set(flightKey, flight);
+    }
+    const built = await flight;
+    // Same copy-out as a cache hit: callers must never share (and so mutate) one result's arrays.
+    return {
+      closing: { lots: built.closing.lots.slice(), lockedLots: built.closing.lockedLots.slice(), realizedEvents: built.closing.realizedEvents.slice() },
+      gasTotalUsd: built.gasTotalUsd,
+      gasTotalEtn: built.gasTotalEtn,
+      asOf: now,
+    };
+  }
+  return buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, false, key, updatedAtMs);
+}
+
+async function buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, cacheable, key, updatedAtMs) {
+  const { events, transfers, incomplete, unresolvedCount } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
+  if (incomplete) {
+    console.warn(`⚠️  Ledger for ${trackedWallet}: ${unresolvedCount} DeFi event(s) couldn't be resolved (RPC?) — result used for this request but NOT cached, so the next one retries.`);
+    cacheable = false;
+  }
   const { closing } = replayFifo(events, now, now);
   const gas = await computeGasFeesUsd(transfers); // whole history — these views have no period to scope it to
   const compact = { lots: closing.lots, lockedLots: closing.lockedLots || [], realizedEvents: closing.realizedEvents };
@@ -582,6 +616,12 @@ export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAd
   // successful live snapshot (see the trigger in pnlSnapshotScheduler.js), so cold-start priority
   // scoping never applies by this point; full pricing throughout.
   const built = precomputed || (await buildEventsForWallet(trackedWallet, selfOwnedAddresses, null, new Date()));
+  // Persisted days are never rewritten, so writing them from a ledger missing DeFi events (RPC down)
+  // would freeze wrong figures in — skip this run; the missing days are still missing next time.
+  if (built.incomplete) {
+    console.warn(`⚠️  PnL history backfill for ${trackedWallet} skipped: ${built.unresolvedCount} DeFi event(s) unresolved — will retry on the next run.`);
+    return built; // handed on so the category backfill sees it's incomplete too, instead of rebuilding
+  }
   const { events, transfers } = built;
 
   // Each checkpoint is the EXCLUSIVE end of its calendar day (start of the next day) — matches
