@@ -225,7 +225,10 @@ export async function getV2LpDepositedQuantities(trackedWallet, poolAddress, tok
   const token0Lc = token0.toLowerCase();
   const token1Lc = token1.toLowerCase();
   const res = await query(
-    `SELECT direction, token_address, amount_raw FROM ingested_transfers
+    // asset_type is needed by legTokenAddress: without it a native ETN leg (addLiquidityETN) has a
+    // null token_address, matches neither token, and was silently added to token1 — confirmed live
+    // on a CORE/WETN pool: 0 WETN "deposited", and CORE's figure = CORE + ETN net (1,998,255).
+    `SELECT direction, asset_type, token_address, amount_raw FROM ingested_transfers
      WHERE tracked_wallet = $1 AND counterparty_address = $2
        AND ((asset_type = 'erc20' AND token_address = ANY($3::text[])) OR (asset_type = 'native' AND $4::boolean))
        AND log_index <= -2000 AND log_index > -4000`,
