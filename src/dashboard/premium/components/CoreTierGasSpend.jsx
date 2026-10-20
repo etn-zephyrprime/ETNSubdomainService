@@ -40,7 +40,13 @@ export default function CoreTierGasSpend({ wallet, getAuthParams, hasAccess, act
       }
     })();
     return () => { cancelled = true; };
-  }, [hasAccess, active, getAuthParams, getGasSpend, wallet.account]);
+    // Keyed on access/wallets only — NOT getAuthParams: it's rebuilt on every parent render
+    // (useReownWallet returns a new wallet object each time), so listing it here re-fetched on
+    // every render. Confirmed live: ~2,500 backend requests/min with the page open, starving the
+    // 0.5-CPU instance until every outbound RPC/R2/Blockscout call timed out. Same convention as
+    // every other Core Tier panel's load effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccess, active]);
 
   const { total, txCount } = useMemo(() => {
     let sum = 0;

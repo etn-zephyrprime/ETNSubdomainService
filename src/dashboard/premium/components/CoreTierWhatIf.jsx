@@ -118,6 +118,9 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
     }
   }, [getAuthParams, getSellableHoldings, wallet.account]);
 
+  // Keyed on the chosen wallet only — NOT loadHoldings, whose identity follows getAuthParams, which
+  // is rebuilt on every parent render (see CoreTierGasSpend.jsx's load effect): depending on it
+  // reloaded holdings (a heavy request) and wiped the form on every render.
   useEffect(() => {
     if (!simWallet) return;
     setResult(null);
@@ -125,7 +128,8 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
     setQuantity("");
     setPositionKey("");
     loadHoldings(simWallet);
-  }, [simWallet, loadHoldings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simWallet]);
 
   const selectedToken = useMemo(() => (holdings?.tokens || []).find((h) => h.tokenAddress === token) || null, [holdings, token]);
   const selectedPosition = useMemo(() => (holdings?.positions || []).find((p) => p.key === positionKey) || null, [holdings, positionKey]);

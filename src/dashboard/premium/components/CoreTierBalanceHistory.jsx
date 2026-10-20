@@ -202,7 +202,10 @@ export default function CoreTierBalanceHistory({ wallet, getAuthParams, coreTier
       }
     })();
     return () => { cancelled = true; };
-  }, [effectiveSelectedAsset, hasAccess, active, getAuthParams, getTokenBalanceHistory, wallet.account]);
+    // Not keyed on getAuthParams: it's rebuilt on every parent render (see CoreTierGasSpend.jsx's
+    // load effect), which re-fetched on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveSelectedAsset, hasAccess, active]);
 
   const priceLookup = useMemo(
     () => (pricePoints && pricePoints.length > 0 ? buildEtnPriceLookup(pricePoints) : null),
