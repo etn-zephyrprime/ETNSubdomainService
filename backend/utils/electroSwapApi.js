@@ -242,10 +242,19 @@ export async function getTokenPrice(tokenAddress) {
  * old or older. Returns null — never throws — on any failure (key unset, request error, empty
  * response); callers should fall back to this app's existing GeckoTerminal-backed data. */
 export async function getCandles(tokenAddress, bucket, limit) {
+  const { ok, candles } = await getCandleSeries(tokenAddress, bucket, limit);
+  return ok && candles.length > 0 ? candles : null;
+}
+
+/** Same call as getCandles, but tells "the call failed" (`ok: false` — key unset, breaker open,
+ * request error) apart from "it worked and there were no candles" (`ok: true, candles: []` — no
+ * trades in the window). ElectroSwap only emits a candle for a bucket that had trades, so an empty
+ * series is a normal answer for a quiet token. Never throws. */
+export async function getCandleSeries(tokenAddress, bucket, limit) {
   try {
     const data = await callElectroSwapApi(`/tokens/${CHAIN_ID}/${tokenAddress}/candles?bucket=${bucket}&limit=${limit}`);
-    if (!Array.isArray(data) || data.length === 0) return null;
-    return data
+    if (!Array.isArray(data)) return { ok: false, candles: [] };
+    const candles = data
       .filter((c) => Number.isFinite(c?.time) && Number.isFinite(c?.close))
       .map((c) => ({
         time: c.time,
@@ -255,9 +264,10 @@ export async function getCandles(tokenAddress, bucket, limit) {
         close: Number(c.close),
         volume: Number.isFinite(c.volume) ? c.volume : null,
       }));
+    return { ok: true, candles };
   } catch (err) {
     console.warn(`⚠️  ElectroSwap candles lookup failed for ${tokenAddress}:`, err.message);
-    return null;
+    return { ok: false, candles: [] };
   }
 }
 

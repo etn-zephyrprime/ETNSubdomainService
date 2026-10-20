@@ -22,7 +22,7 @@ async function main() {
   if (!getPool()) throw new Error("DATABASE_URL not set.");
   console.log(`Topping up the last ${days} day(s) of prices...`);
   const r = await topUpRecentPrices({ days });
-  console.log(`Done: ${r.updated}/${r.assets} assets updated, ${r.pricesWritten} daily prices written (${r.noData} no data, ${r.skipped} skipped, ${r.failed} failed).`);
+  console.log(`Done: ${r.updated}/${r.assets} assets updated, ${r.pricesWritten} daily prices written + ${r.carried} carried forward from quiet days (${r.noData} no data, ${r.skipped} skipped, ${r.failed} failed).`);
   await getPool().end();
 }
 

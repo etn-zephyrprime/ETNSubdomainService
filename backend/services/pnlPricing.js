@@ -40,8 +40,8 @@
 // still be exercised end-to-end on testnet without real market data.
 import { fetchGeckoTerminal } from "../utils/tokenChartRouter.js";
 import { resolveTokenPools } from "../utils/wetnPoolResolver.js";
-import { getCandles, isElectroSwapConfigured, electroSwapPausedForMs } from "../utils/electroSwapApi.js";
-import { getPricePoint, upsertPricePoint, getLatestPricePointBetween } from "../db/pricePoints.js";
+import { getCandles, getCandleSeries, isElectroSwapConfigured, electroSwapPausedForMs } from "../utils/electroSwapApi.js";
+import { getPricePoint, upsertPricePoint, getLatestPricePointBetween, getPricePointsSince } from "../db/pricePoints.js";
 import { getBackfillState, markBackfilled, listBackfilledAssets } from "../db/priceHistoryBackfillState.js";
 import { isIgnoredAsset } from "./ignoredAssets.js";
 
@@ -600,6 +600,14 @@ export async function getCachedHistoricalPriceUsd(asset, timestamp) {
 // asset once a day instead: one ElectroSwap /candles call per token (100 + 1 credit per candle, so
 // ~110 credits at the default window) and one free KuCoin call for ETN. Today's candle is skipped —
 // it's still moving, and a stored day's price is treated as final.
+//
+// ElectroSwap only emits a candle for a day that had trades, so a quiet token's series has gaps
+// (seen live: 863 prices over 52 tokens on a 30-day run, ~17 days each). No trade means the price
+// didn't move, so each missing day gets the previous day's close (source "carry-forward"), seeded
+// from the latest stored price before the window. A carried day never overwrites a stored price,
+// and a real candle for that day later overwrites the carried one.
+const CARRY_SEED_LOOKBACK_DAYS = 90;
+const DAY_MS = 86400000;
 const TOP_UP_DEFAULT_DAYS = 10;
 const TOP_UP_GAP_MS = 500; // between ElectroSwap calls — spread out, not a burst (see electroSwapApi.js's suspension history)
 const TOP_UP_MAX_PAUSE_WAIT_MS = 5 * 60 * 1000;
@@ -615,30 +623,46 @@ async function topUpEtnFromKucoin(days, todayStart) {
   if (!res.ok) throw new Error(`KuCoin HTTP ${res.status}`);
   const json = await res.json();
   if (json.code !== "200000") throw new Error(`KuCoin error ${json.code}: ${json.msg || "unknown"}`);
-  let written = 0;
-  for (const row of json.data || []) {
-    const day = new Date(Number(row[0]) * 1000); // [time, open, close, ...] — see backfillEtnFromKucoin
-    day.setUTCHours(0, 0, 0, 0);
-    const close = Number(row[2]);
-    if (day >= todayStart || !(close > 0)) continue;
-    await upsertPricePoint("ETN", day, close, "kucoin");
-    written++;
-  }
-  return written;
+  const closes = new Map(); // day ms -> close
+  for (const row of json.data || []) closes.set(bucketToDay(Number(row[0]) * 1000).getTime(), Number(row[2])); // [time, open, close, ...] — see backfillEtnFromKucoin
+  return writeDailyCloses("ETN", closes, days, todayStart, "kucoin");
 }
 
 async function topUpTokenFromElectroSwap(asset, days, todayStart) {
-  const candles = await getCandles(asset, "1d", days + 1);
-  if (!candles) return null;
-  let written = 0;
-  for (const c of candles) {
-    const day = new Date(c.time * 1000);
-    day.setUTCHours(0, 0, 0, 0);
-    if (day >= todayStart || !(c.close > 0)) continue;
-    await upsertPricePoint(asset, day, c.close, "electroswap-topup");
-    written++;
+  const { ok, candles } = await getCandleSeries(asset, "1d", days + 1);
+  if (!ok) return null;
+  const closes = new Map();
+  for (const c of candles) closes.set(bucketToDay(c.time * 1000).getTime(), c.close);
+  return writeDailyCloses(asset, closes, days, todayStart, "electroswap-topup");
+}
+
+/** Writes every completed day in the window: the real close where there is one, otherwise the
+ * previous day's price (see the carry-forward note above). Returns { real, carried }. */
+async function writeDailyCloses(asset, closesByDayMs, days, todayStart, source) {
+  const windowStart = todayStart.getTime() - days * DAY_MS;
+  const stored = new Map(); // day ms -> price, everything already in price_points from the seed lookback on
+  for (const r of await getPricePointsSince(asset, new Date(windowStart - CARRY_SEED_LOOKBACK_DAYS * DAY_MS))) {
+    stored.set(new Date(r.timestamp).getTime(), Number(r.price_usd));
   }
-  return written;
+  let last = null;
+  for (const [ms, price] of stored) if (ms < windowStart && price > 0) last = price; // rows come back oldest first
+
+  let real = 0;
+  let carried = 0;
+  for (let ms = windowStart; ms < todayStart.getTime(); ms += DAY_MS) {
+    const close = closesByDayMs.get(ms);
+    if (close > 0) {
+      await upsertPricePoint(asset, new Date(ms), close, source);
+      last = close;
+      real++;
+    } else if (stored.get(ms) > 0) {
+      last = stored.get(ms);
+    } else if (last != null) {
+      await upsertPricePoint(asset, new Date(ms), last, "carry-forward");
+      carried++;
+    }
+  }
+  return { real, carried };
 }
 
 /** Writes the last `days` completed UTC days' closing prices into price_points for every
@@ -647,15 +671,22 @@ async function topUpTokenFromElectroSwap(asset, days, todayStart) {
 export async function topUpRecentPrices({ days = TOP_UP_DEFAULT_DAYS, log = console.log } = {}) {
   const todayStart = bucketToDay(new Date());
   const assets = await listBackfilledAssets();
-  const result = { assets: assets.length, updated: 0, pricesWritten: 0, noData: 0, skipped: 0, failed: 0 };
+  const result = { assets: assets.length, updated: 0, pricesWritten: 0, carried: 0, noData: 0, skipped: 0, failed: 0 };
+  const tally = (written) => {
+    if (written == null) {
+      result.failed++;
+      return;
+    }
+    result.pricesWritten += written.real;
+    result.carried += written.carried;
+    if (written.real + written.carried > 0) result.updated++;
+    else result.noData++; // no candles and no earlier price to carry
+  };
 
   for (const asset of assets) {
     try {
       if (asset === "ETN") {
-        const n = await topUpEtnFromKucoin(days, todayStart);
-        result.pricesWritten += n;
-        if (n > 0) result.updated++;
-        else result.noData++;
+        tally(await topUpEtnFromKucoin(days, todayStart));
         continue;
       }
       if (!isElectroSwapConfigured()) {
@@ -677,13 +708,7 @@ export async function topUpRecentPrices({ days = TOP_UP_DEFAULT_DAYS, log = cons
         }
         await sleep(pausedMs);
       }
-      const n = await topUpTokenFromElectroSwap(asset, days, todayStart);
-      if (n == null) result.failed++;
-      else if (n === 0) result.noData++;
-      else {
-        result.updated++;
-        result.pricesWritten += n;
-      }
+      tally(await topUpTokenFromElectroSwap(asset, days, todayStart));
       await sleep(TOP_UP_GAP_MS);
     } catch (err) {
       result.failed++;
