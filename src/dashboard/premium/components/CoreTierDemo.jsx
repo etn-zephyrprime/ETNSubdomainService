@@ -10,7 +10,7 @@ import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { DiamondHandsCard } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
-import ImpermanentLossLine from "./ImpermanentLossLine.jsx";
+import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
 import { useBlockscout } from "../../hooks/useBlockscout.js";
 import { useEtnPriceHistory } from "../../hooks/useEtnPriceHistory.js";
 import { useCoreTierDemo } from "../../hooks/useCoreTierDemo.js";
@@ -510,6 +510,7 @@ function DemoPortfolio({ data, walletFilter, onSelectToken, priceChanges }) {
                     {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                   </div>
                   <ImpermanentLossLine il={p.impermanentLoss} />
+                  <FarmMultiplierLine multipliers={p.multipliers} />
 
                   {isExpanded && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>

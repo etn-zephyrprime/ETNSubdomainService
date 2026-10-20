@@ -23,7 +23,7 @@ import RowLeader from "./RowLeader.jsx";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
-import ImpermanentLossLine from "./ImpermanentLossLine.jsx";
+import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
 import { IngestProgressBanner } from "./CoreTierPnl.jsx";
 
 // Same poll cadence as CoreTierPnl.jsx's own identical constant — see that file's own comment for
@@ -1394,6 +1394,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                 {p.legs.map((leg) => `${Number(leg.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${leg.symbol || "?"}`).join(" + ")}
                               </div>
                               <ImpermanentLossLine il={p.impermanentLoss} />
+                              <FarmMultiplierLine multipliers={p.multipliers} />
 
                               {isExpanded && (
                                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${border}` }}>

@@ -10,6 +10,7 @@ import { useWalletAlerts } from "../../hooks/useWalletAlerts.js";
 import { useTokenPriceAlerts } from "../../hooks/useTokenPriceAlerts.js";
 import { usePortfolioAlerts } from "../../hooks/usePortfolioAlerts.js";
 import { usePortfolioDigest } from "../../hooks/usePortfolioDigest.js";
+import PositionAlertsSection from "./PositionAlertsSection.jsx";
 import { useSubscriptionReminders } from "../../hooks/useSubscriptionReminders.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
@@ -641,6 +642,9 @@ export default function CoreTierAlerts({ wallet, getAuthParams, onSelectToken, c
             </>
           )}
         </div>
+
+        {/* Position health alerts — IL threshold, V3 range, farm multiplier milestones */}
+        <PositionAlertsSection wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} active={active} linked={linked} />
 
         {/* Token price alerts */}
         <div>

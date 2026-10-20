@@ -50,6 +50,7 @@ import { startSubscriptionRevenueSweepScheduler } from "./utils/subscriptionReve
 import { startWalletAlertScheduler } from "./utils/walletAlertScheduler.js";
 import { startTokenPriceAlertScheduler } from "./utils/tokenPriceAlertScheduler.js";
 import { startPortfolioAlertScheduler } from "./utils/portfolioAlertScheduler.js";
+import { startPositionAlertScheduler } from "./utils/positionAlertScheduler.js";
 import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.js";
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
@@ -180,6 +181,7 @@ app.listen(PORT, () => {
   safeStart("Wallet alert scheduler", startWalletAlertScheduler);
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
   safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);
+  safeStart("Position alert scheduler", startPositionAlertScheduler);
   safeStart("Portfolio digest scheduler", startPortfolioDigestScheduler);
   safeStart("Subscription reminder scheduler", startSubscriptionReminderScheduler);
   safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);

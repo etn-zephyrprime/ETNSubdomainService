@@ -65,6 +65,32 @@ const CORE_ASCENSION_ABI = [
 ];
 
 const Q96 = 2n ** 96n;
+
+// YieldFarm duration multiplier, from the contract's verified source (calculateDurationMultiplier):
+// 10000 + 15000 × blocksHeld / MAX_BLOCKS_FOR_BONUS, capped at 25000 — i.e. 1.00× rising linearly to
+// 2.50× over ~1 year of blocks since farmer.startingBlock (which a top-up deposit dilutes toward now).
+// Computed live from the current block rather than read from farmer.durationMultiplier, which is a
+// snapshot the contract only refreshes when the farmer interacts.
+const DURATION_MULTIPLIER_BASE = 10000;
+const DURATION_MULTIPLIER_RANGE = 15000;
+const DURATION_MULTIPLIER_MAX = 25000;
+const MAX_BLOCKS_FOR_BONUS = 6307200;
+const SECONDS_PER_BLOCK = (365 * 24 * 3600) / MAX_BLOCKS_FOR_BONUS; // the contract sizes the bonus window as one year of blocks
+
+/** { durationMultiplier, boltMultiplier, maxDurationMultiplier, maxReachedInDays } — multipliers as
+ * plain numbers (1.734 = 1.734×). maxReachedInDays is 0 once at the cap. */
+export function farmMultipliers(farmer, currentBlock) {
+  const held = BigInt(currentBlock) > BigInt(farmer.startingBlock) ? BigInt(currentBlock) - BigInt(farmer.startingBlock) : 0n;
+  let raw = DURATION_MULTIPLIER_BASE + Number((BigInt(DURATION_MULTIPLIER_RANGE) * held) / BigInt(MAX_BLOCKS_FOR_BONUS));
+  if (raw > DURATION_MULTIPLIER_MAX) raw = DURATION_MULTIPLIER_MAX;
+  const blocksToMax = Math.max(0, MAX_BLOCKS_FOR_BONUS - Number(held));
+  return {
+    durationMultiplier: raw / 10000,
+    boltMultiplier: Number(farmer.boltMultiplier) > 0 ? Number(farmer.boltMultiplier) / 10000 : 1,
+    maxDurationMultiplier: DURATION_MULTIPLIER_MAX / 10000,
+    maxReachedInDays: raw >= DURATION_MULTIPLIER_MAX ? 0 : (blocksToMax * SECONDS_PER_BLOCK) / 86400,
+  };
+}
 // Confirmed via this farm contract's own verified source (_collectRewardsAndFees): pendingFeesX =
 // (farmer.liquidity * farm.accFeesXPerShare / CALC_PRECISION) - farmer.feesXDebt. Not guessed from
 // the ABI struct's field names alone — this exact constant and formula were read directly off the
@@ -211,7 +237,7 @@ const POSITION_FAILED = Symbol("position-failed");
 async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
   try {
     const farm = new ethers.Contract(contractAddress, YIELD_FARM_ABI, getProvider());
-    const farmer = await farm.getFarmerByFarmIdAndAddress(farmId, walletAddress);
+    const [farmer, currentBlock] = await Promise.all([farm.getFarmerByFarmIdAndAddress(farmId, walletAddress), getProvider().getBlockNumber()]);
     if (farmer.liquidity === 0n) return null; // fully withdrawn — nothing open here anymore
 
     const meta = await getFarmMeta(contractAddress, farmId);
@@ -293,6 +319,7 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
       label: meta.name || `Yield Farm #${farmId}`,
       contractAddress,
       farmId,
+      multipliers: farmMultipliers(farmer, currentBlock),
       legs: [
         {
           tokenAddress: meta.token0, symbol: meta0?.symbol || null, amount: amount0.toString(), usdValue: usd0?.toString() ?? null,

@@ -1,7 +1,7 @@
 import React from "react";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { formatUsdPrice } from "../../utils/format.js";
-import { muted, mutedLight, orange, error as errorColor } from "../../theme.js";
+import { muted, mutedLight, orange, green, error as errorColor } from "../../theme.js";
 
 // Below this the loss is noise — shown neutral rather than alarming.
 const NOTICEABLE_IL_PERCENT = -1;
@@ -42,6 +42,27 @@ export default function ImpermanentLossLine({ il }) {
         </span>
       )}
       <InfoTooltip text={TOOLTIP} />
+    </div>
+  );
+}
+
+/** Farm card line: the live duration multiplier (backend defiPositionValuation.js farmMultipliers),
+ * when it reaches its maximum, and the BOLT multiplier. Renders nothing without `multipliers`
+ * (staking positions, or a cached result from before this shipped). */
+export function FarmMultiplierLine({ multipliers }) {
+  if (!multipliers || multipliers.durationMultiplier == null) return null;
+  const { durationMultiplier, maxDurationMultiplier, maxReachedInDays, boltMultiplier } = multipliers;
+  const atMax = durationMultiplier >= maxDurationMultiplier;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", fontSize: 10, color: muted, marginTop: 3 }}>
+      <span>Duration multiplier</span>
+      <span style={{ color: atMax ? green : mutedLight, fontWeight: 700 }}>{durationMultiplier.toFixed(2)}×</span>
+      <span>{atMax ? "· maximum reached" : `· ${maxDurationMultiplier.toFixed(1)}× max in ${Math.ceil(maxReachedInDays)} day${Math.ceil(maxReachedInDays) === 1 ? "" : "s"}`}</span>
+      {boltMultiplier > 1 && (
+        <span>
+          · BOLT <span style={{ color: mutedLight, fontWeight: 700 }}>{boltMultiplier.toFixed(2)}×</span>
+        </span>
+      )}
     </div>
   );
 }
