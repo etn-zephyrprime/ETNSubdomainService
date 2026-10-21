@@ -6,6 +6,7 @@ import CoreTierStressTest from "./CoreTierStressTest.jsx";
 import CoreTierWhatIf from "./CoreTierWhatIf.jsx";
 import CoreTierFarmScenario from "./CoreTierFarmScenario.jsx";
 import CoreTierRewardProjection from "./CoreTierRewardProjection.jsx";
+import CoreTierBacktest from "./CoreTierBacktest.jsx";
 import { useScenarios } from "../../hooks/useScenarios.js";
 import { green, mutedLight, border, monoFont } from "../../theme.js";
 
@@ -16,6 +17,7 @@ const TOOLS = [
   { id: "sellExit", label: "Sell / exit", flags: ["sell", "exit"] },
   { id: "farm", label: "Farm: add / withdraw" },
   { id: "rewards", label: "Rewards" },
+  { id: "backtest", label: "Backtest" },
 ];
 
 export default function CoreTierScenarios({ wallet, getAuthParams, coreTierAccess, walletFilter }) {
@@ -27,7 +29,7 @@ export default function CoreTierScenarios({ wallet, getAuthParams, coreTierAcces
   useEffect(() => {
     getScenarioConfig()
       .then((c) => setFlags(c.tools || {}))
-      .catch(() => setFlags({ stress: true, sell: true, exit: true, farm: true, rewards: true })); // config unreachable: don't hide tools over it
+      .catch(() => setFlags({ stress: true, sell: true, exit: true, farm: true, rewards: true, backtest: true })); // config unreachable: don't hide tools over it
   }, [getScenarioConfig]);
 
   const enabled = TOOLS.filter((t) => (t.flags || [t.id]).some((f) => flags?.[f] !== false));
@@ -74,6 +76,7 @@ export default function CoreTierScenarios({ wallet, getAuthParams, coreTierAcces
             {current === "stress" && <CoreTierStressTest wallet={wallet} getAuthParams={getAuthParams} active={active} />}
             {current === "farm" && <CoreTierFarmScenario wallet={wallet} getAuthParams={getAuthParams} active={active} />}
             {current === "rewards" && <CoreTierRewardProjection wallet={wallet} getAuthParams={getAuthParams} active={active} />}
+            {current === "backtest" && <CoreTierBacktest wallet={wallet} getAuthParams={getAuthParams} />}
             {current === "sellExit" && (
               <CoreTierWhatIf wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} embedded />
             )}

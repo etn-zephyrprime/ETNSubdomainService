@@ -61,5 +61,14 @@ export function useScenarios() {
     return res.json(); // { farms: [{ key, id, name, rewards }] }
   }, []);
 
-  return { getScenarioConfig, runStressTest, runFarmScenario, runRewardProjection, getActiveFarms };
+  // Tool 5: { asset, amountType: "usd"|"etn"|"tokens", amount, start, end?, mode: "lump"|"weekly"|"monthly" }.
+  const runBacktest = useCallback((wallet, signature, timestamp, input) => post("backtest", { wallet, signature, timestamp, ...input }), [post]);
+
+  const getBacktestTokens = useCallback(async () => {
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/scenarios/backtest-tokens`);
+    await parseErrorOrThrow(res);
+    return res.json(); // { tokens: [{ asset, symbol }] }
+  }, []);
+
+  return { getScenarioConfig, runStressTest, runFarmScenario, runRewardProjection, getActiveFarms, runBacktest, getBacktestTokens };
 }

@@ -37,6 +37,7 @@ import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
 import { simulateSell, simulateExit, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
 import { runStressTest, StressInputError } from "../services/scenarioStressTest.js";
 import { runFarmScenario, runRewardProjection, listActiveFarms, RewardsInputError } from "../services/scenarioRewards.js";
+import { runBacktest, listBacktestTokens, BacktestInputError } from "../services/scenarioBacktest.js";
 import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
@@ -204,7 +205,7 @@ router.get("/premium/what-if-holdings", async (req, res) => {
 // Each tool ships behind its own flag (env SCENARIO_<TOOL>_ENABLED=false turns it off); the UI reads
 // /premium/scenarios/config to decide what to show. Runs are explicit ("Run" button), server-side,
 // and rate-limited per member — they fan out to RPC/Blockscout, which are shared.
-const SCENARIO_TOOLS = ["stress", "sell", "exit", "farm", "rewards"];
+const SCENARIO_TOOLS = ["stress", "sell", "exit", "farm", "rewards", "backtest"];
 const scenarioEnabled = (tool) => String(process.env[`SCENARIO_${tool.toUpperCase()}_ENABLED`] ?? "true").toLowerCase() !== "false";
 const SCENARIO_MIN_INTERVAL_MS = 5000;
 const lastScenarioRun = new Map(); // owner -> ms
@@ -291,6 +292,33 @@ async function scenarioWalletGuard(req, res, tool) {
   if (!allowScenarioRun(res, wallet)) return null;
   return target;
 }
+
+// Tool 5 — historical backtest (scenarioBacktest.js). Market data only, no wallet needed beyond the
+// Core tier check.
+router.get("/premium/scenarios/backtest-tokens", async (req, res) => {
+  try {
+    res.json({ tokens: await listBacktestTokens() });
+  } catch (err) {
+    console.error("Backtest token list failed:", err);
+    res.status(500).json({ error: "Couldn't load the token list" });
+  }
+});
+
+router.post("/premium/scenarios/backtest", async (req, res) => {
+  if (!scenarioEnabled("backtest")) return res.status(404).json({ error: "The backtest isn't available right now" });
+  const { wallet, signature, timestamp, asset, amountType, amount, start, end, mode } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) return res.status(400).json({ error: "wallet must be a valid address" });
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) return res.status(403).json({ error: "Core tier membership required" });
+  if (!allowScenarioRun(res, wallet)) return;
+  try {
+    res.json(await runBacktest({ asset, amountType, amount, start, end, mode }));
+  } catch (err) {
+    if (err instanceof BacktestInputError) return res.status(400).json({ error: err.message });
+    console.error("Backtest failed:", err);
+    res.status(500).json({ error: "Couldn't run the backtest right now" });
+  }
+});
 
 // Tool 2 — yield farm "add more / withdraw now" (scenarioRewards.js runFarmScenario).
 router.post("/premium/scenarios/farm", async (req, res) => {

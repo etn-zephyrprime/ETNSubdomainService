@@ -72,3 +72,14 @@ export async function getPricePointsSince(asset, sinceTimestamp) {
   );
   return res?.rows || [];
 }
+
+/** Daily price points for `asset` between `from` and `to` (inclusive), oldest first, with each one's
+ * source — "carry-forward" marks a day with no trades that reuses the last real close (see
+ * pnlPricing.js's top-up), which the historical backtest counts as a gap. */
+export async function getPricePointsRange(asset, from, to) {
+  const res = await query(
+    `SELECT "timestamp", price_usd, source FROM price_points WHERE asset = $1 AND "timestamp" >= $2 AND "timestamp" <= $3 ORDER BY "timestamp" ASC`,
+    [asset, from, to]
+  );
+  return res?.rows || [];
+}
