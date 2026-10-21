@@ -2355,6 +2355,7 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
         lastIngestedBlock: highestBlock >= 0 ? highestBlock : stopAtBlock,
         coldStartCompletedAt: state?.cold_start_completed_at || new Date(),
         lastIngestedDefiBlock: highestFromDefi >= 0 ? highestFromDefi : null,
+        defiDataChanged: defiTxHashes.size > 0, // only real new DeFi activity invalidates the caches
       });
     }
 
@@ -2392,7 +2393,7 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
 export async function ensureDefiActivityIngested(trackedWallet) {
   const state = await getIngestionState(trackedWallet);
   const stopAtDefiBlock = state?.last_ingested_defi_block > 0 ? state.last_ingested_defi_block : null;
-  const { highestBlock: highestFromDefi } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
+  const { highestBlock: highestFromDefi, defiTxHashes } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock);
   if (highestFromDefi >= 0) {
     await upsertIngestionState(trackedWallet, {
       // `?? 0`, not `?? null` — this column is NOT NULL (see migration 001), and `state` is
@@ -2409,6 +2410,7 @@ export async function ensureDefiActivityIngested(trackedWallet) {
       lastIngestedBlock: state?.last_ingested_block ?? 0,
       coldStartCompletedAt: state?.cold_start_completed_at || null,
       lastIngestedDefiBlock: highestFromDefi,
+      defiDataChanged: defiTxHashes.size > 0,
     });
   }
 }
@@ -2472,7 +2474,7 @@ export async function checkAndStartDefiIngestIfNeeded(trackedWallet) {
 
   const scanPromise = (async () => {
     try {
-      const { highestBlock } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock, reportProgress, latestBlockAtStart);
+      const { highestBlock, defiTxHashes } = await ingestDefiActivity(trackedWallet, stopAtDefiBlock, reportProgress, latestBlockAtStart);
       if (highestBlock >= 0) {
         // Same NOT-NULL-safe defaulting as ensureDefiActivityIngested's own upsert — see that
         // function's own comment on why `?? 0`, not `?? null`, matters on a wallet's first-ever row.
@@ -2480,6 +2482,7 @@ export async function checkAndStartDefiIngestIfNeeded(trackedWallet) {
           lastIngestedBlock: state?.last_ingested_block ?? 0,
           coldStartCompletedAt: state?.cold_start_completed_at || null,
           lastIngestedDefiBlock: highestBlock,
+          defiDataChanged: defiTxHashes.size > 0,
         });
       }
       await completeJob(trackedWallet).catch((err) =>

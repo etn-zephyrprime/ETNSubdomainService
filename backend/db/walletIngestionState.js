@@ -31,7 +31,13 @@ export async function getIngestionState(trackedWallet) {
 // completed, also a real state transition those same callers care about) — a same-value write is
 // now a true no-op as far as every downstream cache is concerned, which is what all of their own
 // header comments already claimed was happening.
-export async function upsertIngestionState(trackedWallet, { lastIngestedBlock, coldStartCompletedAt, lastIngestedDefiBlock }) {
+// `defiDataChanged`: whether the DeFi scan behind this call found any activity. The DeFi cursor
+// advances to the scanned chain tip on EVERY pass (a block every 5s), so bumping updated_at on
+// every cursor move invalidated every cache keyed on it (PnL ledger, snapshot, DeFi positions, NFT
+// PnL, token history) each time the position-alert checker or a page ran a DeFi scan — and the next
+// view re-read the wallet's whole history from the database. Confirmed as the main source of
+// Supabase egress (Oct 2026: 11.7 GB of the Free plan's 5 GB). Omitted = true (the old behaviour).
+export async function upsertIngestionState(trackedWallet, { lastIngestedBlock, coldStartCompletedAt, lastIngestedDefiBlock, defiDataChanged = true }) {
   await query(
     `INSERT INTO wallet_ingestion_state (tracked_wallet, last_ingested_block, cold_start_completed_at, last_ingested_defi_block, updated_at)
      VALUES ($1, $2, $3, $4, now())
@@ -41,11 +47,11 @@ export async function upsertIngestionState(trackedWallet, { lastIngestedBlock, c
            last_ingested_defi_block = COALESCE(EXCLUDED.last_ingested_defi_block, wallet_ingestion_state.last_ingested_defi_block),
            updated_at = CASE
              WHEN wallet_ingestion_state.last_ingested_block IS DISTINCT FROM EXCLUDED.last_ingested_block THEN now()
-             WHEN EXCLUDED.last_ingested_defi_block IS NOT NULL
+             WHEN $5::boolean AND EXCLUDED.last_ingested_defi_block IS NOT NULL
                   AND wallet_ingestion_state.last_ingested_defi_block IS DISTINCT FROM EXCLUDED.last_ingested_defi_block THEN now()
              WHEN wallet_ingestion_state.cold_start_completed_at IS NULL AND EXCLUDED.cold_start_completed_at IS NOT NULL THEN now()
              ELSE wallet_ingestion_state.updated_at
            END`,
-    [trackedWallet.toLowerCase(), lastIngestedBlock, coldStartCompletedAt || null, lastIngestedDefiBlock ?? null]
+    [trackedWallet.toLowerCase(), lastIngestedBlock, coldStartCompletedAt || null, lastIngestedDefiBlock ?? null, defiDataChanged !== false]
   );
 }

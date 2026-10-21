@@ -77,7 +77,9 @@ export async function getSwapTradesInRange(trackedWallet, fromTs, toTs) {
 
 export async function getAllSwapTradesBefore(trackedWallet, beforeTs) {
   const res = await query(
-    `SELECT * FROM swap_trades WHERE tracked_wallet = $1 AND "timestamp" < $2
+    `SELECT id, tx_hash, log_index, pool_address, token_sold_address, amount_sold, token_bought_address, amount_bought,
+            price_usd_sold_leg, price_usd_bought_leg, block_number, "timestamp"
+     FROM swap_trades WHERE tracked_wallet = $1 AND "timestamp" < $2
      ORDER BY "timestamp" ASC, log_index ASC`,
     [trackedWallet.toLowerCase(), beforeTs]
   );
