@@ -33,5 +33,33 @@ export function useScenarios() {
     return res.json();
   }, []);
 
-  return { getScenarioConfig, runStressTest };
+  const post = useCallback(async (path, body) => {
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/scenarios/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await parseErrorOrThrow(res);
+    return res.json();
+  }, []);
+
+  // Tool 2: { farmKey, action: "add" | "withdraw", addUsd?, withdrawPct? } for one tracked wallet.
+  const runFarmScenario = useCallback(
+    (wallet, signature, timestamp, walletAddress, input) => post("farm", { wallet, signature, timestamp, walletAddress, ...input }),
+    [post]
+  );
+
+  // Tool 4: projectionTarget = "staking" | farm key; deposit = null | { usd } | { core, nfts }.
+  const runRewardProjection = useCallback(
+    (wallet, signature, timestamp, walletAddress, projectionTarget, deposit) => post("rewards", { wallet, signature, timestamp, walletAddress, projectionTarget, deposit }),
+    [post]
+  );
+
+  const getActiveFarms = useCallback(async () => {
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/scenarios/farms`);
+    await parseErrorOrThrow(res);
+    return res.json(); // { farms: [{ key, id, name, rewards }] }
+  }, []);
+
+  return { getScenarioConfig, runStressTest, runFarmScenario, runRewardProjection, getActiveFarms };
 }

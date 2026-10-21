@@ -60,7 +60,7 @@ const YIELD_FARM_ABI = [
   "function rewardPerBlock() view returns (uint256)",
   "function totalAllocPoint() view returns (uint256)",
   "function rewardToken() view returns (address)",
-  "function getThirdPartyRewardConfigByFarmId(uint256 _farmId) view returns (tuple(address token, uint256 tokensPerBlock, uint256 endBlock))",
+  "function getThirdPartyRewardConfigByFarmId(uint256 _farmId) view returns (tuple(address token, address tokenManager, uint256 tokensPerBlock, uint256 endBlock))",
 ];
 const POOL_V3_ABI = ["function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16, uint16, uint16, uint8, bool)"];
 const CORE_ASCENSION_ABI = [
@@ -275,6 +275,7 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
     let pendingFees0 = new Decimal(0);
     let pendingFees1 = new Decimal(0);
     let pendingRewards = null; // { tokenAddress, symbol, amount } — the farm's own reward token
+    let pendingThirdPartyRewards = null; // { tokenAddress, symbol, amount } — a partner token (e.g. CLUB)
     let hasThirdPartyRewards = false;
     try {
       const farmState = await farm.getFarmById(farmId);
@@ -300,7 +301,22 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
         const collected = (earned * farmer.boltMultiplier * durationRaw) / 100000000n;
         const [rewardDecimals, rewardMeta] = await Promise.all([decimalsFor(rewardTokenAddress), getTokenMetadata(rewardTokenAddress)]);
         pendingRewards = { tokenAddress: rewardTokenAddress, symbol: rewardMeta?.symbol || null, amount: ethers.formatUnits(collected, rewardDecimals) };
-        hasThirdPartyRewards = Boolean(thirdParty && thirdParty.token !== ethers.ZeroAddress && (thirdParty.tokensPerBlock > 0n || farmer.thirdPartyRewardDebt > 0n));
+        // Partner reward (ThirdPartyReward: token, tokenManager, tokensPerBlock, endBlock): accrues per
+        // block until endBlock, by share, with NO multipliers — _collectRewardsAndFees pays
+        // newThirdPartyDebt - thirdPartyRewardDebt as-is.
+        if (thirdParty && thirdParty.token !== ethers.ZeroAddress) {
+          hasThirdPartyRewards = true;
+          let accTp = farmState.accThirdPartyRewardsPerShare;
+          const last = farmState.lastCalcBlock;
+          const until = BigInt(currentBlock) < thirdParty.endBlock ? BigInt(currentBlock) : thirdParty.endBlock;
+          if (farmState.liquidity > 0n && farmState.active && thirdParty.tokensPerBlock > 0n && until > last) {
+            accTp += ((until - last) * thirdParty.tokensPerBlock * CALC_PRECISION) / farmState.liquidity;
+          }
+          let tpEarned = (farmer.liquidity * accTp) / CALC_PRECISION - farmer.thirdPartyRewardDebt;
+          if (tpEarned < 0n) tpEarned = 0n;
+          const [tpDecimals, tpMeta] = await Promise.all([decimalsFor(thirdParty.token), getTokenMetadata(thirdParty.token)]);
+          pendingThirdPartyRewards = { tokenAddress: thirdParty.token, symbol: tpMeta?.symbol || null, amount: ethers.formatUnits(tpEarned, tpDecimals) };
+        }
       } catch (err) {
         console.warn(`⚠️  DeFi position valuation: couldn't compute pending rewards for farm ${farmId}@${contractAddress}:`, err?.shortMessage || err?.message);
       }
@@ -355,6 +371,7 @@ async function valueYieldFarmPosition(contractAddress, farmId, walletAddress) {
       // Farm rewards accrued but not yet minted (collected on ANY withdrawal), and the BOLT staked for
       // the multiplier (returned only when the position is withdrawn in full — verified source).
       pendingRewards,
+      pendingThirdPartyRewards,
       hasThirdPartyRewards,
       boltDeposited: ethers.formatUnits(farmer.boltDeposited, 18),
       legs: [

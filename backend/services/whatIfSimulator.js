@@ -442,7 +442,8 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
         warnings.push(`Your ${wholeFmt(new Decimal(p.boltDeposited))} staked BOLT only comes back when you withdraw 100% of this farm.`);
       }
     }
-    if (p.hasThirdPartyRewards) warnings.push("This farm also pays a partner reward token, which is not included in these figures.");
+    if (p.pendingThirdPartyRewards && Number(p.pendingThirdPartyRewards.amount) > 0) add(p.pendingThirdPartyRewards.tokenAddress, p.pendingThirdPartyRewards.symbol, 0, p.pendingThirdPartyRewards.amount);
+    else if (p.hasThirdPartyRewards && !p.pendingThirdPartyRewards) warnings.push("This farm also pays a partner reward token that couldn't be read just now, so it isn't included.");
   } else if (pos.kind === "staking") {
     const leg = p.legs[0];
     const amount = new Decimal(leg.amount).times(f);

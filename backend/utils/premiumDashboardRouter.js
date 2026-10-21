@@ -36,6 +36,7 @@ import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
 import { simulateSell, simulateExit, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
 import { runStressTest, StressInputError } from "../services/scenarioStressTest.js";
+import { runFarmScenario, runRewardProjection, listActiveFarms, RewardsInputError } from "../services/scenarioRewards.js";
 import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
@@ -203,7 +204,7 @@ router.get("/premium/what-if-holdings", async (req, res) => {
 // Each tool ships behind its own flag (env SCENARIO_<TOOL>_ENABLED=false turns it off); the UI reads
 // /premium/scenarios/config to decide what to show. Runs are explicit ("Run" button), server-side,
 // and rate-limited per member — they fan out to RPC/Blockscout, which are shared.
-const SCENARIO_TOOLS = ["stress", "sell", "exit"];
+const SCENARIO_TOOLS = ["stress", "sell", "exit", "farm", "rewards"];
 const scenarioEnabled = (tool) => String(process.env[`SCENARIO_${tool.toUpperCase()}_ENABLED`] ?? "true").toLowerCase() !== "false";
 const SCENARIO_MIN_INTERVAL_MS = 5000;
 const lastScenarioRun = new Map(); // owner -> ms
@@ -224,6 +225,16 @@ function allowScenarioRun(res, owner) {
 
 router.get("/premium/scenarios/config", (req, res) => {
   res.json({ tools: Object.fromEntries(SCENARIO_TOOLS.map((t) => [t, scenarioEnabled(t)])) });
+});
+
+// Active yield farms for the reward-projection picker (public contract data, cached server-side).
+router.get("/premium/scenarios/farms", async (req, res) => {
+  try {
+    res.json({ farms: await listActiveFarms() });
+  } catch (err) {
+    console.error("Farm list failed:", err);
+    res.status(502).json({ error: "Couldn't read the farm list right now" });
+  }
 });
 
 // Tool 1 — portfolio stress test (scenarioStressTest.js). `scope` = "all" or one tracked wallet.
@@ -251,6 +262,61 @@ router.post("/premium/scenarios/stress", async (req, res) => {
     if (err instanceof StressInputError) return res.status(400).json({ error: err.message });
     console.error("Stress test failed:", err);
     res.status(500).json({ error: "Couldn't run the stress test right now" });
+  }
+});
+
+/** Shared guard for the per-wallet scenario tools: auth, Core tier, rate limit, and that
+ * `walletAddress` is one of the member's tracked wallets. Returns the lowercased wallet or null (sent). */
+async function scenarioWalletGuard(req, res, tool) {
+  if (!scenarioEnabled(tool)) {
+    res.status(404).json({ error: "This scenario tool isn't available right now" });
+    return null;
+  }
+  const { wallet, signature, timestamp, walletAddress } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet) || !walletAddress || !ethers.isAddress(walletAddress)) {
+    res.status(400).json({ error: "wallet and walletAddress must be valid addresses" });
+    return null;
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return null;
+  if (!(await hasCoreAccess(wallet))) {
+    res.status(403).json({ error: "Core tier membership required" });
+    return null;
+  }
+  const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
+  const target = walletAddress.toLowerCase();
+  if (!addresses.includes(target)) {
+    res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+    return null;
+  }
+  if (!allowScenarioRun(res, wallet)) return null;
+  return target;
+}
+
+// Tool 2 — yield farm "add more / withdraw now" (scenarioRewards.js runFarmScenario).
+router.post("/premium/scenarios/farm", async (req, res) => {
+  const target = await scenarioWalletGuard(req, res, "farm");
+  if (!target) return;
+  const { farmKey, action, addUsd, withdrawPct } = req.body;
+  try {
+    res.json(await runFarmScenario(target, { farmKey, action, addUsd, withdrawPct }));
+  } catch (err) {
+    if (err instanceof RewardsInputError) return res.status(400).json({ error: err.message });
+    console.error("Farm scenario failed:", err);
+    res.status(500).json({ error: "Couldn't run the farm scenario right now" });
+  }
+});
+
+// Tool 4 — reward projection for a yield farm or Core Ascension (scenarioRewards.js).
+router.post("/premium/scenarios/rewards", async (req, res) => {
+  const target = await scenarioWalletGuard(req, res, "rewards");
+  if (!target) return;
+  const { projectionTarget, deposit } = req.body;
+  try {
+    res.json(await runRewardProjection(target, { target: projectionTarget, deposit: deposit || null }));
+  } catch (err) {
+    if (err instanceof RewardsInputError) return res.status(400).json({ error: err.message });
+    console.error("Reward projection failed:", err);
+    res.status(500).json({ error: "Couldn't run the projection right now" });
   }
 });
 
