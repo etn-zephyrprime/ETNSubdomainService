@@ -319,9 +319,14 @@ function SellResult({ result }) {
           <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{etnFmt(Number(result.proceeds.etn))}</div>
           <div style={{ fontSize: 11, color: mutedLight }}>≈ {formatUsdPrice(Number(result.proceeds.usd))}</div>
         </Stat>
-        <Stat label="Price impact" tooltip="How much less you'd get than the pool's current spot price for this size — includes the pool fee. Large sales move the price against you.">
+        <Stat label="Price impact" tooltip="How much less you'd get than the pool's current spot price for this size — includes the pool fee, and the token's own sell tax where it charges one. Large sales move the price against you.">
           <div style={{ fontSize: 16, fontWeight: 800, color: impact == null ? mutedLight : impact >= 5 ? errorColor : impact >= 1 ? orange : "#fff" }}>{impact == null ? "—" : `${impact.toFixed(2)}%`}</div>
           <div style={{ fontSize: 11, color: mutedLight }}>{route}</div>
+          {result.quote.sellTax && (
+            <div style={{ fontSize: 11, color: orange }}>
+              incl. {(result.quote.sellTax.bps / 100).toFixed(2)}% sell tax ({shortQty(result.quote.sellTax.tokens)} {symbol})
+            </div>
+          )}
         </Stat>
         <PnlStats
           usd={realizedUsd}

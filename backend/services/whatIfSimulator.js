@@ -38,6 +38,7 @@ import { getLiquidityPositionsUsd, fetchHeldFungibleTokens } from "./lpPositionV
 import { quoteV2SellToEtn, quoteV3SellToEtn, getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
+import { getTradeTax, isTaxExempt } from "../utils/tokenTransferTax.js";
 
 // Gas units — an estimate (a real estimateGas needs the token approval in place and would revert
 // without it). V2: a typical swapExactTokensForETH. V3: the quoter's own gasEstimate for the swap
@@ -63,24 +64,36 @@ async function etnUsdAt(timestamp) {
 }
 
 /** The best single-hop sale of `qty` (Decimal) of `tokenKey` into ETN right now — see the header.
+ * A token's own trade tax (utils/tokenTransferTax.js — CORE: only on its V2 pair) is taken off the
+ * amount that pair receives before quoting it; `wallet` (optional) lets an exempt seller skip it.
  * Returns { quote, decimals, symbol, warnings }; throws WhatIfInputError when nothing can price it. */
-export async function quoteSell(tokenKey, qty) {
+export async function quoteSell(tokenKey, qty, wallet = null) {
   const isNative = tokenKey === NATIVE_SENTINEL;
   let quote;
   let decimals = 18;
   const warnings = [];
   const meta = isNative ? null : await getTokenMetadata(tokenKey).catch(() => null);
   if (isNative) {
-    quote = { source: "native", etnOut: qty, spotEtn: qty, priceImpactPct: new Decimal(0), pairAddress: null, feeTier: null, swapGasUnits: 21000n, alternative: null };
+    quote = { source: "native", etnOut: qty, spotEtn: qty, priceImpactPct: new Decimal(0), pairAddress: null, feeTier: null, swapGasUnits: 21000n, alternative: null, sellTax: null };
   } else {
     const erc20 = new ethers.Contract(tokenKey, ERC20_ABI, getProvider());
     decimals = Number(meta?.decimals ?? (await erc20.decimals()));
     const amountInRaw = ethers.parseUnits(qty.toFixed(decimals, Decimal.ROUND_DOWN), decimals);
-    const [v2, v3, spotEtnPrice] = await Promise.all([
+    const [v2Gross, v3, spotEtnPrice, tax] = await Promise.all([
       quoteV2SellToEtn(getProvider(), tokenKey, amountInRaw),
       quoteV3SellToEtn(getProvider(), tokenKey, amountInRaw),
       getTokenEtnPrice(getProvider(), tokenKey).catch(() => null),
+      getTradeTax(getProvider(), tokenKey),
     ]);
+    // Sell tax: charged only on the token's own pair (CORE: its V2 pair), so only the V2 quote
+    // shrinks — re-quoted on what the pair actually receives. V3 pools are untaxed for CORE.
+    let v2 = v2Gross;
+    let taxApplied = null;
+    if (v2Gross && tax && tax.sellBps > 0 && v2Gross.pairAddress.toLowerCase() === tax.pairAddress && !(await isTaxExempt(getProvider(), tokenKey, wallet))) {
+      const netIn = (amountInRaw * BigInt(10000 - tax.sellBps)) / 10000n;
+      v2 = await quoteV2SellToEtn(getProvider(), tokenKey, netIn);
+      taxApplied = { bps: tax.sellBps, tokens: new Decimal(ethers.formatUnits(amountInRaw - netIn, decimals)) };
+    }
     const spotEtn = spotEtnPrice != null && spotEtnPrice > 0 ? qty.times(spotEtnPrice) : null;
     const v2Out = v2 && v2.amountOutRaw > 0n ? v2.amountOutRaw : 0n;
     const v3Out = v3 && v3.amountOutRaw > 0n ? v3.amountOutRaw : 0n;
@@ -98,9 +111,17 @@ export async function quoteSell(tokenKey, qty) {
         feeTier: useV3 ? v3.fee : 3000,
         swapGasUnits: useV3 ? BigInt(v3.gasEstimate) + V3_SWAP_OVERHEAD_GAS_UNITS : V2_SWAP_GAS_UNITS,
         alternative: alternativeOut > 0n ? { source: useV3 ? "v2_router" : "v3_quoter", etnOut: ethers.formatUnits(alternativeOut, 18) } : null,
+        // The token's own sell tax, when the chosen route is the pair it taxes (null otherwise).
+        sellTax: !useV3 && taxApplied ? { bps: taxApplied.bps, tokens: taxApplied.tokens.toString() } : null,
       };
+      const symbolLabel = meta?.symbol || "This token";
+      if (quote.sellTax) {
+        warnings.push(`${symbolLabel} charges a ${(quote.sellTax.bps / 100).toFixed(2)}% sell tax on its V2 pair (read from the token contract), which is included above.`);
+      } else if (taxApplied && useV3) {
+        warnings.push(`Routed through a V3 pool, which avoids ${symbolLabel}'s ${(taxApplied.bps / 100).toFixed(2)}% sell tax on its V2 pair.`);
+      }
     } else if (spotEtn) {
-      quote = { source: "spot_only", etnOut: spotEtn, spotEtn, priceImpactPct: null, pairAddress: null, feeTier: null, swapGasUnits: V2_SWAP_GAS_UNITS, alternative: null };
+      quote = { source: "spot_only", etnOut: spotEtn, spotEtn, priceImpactPct: null, pairAddress: null, feeTier: null, swapGasUnits: V2_SWAP_GAS_UNITS, alternative: null, sellTax: null };
       warnings.push("No direct ElectroSwap pool could fill this sale size — proceeds are at the spot price, without price impact or fees.");
     } else {
       throw new WhatIfInputError("No ElectroSwap pool with a price for this token — there's nothing to sell into");
@@ -157,7 +178,7 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
   const etnUsd = etnUsdCache?.usd != null ? new Decimal(etnUsdCache.usd) : null;
   if (etnUsd == null) throw new Error("ETN/USD price isn't available right now — try again shortly");
 
-  const { quote, symbol, warnings: quoteWarnings } = await quoteSell(tokenKey, qty);
+  const { quote, symbol, warnings: quoteWarnings } = await quoteSell(tokenKey, qty, wallet);
   warnings.push(...quoteWarnings);
 
   const proceedsEtn = quote.etnOut;
@@ -232,6 +253,7 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
       pairAddress: quote.pairAddress,
       feeTier: quote.feeTier,
       alternative: quote.alternative,
+      sellTax: quote.sellTax,
       spotEtn: quote.spotEtn?.toString() ?? null,
       priceImpactPct: quote.priceImpactPct?.toString() ?? null,
     },
@@ -451,7 +473,7 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
       etn = amount;
     } else if (sellToEtn) {
       try {
-        const { quote, warnings: w } = await quoteSell(r.tokenAddress, amount);
+        const { quote, warnings: w } = await quoteSell(r.tokenAddress, amount, wallet);
         etn = quote.etnOut;
         source = quote.source;
         impactPct = quote.priceImpactPct;
