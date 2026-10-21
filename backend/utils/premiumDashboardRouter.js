@@ -35,6 +35,7 @@ import { checkAndStartDefiIngestIfNeeded } from "../services/pnlIngestion.js";
 import { getDailyGasByWallet } from "../db/gasSpend.js";
 import { getCostBasisTotalsByToken } from "../services/avgCostBasisService.js";
 import { simulateSell, simulateExit, listSellableHoldings, WhatIfInputError } from "../services/whatIfSimulator.js";
+import { runStressTest, StressInputError } from "../services/scenarioStressTest.js";
 import { getTokenBalanceHistory } from "../services/tokenBalanceHistoryService.js";
 import { getPortfolioSummary, upsertPortfolioSummary } from "../db/portfolioSummaryCache.js";
 
@@ -198,9 +199,65 @@ router.get("/premium/what-if-holdings", async (req, res) => {
   }
 });
 
+// ---- Core Tier Scenarios (read-only what-if tools) ----
+// Each tool ships behind its own flag (env SCENARIO_<TOOL>_ENABLED=false turns it off); the UI reads
+// /premium/scenarios/config to decide what to show. Runs are explicit ("Run" button), server-side,
+// and rate-limited per member — they fan out to RPC/Blockscout, which are shared.
+const SCENARIO_TOOLS = ["stress", "sell", "exit"];
+const scenarioEnabled = (tool) => String(process.env[`SCENARIO_${tool.toUpperCase()}_ENABLED`] ?? "true").toLowerCase() !== "false";
+const SCENARIO_MIN_INTERVAL_MS = 5000;
+const lastScenarioRun = new Map(); // owner -> ms
+
+/** true if `owner` may run another scenario now (records the run); otherwise sends 429 and returns false. */
+function allowScenarioRun(res, owner) {
+  const key = owner.toLowerCase();
+  const last = lastScenarioRun.get(key) || 0;
+  const wait = SCENARIO_MIN_INTERVAL_MS - (Date.now() - last);
+  if (wait > 0) {
+    res.status(429).json({ error: `Please wait ${Math.ceil(wait / 1000)}s before running another scenario` });
+    return false;
+  }
+  lastScenarioRun.set(key, Date.now());
+  if (lastScenarioRun.size > 1000) lastScenarioRun.delete(lastScenarioRun.keys().next().value);
+  return true;
+}
+
+router.get("/premium/scenarios/config", (req, res) => {
+  res.json({ tools: Object.fromEntries(SCENARIO_TOOLS.map((t) => [t, scenarioEnabled(t)])) });
+});
+
+// Tool 1 — portfolio stress test (scenarioStressTest.js). `scope` = "all" or one tracked wallet.
+router.post("/premium/scenarios/stress", async (req, res) => {
+  if (!scenarioEnabled("stress")) return res.status(404).json({ error: "The stress test isn't available right now" });
+  const { wallet, signature, timestamp, scope, shocks } = req.body || {};
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  if (!allowScenarioRun(res, wallet)) return;
+  try {
+    const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
+    let targets = addresses;
+    if (scope && scope !== "all") {
+      const one = String(scope).toLowerCase();
+      if (!addresses.includes(one)) return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+      targets = [one];
+    }
+    res.json(await runStressTest(targets, addresses, shocks || {}));
+  } catch (err) {
+    if (err instanceof StressInputError) return res.status(400).json({ error: err.message });
+    console.error("Stress test failed:", err);
+    res.status(500).json({ error: "Couldn't run the stress test right now" });
+  }
+});
+
 // What-If position exit (whatIfSimulator.js simulateExit): read-only — what exiting `exitPct` of one
 // LP / farm / staking position would return, optionally all sold to ETN, against its cost basis.
 router.post("/premium/what-if-exit", async (req, res) => {
+  if (!scenarioEnabled("exit")) return res.status(404).json({ error: "This simulator isn't available right now" });
   const { wallet, signature, timestamp, walletAddress, positionKey, exitPct, sellToEtn } = req.body || {};
   if (!wallet || !ethers.isAddress(wallet) || !walletAddress || !ethers.isAddress(walletAddress)) {
     return res.status(400).json({ error: "wallet and walletAddress must be valid addresses" });
@@ -212,6 +269,7 @@ router.post("/premium/what-if-exit", async (req, res) => {
   if (!(await hasCoreAccess(wallet))) {
     return res.status(403).json({ error: "Core tier membership required" });
   }
+  if (!allowScenarioRun(res, wallet)) return;
   try {
     const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
     const target = walletAddress.toLowerCase();
@@ -230,6 +288,7 @@ router.post("/premium/what-if-exit", async (req, res) => {
 // `tokenAddress` from ONE covered wallet would consume, what the V2 router would pay for it, and the
 // realized P&L in USD and ETN, before and after gas. A POST only because it carries a body.
 router.post("/premium/what-if-sell", async (req, res) => {
+  if (!scenarioEnabled("sell")) return res.status(404).json({ error: "This simulator isn't available right now" });
   const { wallet, signature, timestamp, walletAddress, tokenAddress, quantity } = req.body || {};
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "wallet must be a valid address" });
@@ -244,6 +303,7 @@ router.post("/premium/what-if-sell", async (req, res) => {
   if (!(await hasCoreAccess(wallet))) {
     return res.status(403).json({ error: "Core tier membership required" });
   }
+  if (!allowScenarioRun(res, wallet)) return;
   try {
     const addresses = (await getCoveredWallets(wallet)).map((w) => w.address.toLowerCase());
     const target = walletAddress.toLowerCase();

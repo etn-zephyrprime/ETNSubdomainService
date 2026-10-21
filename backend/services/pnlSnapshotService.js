@@ -215,6 +215,20 @@ async function buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, no
   return { closing: compact, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn, asOf: now };
 }
 
+/** The two parts Current Value is built from, before they're folded together: the open lots valued
+ * at live prices (LP tokens / V3 positions at their live per-unit value), and the locked positions
+ * (farm/stake principal, LP in the locker) valued live per token. computeLivePnlSnapshot folds them
+ * with addLockedPositionsToValuation; the scenario stress test (scenarioStressTest.js) needs them
+ * apart to revalue each kind correctly — one code path, so its baseline IS Current Value. */
+export async function computeLiveValuationParts(trackedWallet, closing, now = new Date()) {
+  const [tokenPrices, positions] = await Promise.all([
+    fetchLivePricesUsd(closing.lots),
+    computeLivePositionValuation(trackedWallet, closing.lots, closing.lockedLots || []),
+  ]);
+  const openValuation = await valueInventoryAtTimestamp(closing.lots, now, { ...tokenPrices, ...positions.livePricesUsd });
+  return { openValuation, positions };
+}
+
 /**
  * Live PnL snapshot for `trackedWallet` as of right now: current holdings (per token, valued at
  * today's price via the same ElectroSwap-derived pipeline the Statement uses), unrealized P&L, and
@@ -315,19 +329,11 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   // getLedgerState. Only the LIVE PRICING below is recomputed on every snapshot.
   const { closing, gasTotalUsd, gasTotalEtn } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets);
 
-  const [valuation] = await Promise.all([
-    // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
-    // cost basis (see pnlPositionValuation.js) — so Current Value and Unrealized P&L include the
-    // positions the Portfolio panel already counts.
-    (async () => {
-      const [tokenPrices, positions] = await Promise.all([
-        fetchLivePricesUsd(closing.lots),
-        computeLivePositionValuation(trackedWallet, closing.lots, closing.lockedLots || []),
-      ]);
-      const valuation = await valueInventoryAtTimestamp(closing.lots, now, { ...tokenPrices, ...positions.livePricesUsd });
-      return addLockedPositionsToValuation(valuation, positions.lockedByToken);
-    })(),
-  ]);
+  // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
+  // cost basis (see pnlPositionValuation.js) — so Current Value and Unrealized P&L include the
+  // positions the Portfolio panel already counts.
+  const { openValuation, positions } = await computeLiveValuationParts(trackedWallet, closing, now);
+  const valuation = addLockedPositionsToValuation(openValuation, positions.lockedByToken);
 
   const realizedPnlUsdGross = closing.realizedEvents.reduce((sum, e) => sum.plus(e.realizedPnlUsd), new Decimal(0));
   const realizedPnlUsd = realizedPnlUsdGross.minus(gasTotalUsd);

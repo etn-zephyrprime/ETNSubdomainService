@@ -81,7 +81,7 @@ function Warnings({ warnings }) {
  * sell a freely-held token (which FIFO lots go, the best ElectroSwap quote, P&L in USD and ETN), or
  * exit an LP / farm / staking position (what comes back, optionally all sold to ETN, P&L against what
  * the position cost). One wallet at a time — FIFO is per wallet. */
-export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, walletFilter }) {
+export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, walletFilter, embedded = false }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getSellableHoldings, simulateSell, simulateExit } = useWhatIfSimulator();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
@@ -183,17 +183,10 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
     fontWeight: 700,
   });
 
-  return (
-    <CollapsibleCoreTierPanel icon={FlaskConical} title="Core Tier — What-If Simulator" defaultCollapsed={false}>
-      <CoreTierGate
-        wallet={wallet}
-        hasAccess={hasAccess}
-        accessError={accessError}
-        awaitingActivation={awaitingActivation}
-        manualCheckLoading={manualCheckLoading}
-        checkAccessOnce={checkAccessOnce}
-        featureDescription="simulate a sale or a position exit before you make it — what you'd get, and the P&L in USD and ETN"
-      >
+  // `embedded`: rendered inside CoreTierScenarios.jsx, which already provides the panel and the
+  // Core Tier gate — just the body then.
+  const body = (
+    <>
         {active.length === 0 ? (
           <div style={{ fontSize: 12, color: mutedLight }}>Track a wallet under Core Tier — Portfolio above to simulate from it.</div>
         ) : (
@@ -277,6 +270,22 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
             {result?.mode === "position" && <ExitResult result={result.data} />}
           </div>
         )}
+    </>
+  );
+  if (embedded) return body;
+
+  return (
+    <CollapsibleCoreTierPanel icon={FlaskConical} title="Core Tier — What-If Simulator" defaultCollapsed={false}>
+      <CoreTierGate
+        wallet={wallet}
+        hasAccess={hasAccess}
+        accessError={accessError}
+        awaitingActivation={awaitingActivation}
+        manualCheckLoading={manualCheckLoading}
+        checkAccessOnce={checkAccessOnce}
+        featureDescription="simulate a sale or a position exit before you make it — what you'd get, and the P&L in USD and ETN"
+      >
+        {body}
       </CoreTierGate>
     </CollapsibleCoreTierPanel>
   );

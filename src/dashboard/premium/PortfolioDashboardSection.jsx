@@ -14,7 +14,7 @@ import CoreTierRecentActivity from "./components/CoreTierRecentActivity.jsx";
 import CoreTierDiamondHandsCard from "./components/CoreTierDiamondHands.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
-import CoreTierWhatIf from "./components/CoreTierWhatIf.jsx";
+import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
@@ -33,7 +33,7 @@ const PANELS = [
   { id: "balance", label: "Balance History", icon: LineChart },
   { id: "pnl", label: "PnL", icon: TrendingUp },
   { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
-  { id: "whatif", label: "What-If", icon: FlaskConical },
+  { id: "scenarios", label: "Scenarios", icon: FlaskConical },
   { id: "activity", label: "Recent Activity", icon: Activity },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
 ];
@@ -246,8 +246,8 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         {activePanel === "nftpnl" && (
           <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
-        {activePanel === "whatif" && (
-          <CoreTierWhatIf wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        {activePanel === "scenarios" && (
+          <CoreTierScenarios wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
         {activePanel === "activity" && (
           <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
