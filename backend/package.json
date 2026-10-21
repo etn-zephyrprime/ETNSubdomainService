@@ -10,7 +10,8 @@
     "dev": "node --watch index.js",
     "backfill:images": "node scripts/backfillNftImages.js",
     "set-r2-cors": "node scripts/setR2Cors.js",
-    "migrate": "node scripts/runMigrations.js"
+    "migrate": "node scripts/runMigrations.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",

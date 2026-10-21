@@ -609,6 +609,28 @@ export async function getLockedLpByPair(walletAddress) {
   return byPair;
 }
 
+/** Every ElectroSwapLockerV2 lock `walletAddress` owns, with when each can be withdrawn: the locker's
+ * own withdraw() requires block.timestamp - created >= duration (both in SECONDS — verified source),
+ * so unlockAt = created + duration. [{ lockId, pair, amount (LP, decimal string), unlockAt (Date),
+ * unlocked (bool) }]. Never throws — an empty list on failure (logged). */
+export async function getLpLockDetails(walletAddress) {
+  try {
+    const locker = new ethers.Contract(LOCKER_ADDRESS, LOCKER_ABI, getProvider());
+    const ids = (await locker.getLockIDsByOwner(walletAddress)).slice(0, MAX_LOCKS_PER_WALLET);
+    const locks = await Promise.all(ids.map((id) => locker.getLockById(id).catch(() => null)));
+    const now = Date.now();
+    return locks
+      .filter((l) => l && l.owner.toLowerCase() === walletAddress.toLowerCase() && l.amount > 0n)
+      .map((l) => {
+        const unlockAt = new Date((Number(l.created) + Number(l.duration)) * 1000);
+        return { lockId: String(l.lockID), pair: l.pair.toLowerCase(), amount: ethers.formatUnits(l.amount, 18), unlockAt, unlocked: unlockAt.getTime() <= now };
+      });
+  } catch (err) {
+    console.warn(`⚠️  LP position valuation: couldn't read lock details for ${walletAddress}:`, err?.shortMessage || err?.message);
+    return [];
+  }
+}
+
 /** The actual live computation — pure L3, no caching at all. See getLiquidityPositionsUsd below for
  * the cache levels wrapping this. Returns `{ v2Positions, v3Positions, totalUsd, hasUnpriced,
  * lpTokenAddresses }` — `lpTokenAddresses` is a plain array (lowercased) of `heldFungibleTokens`
