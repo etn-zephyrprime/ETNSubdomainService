@@ -34,7 +34,7 @@ import { getHistoricalPriceUsd } from "./pnlPricing.js";
 import { NATIVE_SENTINEL, canonicalTokenKey } from "./pnlEventBuilder.js";
 import { getTokenMetadata, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { getOpenDefiPositionsUsd } from "./defiPositionValuation.js";
-import { getLiquidityPositionsUsd, fetchHeldFungibleTokens } from "./lpPositionValuation.js";
+import { getLiquidityPositionsUsd, fetchHeldFungibleTokens, getLpLockDetails } from "./lpPositionValuation.js";
 import { quoteV2SellToEtn, quoteV3SellToEtn, getTokenEtnPrice } from "../utils/dexPriceQuote.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
@@ -270,6 +270,14 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
     lotsSummary: summarizeLots(lots),
     lots,
     warnings,
+    assumptions: {
+      pricedAt: new Date().toISOString(),
+      etnUsd: etnUsd.toString(),
+      quote: "The single best direct ElectroSwap pool right now (V2 router or V3 quoter), with the pool fee, price impact and any token sell tax included. ElectroSwap's app can split a big trade across pools.",
+      lots: "Your oldest purchases first (FIFO), from your ledger. Unknown cost is never treated as $0; uncovered amounts are flagged.",
+      etn: "ETN cost = each purchase's USD cost at ETN's price on the day you bought.",
+      gas: "Estimated at the current gas price; excludes any one-time token approval.",
+    },
   };
 }
 
@@ -413,6 +421,7 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
   };
   const lotsFor = (list, key) => (list || []).filter((l) => l.tokenAddress === key && l.quantityRemaining.gt(0));
   const costs = [];
+  let exitShare = f; // share of the whole position this exit takes (V2: of the freely-held part only)
 
   if (pos.kind === "farm") {
     for (const leg of p.legs) {
@@ -445,9 +454,18 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
     const total = new Decimal(p.quantity || 0);
     const locked = new Decimal(p.lockedQuantity || 0);
     const free = Decimal.max(total.minus(locked), 0);
-    if (free.lte(0)) throw new WhatIfInputError("All of this LP is in an ElectroSwap liquidity lock, so it can't be removed until the lock ends");
-    if (locked.gt(0)) warnings.push(`${wholeFmt(locked)} of these LP tokens are locked and can't be removed. Only the ${wholeFmt(free)} you hold freely are included.`);
+    // Locked LP can't be removed: the locker's withdraw() requires the lock duration to have elapsed.
+    const locks = locked.gt(0) ? (await getLpLockDetails(wallet)).filter((l) => l.pair === String(p.tokenAddress).toLowerCase()) : [];
+    const lockLine = (l) => `${wholeFmt(new Decimal(l.amount))} LP ${l.unlocked ? "unlocked (withdraw it from the locker first)" : `locked until ${l.unlockAt.toISOString().slice(0, 10)}`}`;
+    if (free.lte(0)) {
+      const next = locks.filter((l) => !l.unlocked).sort((a, b) => a.unlockAt - b.unlockAt)[0];
+      throw new WhatIfInputError(
+        `All of this LP is in an ElectroSwap liquidity lock, so it can't be removed${next ? ` until ${next.unlockAt.toISOString().slice(0, 10)}` : " yet"}.${locks.length ? ` Locks: ${locks.map(lockLine).join("; ")}.` : ""}`
+      );
+    }
+    if (locked.gt(0)) warnings.push(`Only the ${wholeFmt(free)} LP you hold freely is included. The rest is in the locker${locks.length ? `: ${locks.map(lockLine).join("; ")}` : ""}.`);
     const share = free.div(total).times(f);
+    exitShare = share;
     for (const leg of p.legs) add(leg.tokenAddress, leg.symbol, new Decimal(leg.amount).times(share), 0);
     costs.push(await costOfLots(lotsFor(closing.lots, String(p.tokenAddress).toLowerCase()), free.times(f)));
   } else if (pos.kind === "v3") {
@@ -461,11 +479,22 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
   // ---- What it's worth: sold to ETN at the best route, or held at spot ----
   const rows = [];
   let totalEtn = new Decimal(0);
+  let spotTotalEtn = new Decimal(0);
+  const unpricedSymbols = [];
   let swapGas = 0n;
   let swaps = 0;
   for (const r of received.values()) {
     const amount = r.principal.plus(r.income);
     if (amount.lte(0)) continue;
+    // Fair value at today's spot price: what removing the position realizes (the position is disposed
+    // of and both tokens acquired at this value). Selling them afterwards is a separate second step.
+    const spotPrice =
+      r.tokenAddress === NATIVE_SENTINEL
+        ? new Decimal(1)
+        : await getTokenEtnPrice(getProvider(), r.tokenAddress).then((x) => (x ? new Decimal(x) : null)).catch(() => null);
+    if (!spotPrice) unpricedSymbols.push(r.symbol || r.tokenAddress);
+    const spotEtn = spotPrice ? amount.times(spotPrice) : null;
+    if (spotEtn) spotTotalEtn = spotTotalEtn.plus(spotEtn);
     let etn;
     let source = "etn";
     let impactPct = null;
@@ -479,17 +508,15 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
         impactPct = quote.priceImpactPct;
         swapGas += quote.swapGasUnits;
         swaps++;
-        warnings.push(...w.map((x) => `${r.symbol}: ${x}`));
+        warnings.push(...w.map((x) => (r.symbol && x.startsWith(r.symbol) ? x : `${r.symbol}: ${x}`)));
       } catch (err) {
         etn = new Decimal(0);
         source = "unsellable";
         warnings.push(`${r.symbol || r.tokenAddress}: ${err.message}. Counted as 0.`);
       }
     } else {
-      const spot = await getTokenEtnPrice(getProvider(), r.tokenAddress).catch(() => null);
-      etn = spot ? amount.times(spot) : new Decimal(0);
-      source = spot ? "spot" : "unpriced";
-      if (!spot) warnings.push(`${r.symbol || r.tokenAddress} has no price right now. Counted as 0.`);
+      etn = spotEtn ?? new Decimal(0);
+      source = spotEtn ? "spot" : "unpriced";
     }
     totalEtn = totalEtn.plus(etn);
     rows.push({
@@ -500,6 +527,7 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
       amount: amount.toString(),
       etn: etn.toString(),
       usd: etn.times(etnUsd).toString(),
+      spotEtn: spotEtn?.toString() ?? null,
       source,
       priceImpactPct: impactPct?.toString() ?? null,
     });
@@ -529,6 +557,12 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
   const gasEtn = gas ? new Decimal(gas.etn) : new Decimal(0);
   const pnlUsd = totalUsd.minus(costUsd);
   const pnlEtn = totalEtn.minus(costEtn);
+  // A token with no price leaves the P&L unknowable: shown as unavailable, never as if it were $0.
+  const pnlAvailable = unpricedSymbols.length === 0;
+  if (!pnlAvailable) warnings.push(`${unpricedSymbols.join(", ")} has no price right now, so the profit/loss can't be worked out. The amounts you'd get back are still shown.`);
+  const spotTotalUsd = spotTotalEtn.times(etnUsd);
+  const removalPnlUsd = spotTotalUsd.minus(costUsd);
+  const il = p.impermanentLoss?.lossUsd != null ? new Decimal(p.impermanentLoss.lossUsd).times(exitShare) : null;
 
   return {
     walletAddress: wallet,
@@ -538,15 +572,37 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
     etnUsd: etnUsd.toString(),
     received: rows,
     total: { etn: totalEtn.toString(), usd: totalUsd.toString() },
+    // Step 1, removing the position: what it realizes at today's fair value (before any sale).
+    atFairValue: { etn: spotTotalEtn.toString(), usd: spotTotalUsd.toString(), pnlUsd: pnlAvailable ? removalPnlUsd.toString() : null },
     incomeUsd: incomeUsd.toString(),
     costBasis: { usd: costUsd.toString(), etn: etnIncomplete ? null : costEtn.toString() },
-    pnl: {
-      usd: pnlUsd.toString(),
-      pct: costUsd.gt(0) ? pnlUsd.div(costUsd).times(100).toString() : null,
-      etn: etnIncomplete ? null : pnlEtn.toString(),
-    },
-    afterGas: { usd: pnlUsd.minus(gas ? gas.usd : 0).toString(), etn: etnIncomplete ? null : pnlEtn.minus(gasEtn).toString() },
+    pnl: pnlAvailable
+      ? { usd: pnlUsd.toString(), pct: costUsd.gt(0) ? pnlUsd.div(costUsd).times(100).toString() : null, etn: etnIncomplete ? null : pnlEtn.toString() }
+      : { usd: null, pct: null, etn: null, unavailable: unpricedSymbols },
+    afterGas: pnlAvailable
+      ? { usd: pnlUsd.minus(gas ? gas.usd : 0).toString(), etn: etnIncomplete ? null : pnlEtn.minus(gasEtn).toString() }
+      : { usd: null, etn: null },
     impermanentLoss: p.impermanentLoss ?? null,
+    // vs simply having held the deposited tokens, for the part being exited (<= 0: the IL in dollars).
+    holdComparisonUsd: il ? il.toString() : null,
+    assumptions: {
+      pricedAt: new Date().toISOString(),
+      etnUsd: etnUsd.toString(),
+      received:
+        pos.kind === "v2"
+          ? "Your share of the pool's current reserves. A V2 pool's trading fees are already inside its reserves, so there's no separate fee line."
+          : pos.kind === "farm"
+            ? "Your share of the farm's position at the current pool price, plus every pending reward and fee (any withdrawal collects them all). Staked BOLT returns only on a 100% exit."
+            : pos.kind === "v3"
+              ? "Your position's liquidity at the current pool price, plus all uncollected fees."
+              : "Your staked amount.",
+      fairValue: "Removing liquidity disposes of the position at today's spot prices and acquires the tokens at that value. The realized P&L at that point is shown before any sale.",
+      sale: sellToEtn
+        ? "Each token sold to ETN at the single best ElectroSwap pool right now (V2 router or V3 quoter), with fees, price impact and any token sell tax included. Quotes use the pools' current reserves, before your own liquidity comes out, so selling back into the pool you're leaving would cost slightly more."
+        : "Nothing is sold; tokens are valued at spot.",
+      costBasis: "Cost of what the exit releases from your ledger (FIFO). Unknown cost is never treated as $0; uncovered amounts are flagged.",
+      gas: "Estimated at the current gas price; excludes any one-time token approval.",
+    },
     gas,
     lotsSummary: summarizeLots(costs.flatMap((c) => c.lots)),
     warnings,

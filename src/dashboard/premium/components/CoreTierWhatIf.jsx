@@ -355,14 +355,34 @@ function SellResult({ result }) {
         {alt && <> The other pool would pay {etnFmt(Number(alt.etnOut))}; ElectroSwap's app can also split a large sale across pools, so you may do slightly better there.</>}
       </div>
       <Warnings warnings={result.warnings} />
+      <Assumptions assumptions={result.assumptions} />
+    </div>
+  );
+}
+
+function Assumptions({ assumptions }) {
+  if (!assumptions) return null;
+  const { pricedAt, etnUsd, ...rest } = assumptions;
+  return (
+    <div style={{ padding: "10px 12px", borderRadius: 6, border: `1px dashed ${border}`, fontSize: 11, color: mutedLight, lineHeight: 1.7 }}>
+      <div style={statLabel}>Assumptions</div>
+      <div>Prices live at {new Date(pricedAt).toLocaleString()} · ETN = ${Number(etnUsd).toFixed(6)}</div>
+      {Object.values(rest).filter(Boolean).map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+      <div style={{ color: muted, marginTop: 4 }}>Hypothetical estimate — not a quote, not a record, and not financial or tax advice. Nothing is saved.</div>
     </div>
   );
 }
 
 function ExitResult({ result }) {
-  const pnlUsd = Number(result.pnl.usd);
+  const available = result.pnl.usd != null;
+  const pnlUsd = available ? Number(result.pnl.usd) : null;
   const il = result.impermanentLoss?.percent != null ? Number(result.impermanentLoss.percent) : null;
+  const holdUsd = result.holdComparisonUsd != null ? Number(result.holdComparisonUsd) : null;
   const income = Number(result.incomeUsd);
+  const fair = result.atFairValue;
+  const fairPnl = fair?.pnlUsd != null ? Number(fair.pnlUsd) : null;
   const backLine = result.received
     .map((r) => {
       const parts = [];
@@ -372,6 +392,7 @@ function ExitResult({ result }) {
     })
     .join(" · ");
   const worstImpact = result.received.reduce((m, r) => (r.priceImpactPct != null ? Math.max(m, Number(r.priceImpactPct)) : m), -1);
+  const saleCostUsd = result.sellToEtn ? Number(fair.usd) - Number(result.total.usd) : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
@@ -383,35 +404,49 @@ function ExitResult({ result }) {
         <span style={{ color: "#fff" }}>{backLine || "nothing"}</span>
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat
-          label={result.sellToEtn ? "All sold to ETN" : "Worth now"}
-          tooltip={result.sellToEtn ? "Every token the exit returns, sold to ETN at the best ElectroSwap pool right now — fees and price impact included." : "Every token the exit returns, valued at today's spot prices without selling."}
-        >
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{etnFmt(Number(result.total.etn))}</div>
-          <div style={{ fontSize: 11, color: mutedLight }}>
-            ≈ {formatUsdPrice(Number(result.total.usd))}
-            {result.sellToEtn && worstImpact >= 0 && ` · worst price impact ${worstImpact.toFixed(2)}%`}
+        <Stat label="1 · Removing it" tooltip="Exiting disposes of the position at today's spot prices and you acquire the tokens at that value. This is the profit or loss realized at that point, before selling anything.">
+          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatUsdPrice(Number(fair.usd))}</div>
+          <div style={{ fontSize: 11, color: fairPnl == null ? mutedLight : pnlColor(fairPnl) }}>
+            {fairPnl == null ? "P&L unavailable — a token has no price" : `realized ${signed(fairPnl, formatUsdPrice)} vs what you put in`}
           </div>
         </Stat>
-        <PnlStats
-          usd={pnlUsd}
-          usdPct={result.pnl.pct != null ? Number(result.pnl.pct) : null}
-          etn={result.pnl.etn != null ? Number(result.pnl.etn) : null}
-          afterUsd={Number(result.afterGas.usd)}
-          afterEtn={result.afterGas.etn != null ? Number(result.afterGas.etn) : null}
-          usdTooltip="What you'd get back minus what you paid for the tokens you put in. Includes the fees and rewards you've earned, and any impermanent loss."
-          etnTooltip={ETN_PNL_TOOLTIP}
-        />
+        {result.sellToEtn && (
+          <Stat label="2 · Then selling to ETN" tooltip="Every token the exit returns, sold to ETN at the best ElectroSwap pool right now — pool fees, price impact and any token sell tax included.">
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{etnFmt(Number(result.total.etn))}</div>
+            <div style={{ fontSize: 11, color: mutedLight }}>
+              ≈ {formatUsdPrice(Number(result.total.usd))}
+              {saleCostUsd > 0.005 && ` · selling costs ${formatUsdPrice(saleCostUsd)}`}
+              {worstImpact >= 0 && ` · worst impact ${worstImpact.toFixed(2)}%`}
+            </div>
+          </Stat>
+        )}
+        {available ? (
+          <PnlStats
+            usd={pnlUsd}
+            usdPct={result.pnl.pct != null ? Number(result.pnl.pct) : null}
+            etn={result.pnl.etn != null ? Number(result.pnl.etn) : null}
+            afterUsd={Number(result.afterGas.usd)}
+            afterEtn={result.afterGas.etn != null ? Number(result.afterGas.etn) : null}
+            usdTooltip={result.sellToEtn ? "Overall: what you'd end up with in ETN (in dollars) minus what you paid for the tokens you put in. Includes fees and rewards earned, impermanent loss, and the cost of selling." : "What you'd get back, at today's prices, minus what you paid for the tokens you put in. Includes fees and rewards earned and any impermanent loss."}
+            etnTooltip={ETN_PNL_TOOLTIP}
+          />
+        ) : (
+          <Stat label="Profit / loss">
+            <div style={{ fontSize: 14, fontWeight: 800, color: mutedLight }}>Unavailable</div>
+            <div style={{ fontSize: 11, color: mutedLight }}>{(result.pnl.unavailable || []).join(", ")} has no price</div>
+          </Stat>
+        )}
       </div>
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.7 }}>
         Cost of what you put in {formatUsdPrice(Number(result.costBasis.usd))}
         {result.costBasis.etn != null && <> ({etnFmt(Number(result.costBasis.etn))})</>}
         {income > 0 && <> · fees &amp; rewards earned {formatUsdPrice(income)}</>}
-        {il != null && <> · impermanent loss {il.toFixed(2)}% (already included)</>}
+        {il != null && <> · impermanent loss {il.toFixed(2)}%{holdUsd != null && holdUsd < 0 && <> — just holding the tokens you deposited would be worth {formatUsdPrice(Math.abs(holdUsd))} more</>}</>}
         {" · "}Gas {result.gas ? `${smallEtnFmt(Number(result.gas.etn))} ETN (≈ ${smallUsdFmt(Number(result.gas.usd))})${result.gas.swaps ? `, withdraw + ${result.gas.swaps} sale${result.gas.swaps === 1 ? "" : "s"}` : ""}` : "unavailable"}.
         {result.lotsSummary?.count > 0 && <> {lotsSentence(result.lotsSummary, "Releases")}</>}
       </div>
       <Warnings warnings={result.warnings} />
+      <Assumptions assumptions={result.assumptions} />
     </div>
   );
 }
