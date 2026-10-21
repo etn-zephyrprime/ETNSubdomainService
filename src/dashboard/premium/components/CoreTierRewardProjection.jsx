@@ -2,9 +2,8 @@ import React, { useEffect, useState } from "react";
 import DashboardButton from "./DashboardButton.jsx";
 import { useScenarios } from "../../hooks/useScenarios.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
-import { formatUsdPrice } from "../../utils/format.js";
-import { mutedLight, orange, border, error as errorColor } from "../../theme.js";
-import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, Stat, Warnings, Assumptions, ProjectionTable, tokenFmt, multFmt, colorOf, signed } from "./ScenarioBits.jsx";
+import { error as errorColor } from "../../theme.js";
+import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, tokenFmt, multFmt, signed, ResultCard, Hero, Kpi, KpiRow, AssumptionsStrip, WarningList, ProjectionCards, Intro, usdShort, toneFor } from "./ScenarioBits.jsx";
 
 /** Scenarios — Tool 4: reward projections for ElectroSwap yield farms and Core Ascension staking
  * (backend/services/scenarioRewards.js runRewardProjection). A range, never a single promise. */
@@ -46,9 +45,7 @@ export default function CoreTierRewardProjection({ wallet, getAuthParams, active
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-        What a stake or farm position could earn over the next month, quarter and year — from the contracts' live emission rates, your share and your multipliers. Shown as a range, because the result depends on how much everyone else stakes and what the reward token is worth.
-      </div>
+      <Intro>What a stake or farm could earn over a month, a quarter and a year — as a range, not a promise.</Intro>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <div style={{ flex: "1 1 200px", minWidth: 0 }}>
           <label style={labelStyle}>Wallet</label>
@@ -103,60 +100,66 @@ export default function CoreTierRewardProjection({ wallet, getAuthParams, active
   );
 }
 
-function StakingResult({ r }) {
+const spotOf = (row) => (row ? (Number(row.reward?.spotUsd) || 0) + (Number(row.partner?.spotUsd) || 0) : null);
+
+export function StakingResult({ r }) {
   const e = r.earlyExit;
+  const year = r.projection.find((p) => p.days === 365);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label="Stake" tooltip="Your reward weight is CORE staked × your NFT boost.">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{tokenFmt(r.stake.core)} CORE</div>
-          <div style={{ fontSize: 11, color: mutedLight }}>{r.stake.nfts} NFT{r.stake.nfts === 1 ? "" : "s"} · {multFmt(r.stake.boost)} boost</div>
-        </Stat>
-        <Stat label="If you need out early" tooltip="Withdrawing within 60 days of your last stake costs 15% of what you withdraw.">
-          {e.daysLeft != null && e.daysLeft > 0 ? (
-            <>
-              <div style={{ fontSize: 16, fontWeight: 800, color: orange }}>−{tokenFmt(e.penaltyCore)} CORE</div>
-              <div style={{ fontSize: 11, color: mutedLight }}>15% penalty for {e.daysLeft.toFixed(0)} more days</div>
-            </>
-          ) : (
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>No penalty — past the 60 days</div>
-          )}
-        </Stat>
-      </div>
-      <ProjectionTable rows={r.projection} showMultiplier={false} />
-      <Warnings warnings={r.warnings} />
-      <Assumptions assumptions={r.assumptions} />
-    </div>
+    <ResultCard accent="#e8bf4c">
+      <Hero
+        label="Core Ascension · projected over 1 year"
+        value={year ? usdShort(spotOf(year)) : "—"}
+        sub={year ? `${tokenFmt(year.rewardTokens)} CORE · range ${usdShort(year.rangeUsd.low)}–${usdShort(year.rangeUsd.high)}` : undefined}
+        tone="up"
+      />
+      <KpiRow>
+        <Kpi label="Stake" value={`${tokenFmt(r.stake.core)} CORE`} sub={`${r.stake.nfts} NFT${r.stake.nfts === 1 ? "" : "s"} · ${multFmt(r.stake.boost)} boost`} tooltip="Your reward weight is CORE staked × your NFT boost." />
+        <Kpi label="Share of rewards" value={year ? `${(year.share * 100).toFixed(2)}%` : "—"} />
+        <Kpi
+          label="Exit early"
+          value={e.daysLeft != null && e.daysLeft > 0 ? `−${tokenFmt(e.penaltyCore)} CORE` : "No penalty"}
+          sub={e.daysLeft != null && e.daysLeft > 0 ? `15% until ${e.daysLeft.toFixed(0)} more days pass` : "past the 60 days"}
+          tone={e.daysLeft != null && e.daysLeft > 0 ? "warn" : "up"}
+          tooltip="Withdrawing within 60 days of your last stake costs 15% of what you withdraw."
+        />
+      </KpiRow>
+      <ProjectionCards rows={r.projection} showMultiplier={false} />
+      <WarningList warnings={r.warnings} />
+      <AssumptionsStrip assumptions={r.assumptions} facts={["Today's emission rate", "Funded schedule only", "Others' stake constant"]} />
+    </ResultCard>
   );
 }
 
-function FarmResult({ r }) {
+export function FarmResult({ r }) {
   const il = r.impermanentLoss;
   const ilUsd = il?.lossUsd != null ? Number(il.lossUsd) : null;
-  const yearRow = r.projection.find((p) => p.days === 365);
-  const yearSpot = yearRow ? (Number(yearRow.reward?.spotUsd) || 0) + (Number(yearRow.partner?.spotUsd) || 0) : null;
+  const year = r.projection.find((p) => p.days === 365);
+  const yearSpot = spotOf(year);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label={r.hypothetical ? "Hypothetical position" : "Your position"}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{r.label}</div>
-          <div style={{ fontSize: 11, color: mutedLight }}>
-            duration {multFmt(r.multiplierNow)} · BOLT {multFmt(r.boltMultiplier)}
-            {r.farm.valueUsd != null && ` · whole farm ${formatUsdPrice(Number(r.farm.valueUsd))}`}
-          </div>
-        </Stat>
+    <ResultCard>
+      <Hero
+        label={`${r.label}${r.hypothetical ? " · if you deposit" : ""} · projected over 1 year`}
+        value={yearSpot != null ? usdShort(yearSpot) : "—"}
+        sub={year ? `${tokenFmt(year.rewardTokens)} ${year.rewardSymbol}${year.partnerTokens ? ` + ${tokenFmt(year.partnerTokens)} ${year.partnerSymbol}` : ""} · range ${usdShort(year.rangeUsd.low)}–${usdShort(year.rangeUsd.high)}` : undefined}
+        tone="up"
+      />
+      <KpiRow>
+        <Kpi label="Multiplier now" value={multFmt(r.multiplierNow)} sub={`BOLT ${multFmt(r.boltMultiplier)}`} />
+        {year && <Kpi label="Multiplier in 1 year" value={multFmt(year.multiplierAt)} tone="up" />}
         {ilUsd != null && yearSpot != null && (
-          <Stat label="Rewards vs impermanent loss" tooltip="A year's projected rewards (at spot) against the impermanent loss your position already carries at today's prices. Rewards that look good can be smaller than IL on the pair.">
-            <div style={{ fontSize: 16, fontWeight: 800, color: colorOf(yearSpot + ilUsd) }}>{signed(yearSpot + ilUsd, formatUsdPrice)}</div>
-            <div style={{ fontSize: 11, color: mutedLight }}>
-              {formatUsdPrice(yearSpot)} rewards (1 yr) − {formatUsdPrice(Math.abs(ilUsd))} IL ({Number(il.percent).toFixed(2)}%)
-            </div>
-          </Stat>
+          <Kpi
+            label="Rewards − IL"
+            value={signed(yearSpot + ilUsd, usdShort)}
+            sub={`IL today ${Number(il.percent).toFixed(2)}% (${usdShort(Math.abs(ilUsd))})`}
+            tone={toneFor(yearSpot + ilUsd)}
+            tooltip="A year's projected rewards against the impermanent loss the position already carries at today's prices. Rewards that look good can be smaller than the IL on the pair."
+          />
         )}
-      </div>
-      <ProjectionTable rows={r.projection} />
-      <Warnings warnings={r.warnings} />
-      <Assumptions assumptions={r.assumptions} />
-    </div>
+      </KpiRow>
+      <ProjectionCards rows={r.projection} />
+      <WarningList warnings={r.warnings} />
+      <AssumptionsStrip assumptions={r.assumptions} facts={["Today's emission rate", "Collected at period end", "Others' stake constant"]} />
+    </ResultCard>
   );
 }
