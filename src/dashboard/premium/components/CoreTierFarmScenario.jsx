@@ -2,9 +2,8 @@ import React, { useEffect, useState } from "react";
 import DashboardButton from "./DashboardButton.jsx";
 import { useScenarios } from "../../hooks/useScenarios.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
-import { formatUsdPrice } from "../../utils/format.js";
-import { muted, mutedLight, orange, border, error as errorColor } from "../../theme.js";
-import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, Stat, Warnings, Assumptions, ProjectionTable, tokenFmt, multFmt, colorOf, signed } from "./ScenarioBits.jsx";
+import { muted, mutedLight, orange, error as errorColor } from "../../theme.js";
+import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, tokenFmt, multFmt, signed, ResultCard, Hero, Kpi, KpiRow, Eyebrow, Callout, Details, AssumptionsStrip, WarningList, MultiplierGauge, ProjectionCards, Intro, usdShort, toneFor } from "./ScenarioBits.jsx";
 
 /** Scenarios — Tool 2: ElectroSwap yield farm "add more" / "withdraw now"
  * (backend/services/scenarioRewards.js runFarmScenario). */
@@ -44,9 +43,7 @@ export default function CoreTierFarmScenario({ wallet, getAuthParams, active }) 
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-        What adding to a yield-farm position, or leaving it now, would do to your duration multiplier and rewards — worked out from the farm contract's own rules.
-      </div>
+      <Intro>What topping up a farm — or leaving it now — does to your multiplier and rewards.</Intro>
       <div style={{ display: "flex", gap: 8 }}>
         <button type="button" onClick={() => { setAction("add"); setResult(null); }} style={toggleStyle(action === "add")}>Add more</button>
         <button type="button" onClick={() => { setAction("withdraw"); setResult(null); }} style={toggleStyle(action === "withdraw")}>Withdraw now</button>
@@ -93,94 +90,82 @@ export default function CoreTierFarmScenario({ wallet, getAuthParams, active }) 
   );
 }
 
-function PositionLine({ r }) {
+function PositionHeader({ r }) {
   const il = r.position.impermanentLoss?.percent != null ? Number(r.position.impermanentLoss.percent) : null;
   return (
-    <div style={{ fontSize: 12, color: mutedLight }}>
-      <span style={{ color: "#fff", fontWeight: 700 }}>{r.farm.name}</span>
-      {r.position.valueUsd != null && <> · position {formatUsdPrice(Number(r.position.valueUsd))}</>} · duration {multFmt(r.position.multiplier)} · BOLT {multFmt(r.position.boltMultiplier)}
-      {il != null && <> · impermanent loss {il.toFixed(2)}%</>}
-      {!r.farm.active && <span style={{ color: orange }}> · farm inactive (no rewards)</span>}
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+      <div style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>{r.farm.name}</div>
+      <div style={{ fontSize: 11, color: mutedLight }}>
+        {r.position.valueUsd != null && `${usdShort(Number(r.position.valueUsd))} · `}BOLT {multFmt(r.position.boltMultiplier)}
+        {il != null && ` · IL ${il.toFixed(2)}%`}
+        {!r.farm.active && <span style={{ color: orange }}> · inactive, no rewards</span>}
+      </div>
     </div>
   );
 }
 
-function AddResult({ r }) {
+export function AddResult({ r }) {
   const a = r.add;
   const sym = r.pending.rewardSymbol;
+  const rateDelta = a.rewardPerDayAfter - a.rewardPerDayBefore;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
-      <PositionLine r={r} />
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label="Duration multiplier" tooltip="The farm dilutes your time served by your old share of the new position (contract rule), so a top-up lowers the multiplier for the WHOLE position, not just the new part.">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{multFmt(r.position.multiplier)} → {multFmt(a.multiplierAfter)}</div>
-          <div style={{ fontSize: 11, color: mutedLight }}>{a.recoverDays > 0.05 ? `back to ${multFmt(r.position.multiplier)} in ${a.recoverDays.toFixed(0)} days` : "no change"}</div>
-        </Stat>
-        <Stat label="Your share of the farm">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{(a.shareBefore * 100).toFixed(2)}% → {(a.shareAfter * 100).toFixed(2)}%</div>
-        </Stat>
-        <Stat label={`${sym} per day`} tooltip="Today's rate at your share and multipliers, if you collected at today's multiplier.">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{tokenFmt(a.rewardPerDayBefore)} → {tokenFmt(a.rewardPerDayAfter)}</div>
-          <div style={{ fontSize: 11, color: colorOf(a.rewardPerDayAfter - a.rewardPerDayBefore) }}>{signed(a.rewardPerDayAfter - a.rewardPerDayBefore, tokenFmt)} {sym}/day</div>
-        </Stat>
+    <ResultCard>
+      <PositionHeader r={r} />
+      <div>
+        <Eyebrow>Duration multiplier · {multFmt(r.position.multiplier)} → {multFmt(a.multiplierAfter)}</Eyebrow>
+        <MultiplierGauge value={r.position.multiplier} next={a.multiplierAfter} />
       </div>
+      <KpiRow>
+        <Kpi label="Back to today's level" value={a.recoverDays > 0.05 ? `${a.recoverDays.toFixed(0)} days` : "No change"} tooltip="A top-up dilutes your time served by your old share of the position (contract rule), so the multiplier drops for the WHOLE position." />
+        <Kpi label="Your share" value={`${(a.shareAfter * 100).toFixed(2)}%`} sub={`from ${(a.shareBefore * 100).toFixed(2)}%`} />
+        <Kpi label={`${sym} per day`} value={tokenFmt(a.rewardPerDayAfter)} sub={`${signed(rateDelta, tokenFmt)} vs ${tokenFmt(a.rewardPerDayBefore)}`} tone={toneFor(rateDelta)} />
+      </KpiRow>
       {a.pendingLostIfNotClaimed > 0.0001 && (
-        <div style={{ fontSize: 12, color: orange, lineHeight: 1.6 }}>
-          ⚠ Claim first: a top-up doesn't collect your {tokenFmt(r.pending.rewardTokens)} pending {sym}, so they'd be paid later at the lower multiplier — about {tokenFmt(a.pendingLostIfNotClaimed)} {sym} less
-          {a.pendingLostEtn != null && <> (≈ {tokenFmt(a.pendingLostEtn)} ETN)</>}. A withdraw of 0 claims them without leaving the farm.
-        </div>
+        <Callout>
+          <strong>Claim first.</strong> A top-up doesn't collect your {tokenFmt(r.pending.rewardTokens)} pending {sym} — they'd be paid later at the lower multiplier, about {tokenFmt(a.pendingLostIfNotClaimed)} {sym} less.
+        </Callout>
       )}
-      <div style={{ fontSize: 11, color: mutedLight }}>{r.costBasisNote}</div>
-      <div style={{ fontSize: 11, color: muted, fontWeight: 700 }}>Projected rewards — now</div>
-      <ProjectionTable rows={r.projectionBefore} />
-      <div style={{ fontSize: 11, color: muted, fontWeight: 700 }}>Projected rewards — after adding {formatUsdPrice(a.usd)}</div>
-      <ProjectionTable rows={r.projectionAfter} />
-      <Assumptions assumptions={r.assumptions} />
-    </div>
+      <div>
+        <Eyebrow>Projected rewards after adding {usdShort(a.usd)}</Eyebrow>
+        <ProjectionCards rows={r.projectionAfter} />
+      </div>
+      <Details label="Projected rewards without adding">
+        <ProjectionCards rows={r.projectionBefore} />
+      </Details>
+      <AssumptionsStrip assumptions={r.assumptions} facts={["Today's emission rate", "Others' stake constant", "Cost basis carries over"]} />
+    </ResultCard>
   );
 }
 
-function WithdrawResult({ r }) {
+export function WithdrawResult({ r }) {
   const w = r.withdraw;
   const sym = r.pending.rewardSymbol;
   const m = w.nextMilestone;
+  const paid = w.paidNow.value;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
-      <PositionLine r={r} />
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label="Paid out on withdrawal" tooltip="Any withdrawal collects every pending reward, at your multiplier at that moment.">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{tokenFmt(w.paidNow.rewardTokens)} {sym}</div>
-          <div style={{ fontSize: 11, color: mutedLight }}>
-            {w.paidNow.value.spotUsd != null && `${formatUsdPrice(Number(w.paidNow.value.spotUsd))} at spot`}
-            {w.paidNow.value.soldUsd != null && ` · ${formatUsdPrice(Number(w.paidNow.value.soldUsd))} if sold`}
-          </div>
-          {w.paidNow.partnerTokens > 0 && <div style={{ fontSize: 11, color: mutedLight }}>+ {tokenFmt(w.paidNow.partnerTokens)} {r.pending.partnerSymbol}</div>}
-        </Stat>
-        <Stat label="What you give up" tooltip="Your duration multiplier lives with the position: leave entirely and a new deposit starts again from 1.0x. A partial withdrawal keeps it for what stays.">
-          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{w.full ? `${multFmt(w.multiplierLost)} multiplier` : "Nothing — a partial withdrawal keeps your multiplier"}</div>
-          {w.full && w.boltReturned > 0 && <div style={{ fontSize: 11, color: mutedLight }}>{tokenFmt(w.boltReturned)} staked BOLT returned</div>}
-          {!w.full && r.position.boltDeposited > 0 && <div style={{ fontSize: 11, color: orange }}>Staked BOLT only returns on a 100% withdrawal</div>}
-        </Stat>
-        <Stat label="Wait for the next milestone?" tooltip="Rewards keep accruing and are paid at the higher multiplier — everything else held constant (see the range).">
-          {m ? (
-            <>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{multFmt(m.multiplier)} in {m.days.toFixed(0)} days</div>
-              <div style={{ fontSize: 11, color: mutedLight }}>
-                about {tokenFmt(w.waitGainTokens)} {sym} more{w.waitGain?.rangeUsd && ` (${formatUsdPrice(w.waitGain.rangeUsd.low)}–${formatUsdPrice(w.waitGain.rangeUsd.high)} in total)`}
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Already at the 2.5× maximum</div>
-          )}
-        </Stat>
+    <ResultCard>
+      <PositionHeader r={r} />
+      <Hero
+        label={`Paid out on withdrawal`}
+        value={paid.spotUsd != null ? usdShort(Number(paid.spotUsd)) : `${tokenFmt(w.paidNow.rewardTokens)} ${sym}`}
+        sub={`${tokenFmt(w.paidNow.rewardTokens)} ${sym}${w.paidNow.partnerTokens > 0 ? ` + ${tokenFmt(w.paidNow.partnerTokens)} ${r.pending.partnerSymbol}` : ""}${paid.soldUsd != null ? ` · ${usdShort(Number(paid.soldUsd))} if sold` : ""}`}
+      />
+      <div>
+        <Eyebrow>Duration multiplier · {multFmt(r.position.multiplier)}</Eyebrow>
+        <MultiplierGauge value={r.position.multiplier} />
       </div>
-      <div style={{ fontSize: 11, color: mutedLight }}>
-        {r.exposure} To see what the exit itself returns and its profit/loss, use <strong>Sell / exit → Exit a position</strong>.
+      <KpiRow>
+        <Kpi label="You give up" value={w.full ? `${multFmt(w.multiplierLost)} multiplier` : "Nothing"} sub={w.full ? (w.boltReturned > 0 ? `${tokenFmt(w.boltReturned)} BOLT returned` : "a new deposit restarts at 1.0×") : "partial exits keep it"} tone={w.full ? "warn" : undefined} />
+        <Kpi label="Next milestone" value={m ? `${multFmt(m.multiplier)} in ${m.days.toFixed(0)}d` : "At 2.5× max"} sub={m && w.waitGainTokens != null ? `+${tokenFmt(w.waitGainTokens)} ${sym} if you wait` : undefined} tone={m ? "up" : undefined} />
+      </KpiRow>
+      {!w.full && r.position.boltDeposited > 0 && <Callout>Your staked BOLT only comes back on a 100% withdrawal.</Callout>}
+      <div>
+        <Eyebrow>If you stay in · includes the {tokenFmt(w.paidNow.rewardTokens)} {sym} already pending</Eyebrow>
+        <ProjectionCards rows={r.projection} />
       </div>
-      <div style={{ fontSize: 11, color: muted, fontWeight: 700 }}>If you stay in — projected rewards (including the {tokenFmt(w.paidNow.rewardTokens)} {sym} already pending)</div>
-      <ProjectionTable rows={r.projection} />
-      <Warnings warnings={r.warnings} />
-      <Assumptions assumptions={r.assumptions} />
-    </div>
+      <div style={{ fontSize: 11, color: muted }}>For what the exit returns and its profit/loss, use Sell / exit → Exit a position.</div>
+      <WarningList warnings={r.warnings} />
+      <AssumptionsStrip assumptions={r.assumptions} facts={["Today's emission rate", "Others' stake constant", "No withdrawal fee"]} />
+    </ResultCard>
   );
 }

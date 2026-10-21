@@ -3,15 +3,14 @@ import DashboardButton from "./DashboardButton.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import { useScenarios } from "../../hooks/useScenarios.js";
 import { formatUsdPrice, formatChartDate, formatUsdPricePrecise } from "../../utils/format.js";
-import { muted, mutedLight, orange, border, error as errorColor, monoFont } from "../../theme.js";
-import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, Stat, Assumptions, etnFmt, colorOf, signed, tokenFmt } from "./ScenarioBits.jsx";
+import { muted, mutedLight, border, error as errorColor, monoFont } from "../../theme.js";
+import { AUTH_PURPOSE, inputStyle, labelStyle, toggleStyle, etnFmt, signed, tokenFmt, ResultCard, Hero, Kpi, KpiRow, Callout, Details, AssumptionsStrip, Intro, usdShort, toneFor, pctText } from "./ScenarioBits.jsx";
 
 const yearAgo = () => {
   const d = new Date();
   d.setUTCFullYear(d.getUTCFullYear() - 1);
   return d.toISOString().slice(0, 10);
 };
-const pctFmt = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)}%`);
 const CHART_SERIES = [
   { id: "valueUsd", label: "Your position" },
   { id: "etnHoldUsd", label: "Hold ETN instead" },
@@ -30,7 +29,6 @@ export default function CoreTierBacktest({ wallet, getAuthParams }) {
   const [start, setStart] = useState(yearAgo());
   const [end, setEnd] = useState("");
   const [series, setSeries] = useState("valueUsd");
-  const [showBuys, setShowBuys] = useState(false);
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
@@ -48,7 +46,6 @@ export default function CoreTierBacktest({ wallet, getAuthParams }) {
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
       setResult(await runBacktest(wallet.account, signature, timestamp, { asset, amountType, amount: Number(amount), start, end: end || undefined, mode }));
-      setShowBuys(false);
     } catch (err) {
       setResult(null);
       setError(err.message || "Couldn't run the backtest");
@@ -59,9 +56,7 @@ export default function CoreTierBacktest({ wallet, getAuthParams }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 12, color: mutedLight, lineHeight: 1.6 }}>
-        What a past purchase — once, or the same amount every week or month — would be worth today, against simply holding ETN or keeping the dollars. A look back at real prices, not a prediction.
-      </div>
+      <Intro>What a past purchase — once, or every week or month — would be worth today, against simply holding ETN.</Intro>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button type="button" onClick={() => setMode("lump")} style={toggleStyle(mode === "lump")}>One purchase</button>
         <button type="button" onClick={() => setMode("weekly")} style={toggleStyle(mode === "weekly")}>Every week</button>
@@ -100,99 +95,81 @@ export default function CoreTierBacktest({ wallet, getAuthParams }) {
       <DashboardButton onClick={run} disabled={running} style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}>
         {running ? "Running…" : "Run backtest"}
       </DashboardButton>
-      {result && <BacktestResult r={result} series={series} setSeries={setSeries} showBuys={showBuys} setShowBuys={setShowBuys} />}
+      {result && <BacktestResult r={result} series={series} setSeries={setSeries} />}
     </div>
   );
 }
 
-function BacktestResult({ r, series, setSeries, showBuys, setShowBuys }) {
+export function BacktestResult({ r, series, setSeries }) {
   const t = r.totals;
   const cov = r.coverage;
   const chartData = useMemo(() => r.chart.map((p) => ({ label: p.date, value: p[series] })), [r, series]);
   const isEtn = r.symbol === "ETN";
+  const vsEtn = isEtn ? null : t.returnPct - r.benchmarks.holdEtn.returnPct;
+  const title = r.mode === "lump" ? `${r.symbol} bought ${r.window.start}` : `${r.symbol} every ${r.mode === "weekly" ? "week" : "month"} since ${r.window.start}`;
+  const gapsMatter = cov.days > 0 && (cov.carriedDays / cov.days > 0.1 || cov.longestCarried > 7);
+  const anyTax = r.buys.some((b) => b.taxBps > 0);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 12, borderTop: `1px solid ${border}` }}>
-      <div style={{ fontSize: 13, color: "#fff", fontWeight: 700 }}>
-        {r.mode === "lump" ? `${r.symbol} bought ${r.window.start}` : `${r.symbol} bought ${r.mode === "weekly" ? "weekly" : "monthly"}, ${r.window.start} → ${r.window.end}`} · {r.buys.length} purchase{r.buys.length === 1 ? "" : "s"}
-      </div>
-      <div style={{ fontSize: 11, color: cov.carriedDays > 0 ? orange : mutedLight }}>
-        Data coverage: {r.symbol} prices from {cov.earliest} · {cov.days} days in this window, {cov.carriedDays} without their own price (carried forward{cov.longestCarried > 1 ? `, longest ${cov.longestCarried} days` : ""})
-      </div>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label="Put in → worth now (USD)">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{formatUsdPrice(t.costUsd)} → {formatUsdPrice(t.valueUsd)}</div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: colorOf(t.returnUsd) }}>{signed(t.returnUsd, formatUsdPrice)} ({pctFmt(t.returnPct)})</div>
-        </Stat>
-        <Stat label="Put in → worth now (ETN)" tooltip="The same result measured in ETN: what the purchases cost in ETN at the time, against what the position is worth in ETN now.">
-          <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{etnFmt(t.costEtn)} → {etnFmt(t.valueEtn)}</div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: colorOf(t.returnEtn) }}>{signed(t.returnEtn, etnFmt)} ({pctFmt(t.returnEtnPct)})</div>
-        </Stat>
-        <Stat label="Compared with">
-          {!isEtn && <div style={{ fontSize: 12, color: mutedLight }}>Holding ETN instead: <span style={{ color: colorOf(r.benchmarks.holdEtn.returnPct), fontWeight: 700 }}>{pctFmt(r.benchmarks.holdEtn.returnPct)}</span> ({formatUsdPrice(r.benchmarks.holdEtn.valueUsd)})</div>}
-          <div style={{ fontSize: 12, color: mutedLight }}>Keeping the dollars: <span style={{ fontWeight: 700 }}>0.0%</span> ({formatUsdPrice(r.benchmarks.holdUsd.valueUsd)})</div>
-          <div style={{ fontSize: 11, color: muted, marginTop: 2 }}>
-            {tokenFmt(t.tokens)} {r.symbol} at an average {formatUsdPricePrecise(t.avgCostUsd)}
-          </div>
-        </Stat>
-      </div>
+    <ResultCard>
+      <Hero label={`${title} · ${r.buys.length} purchase${r.buys.length === 1 ? "" : "s"}`} from={usdShort(t.costUsd)} value={usdShort(t.valueUsd)} pct={t.returnPct} tone={toneFor(t.returnUsd)} sub={`${signed(t.returnUsd, usdShort)} · today's value`} />
+      <KpiRow>
+        <Kpi label="In ETN terms" value={pctText(t.returnEtnPct)} sub={`${etnFmt(t.costEtn)} → ${etnFmt(t.valueEtn)}`} tone={toneFor(t.returnEtn)} tooltip="What the purchases cost in ETN at the time, against what the position is worth in ETN now." />
+        {!isEtn && <Kpi label="vs holding ETN" value={vsEtn == null ? "—" : `${vsEtn >= 0 ? "+" : "−"}${Math.abs(vsEtn).toFixed(1)} pts`} sub={`ETN instead: ${pctText(r.benchmarks.holdEtn.returnPct)}`} tone={toneFor(vsEtn)} tooltip="The same dollars spent on ETN on the same days." />}
+        <Kpi label="Average cost" value={formatUsdPricePrecise(t.avgCostUsd)} sub={`${tokenFmt(t.tokens)} ${r.symbol}`} />
+      </KpiRow>
 
       <div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {CHART_SERIES.filter((s) => !(isEtn && s.id === "etnHoldUsd")).map((s) => (
-            <button key={s.id} type="button" onClick={() => setSeries(s.id)} style={{ ...toggleStyle(series === s.id), fontSize: 10, padding: "3px 8px" }}>{s.label}</button>
+            <button key={s.id} type="button" onClick={() => setSeries(s.id)} style={{ ...toggleStyle(series === s.id), fontSize: 10, padding: "3px 10px" }}>{s.label}</button>
           ))}
         </div>
-        <SparklineChart data={chartData} height={120} formatValue={(v) => formatUsdPrice(v)} formatLabel={formatChartDate} />
+        <SparklineChart data={chartData} height={170} formatValue={(v) => formatUsdPrice(v)} formatLabel={formatChartDate} />
       </div>
 
       {r.liquidity?.lowLiquidity && (
-        <div style={{ fontSize: 12, color: orange, lineHeight: 1.6 }}>
-          ⚠ {r.symbol} is thin: selling this position today would move its price {r.liquidity.sellImpactPct != null ? `about ${r.liquidity.sellImpactPct.toFixed(1)}%` : "by an unknown amount"}. These results assume every purchase filled at the day's price with no price impact, so they look better than a real trade would have.
-        </div>
+        <Callout>
+          {r.symbol} is thin — selling this position today would move the price {r.liquidity.sellImpactPct != null ? `~${r.liquidity.sellImpactPct.toFixed(1)}%` : "an unknown amount"}. Past buys assume no price impact, so real results would be lower.
+        </Callout>
       )}
-      {t.taxTokens > 0 && (
-        <div style={{ fontSize: 11, color: mutedLight }}>
-          Buy tax paid along the way: {tokenFmt(t.taxTokens)} {r.symbol}, at each purchase date's rate.
-        </div>
-      )}
+      {gapsMatter && <Callout tone="info">{cov.carriedDays} of {cov.days} days had no trades and reuse the previous price (longest gap {cov.longestCarried} days).</Callout>}
       {r.notes.map((n) => (
-        <div key={n} style={{ fontSize: 11, color: orange }}>⚠ {n}</div>
+        <Callout key={n} tone="info">{n}</Callout>
       ))}
 
       {r.buys.length > 1 && (
-        <div>
-          <button type="button" onClick={() => setShowBuys(!showBuys)} style={{ ...toggleStyle(false), fontSize: 10, padding: "3px 8px" }}>
-            {showBuys ? "Hide purchases" : `Show all ${r.buys.length} purchases`}
-          </button>
-          {showBuys && (
-            <div style={{ overflowX: "auto", marginTop: 6 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, color: mutedLight, minWidth: 460 }}>
-                <thead>
-                  <tr style={{ textAlign: "right", color: muted, fontFamily: monoFont, fontSize: 10 }}>
-                    <th style={{ textAlign: "left", padding: "4px 6px" }}>Date</th>
-                    <th style={{ padding: "4px 6px" }}>Price</th>
-                    <th style={{ padding: "4px 6px" }}>Spent</th>
-                    <th style={{ padding: "4px 6px" }}>Received</th>
-                    {r.buys.some((b) => b.taxBps > 0) && <th style={{ padding: "4px 6px" }}>Buy tax</th>}
+        <Details label={`All ${r.buys.length} purchases`}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, color: mutedLight, minWidth: 420 }}>
+              <thead>
+                <tr style={{ textAlign: "right", color: muted, fontFamily: monoFont, fontSize: 10 }}>
+                  <th style={{ textAlign: "left", padding: "4px 6px" }}>Date</th>
+                  <th style={{ padding: "4px 6px" }}>Price</th>
+                  <th style={{ padding: "4px 6px" }}>Spent</th>
+                  <th style={{ padding: "4px 6px" }}>Received</th>
+                  {anyTax && <th style={{ padding: "4px 6px" }}>Buy tax</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {r.buys.map((b) => (
+                  <tr key={b.date} style={{ textAlign: "right", borderTop: `1px solid ${border}` }}>
+                    <td style={{ textAlign: "left", padding: "4px 6px" }}>{b.date}</td>
+                    <td style={{ padding: "4px 6px" }}>{formatUsdPricePrecise(b.priceUsd)}</td>
+                    <td style={{ padding: "4px 6px" }}>{formatUsdPrice(b.costUsd)}</td>
+                    <td style={{ padding: "4px 6px" }}>{tokenFmt(b.tokens)}</td>
+                    {anyTax && <td style={{ padding: "4px 6px" }}>{(b.taxBps / 100).toFixed(2)}%</td>}
                   </tr>
-                </thead>
-                <tbody>
-                  {r.buys.map((b) => (
-                    <tr key={b.date} style={{ textAlign: "right", borderTop: `1px solid ${border}` }}>
-                      <td style={{ textAlign: "left", padding: "4px 6px" }}>{b.date}</td>
-                      <td style={{ padding: "4px 6px" }}>{formatUsdPricePrecise(b.priceUsd)}</td>
-                      <td style={{ padding: "4px 6px" }}>{formatUsdPrice(b.costUsd)}</td>
-                      <td style={{ padding: "4px 6px" }}>{tokenFmt(b.tokens)} {r.symbol}</td>
-                      {r.buys.some((x) => x.taxBps > 0) && <td style={{ padding: "4px 6px" }}>{(b.taxBps / 100).toFixed(2)}%</td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Details>
       )}
-      <Assumptions assumptions={r.assumptions} />
-    </div>
+      <AssumptionsStrip
+        assumptions={r.assumptions}
+        facts={[`Data from ${cov.earliest}`, `${cov.carriedDays} gap day${cov.carriedDays === 1 ? "" : "s"}`, anyTax ? "Buy tax at each date" : null, "No price impact"]}
+      />
+    </ResultCard>
   );
 }
