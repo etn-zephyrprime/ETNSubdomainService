@@ -41,7 +41,8 @@ export async function insertDefiActivity(rows) {
 
 export async function getAllDefiActivityBefore(trackedWallet, beforeTs) {
   const res = await query(
-    `SELECT * FROM defi_activity WHERE tracked_wallet = $1 AND "timestamp" < $2
+    `SELECT id, tx_hash, log_index, contract_address, event_type, farm_id, raw_args, block_number, "timestamp"
+     FROM defi_activity WHERE tracked_wallet = $1 AND "timestamp" < $2
      ORDER BY "timestamp" ASC, log_index ASC`,
     [trackedWallet.toLowerCase(), beforeTs]
   );

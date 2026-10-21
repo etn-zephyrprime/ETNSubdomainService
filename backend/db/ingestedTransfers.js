@@ -179,7 +179,9 @@ export async function getAllTransfersBefore(trackedWallet, beforeTs) {
   }
 
   const res = await query(
-    `SELECT * FROM ingested_transfers WHERE tracked_wallet = $1 AND "timestamp" < $2
+    `SELECT id, tx_hash, log_index, direction, counterparty_address, is_self_transfer, is_cex, asset_type, token_address, token_id,
+            amount_raw, amount_decimal, price_usd_at_time, usd_value, gas_fee_wei, block_number, "timestamp"
+     FROM ingested_transfers WHERE tracked_wallet = $1 AND "timestamp" < $2
      ORDER BY "timestamp" ASC, log_index ASC`,
     [wallet, beforeTs]
   );
