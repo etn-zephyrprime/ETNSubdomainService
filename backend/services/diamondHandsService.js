@@ -12,8 +12,9 @@
 // shouldn't inflate this score purely from price movement, only from behavior).
 //
 // On-chain only (no CEX — same scoping as the live PnL snapshot, not the CEX-inclusive Statement).
-// Live, recomputed fresh on every call, never frozen/cached here (same "not a formal record"
-// treatment as computeLivePnlSnapshot — see that function's own header comment).
+// Live, not a formal record (same treatment as computeLivePnlSnapshot). The finished score is cached
+// for up to an hour per wallet set, and recomputed as soon as new activity is ingested — see
+// computeDiamondHandsScore's own comment.
 //
 // ============================================================================================
 // PROVISIONAL DEFAULTS — confirmed decision: ship with these, calibrate against real tracked-
@@ -25,6 +26,7 @@ import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { getLedgerState } from "./pnlSnapshotService.js";
 import { getPricePointsSince } from "../db/pricePoints.js";
+import { setBounded, registerCache } from "../utils/boundedMap.js";
 
 // Rolling window (ending at each disposal) a "recent high" is measured over, and how far below
 // that high counts as "sold into a dip" — both the build brief's own suggested example numbers.
@@ -111,7 +113,10 @@ function cacheAssetFor(tokenAddress) {
 // (matches any member — how a grouped NFT collection's several "collection:tokenId" keys get
 // pooled into one scope, see computeDiamondHandsScore's own asset-grouping below), or null/
 // undefined for no filtering at all.
-export async function computeComponentsForScope(lots, realizedEvents, scope, now) {
+// `priceSeries` (optional): fetch(tokenAddress) -> Promise of that token's price rows, shared by
+// every scope in one score computation (portfolio, per wallet, per asset) so each token's history is
+// read from the database once, not once per scope — see computeDiamondHandsScore.
+export async function computeComponentsForScope(lots, realizedEvents, scope, now, priceSeries = null) {
   const matches = scope == null ? null : scope instanceof Set ? (addr) => scope.has(addr) : (addr) => addr === scope;
   const scopedLots = matches ? lots.filter((l) => matches(l.tokenAddress)) : lots;
   const scopedEvents = matches ? realizedEvents.filter((e) => matches(e.tokenAddress)) : realizedEvents;
@@ -174,7 +179,7 @@ export async function computeComponentsForScope(lots, realizedEvents, scope, now
     tokensWithDisposals.map(async (addr) => {
       const disposalTimesMs = scopedEvents.filter((e) => e.tokenAddress === addr).map((e) => new Date(e.timestamp).getTime());
       const windowStart = new Date(Math.min(...disposalTimesMs) - ROLLING_HIGH_WINDOW_DAYS * 86400000);
-      const rows = await getPricePointsSince(cacheAssetFor(addr), windowStart);
+      const rows = priceSeries ? await priceSeries(addr) : await getPricePointsSince(cacheAssetFor(addr), windowStart);
       priceHistoryByToken.set(
         addr,
         rows.map((r) => ({ timestampMs: new Date(r.timestamp).getTime(), priceUsd: Number(r.price_usd) }))
@@ -308,7 +313,31 @@ async function getWalletLedgerState(trackedWallet, selfOwnedAddresses) {
 // same memory-vs-wall-clock trade coreTierDemoRouter.js's computeDemoData makes for its own
 // per-wallet work (a full FIFO replay per wallet, all held concurrently, blew that process's heap).
 // Only the offline demo-snapshot generation opts in; the live member route keeps the parallel default.
-export async function computeDiamondHandsScore(trackedWallets, { sequential = false } = {}) {
+// Finished scores, cached per wallet set. Keyed on every wallet's ingestion version
+// (wallet_ingestion_state.updated_at — moves only when new activity is ingested), so new transactions
+// recompute it at once; otherwise kept up to SCORE_CACHE_TTL_MS, since the only other input (daily
+// price closes) changes once a day. Before this, every Core Tier page view recomputed the score from
+// scratch, running one price-history query per sold token per scope — the biggest query by call count
+// on Supabase (7,377 calls/day, Oct 2026).
+const SCORE_CACHE_TTL_MS = 60 * 60 * 1000;
+const scoreCache = registerCache("diamondHands", new Map()); // key -> { at, versions, result }
+
+async function ingestionVersions(trackedWallets) {
+  const states = await Promise.all(trackedWallets.map((w) => getIngestionState(w).catch(() => null)));
+  return states.map((st) => (st?.updated_at ? new Date(st.updated_at).getTime() : 0)).join(",");
+}
+
+export async function computeDiamondHandsScore(trackedWallets, options = {}) {
+  const key = [...trackedWallets].map((w) => w.toLowerCase()).sort().join("|");
+  const versions = await ingestionVersions(trackedWallets);
+  const hit = scoreCache.get(key);
+  if (hit && hit.versions === versions && Date.now() - hit.at < SCORE_CACHE_TTL_MS) return hit.result;
+  const result = await computeDiamondHandsScoreUncached(trackedWallets, options);
+  setBounded(scoreCache, key, { at: Date.now(), versions, result }, 100);
+  return result;
+}
+
+async function computeDiamondHandsScoreUncached(trackedWallets, { sequential = false } = {}) {
   const failed = [];
   const fetchLedger = async (addr) => {
     const selfOwned = trackedWallets.filter((a) => a !== addr);
@@ -333,12 +362,25 @@ export async function computeDiamondHandsScore(trackedWallets, { sequential = fa
   const pooledLots = perWalletLedger.flatMap((w) => w.lots);
   const pooledEvents = perWalletLedger.flatMap((w) => w.realizedEvents);
 
-  const portfolioComponents = await computeComponentsForScope(pooledLots, pooledEvents, null, now);
+  // One price-history read per token for the whole computation, from the earliest window any scope
+  // needs (the token's first disposal across every wallet, minus the rolling-high window) — each
+  // scope then filters to its own disposals' windows, exactly as before.
+  const seriesByToken = new Map();
+  const priceSeries = (addr) => {
+    if (!seriesByToken.has(addr)) {
+      const times = pooledEvents.filter((e) => e.tokenAddress === addr).map((e) => new Date(e.timestamp).getTime());
+      const windowStart = new Date(Math.min(...times) - ROLLING_HIGH_WINDOW_DAYS * 86400000);
+      seriesByToken.set(addr, getPricePointsSince(cacheAssetFor(addr), windowStart));
+    }
+    return seriesByToken.get(addr);
+  };
+
+  const portfolioComponents = await computeComponentsForScope(pooledLots, pooledEvents, null, now, priceSeries);
   const portfolioScoring = scoreFromComponents(portfolioComponents);
 
   const perWallet = await Promise.all(
     perWalletLedger.map(async ({ walletAddress, lots, realizedEvents }) => {
-      const components = await computeComponentsForScope(lots, realizedEvents, null, now);
+      const components = await computeComponentsForScope(lots, realizedEvents, null, now, priceSeries);
       const scoring = scoreFromComponents(components);
       return { walletAddress, components, ...scoring };
     })
@@ -353,7 +395,7 @@ export async function computeDiamondHandsScore(trackedWallets, { sequential = fa
   }
   const perAsset = await Promise.all(
     [...assetGroups.entries()].map(async ([groupKey, { type, memberKeys }]) => {
-      const components = await computeComponentsForScope(pooledLots, pooledEvents, memberKeys, now);
+      const components = await computeComponentsForScope(pooledLots, pooledEvents, memberKeys, now, priceSeries);
       const scoring = scoreFromComponents(components);
       return { tokenAddress: groupKey, type, components, ...scoring };
     })
