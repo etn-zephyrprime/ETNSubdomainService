@@ -97,9 +97,9 @@ class FifoLedger {
     const { consumptions, remainingShort } = consumeFifo(lots, qty);
 
     // Captured BEFORE the quantityRemaining mutation below, same reasoning as lock()'s own
-    // preFilterLots -- new in support of the Diamond Hands score, which needs each disposed
-    // portion's own ORIGINAL acquisition date to compute how long it was actually held (see
-    // realizedEvents.push below). openedTimestamp itself is never mutated by this loop, so
+    // preFilterLots -- each disposed portion's own ORIGINAL acquisition date is reported on its
+    // realized event (see realizedEvents.push below; the ETN-denominated realized P&L prices the
+    // cost basis at it). openedTimestamp itself is never mutated by this loop, so
     // capturing it here vs. before/after the assignment makes no difference -- done here purely to
     // keep this one loop, not add a second pass over `consumptions`.
     const lotOpenedTimestamps = new Map();
@@ -132,9 +132,8 @@ class FifoLedger {
         timestamp,
         lotId: c.lotId,
         // null for the shortfall portion (lotId: null -- see remainingShort handling below), which
-        // has no real originating lot to report a holding period against. New in support of the
-        // Diamond Hands score's holding-period component -- no existing consumer of realizedEvents
-        // reads this field, so this is purely additive.
+        // has no real originating lot to report an acquisition date for. Read by
+        // convertRealizedEventsToEtn (ETN cost basis at the lot's own acquisition-day ETN price).
         acquisitionTimestamp: c.lotId != null ? lotOpenedTimestamps.get(c.lotId) ?? null : null,
         quantityConsumed: c.quantityConsumed,
         costBasisUsd: c.costBasisUsd,

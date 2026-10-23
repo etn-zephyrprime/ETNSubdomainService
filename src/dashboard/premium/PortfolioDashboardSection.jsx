@@ -11,7 +11,6 @@ import CoreTierBalanceHistory from "./components/CoreTierBalanceHistory.jsx";
 import CoreTierPnl from "./components/CoreTierPnl.jsx";
 import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
 import CoreTierRecentActivity from "./components/CoreTierRecentActivity.jsx";
-import CoreTierDiamondHandsCard from "./components/CoreTierDiamondHands.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
@@ -26,8 +25,8 @@ import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, go
 // Each of the 7 collapsible ones now renders with defaultCollapsed={false} (see their own files)
 // since this row is now the single show/hide control — the one-at-a-time display IS the "closed
 // until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
-// Gas Spent and Diamond Hands Score used to be panels here too — they're now the summary row under
-// the wallet filter (a gas ticker and a Diamond Hands card), since each is one headline figure.
+// Gas Spent used to be a panel here too — it's now the gas ticker under the wallet filter, since it's
+// one headline figure.
 const PANELS = [
   { id: "portfolio", label: "Portfolio", icon: WalletIcon },
   { id: "balance", label: "Balance History", icon: LineChart },
@@ -204,12 +203,11 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         </div>
       )}
 
-      {/* Summary row, right under the wallet filter: total gas spent and the Diamond Hands card —
-          both follow the same page-wide walletFilter as every panel below. */}
+      {/* Summary row, right under the wallet filter: total gas spent — follows the same page-wide
+          walletFilter as every panel below. */}
       {hasAccess && active.length > 0 && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
           <CoreTierGasSpend wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} active={active} walletFilter={walletFilter} />
-          <CoreTierDiamondHandsCard wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} active={active} walletFilter={walletFilter} />
         </div>
       )}
 
