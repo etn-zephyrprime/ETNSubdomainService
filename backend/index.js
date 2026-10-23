@@ -55,6 +55,7 @@ import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
 import { startPriceTopUpScheduler } from "./utils/priceTopUpScheduler.js";
+import { startEtnAccumulatorBot } from "./utils/etnAccumulatorBot.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import adminSplitRouter from "./utils/adminSplitRouter.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
@@ -184,4 +185,7 @@ app.listen(PORT, () => {
   safeStart("Subscription reminder scheduler", startSubscriptionReminderScheduler);
   safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);
   safeStart("Price top-up scheduler", startPriceTopUpScheduler);
+
+  // ETN accumulator bot — off unless ETN_BOT_ENABLED=true; paper-trades unless ETN_BOT_MODE=live.
+  safeStart("ETN accumulator bot", startEtnAccumulatorBot);
 });
