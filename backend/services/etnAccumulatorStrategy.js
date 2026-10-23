@@ -41,10 +41,13 @@ export function updateEma(prevEma, price, dtMs, halfLifeMs) {
   return prevEma + alpha * (price - prevEma);
 }
 
-/** ETN the bot itself owns (budget minus what's sitting in open lots, plus every cycle's gain). */
+/** ETN the bot itself owns: budget minus what's sitting in open lots, plus every cycle's gain —
+ * and, with the gap mode on (services/etnGapStrategy.js), plus its gains, minus the ETN sold to seed
+ * its stablecoin book and any gap trade's first leg still waiting on its second. */
 export function botEtnInventory(state) {
   const openSold = state.lots.filter((l) => l.status === "open").reduce((s, l) => s + l.etnSold, 0);
-  return state.budgetEtn + state.realizedGainEtn - openSold;
+  const gap = state.gap ? state.gap.gainEtn - state.gap.seedEtn - (state.gapLeg?.etnSold || 0) : 0;
+  return state.budgetEtn + state.realizedGainEtn - openSold + gap;
 }
 
 /**
@@ -108,14 +111,15 @@ export function applyBuyback(state, lotId, { etnBought, txHash, at }) {
   return state;
 }
 
-/** Headline figures: realized gain, plus what the open lots' stablecoin would buy back right now. */
-export function summarize(state, buybackQuotes = {}) {
+/** Headline figures: realized gain, plus what the open lots' stablecoin would buy back right now.
+ * `gapStablesEtn`: what the gap book's stablecoin would buy in ETN right now (0 without the gap mode). */
+export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0) {
   const open = state.lots.filter((l) => l.status === "open");
   const closed = state.lots.filter((l) => l.status === "closed");
   const openEtnSold = open.reduce((s, l) => s + l.etnSold, 0);
   const openBuybackEtn = open.reduce((s, l) => s + (buybackQuotes[l.id] ?? 0), 0);
   const allQuoted = open.every((l) => buybackQuotes[l.id] > 0);
-  const etnNow = botEtnInventory(state) + (allQuoted ? openBuybackEtn : openEtnSold);
+  const etnNow = botEtnInventory(state) + (allQuoted ? openBuybackEtn : openEtnSold) + gapStablesEtn;
   return {
     budgetEtn: state.budgetEtn,
     cyclesClosed: closed.length,
@@ -123,6 +127,10 @@ export function summarize(state, buybackQuotes = {}) {
     realizedGainEtn: state.realizedGainEtn,
     openEtnSold,
     openBuybackEtn: allQuoted ? openBuybackEtn : null,
+    gapTrades: state.gap?.trades || 0,
+    gapGainEtn: state.gap?.gainEtn || 0,
+    gapSeedEtn: state.gap?.seedEtn || 0,
+    gapStablesEtn,
     etnEquivalentNow: etnNow,
     vsHoldPct: (etnNow / state.budgetEtn - 1) * 100,
   };

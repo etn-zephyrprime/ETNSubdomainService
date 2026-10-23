@@ -9,9 +9,16 @@
 // real live quotes but sends nothing, filling at the quote — set ETN_BOT_MODE=live to trade. Paper
 // and live keep separate books (state/etnAccumulatorBotState.js).
 //
+// Gap mode (ETN_BOT_GAP_ENABLED=true; rules in services/etnGapStrategy.js): the two pools often price
+// ETN differently. Once seeded (ETN_BOT_GAP_SEED_ETN, half sold into each pool once), it sells ETN
+// into the dearer pool and spends the same dollars of the other stablecoin on ETN in the cheaper one
+// — two transactions, the second always completed (a restart between them finishes it first) — for
+// at least ETN_BOT_GAP_MIN_GAIN_PCT more ETN, net of fees. Priority each tick: lot buyback, gap
+// trade (or seeding), lot sale — at most one of them.
+//
 // Money safety:
 //   - The bot only ever spends its own books: budget ETN (ETN_BOT_BUDGET_ETN) less what's out in
-//     open lots, and each open lot's own stablecoin. The wallet's other ETN is never touched, so it
+//     open lots (and in the gap book, below), and each open lot's / the gap book's own stablecoin. The wallet's other ETN is never touched, so it
 //     can run on the admin wallet alongside the split/sweep schedulers. A failed books read skips
 //     the tick rather than starting over (see the state file's header).
 //   - Every swap is a real QuoterV2 quote, sent with amountOutMinimum = quote less ETN_BOT_SLIPPAGE_BPS
@@ -23,7 +30,8 @@
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { GAP_DEFAULTS, gapSizes, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg } from "../services/etnGapStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
 const SWAP_ROUTER = "0x5A3AB7e9f405250B36e7e0a4654c1052EADC1F07"; // ElectroSwap SwapRouter02 (V3)
@@ -52,6 +60,11 @@ export function readConfig() {
     slippageBps: num("ETN_BOT_SLIPPAGE_BPS", 50),
     gasReserveEtn: num("ETN_BOT_GAS_RESERVE_ETN", 100),
     maxTradesPerDay: num("ETN_BOT_MAX_TRADES_PER_DAY", 24),
+    gapEnabled: process.env.ETN_BOT_GAP_ENABLED === "true",
+    gapSeedEtn: num("ETN_BOT_GAP_SEED_ETN", 20000),
+    gapClipEtn: num("ETN_BOT_GAP_CLIP_ETN", GAP_DEFAULTS.clipEtn),
+    gapMinGainPct: num("ETN_BOT_GAP_MIN_GAIN_PCT", GAP_DEFAULTS.minGainPct),
+    gapMaxTradesPerDay: num("ETN_BOT_GAP_MAX_TRADES_PER_DAY", 48),
   };
 }
 
@@ -78,6 +91,7 @@ const routerIface = new ethers.Interface(ROUTER_ABI);
 
 const fmtEtn = (n) => Math.round(n).toLocaleString("en-US");
 const fmtUsd = (n) => `$${n.toFixed(2)}`;
+const signedEtn = (n) => `${n >= 0 ? "+" : "−"}${fmtEtn(Math.abs(n))}`;
 
 /** USD per ETN from a pool's slot0 (WETN = token0, 18 decimals; stablecoin = token1). */
 async function midPrice(provider, p) {
@@ -121,7 +135,7 @@ function freshState(cfg) {
 }
 
 /** Reads the Swap event of `poolAddress` out of a receipt: { etnDelta, stableDelta } in human units,
- * signed from the pool's side (negative = paid out to us). */
+ * signed from the pool's side (positive = paid into the pool by us, negative = paid out to us). */
 function swapAmounts(receipt, p) {
   for (const log of receipt.logs) {
     if (log.address.toLowerCase() !== p.pool.toLowerCase()) continue;
@@ -135,26 +149,17 @@ function swapAmounts(receipt, p) {
   return null;
 }
 
-/** Applies a mined pending trade's receipt to the books. */
-function settlePending(state, pending, receipt) {
-  const p = POOLS[pending.stable];
-  const at = new Date().toISOString();
-  if (receipt.status !== 1) return { ok: false };
-  const amounts = swapAmounts(receipt, p);
-  if (!amounts) throw new Error(`No Swap event in ${pending.txHash}`);
-  if (pending.kind === "sell") {
-    applySell(state, { id: pending.lotId, stable: pending.stable, etnSold: amounts.etnDelta, stableAmount: -amounts.stableDelta, txHash: pending.txHash, at });
-  } else {
-    applyBuyback(state, pending.lotId, { etnBought: -amounts.etnDelta, txHash: pending.txHash, at });
-  }
-  return { ok: true };
-}
+// Stablecoin amounts are floats in the books; round DOWN to the token's decimals before spending, so
+// rounding can never ask for one unit more than the wallet holds.
+const floorTo = (n, decimals) => (Math.floor(n * 10 ** decimals) / 10 ** decimals).toFixed(decimals);
+const other = (stable) => (stable === "USDT" ? "USDC" : "USDT");
 
-export function createEtnAccumulatorBot({ provider, wallet, cfg }) {
+// `store` is swappable for tests (in-memory books); the bot itself always uses R2.
+export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: getBotState, set: setBotState } }) {
   async function saveWithRetry(state) {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await setBotState(cfg.mode, state);
+        return await store.set(cfg.mode, state);
       } catch (err) {
         if (attempt >= 5) throw err;
         await new Promise((r) => setTimeout(r, attempt * 2000));
@@ -169,42 +174,91 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg }) {
     console.log(`🤖 ETN bot${cfg.mode === "paper" ? " (paper)" : ""}: ${text}`);
   }
 
-  async function sendSell(state, decision, lotId) {
-    const p = POOLS[decision.stable];
-    const amountIn = ethers.parseEther(String(decision.etnAmount));
-    const minOut = (ethers.parseUnits(decision.expectedStable.toFixed(p.decimals), p.decimals) * BigInt(10000 - cfg.slippageBps)) / 10000n;
-    const router = new ethers.Contract(SWAP_ROUTER, ROUTER_ABI, wallet);
-    const calls = [
-      routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: WETN, tokenOut: p.token, fee: p.fee, recipient: wallet.address, amountIn, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
-      routerIface.encodeFunctionData("refundETH", []),
-    ];
-    const deadline = Math.floor(Date.now() / 1000) + 300;
-    await router.multicall.staticCall(deadline, calls, { value: amountIn });
-    const tx = await router.multicall(deadline, calls, { value: amountIn });
-    return { kind: "sell", lotId, stable: decision.stable, txHash: tx.hash, nonce: tx.nonce, sentAt: new Date().toISOString() };
-  }
+  const quoteSellEtn = async (stable, etn) => {
+    const p = POOLS[stable];
+    return Number(ethers.formatUnits(await quote(provider, WETN, p.token, p.fee, ethers.parseEther(etn.toFixed(18))), p.decimals));
+  };
+  const quoteBuyEtn = async (stable, usd) => {
+    const p = POOLS[stable];
+    return Number(ethers.formatEther(await quote(provider, p.token, WETN, p.fee, ethers.parseUnits(floorTo(usd, p.decimals), p.decimals))));
+  };
 
-  async function sendBuyback(decision) {
-    const p = POOLS[decision.stable];
-    const amountIn = ethers.parseUnits(decision.stableAmount.toFixed(p.decimals), p.decimals);
-    const minOut = (ethers.parseEther(decision.expectedEtn.toFixed(18)) * BigInt(10000 - cfg.slippageBps)) / 10000n;
+  /** Sends one swap — "sellEtn" (native ETN -> stablecoin) or "buyEtn" (stablecoin -> native ETN) —
+   * after simulating it. Amounts are human units; minimum out = expectedOut less the slippage. */
+  async function sendSwap(side, stable, amountIn, expectedOut) {
+    const p = POOLS[stable];
+    const router = new ethers.Contract(SWAP_ROUTER, ROUTER_ABI, wallet);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+    const slip = BigInt(10000 - cfg.slippageBps);
+    if (side === "sellEtn") {
+      const inRaw = ethers.parseEther(amountIn.toFixed(18));
+      const minOut = (ethers.parseUnits(floorTo(expectedOut, p.decimals), p.decimals) * slip) / 10000n;
+      const calls = [
+        routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: WETN, tokenOut: p.token, fee: p.fee, recipient: wallet.address, amountIn: inRaw, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
+        routerIface.encodeFunctionData("refundETH", []),
+      ];
+      await router.multicall.staticCall(deadline, calls, { value: inRaw });
+      return router.multicall(deadline, calls, { value: inRaw });
+    }
+    const inRaw = ethers.parseUnits(floorTo(amountIn, p.decimals), p.decimals);
+    const minOut = (ethers.parseEther(expectedOut.toFixed(18)) * slip) / 10000n;
     const token = new ethers.Contract(p.token, ERC20_ABI, wallet);
     const held = await token.balanceOf(wallet.address);
-    if (held < amountIn) throw new Error(`wallet holds ${ethers.formatUnits(held, p.decimals)} ${decision.stable}, lot needs ${decision.stableAmount}`);
-    if ((await token.allowance(wallet.address, SWAP_ROUTER)) < amountIn) {
-      await (await token.approve(SWAP_ROUTER, amountIn)).wait(); // exact amount, never unlimited
+    if (held < inRaw) throw new Error(`wallet holds ${ethers.formatUnits(held, p.decimals)} ${stable}, needs ${floorTo(amountIn, p.decimals)}`);
+    if ((await token.allowance(wallet.address, SWAP_ROUTER)) < inRaw) {
+      await (await token.approve(SWAP_ROUTER, inRaw)).wait(); // exact amount, never unlimited
     }
-    const router = new ethers.Contract(SWAP_ROUTER, ROUTER_ABI, wallet);
     const calls = [
-      routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: p.token, tokenOut: WETN, fee: p.fee, recipient: ADDRESS_THIS, amountIn, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
+      routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: p.token, tokenOut: WETN, fee: p.fee, recipient: ADDRESS_THIS, amountIn: inRaw, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
       routerIface.encodeFunctionData("unwrapWETH9", [minOut, wallet.address]),
     ];
-    const deadline = Math.floor(Date.now() / 1000) + 300;
     await router.multicall.staticCall(deadline, calls);
-    const tx = await router.multicall(deadline, calls);
-    return { kind: "buyback", lotId: decision.lotId, stable: decision.stable, txHash: tx.hash, nonce: tx.nonce, sentAt: new Date().toISOString() };
+    return router.multicall(deadline, calls);
   }
 
+  /** Books a filled order — `amounts` from the pool's Swap event (live) or the quote (paper). */
+  function settleFill(state, order, amounts, txHash) {
+    const at = new Date().toISOString();
+    const etnIn = amounts.etnDelta, stableOut = -amounts.stableDelta; // for sells
+    const etnOut = -amounts.etnDelta, stableIn = amounts.stableDelta; // for buys
+    const gap = state.gap;
+    switch (order.kind) {
+      case "sell": {
+        applySell(state, { id: order.lotId, stable: order.stable, etnSold: etnIn, stableAmount: stableOut, txHash, at });
+        notify(`🔴 Sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} at ${(stableOut / etnIn).toPrecision(4)} (lot #${order.lotId}, EMA ${state.ema?.toPrecision(4)})`);
+        break;
+      }
+      case "buyback": {
+        const lot = state.lots.find((l) => l.id === order.lotId);
+        applyBuyback(state, order.lotId, { etnBought: etnOut, txHash, at });
+        notify(`🟢 Bought back ${fmtEtn(etnOut)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} — ${signedEtn(etnOut - lot.etnSold)} ETN (lot #${lot.id}). Realized so far: ${signedEtn(state.realizedGainEtn)} ETN`);
+        break;
+      }
+      case "seed": {
+        gap.seedEtn += etnIn;
+        gap.stables[order.stable] += stableOut;
+        gap.seeded[order.stable] = true;
+        notify(`🌱 Gap book seeded: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}`);
+        break;
+      }
+      case "gapSell": {
+        applyGapSellLeg(gap, { dear: order.stable, stableReceived: stableOut });
+        state.gapLeg = { dear: order.stable, cheap: order.cheap, etnSold: etnIn, stableReceived: stableOut, sellTx: txHash, at };
+        break;
+      }
+      case "gapBuy": {
+        const leg = state.gapLeg;
+        applyGapBuyLeg(gap, { dear: leg.dear, cheap: order.stable, etnSold: leg.etnSold, stableReceived: leg.stableReceived, stableSpent: stableIn, etnBought: etnOut, at, txHashes: [leg.sellTx, txHash] });
+        state.gapLeg = null;
+        notify(`🔁 Gap trade: sold ${fmtEtn(leg.etnSold)} ETN for ${fmtUsd(leg.stableReceived)} ${leg.dear}, bought ${fmtEtn(etnOut)} ETN with ${fmtUsd(stableIn)} ${order.stable} — ${signedEtn(etnOut - leg.etnSold)} ETN. Gap total: ${signedEtn(gap.gainEtn)} ETN over ${gap.trades} trade(s)`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown order kind ${order.kind}`);
+    }
+  }
+
+  /** Settles state.pending from its receipt: "filled" | "failed" | "waiting". */
   async function resolvePending(state) {
     const pending = state.pending;
     const receipt = await provider.getTransactionReceipt(pending.txHash);
@@ -213,54 +267,113 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg }) {
       // timeout alone could clear a sale that still mines later, losing track of its stablecoin).
       const minedNonce = await provider.getTransactionCount(wallet.address, "latest");
       if (pending.nonce != null && minedNonce > pending.nonce) {
-        const again = await provider.getTransactionReceipt(pending.txHash);
-        if (!again) {
-          state.pending = null;
-          notify(`⚠️ ${pending.kind} tx ${pending.txHash} was dropped (nonce ${pending.nonce} used by another tx); cleared.`);
-          return true;
-        }
-        return resolvePending(state);
+        if (await provider.getTransactionReceipt(pending.txHash)) return resolvePending(state);
+        state.pending = null;
+        notify(`⚠️ ${pending.kind} tx ${pending.txHash} was dropped (nonce ${pending.nonce} used by another tx); cleared.`);
+        return "failed";
       }
-      return false; // still waiting
+      return "waiting";
     }
-    const { ok } = settlePending(state, pending, receipt);
-    state.pending = null;
-    if (!ok) {
+    if (receipt.status !== 1) {
+      state.pending = null;
       consecutiveFailures++;
       notify(`❌ ${pending.kind} tx ${pending.txHash} reverted.`);
-    } else {
-      consecutiveFailures = 0;
-      const lot = state.lots.find((l) => l.id === pending.lotId);
-      const s = summarize(state);
-      notify(
-        pending.kind === "sell"
-          ? `🔴 Sold ${fmtEtn(lot.etnSold)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} at ${lot.sellPrice.toPrecision(4)} (lot #${lot.id})`
-          : `🟢 Bought back ${fmtEtn(lot.etnBought)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} — +${fmtEtn(lot.etnBought - lot.etnSold)} ETN (lot #${lot.id}). Realized so far: +${fmtEtn(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`
-      );
+      return "failed";
     }
-    return true;
+    const amounts = swapAmounts(receipt, POOLS[pending.stable]);
+    if (!amounts) throw new Error(`No Swap event in ${pending.txHash}`); // left pending — needs a look, not a guess
+    state.pending = null;
+    consecutiveFailures = 0;
+    settleFill(state, pending, amounts, pending.txHash);
+    return "filled";
+  }
+
+  /** Paper: fills at the quote. Live: sends, records it as pending, waits, settles. */
+  async function execute(state, order) {
+    if (cfg.mode === "paper") {
+      const amounts = order.side === "sellEtn" ? { etnDelta: order.amountIn, stableDelta: -order.expectedOut } : { etnDelta: -order.expectedOut, stableDelta: order.amountIn };
+      settleFill(state, order, amounts, null);
+      return "filled";
+    }
+    let tx;
+    try {
+      tx = await sendSwap(order.side, order.stable, order.amountIn, order.expectedOut);
+    } catch (err) {
+      consecutiveFailures++;
+      throw err;
+    }
+    state.pending = { ...order, txHash: tx.hash, nonce: tx.nonce, sentAt: new Date().toISOString() };
+    await saveWithRetry(state); // record the in-flight tx before waiting on it — a lost write here would lose the trade
+    await provider.waitForTransaction(tx.hash, 1, 120000).catch(() => null);
+    const result = await resolvePending(state);
+    await saveWithRetry(state);
+    return result;
+  }
+
+  /** The second leg of a gap trade: spend the cheap pool's stablecoin on ETN. Always completed (even
+   * if the gap has since closed) so the ETN sold in the first leg comes back. */
+  async function completeGapLeg(state) {
+    const leg = state.gapLeg;
+    const amountIn = Math.min(leg.stableReceived, state.gap.stables[leg.cheap] || 0);
+    if (!(amountIn > 0.01)) {
+      // Nothing to buy with (shouldn't happen — the trade was sized to the book). Fold the first leg
+      // into the seed so the books stay whole, and move on.
+      state.gap.seedEtn += leg.etnSold;
+      state.gapLeg = null;
+      notify(`⚠️ Gap trade second leg skipped: no ${leg.cheap} left in the gap book; first leg kept as ${leg.dear}.`);
+      return "failed";
+    }
+    const expectedOut = await quoteBuyEtn(leg.cheap, amountIn);
+    return execute(state, { kind: "gapBuy", side: "buyEtn", stable: leg.cheap, amountIn, expectedOut });
+  }
+
+  /** Gap trade candidates — only quoted when the pools' mid prices are far enough apart to clear the
+   * fees at all (a cheap pre-screen on the mids already read; the full quotes are six quoter calls). */
+  async function gapCandidates(mids) {
+    const gapPct = Math.abs(Math.log(mids.USDT / mids.USDC)) * 100;
+    if (gapPct < cfg.gapMinGainPct + 0.6) return { gapPct, candidates: [] };
+    const dear = mids.USDT > mids.USDC ? "USDT" : "USDC";
+    const cheap = other(dear);
+    const candidates = [];
+    for (const etnIn of gapSizes(cfg.gapClipEtn)) {
+      try {
+        const stableOut = await quoteSellEtn(dear, etnIn);
+        candidates.push({ dear, cheap, etnIn, stableOut, etnBack: await quoteBuyEtn(cheap, stableOut) });
+      } catch {
+        // unquotable size — skip
+      }
+    }
+    return { gapPct, candidates };
   }
 
   async function tick() {
     if (running || pausedReason) return;
     running = true;
     try {
-      const state = (await getBotState(cfg.mode)) || freshState(cfg);
+      const state = (await store.get(cfg.mode)) || freshState(cfg);
       if (state.budgetEtn !== cfg.budgetEtn) {
         console.log(`🤖 ETN bot: budget ${state.budgetEtn} -> ${cfg.budgetEtn} ETN (ETN_BOT_BUDGET_ETN changed)`);
         state.budgetEtn = cfg.budgetEtn;
       }
+      if (cfg.gapEnabled && !state.gap) state.gap = freshGapBook();
 
       // A trade still in flight from a previous tick/process: settle it before anything else.
       if (state.pending) {
-        const settled = await resolvePending(state);
-        await setBotState(cfg.mode, state);
-        if (!settled) return;
+        const result = await resolvePending(state);
+        await saveWithRetry(state);
+        if (result === "waiting") return;
+      }
+      // A gap trade whose second leg hasn't run (a failure or restart between the legs): finish it first.
+      if (state.gapLeg) {
+        await completeGapLeg(state);
+        await saveWithRetry(state);
+        return;
       }
 
       // Price EMA (mid of both pools).
-      const mids = await Promise.all(Object.values(POOLS).map((p) => midPrice(provider, p)));
-      const mid = mids.reduce((a, b) => a + b, 0) / mids.length;
+      const mids = {};
+      for (const [stable, p] of Object.entries(POOLS)) mids[stable] = await midPrice(provider, p);
+      const mid = (mids.USDT + mids.USDC) / 2;
       const now = Date.now();
       state.ema = updateEma(state.ema, mid, state.emaAt ? now - new Date(state.emaAt).getTime() : 0, cfg.emaHalfLifeHours * 3600000);
       state.emaAt = new Date(now).toISOString();
@@ -272,47 +385,68 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg }) {
         quotes.walletEtn = bal - cfg.gasReserveEtn;
       }
       const decision = decide(state, quotes, cfg);
+      const inventory = botEtnInventory(state);
+      const canSpendEtn = (etn) => inventory >= etn && (quotes.walletEtn == null || quotes.walletEtn >= etn);
 
       const day = new Date().toISOString().slice(0, 10);
       state.tradesByDay = { [day]: state.tradesByDay?.[day] || 0 }; // keep today only
-      if (decision.action !== "hold" && state.tradesByDay[day] >= cfg.maxTradesPerDay) {
-        decision.action = "hold";
-        decision.reason = `daily trade cap (${cfg.maxTradesPerDay}) reached`;
-      }
+      state.gapTradesByDay = { [day]: state.gapTradesByDay?.[day] || 0 };
+      const lotCapHit = state.tradesByDay[day] >= cfg.maxTradesPerDay;
 
-      if (decision.action === "hold") {
-        if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${decision.reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(botEtnInventory(state))} ETN)`);
-        await setBotState(cfg.mode, state);
+      // 1. Lot buybacks — they lock in ETN.
+      if (decision.action === "buyback" && !lotCapHit) {
+        state.tradesByDay[day]++;
+        await execute(state, { kind: "buyback", side: "buyEtn", stable: decision.stable, amountIn: decision.stableAmount, expectedOut: decision.expectedEtn, lotId: decision.lotId });
+        await saveWithRetry(state);
         return;
       }
 
-      state.tradesByDay[day]++;
-      if (cfg.mode === "paper") {
-        const at = new Date().toISOString();
-        if (decision.action === "sell") {
-          applySell(state, { id: state.nextLotId++, stable: decision.stable, etnSold: decision.etnAmount, stableAmount: decision.expectedStable, txHash: null, at });
-          notify(`🔴 Sold ${fmtEtn(decision.etnAmount)} ETN for ${fmtUsd(decision.expectedStable)} ${decision.stable} at ${decision.price.toPrecision(4)} (EMA ${state.ema.toPrecision(4)})`);
+      let gapNote = "";
+      if (cfg.gapEnabled) {
+        const gap = state.gap;
+        // 2. Seed the gap book (once per side): half the seed ETN sold into each pool.
+        const unseeded = Object.keys(POOLS).find((k) => !gap.seeded[k]);
+        if (unseeded) {
+          const half = cfg.gapSeedEtn / 2;
+          if (canSpendEtn(half)) {
+            await execute(state, { kind: "seed", side: "sellEtn", stable: unseeded, amountIn: half, expectedOut: await quoteSellEtn(unseeded, half) });
+            await saveWithRetry(state);
+            return;
+          }
+          gapNote = " · gap book not seeded (not enough ETN)";
+        } else if (state.gapTradesByDay[day] < cfg.gapMaxTradesPerDay) {
+          // 3. A gap trade: sell into the dear pool, buy back in the cheap one.
+          const { gapPct, candidates } = await gapCandidates(mids);
+          // Paper fills don't move the pools, so the same gap would be "traded" every tick. In paper,
+          // wait for either pool's price to actually change (someone else trading) before the next one.
+          const midsKey = `${mids.USDT}|${mids.USDC}`;
+          const paperStale = cfg.mode === "paper" && state.gapPaperMids === midsKey;
+          const d = paperStale ? null : decideGap(gap, candidates.filter((c) => canSpendEtn(c.etnIn)), { minGainPct: cfg.gapMinGainPct });
+          if (d) {
+            if (cfg.mode === "paper") state.gapPaperMids = midsKey;
+            state.gapTradesByDay[day]++;
+            const first = await execute(state, { kind: "gapSell", side: "sellEtn", stable: d.dear, cheap: d.cheap, amountIn: d.etnIn, expectedOut: d.stableOut });
+            if (first === "filled" && state.gapLeg) await completeGapLeg(state);
+            await saveWithRetry(state);
+            return;
+          }
+          gapNote = ` · pool gap ${gapPct.toFixed(2)}% (book ${fmtUsd(gap.stables.USDT)} USDT / ${fmtUsd(gap.stables.USDC)} USDC, +${fmtEtn(gap.gainEtn)} ETN over ${gap.trades})`;
         } else {
-          const lot = state.lots.find((l) => l.id === decision.lotId);
-          applyBuyback(state, decision.lotId, { etnBought: decision.expectedEtn, txHash: null, at });
-          notify(`🟢 Bought back ${fmtEtn(decision.expectedEtn)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} — +${fmtEtn(decision.expectedEtn - lot.etnSold)} ETN (+${decision.gainPct.toFixed(1)}%)`);
+          gapNote = ` · gap daily cap (${cfg.gapMaxTradesPerDay}) reached`;
         }
-        await setBotState(cfg.mode, state);
+      }
+
+      // 4. A lot sale.
+      if (decision.action === "sell" && !lotCapHit) {
+        state.tradesByDay[day]++;
+        await execute(state, { kind: "sell", side: "sellEtn", stable: decision.stable, amountIn: decision.etnAmount, expectedOut: decision.expectedStable, lotId: state.nextLotId++ });
+        await saveWithRetry(state);
         return;
       }
 
-      // Live.
-      try {
-        state.pending = decision.action === "sell" ? await sendSell(state, decision, state.nextLotId++) : await sendBuyback(decision);
-      } catch (err) {
-        consecutiveFailures++;
-        await setBotState(cfg.mode, state);
-        throw err;
-      }
-      await saveWithRetry(state); // record the in-flight tx before waiting on it — a lost write here would lose the lot
-      await provider.waitForTransaction(state.pending.txHash, 1, 120000).catch(() => null);
-      await resolvePending(state);
-      await setBotState(cfg.mode, state);
+      const reason = decision.action === "hold" ? decision.reason : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
+      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${gapNote}`);
+      await saveWithRetry(state);
     } catch (err) {
       console.error("⚠️  ETN bot tick failed:", err.shortMessage || err.message);
     } finally {
@@ -345,10 +479,14 @@ export async function startEtnAccumulatorBot() {
   const provider = createRpcProvider();
   const wallet = key ? new ethers.Wallet(key, provider) : null;
   if (cfg.mode === "live") {
+    // What the bot can actually have out of the wallet at once: up to maxStableFraction of the
+    // budget in lots, plus the gap book's seed — not the whole budget.
+    const needed = cfg.maxStableFraction * cfg.budgetEtn + (cfg.gapEnabled ? cfg.gapSeedEtn : 0) + cfg.gasReserveEtn;
     const bal = Number(ethers.formatEther(await provider.getBalance(wallet.address)));
-    if (bal < cfg.budgetEtn + cfg.gasReserveEtn) console.warn(`⚠️  ETN bot: wallet holds ${fmtEtn(bal)} ETN, below budget ${fmtEtn(cfg.budgetEtn)} + reserve ${cfg.gasReserveEtn} — sales will stop when the balance runs short`);
+    if (bal < needed) console.warn(`⚠️  ETN bot: wallet holds ${fmtEtn(bal)} ETN, below the ${fmtEtn(needed)} it may need at once (lots + gap seed + gas reserve) — trades will stop when the balance runs short`);
   }
-  console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%, every ${cfg.intervalMs / 1000}s`);
+  const gapText = cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off";
+  console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();
   setInterval(() => bot.tick(), cfg.intervalMs);

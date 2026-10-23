@@ -10,7 +10,8 @@
 import dotenv from "dotenv";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getBotState } from "../state/etnAccumulatorBotState.js";
-import { gatherQuotes, readConfig } from "../utils/etnAccumulatorBot.js";
+import { ethers } from "ethers";
+import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
 import { summarize } from "../services/etnAccumulatorStrategy.js";
 
 dotenv.config();
@@ -25,16 +26,37 @@ async function main() {
     console.log(`No ${mode} books yet — the bot hasn't run in ${mode} mode.`);
     return;
   }
-  const { buyback } = await gatherQuotes(createRpcProvider(), state, readConfig().clipEtn);
-  const s = summarize(state, buyback);
+  const provider = createRpcProvider();
+  const { buyback } = await gatherQuotes(provider, state, readConfig().clipEtn);
+  // What the gap book's stablecoin would buy in ETN right now.
+  let gapStablesEtn = 0;
+  if (state.gap) {
+    const quoter = new ethers.Contract(process.env.ELECTROSWAP_V3_QUOTER_ADDRESS || "0xba3CAfCc197E71b9d114E515E75c037dA09A6312", ["function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160, uint32, uint256)"], provider);
+    for (const [k, p] of Object.entries(POOLS)) {
+      const usd = state.gap.stables[k] || 0;
+      if (usd < 0.01) continue;
+      const r = await quoter.quoteExactInputSingle.staticCall({ tokenIn: p.token, tokenOut: "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77", amountIn: ethers.parseUnits((Math.floor(usd * 1e6) / 1e6).toFixed(6), 6), fee: p.fee, sqrtPriceLimitX96: 0 });
+      gapStablesEtn += Number(ethers.formatEther(r[0]));
+    }
+  }
+  const s = summarize(state, buyback, gapStablesEtn);
 
   console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt}, updated ${state.updatedAt})`);
   console.log(`  Budget:            ${etn(s.budgetEtn)} ETN`);
   console.log(`  Cycles closed:     ${s.cyclesClosed}   realized gain: ${s.realizedGainEtn >= 0 ? "+" : ""}${etn(s.realizedGainEtn)} ETN`);
   console.log(`  Open lots:         ${s.lotsOpen}   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})`);
   console.log(`  ETN if closed now: ${etn(s.etnEquivalentNow)} ETN  (${s.vsHoldPct >= 0 ? "+" : ""}${s.vsHoldPct.toFixed(2)}% vs just holding)`);
+  if (state.gap) {
+    console.log(`  Gap trades:        ${s.gapTrades}   gained: +${etn(s.gapGainEtn)} ETN   (seed ${etn(s.gapSeedEtn)} ETN; book now $${(state.gap.stables.USDT || 0).toFixed(2)} USDT + $${(state.gap.stables.USDC || 0).toFixed(2)} USDC = ${etn(gapStablesEtn)} ETN)`);
+    if (state.gapLeg) console.log(`  GAP LEG OPEN:      sold ${etn(state.gapLeg.etnSold)} ETN into ${state.gapLeg.dear}; buy leg in ${state.gapLeg.cheap} still to run`);
+  }
   console.log(`  Price EMA:         $${state.ema?.toPrecision(4)} over ${state.samples} samples`);
   if (state.pending) console.log(`  PENDING tx:        ${state.pending.kind} ${state.pending.txHash}`);
+
+  if (state.gap?.recent?.length) {
+    console.log("\n  Recent gap trades:  sold in   ETN sold    $       ETN back    gain");
+    for (const t of state.gap.recent.slice(-10)) console.log(`  ${(t.at || "").slice(5, 16).padEnd(18)} ${t.dear.padEnd(6)} ${etn(t.etnSold).padStart(9)}  ${t.stableReceived.toFixed(2).padStart(6)}  ${etn(t.etnBought).padStart(9)}   ${t.gainEtn >= 0 ? "+" : ""}${etn(t.gainEtn)}`);
+  }
 
   if (state.lots.length) {
     console.log("\n  #    status  stable   ETN sold     stable   sell price    ETN back   gain");
