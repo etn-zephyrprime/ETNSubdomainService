@@ -7,7 +7,6 @@ import PortfolioCompositionChart from "./PortfolioCompositionChart.jsx";
 import Change24hBadge from "./Change24hBadge.jsx";
 import RowLeader from "./RowLeader.jsx";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
-import { DiamondHandsCard } from "./CoreTierDiamondHands.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
@@ -936,7 +935,6 @@ function DemoNftPnl({ data }) {
 // Same 5 panels PortfolioDashboardSection.jsx's own PANELS switches between, minus Recent
 // Activity/Gas Spent/Telegram Alerts — those either need data this demo's own snapshot doesn't
 // compute, or are tied to a real authenticated identity (see this component's own header comment).
-// Diamond Hands isn't a panel any more — it's the card under the wallet filter, same as the real page.
 const DEMO_BASE_PANELS = [
   { id: "portfolio", label: "Portfolio", icon: WalletIcon },
   { id: "balance", label: "Balance History", icon: LineChart },
@@ -1035,18 +1033,6 @@ export default function CoreTierDemo({ onSelectToken }) {
               ))}
             </div>
           </div>
-
-          {/* Same summary-row spot as the real page. No gas ticker here: the demo snapshot doesn't
-              compute gas spend. Diamond Hands only when the snapshot has it (older ones predate it —
-              re-run generateDemoSnapshot.js and it appears). */}
-          {data.diamondHands && (
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <DiamondHandsCard
-                result={(walletFilter === "all" ? data.diamondHands.portfolio : data.diamondHands.perWallet.find((w) => w.walletIndex === Number(walletFilter))) || null}
-                label={walletFilter === "all" ? "Portfolio" : "This Wallet"}
-              />
-            </div>
-          )}
 
           <div style={{ marginBottom: 20 }}>
             <style>{`

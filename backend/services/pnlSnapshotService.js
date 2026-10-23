@@ -120,7 +120,7 @@ export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, pr
 // function of its INGESTED data — it doesn't depend on prices or on when it's asked. Yet every
 // consumer used to rebuild it from scratch on each call: three whole-history SELECTs (transfers, swaps,
 // DeFi activity) plus a full replay. computeLivePnlSnapshot did that on every 30s-TTL miss (so any
-// member who simply reloaded the page), NFT PnL and Diamond Hands did it on EVERY call with no cache at
+// member who simply reloaded the page), NFT PnL did it on EVERY call with no cache at
 // all. That is the dominant source of Supabase egress: 8GB used against a 5GB free-plan cap with only a
 // handful of users. The ledger only changes when ingestion advances a cursor, and
 // wallet_ingestion_state.updated_at moves exactly then (see upsertIngestionState), so it's cached
@@ -141,7 +141,7 @@ function rememberLedger(key, entry) {
 
 // One in-flight build per (wallet, self-owned set, ingestion version): concurrent callers share it.
 // Confirmed live (2026-10-20): after a restart every ledger cache is empty, and the PnL page,
-// Diamond Hands, avg cost, NFT PnL and their polls each started their OWN full rebuild of the same
+// avg cost, NFT PnL and their polls each started their OWN full rebuild of the same
 // wallet. With the RPC stalling, dozens piled up — each holding the wallet's whole history — and the
 // heap ran out ~90s after boot (exit 134, twice). Priority-scoped builds aren't shared (partial by design).
 const inFlightLedgerBuilds = new Map(); // `${key}|${updatedAtMs}` -> Promise
