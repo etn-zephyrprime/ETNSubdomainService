@@ -36,6 +36,7 @@ import { startNftSalesCache } from "./utils/nftSalesCache.js";
 import { startDailyBlockStatsCache } from "./utils/dailyBlockStatsCache.js";
 import { startHourlyActivityCache } from "./utils/hourlyActivityCache.js";
 import { startValidatorRewardsCache } from "./utils/validatorRewardsCache.js";
+import { startValidatorWalletsCache } from "./utils/validatorWalletsCache.js";
 import { startSubdomainAdvertScheduler } from "./utils/subdomainAdvertScheduler.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
@@ -149,6 +150,7 @@ app.listen(PORT, () => {
   startDailyBlockStatsCache();
   startHourlyActivityCache();
   startValidatorRewardsCache();
+  startValidatorWalletsCache();
   safeStart("Telegram webhook registration", registerTelegramWebhook);
   safeStart("Notis (Planet Zephyros) webhook registration", registerNotisWebhook);
   safeStart("Subdomain advert scheduler", startSubdomainAdvertScheduler);
