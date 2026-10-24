@@ -46,6 +46,7 @@ const ALLOWED_FILES = new Set([
   "daily-block-stats.json",
   "hourly-activity.json",
   "validator-rewards.json",
+  "validator-wallets.json",
   "team-wallets.json",
   "team-wallets-balance-history.json",
   "cex-balance-history.json",

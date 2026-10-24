@@ -12,6 +12,7 @@ import TeamWalletTag from "./TeamWalletTag.jsx";
 import TeamBalanceChart from "./TeamBalanceChart.jsx";
 import TeamDestinations from "./TeamDestinations.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
+import ValidatorWalletsView from "./ValidatorWalletsView.jsx";
 
 const sectionLabelStyle = { fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 10 };
 
@@ -117,11 +118,52 @@ function MovementRow({ movement }) {
   );
 }
 
-// Free-tier tab tracking every known Electroneum team wallet (see utils/teamWallets.js) — current
-// ETN balance per wallet plus a merged feed of their recent real ETN movements. Backed entirely by
+function ViewButton({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      style={{
+        flex: "1 1 0",
+        padding: "10px 14px",
+        borderRadius: 6,
+        border: `1px solid ${active ? green : border}`,
+        background: active ? "rgba(24,187,26,0.12)" : panel2,
+        color: active ? green : mutedLight,
+        fontFamily: monoFont,
+        fontSize: 12,
+        letterSpacing: 0.6,
+        textTransform: "uppercase",
+        fontWeight: 800,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// The Team Wallets tab: two views behind a toggle — the suspected team wallets (below) and the
+// chain's validators (ValidatorWalletsView.jsx), watched for the moment they start moving ETN.
+export default function TeamWalletsTab({ onSelectAddress }) {
+  const [view, setView] = useState("team");
+  return (
+    <div>
+      <style>{`.dash-team-row{transition:border-color .15s ease,background .15s ease;} .dash-team-row:hover,.dash-team-row:focus-visible{border-bottom-color:${green};}`}</style>
+      <div style={{ display: "flex", gap: 10, marginBottom: 18, maxWidth: 420 }}>
+        <ViewButton active={view === "team"} onClick={() => setView("team")}>Team Wallets</ViewButton>
+        <ViewButton active={view === "validators"} onClick={() => setView("validators")}>Validators</ViewButton>
+      </div>
+      {view === "team" ? <TeamWalletsView onSelectAddress={onSelectAddress} /> : <ValidatorWalletsView />}
+    </div>
+  );
+}
+
+// Tracks every known Electroneum team wallet (see utils/teamWallets.js) — current ETN balance per
+// wallet plus a merged feed of their recent real ETN movements. Backed entirely by
 // backend/utils/teamWalletsCache.js's R2-published snapshot (useTeamWallets.js) — nothing here
 // talks to Blockscout directly, same reasoning as every other cache-backed tab on this dashboard.
-export default function TeamWalletsTab({ onSelectAddress }) {
+function TeamWalletsView({ onSelectAddress }) {
   const { getTeamWallets } = useTeamWallets();
   const etnUsdPrice = useEtnPrice(); // shared, R2-cached live rate — same source every other "≈ $" estimate on this dashboard uses
 
@@ -198,8 +240,6 @@ export default function TeamWalletsTab({ onSelectAddress }) {
 
   return (
     <div>
-      <style>{`.dash-team-row{transition:border-color .15s ease,background .15s ease;} .dash-team-row:hover,.dash-team-row:focus-visible{border-bottom-color:${green};}`}</style>
-
       <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16, lineHeight: 1.5 }}>
         Suspected Electroneum team wallets — anyone holding more than 49 of{" "}
         <a href={`${EXPLORER_BASE_URL}/token/0x1760321f42A9BE39b39c779D92373769d829ef48?tab=holders`} target="_blank" rel="noreferrer" style={{ color: blue }}>
