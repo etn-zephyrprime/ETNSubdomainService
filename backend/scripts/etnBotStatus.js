@@ -12,7 +12,7 @@ import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getBotState } from "../state/etnAccumulatorBotState.js";
 import { ethers } from "ethers";
 import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
-import { summarize } from "../services/etnAccumulatorStrategy.js";
+import { summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 
 dotenv.config();
 
@@ -41,18 +41,28 @@ async function main() {
   }
   const s = summarize(state, buyback, gapStablesEtn);
 
-  console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt}, updated ${state.updatedAt})`);
+  // Led by ETN ACCUMULATED: ETN the bot's trades have added, which is what it's for. The stablecoin is
+  // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
+  // mark-to-market "if everything were converted now" figure is the last line, not the headline.
+  const accumulated = s.realizedGainEtn + s.gapGainEtn;
+  const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
+  const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
   const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);
-  console.log(`  Budget:            ${etn(s.budgetEtn)} ETN${deposits.length ? `  + topped up ${deposits.map(([k, v]) => `$${v.toFixed(2)} ${k}`).join(" + ")} (= ${etn(s.contributedEtn - s.budgetEtn)} ETN when added)` : ""}`);
-  console.log(`  Cycles closed:     ${s.cyclesClosed}   realized gain: ${s.realizedGainEtn >= 0 ? "+" : ""}${etn(s.realizedGainEtn)} ETN`);
-  console.log(`  Open lots:         ${s.lotsOpen}   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})`);
-  console.log(`  ETN if closed now: ${etn(s.etnEquivalentNow)} ETN  (${s.vsHoldPct >= 0 ? "+" : ""}${s.vsHoldPct.toFixed(2)}% vs just holding${deposits.length ? ` the ${etn(s.contributedEtn)} ETN put in` : ""})`);
+
+  console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt.slice(0, 16)}Z, updated ${state.updatedAt.slice(0, 16)}Z)`);
+  console.log(`\n  ETN ACCUMULATED:     ${signed(accumulated)} ETN   (${((accumulated / s.budgetEtn) * 100).toFixed(2)}% of the ${etn(s.budgetEtn)} ETN budget, ~${signed(accumulated / days)} ETN/day)`);
+  if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)`);
+  console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
+
+  console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
   if (state.gap) {
-    console.log(`  Gap trades:        ${s.gapTrades}   gained: +${etn(s.gapGainEtn)} ETN   (seed ${etn(s.gapSeedEtn)} ETN; book now $${(state.gap.stables.USDT || 0).toFixed(2)} USDT + $${(state.gap.stables.USDC || 0).toFixed(2)} USDC = ${etn(gapStablesEtn)} ETN)`);
-    if (state.gapLeg) console.log(`  GAP LEG OPEN:      sold ${etn(state.gapLeg.etnSold)} ETN into ${state.gapLeg.dear}; buy leg in ${state.gapLeg.cheap} still to run`);
+    const usdt = state.gap.stables.USDT || 0, usdc = state.gap.stables.USDC || 0;
+    console.log(`  Working capital:     $${usdt.toFixed(2)} USDT + $${usdc.toFixed(2)} USDC = $${(usdt + usdc).toFixed(2)}   (from the ${etn(s.gapSeedEtn)} ETN seed${deposits.length ? ` + your top-ups of ${deposits.map(([k, v]) => `$${v.toFixed(2)} ${k}`).join(" + ")}` : ""})`);
+    if (state.gapLeg) console.log(`  GAP LEG OPEN:        sold ${etn(state.gapLeg.etnSold)} ETN into ${state.gapLeg.dear}; buy leg in ${state.gapLeg.cheap} still to run`);
   }
-  console.log(`  Price EMA:         $${state.ema?.toPrecision(4)} over ${state.samples} samples`);
-  if (state.pending) console.log(`  PENDING tx:        ${state.pending.kind} ${state.pending.txHash}`);
+  console.log(`  Open lots:           ${s.lotsOpen}${s.lotsOpen ? `   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})` : ""}`);
+  console.log(`  Price EMA:           $${state.ema?.toPrecision(4)} over ${state.samples} samples`);
+  if (state.pending) console.log(`  PENDING tx:          ${state.pending.kind} ${state.pending.txHash}`);
 
   if (state.gap?.recent?.length) {
     console.log("\n  Recent gap trades:  sold in   ETN sold    $       ETN back    gain");
@@ -67,6 +77,8 @@ async function main() {
       console.log(`  ${String(l.id).padEnd(4)} ${l.status.padEnd(7)} ${l.stable.padEnd(6)} ${etn(l.etnSold).padStart(9)}  ${l.stableAmount.toFixed(2).padStart(9)}   ${l.sellPrice.toPrecision(4).padStart(10)}   ${back ? etn(back).padStart(9) : "        —"}   ${gain}`);
     }
   }
+
+  console.log(`\n  (Mark-to-market, moves with ETN's price: converting everything back to ETN right now would leave ${etn(s.etnEquivalentNow)} ETN against ${etn(s.contributedEtn)} ETN put in — after one-off fees and price impact.)`);
 }
 
 main().catch((err) => {
