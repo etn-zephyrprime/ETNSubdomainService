@@ -2,7 +2,7 @@
 // inventory in services/etnAccumulatorStrategy.js). Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideGap, gapSizes, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapTrade } from "../services/etnGapStrategy.js";
+import { decideGap, gapSizes, affordableLegEtn, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapTrade, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { botEtnInventory, summarize } from "../services/etnAccumulatorStrategy.js";
 
 const book = (USDT, USDC) => ({ ...freshGapBook(), stables: { USDT, USDC } });
@@ -61,4 +61,30 @@ test("inventory: seed out, gains in, an unfinished first leg out", () => {
 
 test("no gap book: inventory unchanged", () => {
   assert.equal(botEtnInventory({ budgetEtn: 100000, realizedGainEtn: 10, lots: [] }), 100010);
+});
+
+test("sizes: a nearly drained side still trades with what it can afford", () => {
+  // $5.17 of USDC at ~$0.00215/ETN affords ~2,330 ETN — just under the 2,500 quarter clip (Oct 2026).
+  const afford = affordableLegEtn(5.17, 0.00215);
+  assert.ok(afford > 2300 && afford < 2340);
+  assert.deepEqual(gapSizes(10000, afford), [Math.floor(afford)]);
+  assert.deepEqual(gapSizes(10000, 6000), [5000, 2500, 6000]);
+  assert.deepEqual(gapSizes(10000, 400), []); // below the minimum leg
+  assert.equal(affordableLegEtn(0, 0.002), 0);
+});
+
+test("deposits: top-ups join the book and count as money put in", () => {
+  const b = book(27.39, 16.14);
+  applyGapDeposit(b, "USDC", 50, 22900);
+  assert.equal(b.stables.USDC, 66.14);
+  assert.equal(b.depositsUsd.USDC, 50);
+  assert.equal(b.depositEtn, 22900);
+  applyGapDeposit(b, "USDT", -100, -45800); // more missing than the book holds: floored at zero
+  assert.equal(b.stables.USDT, 0);
+  assert.ok(Math.abs(b.depositsUsd.USDT + 27.39) < 1e-9);
+  assert.ok(Math.abs(b.depositEtn - (22900 - 45800 * (27.39 / 100))) < 1e-6);
+  const state = { budgetEtn: 100000, realizedGainEtn: 0, lots: [], gap: { ...book(0, 0), seedEtn: 20000, gainEtn: 0, depositEtn: 22900 } };
+  const s = summarize(state, {}, 42900); // seed + deposit stablecoin worth exactly what went in
+  assert.equal(s.contributedEtn, 122900);
+  assert.equal(s.vsHoldPct, 0);
 });

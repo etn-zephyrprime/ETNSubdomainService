@@ -120,6 +120,9 @@ export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0) {
   const openBuybackEtn = open.reduce((s, l) => s + (buybackQuotes[l.id] ?? 0), 0);
   const allQuoted = open.every((l) => buybackQuotes[l.id] > 0);
   const etnNow = botEtnInventory(state) + (allQuoted ? openBuybackEtn : openEtnSold) + gapStablesEtn;
+  // Everything put in, in ETN: the budget plus any stablecoin topped up into the gap book (at the ETN
+  // value it had when it arrived).
+  const contributedEtn = state.budgetEtn + (state.gap?.depositEtn || 0);
   return {
     budgetEtn: state.budgetEtn,
     cyclesClosed: closed.length,
@@ -131,7 +134,9 @@ export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0) {
     gapGainEtn: state.gap?.gainEtn || 0,
     gapSeedEtn: state.gap?.seedEtn || 0,
     gapStablesEtn,
+    gapDepositsUsd: state.gap?.depositsUsd || {},
+    contributedEtn,
     etnEquivalentNow: etnNow,
-    vsHoldPct: (etnNow / state.budgetEtn - 1) * 100,
+    vsHoldPct: (etnNow / contributedEtn - 1) * 100,
   };
 }
