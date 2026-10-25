@@ -31,7 +31,7 @@ import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
-import { GAP_DEFAULTS, gapSizes, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg } from "../services/etnGapStrategy.js";
+import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
 const SWAP_ROUTER = "0x5A3AB7e9f405250B36e7e0a4654c1052EADC1F07"; // ElectroSwap SwapRouter02 (V3)
@@ -327,15 +327,35 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     return execute(state, { kind: "gapBuy", side: "buyEtn", stable: leg.cheap, amountIn, expectedOut });
   }
 
+  /** Brings the gap book in line with the wallet's actual USDT/USDC. Everything the bot does is in its
+   * books, so the wallet should hold exactly the gap book plus any open lots' stablecoin; a surplus can
+   * only be a top-up sent to the wallet, and joins the gap book as a deposit — counted at that moment's
+   * ETN value, so the ETN-vs-holding figure isn't flattered by it. A shortfall (stablecoin moved out of
+   * the wallet by hand) shrinks the book to match, so the bot never plans a trade it can't pay for.
+   * Only runs between trades: the caller has already settled anything pending. */
+  async function reconcileGapStables(state, mids) {
+    const gap = state.gap;
+    for (const [k, p] of Object.entries(POOLS)) {
+      const held = Number(ethers.formatUnits(await new ethers.Contract(p.token, ERC20_ABI, provider).balanceOf(wallet.address), p.decimals));
+      const inLots = state.lots.filter((l) => l.status === "open" && l.stable === k).reduce((s, l) => s + l.stableAmount, 0);
+      const diff = held - inLots - (gap.stables[k] || 0);
+      if (Math.abs(diff) < 0.01) continue;
+      applyGapDeposit(gap, k, diff, diff / mids[k]);
+      notify(diff > 0
+        ? `💵 ${fmtUsd(diff)} ${k} found in the wallet — added to the gap book (now ${fmtUsd(gap.stables[k])} ${k})`
+        : `⚠️ ${fmtUsd(-diff)} ${k} missing from the wallet — gap book reduced to ${fmtUsd(gap.stables[k])} ${k}`);
+    }
+  }
+
   /** Gap trade candidates — only quoted when the pools' mid prices are far enough apart to clear the
    * fees at all (a cheap pre-screen on the mids already read; the full quotes are six quoter calls). */
-  async function gapCandidates(mids) {
+  async function gapCandidates(mids, book) {
     const gapPct = Math.abs(Math.log(mids.USDT / mids.USDC)) * 100;
     if (gapPct < cfg.gapMinGainPct + 0.6) return { gapPct, candidates: [] };
     const dear = mids.USDT > mids.USDC ? "USDT" : "USDC";
     const cheap = other(dear);
     const candidates = [];
-    for (const etnIn of gapSizes(cfg.gapClipEtn)) {
+    for (const etnIn of gapSizes(cfg.gapClipEtn, affordableLegEtn(book.stables[cheap], mids[dear]))) {
       try {
         const stableOut = await quoteSellEtn(dear, etnIn);
         candidates.push({ dear, cheap, etnIn, stableOut, etnBack: await quoteBuyEtn(cheap, stableOut) });
@@ -379,6 +399,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       state.emaAt = new Date(now).toISOString();
       state.samples = (state.samples || 0) + 1;
 
+      // USDT/USDC you send to the wallet joins the gap book (live only; see reconcileGapStables).
+      if (cfg.gapEnabled && cfg.mode === "live" && wallet) await reconcileGapStables(state, mids);
+
       const quotes = await gatherQuotes(provider, state, cfg.clipEtn);
       if (wallet) {
         const bal = Number(ethers.formatEther(await provider.getBalance(wallet.address)));
@@ -416,7 +439,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
           gapNote = " · gap book not seeded (not enough ETN)";
         } else if (state.gapTradesByDay[day] < cfg.gapMaxTradesPerDay) {
           // 3. A gap trade: sell into the dear pool, buy back in the cheap one.
-          const { gapPct, candidates } = await gapCandidates(mids);
+          const { gapPct, candidates } = await gapCandidates(mids, gap);
           // Paper fills don't move the pools, so the same gap would be "traded" every tick. In paper,
           // wait for either pool's price to actually change (someone else trading) before the next one.
           const midsKey = `${mids.USDT}|${mids.USDC}`;

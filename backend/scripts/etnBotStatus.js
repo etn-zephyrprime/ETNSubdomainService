@@ -42,10 +42,11 @@ async function main() {
   const s = summarize(state, buyback, gapStablesEtn);
 
   console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt}, updated ${state.updatedAt})`);
-  console.log(`  Budget:            ${etn(s.budgetEtn)} ETN`);
+  const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);
+  console.log(`  Budget:            ${etn(s.budgetEtn)} ETN${deposits.length ? `  + topped up ${deposits.map(([k, v]) => `$${v.toFixed(2)} ${k}`).join(" + ")} (= ${etn(s.contributedEtn - s.budgetEtn)} ETN when added)` : ""}`);
   console.log(`  Cycles closed:     ${s.cyclesClosed}   realized gain: ${s.realizedGainEtn >= 0 ? "+" : ""}${etn(s.realizedGainEtn)} ETN`);
   console.log(`  Open lots:         ${s.lotsOpen}   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})`);
-  console.log(`  ETN if closed now: ${etn(s.etnEquivalentNow)} ETN  (${s.vsHoldPct >= 0 ? "+" : ""}${s.vsHoldPct.toFixed(2)}% vs just holding)`);
+  console.log(`  ETN if closed now: ${etn(s.etnEquivalentNow)} ETN  (${s.vsHoldPct >= 0 ? "+" : ""}${s.vsHoldPct.toFixed(2)}% vs just holding${deposits.length ? ` the ${etn(s.contributedEtn)} ETN put in` : ""})`);
   if (state.gap) {
     console.log(`  Gap trades:        ${s.gapTrades}   gained: +${etn(s.gapGainEtn)} ETN   (seed ${etn(s.gapSeedEtn)} ETN; book now $${(state.gap.stables.USDT || 0).toFixed(2)} USDT + $${(state.gap.stables.USDC || 0).toFixed(2)} USDC = ${etn(gapStablesEtn)} ETN)`);
     if (state.gapLeg) console.log(`  GAP LEG OPEN:      sold ${etn(state.gapLeg.etnSold)} ETN into ${state.gapLeg.dear}; buy leg in ${state.gapLeg.cheap} still to run`);

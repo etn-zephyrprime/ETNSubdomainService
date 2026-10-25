@@ -20,9 +20,25 @@ export const GAP_DEFAULTS = {
   minGainPct: 1.5, // net ETN gain per trade, after both legs' fees and impact (backtest pick, Oct 2026)
 };
 
-/** Candidate leg sizes to quote for a given max clip. */
-export function gapSizes(clipEtn) {
-  return [clipEtn, clipEtn / 2, clipEtn / 4];
+// Smallest leg worth a transaction: below this the gain is a handful of ETN.
+export const MIN_GAP_LEG_ETN = 500;
+
+/** Candidate leg sizes to quote: the full, half and quarter clip, plus `affordableEtn` — the largest
+ * leg the cheap side's stablecoin can pay for — so a nearly drained side still trades with what's
+ * left instead of sitting out a gap (Oct 2026: a 3.3% gap went untraded for 3 hours because $5.17 of
+ * USDC was just short of the quarter clip). Sizes the book can't pay for are dropped here; decideGap
+ * checks the real quotes against the book as well. */
+export function gapSizes(clipEtn, affordableEtn = Infinity) {
+  const sizes = [clipEtn, clipEtn / 2, clipEtn / 4].filter((s) => s <= affordableEtn);
+  if (affordableEtn < clipEtn && affordableEtn >= MIN_GAP_LEG_ETN) sizes.push(Math.floor(affordableEtn));
+  return [...new Set(sizes)];
+}
+
+/** The largest ETN leg whose sale into the dear pool (at about `dearPriceUsd` per ETN) stays within
+ * `cheapStableUsd` — with 3% headroom for fees and price impact going the other way. */
+export function affordableLegEtn(cheapStableUsd, dearPriceUsd) {
+  if (!(cheapStableUsd > 0) || !(dearPriceUsd > 0)) return 0;
+  return (cheapStableUsd * 0.97) / dearPriceUsd;
 }
 
 /**
@@ -44,7 +60,19 @@ export function decideGap(book, candidates, cfg = GAP_DEFAULTS) {
 }
 
 export function freshGapBook() {
-  return { seedEtn: 0, seeded: {}, stables: { USDT: 0, USDC: 0 }, gainEtn: 0, trades: 0, recent: [] };
+  return { seedEtn: 0, seeded: {}, stables: { USDT: 0, USDC: 0 }, gainEtn: 0, trades: 0, recent: [], depositsUsd: {}, depositEtn: 0 };
+}
+
+/** Stablecoin added to (positive) or taken out of (negative) the gap book from outside the bot —
+ * `etnValue` is what it was worth in ETN at that moment, so performance is measured against
+ * everything put in, not just the ETN budget. The book never goes below zero. */
+export function applyGapDeposit(book, stable, usd, etnValue) {
+  const before = book.stables[stable] || 0;
+  const applied = Math.max(usd, -before);
+  book.stables[stable] = before + applied;
+  book.depositsUsd = { ...(book.depositsUsd || {}), [stable]: ((book.depositsUsd || {})[stable] || 0) + applied };
+  book.depositEtn = (book.depositEtn || 0) + (usd === 0 ? 0 : etnValue * (applied / usd));
+  return book;
 }
 
 /** First leg filled: the dear pool's stablecoin arrived. Live trades settle the two legs separately
