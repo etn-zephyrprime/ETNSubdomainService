@@ -55,16 +55,16 @@ async function checkOneSubscription(provider, sub, today) {
   const chatId = await getNotisLinkedChatId(sub.ownerWallet);
   if (chatId == null) return; // not linked — retried every tick until they link, so nothing is lost by not recording a send
 
-  let totalUsd, hasUnpriced, usedStale;
+  let totalUsd, hasUnpriced, usedStale, unpriced;
   try {
-    ({ totalUsd, hasUnpriced, usedStale } = await getPortfolioUsdValue(provider, sub.ownerWallet));
+    ({ totalUsd, hasUnpriced, usedStale, unpriced } = await getPortfolioUsdValue(provider, sub.ownerWallet));
   } catch (err) {
     console.warn(`⚠️  Portfolio digest: valuation failed for ${sub.ownerWallet}:`, err.message);
     return;
   }
 
   if (hasUnpriced && new Date().getUTCHours() < GIVE_UP_HOUR_UTC) {
-    console.warn(`⚠️  Portfolio digest: valuation for ${sub.ownerWallet} is incomplete (some holdings couldn't be priced) — holding the digest and retrying next check`);
+    console.warn(`⚠️  Portfolio digest: valuation for ${sub.ownerWallet} is incomplete — holding the digest and retrying next check. Unpriced: ${(unpriced || []).join(" | ") || "(no reason recorded)"}`);
     return; // nothing recorded, so the next tick tries again
   }
 

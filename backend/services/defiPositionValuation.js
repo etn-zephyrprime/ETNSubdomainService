@@ -556,7 +556,13 @@ async function computeDefiPositionsLive(trackedWallet) {
   // reads this directly (portfolioValuation.js, via Number()) or relays it through an HTTP JSON
   // response (premiumDashboardRouter.js) — sees the same plain, unambiguous type, matching this
   // codebase's own convention elsewhere (e.g. pnlSnapshotService.js's return shape).
-  return { positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced, failedCount };
+  // Which position(s) made it incomplete, for the digest's log line (portfolioValuation.js).
+  const reasons = positions
+    .filter((p) => p.hasUnpriced)
+    .map((p) => `${p.label || p.kind}: no price for ${(p.legs || []).filter((l) => l.usdValue == null).map((l) => l.symbol || l.tokenAddress).join(", ") || "a leg"}`);
+  if (failedCount > 0) reasons.push(`${failedCount} position(s) couldn't be read`);
+  const unpricedReason = reasons.length ? reasons.join("; ") : null;
+  return { positions, totalUsd: totalUsd?.toString() ?? null, hasUnpriced, failedCount, unpricedReason };
 }
 
 /** Runs the live computation and writes the result to both cache levels, tagged with the
