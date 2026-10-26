@@ -85,14 +85,11 @@ async function checkOneSubscription(provider, sub, today) {
     `📊 *Daily Portfolio Summary*\n\n${prefix}${fmtUsd(totalUsd)}\n\n${changeLine}` +
       `${hasUnpriced ? "\n\n_Some holdings couldn't be priced — real total may be higher._" : ""}` +
       `${usedStale ? "\n\n_A few prices are from a recent snapshot._" : ""}` +
-      // This quick total covers ETN, token balances, and yield-farm/staking positions
-      // (getPortfolioUsdValue above) — it never values liquidity-pool positions at all, no LP
-      // valuation call exists in that function. A member holding LP positions gets a total that
-      // permanently understates their real portfolio, with no transient caveat (unlike hasUnpriced/
-      // usedStale above) ever correcting it — the dashboard's own Combined Holdings is the only
-      // place that computes the complete figure. Shown every time, not conditionally, since this
-      // is a structural scope gap, not an occasional pricing hiccup.
-      `\n\n_Doesn't include liquidity pool positions — log in for your complete, most accurate total._\n\n` +
+      // This quick total covers ETN, token balances, unlocked liquidity (V2 LP tokens held, V3 positions
+      // held directly) and yield-farm/staking positions (getPortfolioUsdValue above). LP locked in
+      // ElectroSwapLockerV2 is deliberately excluded — said on every message, since it's a scope choice,
+      // not an occasional pricing hiccup.
+      `\n\n_Includes unlocked liquidity; locked LP isn't counted. Log in for your full breakdown._\n\n` +
       `[Dashboard](${DASHBOARD_URL}/premium)`
   );
 

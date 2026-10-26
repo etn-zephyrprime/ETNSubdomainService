@@ -26,7 +26,7 @@ import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLastKnownPrice, recordLastKnownPrice } from "./lastKnownPrices.js";
 import { isTestNamedToken } from "../services/ignoredAssets.js";
-import { probeV2Pool } from "../services/lpPositionValuation.js";
+import { probeV2Pool, computeLpPositionsLive } from "../services/lpPositionValuation.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // MUST stay byte-for-byte in sync with src/dashboard/utils/format.js's SPAM_NAME_PATTERN — kept as
@@ -54,6 +54,7 @@ const MAX_PRICED_TOKENS_PER_WALLET = 50;
 // covered by the same store inside defiPositionValuation.js) is carried at its last successful figure, in memory.
 const STALE_MAX_MS = 48 * 60 * 60 * 1000;
 const lastGoodDefiUsd = new Map(); // lowercased wallet -> { usd, at }
+const lastGoodLpUsd = new Map(); // lowercased wallet -> { usd, at } — unlocked liquidity, same carry-forward as DeFi
 const fresh = (entry) => entry && Date.now() - entry.at <= STALE_MAX_MS;
 
 /**
@@ -144,9 +145,9 @@ export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) 
           totalUsd += amount * last;
           usedStale = true;
         } else if (await probeV2Pool(tb.token.address).catch(() => null)) {
-          // A V2 liquidity-pool token held in the wallet. LP positions are outside this quick total by design
-          // (the digest says so on every message); it has no market price of its own, so it must not mark the
-          // total incomplete — before this, an ES-LP token in the wallet blanked the comparison every day.
+          // A V2 liquidity-pool token held in the wallet: it has no market price of its own, so it's valued
+          // from its pool's reserves with the other unlocked liquidity below, not here. (Before, it counted as
+          // an unpriced holding and blanked the digest's comparison every day.)
         } else {
           markUnpriced(`${w.address}: ${tb.token?.symbol || "?"} (${tb.token.address}) — never priced, no ElectroSwap price or WETN pool`);
         }
@@ -173,6 +174,46 @@ export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) 
       } catch (err) {
         console.warn(`⚠️  Portfolio valuation: price lookup failed for ${tb.token?.address}:`, err.message);
         await priceUnavailable();
+      }
+    }
+
+    // UNLOCKED liquidity: V2 LP tokens this wallet holds and V3 positions it holds directly, valued from
+    // live pool state (lpPositionValuation.js). LP locked in ElectroSwapLockerV2 is deliberately left out
+    // (the owner's choice: locked liquidity can't be withdrawn, so it isn't counted as part of the
+    // portfolio); LP staked in a farm is already counted by the farm/staking valuation below, since it's
+    // no longer held by the wallet. Carried at its last good figure on a failed read, like DeFi.
+    try {
+      const held = tokenBalances
+        .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type) && BigInt(tb.value || 0) > 0n)
+        .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
+      const lp = await computeLpPositionsLive(w.address, held, { includeLocked: false });
+      const lpUsd = lp.totalUsd != null ? Number(lp.totalUsd) : 0;
+      const key = w.address.toLowerCase();
+      if (!lp.hasUnpriced) {
+        lastGoodLpUsd.set(key, { usd: lpUsd, at: Date.now() });
+        totalUsd += lpUsd;
+      } else {
+        const last = lastGoodLpUsd.get(key);
+        if (fresh(last) && last.usd > lpUsd) {
+          totalUsd += last.usd;
+          usedStale = true;
+        } else {
+          totalUsd += lpUsd;
+          const missing = [...(lp.v2Positions || []), ...(lp.v3Positions || [])]
+            .filter((p) => p.hasUnpriced)
+            .map((p) => (p.legs || []).filter((l) => l.usdValue == null).map((l) => l.symbol || l.tokenAddress).join("/"))
+            .join(", ");
+          markUnpriced(`${w.address}: a liquidity position couldn't be fully priced${missing ? ` (no price for ${missing})` : ""}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️  Portfolio valuation: liquidity lookup failed for ${w.address}:`, err.message);
+      const last = lastGoodLpUsd.get(w.address.toLowerCase());
+      if (fresh(last)) {
+        totalUsd += last.usd;
+        usedStale = true;
+      } else {
+        markUnpriced(`${w.address}: liquidity lookup failed (${err.message})`);
       }
     }
 
