@@ -25,6 +25,8 @@ import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 import { getOpenDefiPositionsUsd } from "../services/defiPositionValuation.js";
 import { getLastKnownPrice, recordLastKnownPrice } from "./lastKnownPrices.js";
+import { isTestNamedToken } from "../services/ignoredAssets.js";
+import { probeV2Pool, computeLpPositionsLive } from "../services/lpPositionValuation.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // MUST stay byte-for-byte in sync with src/dashboard/utils/format.js's SPAM_NAME_PATTERN — kept as
@@ -52,6 +54,7 @@ const MAX_PRICED_TOKENS_PER_WALLET = 50;
 // covered by the same store inside defiPositionValuation.js) is carried at its last successful figure, in memory.
 const STALE_MAX_MS = 48 * 60 * 60 * 1000;
 const lastGoodDefiUsd = new Map(); // lowercased wallet -> { usd, at }
+const lastGoodLpUsd = new Map(); // lowercased wallet -> { usd, at } — unlocked liquidity, same carry-forward as DeFi
 const fresh = (entry) => entry && Date.now() - entry.at <= STALE_MAX_MS;
 
 /**
@@ -67,13 +70,24 @@ const fresh = (entry) => entry && Date.now() - entry.at <= STALE_MAX_MS;
  * case is now unreachable in practice (getCoveredWallets always returns at least the owner's own
  * wallet) — kept as a defensive fallback, not a real "no wallets" state anymore.
  */
-export async function getPortfolioUsdValue(provider, ownerWallet) {
-  const tracked = await getCoveredWallets(ownerWallet);
-  if (tracked.length === 0) return { totalUsd: 0, hasUnpriced: false };
+//
+// `unpriced` lists WHY the total is incomplete — one short reason per holding that couldn't be valued —
+// so a digest that keeps saying "some holdings couldn't be priced" can be traced to the exact token or
+// position (logged by portfolioDigestScheduler.js). `options.wallets` overrides the covered-wallet
+// lookup (diagnostics: scripts/diagnosePortfolioValuation.js).
+export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) {
+  const tracked = options.wallets ? options.wallets.map((address) => ({ address })) : await getCoveredWallets(ownerWallet);
+  if (tracked.length === 0) return { totalUsd: 0, hasUnpriced: false, unpriced: [] };
 
   const priceCache = await getEtnPriceCache();
   const etnUsd = priceCache?.usd ?? null;
-  let hasUnpriced = etnUsd == null;
+  const unpriced = [];
+  const markUnpriced = (reason) => {
+    hasUnpriced = true;
+    unpriced.push(reason);
+  };
+  let hasUnpriced = false;
+  if (etnUsd == null) markUnpriced("ETN/USD price not available");
   let usedStale = false; // some figure below is a carried-forward last-known-good value, not a live one
 
   let totalUsd = 0;
@@ -87,18 +101,21 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       ]);
     } catch (err) {
       console.warn(`⚠️  Portfolio valuation: fetch failed for ${w.address}:`, err.message);
-      hasUnpriced = true;
+      markUnpriced(`${w.address}: balances couldn't be read (${err.message})`);
       continue;
     }
 
     const etnAmount = parseFloat(ethers.formatEther(addressInfo?.coin_balance || "0"));
     if (etnUsd != null) totalUsd += etnAmount * etnUsd;
-    else if (etnAmount > 0) hasUnpriced = true;
+    else if (etnAmount > 0) markUnpriced(`${w.address}: ETN balance (no ETN/USD price)`);
 
+    // Test items ("test" anywhere, or a "TSA" prefix: the owner's own test tokens) are skipped the same
+    // way the PnL valuation skips them (ignoredAssets.js): they never have a market, so counting them
+    // marked every digest incomplete (Oct 2026: TSA2/TSA3 did, every day).
     const fungible = tokenBalances.filter(
-      (tb) => !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name) && BigInt(tb.value || 0) > 0n
+      (tb) => !NFT_TOKEN_TYPES.has(tb.token?.type) && !isSpamTokenName(tb.token?.name) && !isTestNamedToken(tb.token) && BigInt(tb.value || 0) > 0n
     );
-    if (fungible.length > MAX_PRICED_TOKENS_PER_WALLET) hasUnpriced = true;
+    if (fungible.length > MAX_PRICED_TOKENS_PER_WALLET) markUnpriced(`${w.address}: ${fungible.length - MAX_PRICED_TOKENS_PER_WALLET} token(s) over the ${MAX_PRICED_TOKENS_PER_WALLET}-token cap`);
     const priced = fungible.slice(0, MAX_PRICED_TOKENS_PER_WALLET);
 
     // One batched ElectroSwap call (via electroSwapPriceCache.js's shared cache — so a token
@@ -127,8 +144,12 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
         if (last != null) {
           totalUsd += amount * last;
           usedStale = true;
+        } else if (await probeV2Pool(tb.token.address).catch(() => null)) {
+          // A V2 liquidity-pool token held in the wallet: it has no market price of its own, so it's valued
+          // from its pool's reserves with the other unlocked liquidity below, not here. (Before, it counted as
+          // an unpriced holding and blanked the digest's comparison every day.)
         } else {
-          hasUnpriced = true;
+          markUnpriced(`${w.address}: ${tb.token?.symbol || "?"} (${tb.token.address}) — never priced, no ElectroSwap price or WETN pool`);
         }
       };
 
@@ -156,6 +177,46 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
       }
     }
 
+    // UNLOCKED liquidity: V2 LP tokens this wallet holds and V3 positions it holds directly, valued from
+    // live pool state (lpPositionValuation.js). LP locked in ElectroSwapLockerV2 is deliberately left out
+    // (the owner's choice: locked liquidity can't be withdrawn, so it isn't counted as part of the
+    // portfolio); LP staked in a farm is already counted by the farm/staking valuation below, since it's
+    // no longer held by the wallet. Carried at its last good figure on a failed read, like DeFi.
+    try {
+      const held = tokenBalances
+        .filter((tb) => tb.token?.address && !NFT_TOKEN_TYPES.has(tb.token?.type) && BigInt(tb.value || 0) > 0n)
+        .map((tb) => ({ address: tb.token.address, decimals: Number(tb.token.decimals ?? 18), rawBalance: tb.value }));
+      const lp = await computeLpPositionsLive(w.address, held, { includeLocked: false });
+      const lpUsd = lp.totalUsd != null ? Number(lp.totalUsd) : 0;
+      const key = w.address.toLowerCase();
+      if (!lp.hasUnpriced) {
+        lastGoodLpUsd.set(key, { usd: lpUsd, at: Date.now() });
+        totalUsd += lpUsd;
+      } else {
+        const last = lastGoodLpUsd.get(key);
+        if (fresh(last) && last.usd > lpUsd) {
+          totalUsd += last.usd;
+          usedStale = true;
+        } else {
+          totalUsd += lpUsd;
+          const missing = [...(lp.v2Positions || []), ...(lp.v3Positions || [])]
+            .filter((p) => p.hasUnpriced)
+            .map((p) => (p.legs || []).filter((l) => l.usdValue == null).map((l) => l.symbol || l.tokenAddress).join("/"))
+            .join(", ");
+          markUnpriced(`${w.address}: a liquidity position couldn't be fully priced${missing ? ` (no price for ${missing})` : ""}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️  Portfolio valuation: liquidity lookup failed for ${w.address}:`, err.message);
+      const last = lastGoodLpUsd.get(w.address.toLowerCase());
+      if (fresh(last)) {
+        totalUsd += last.usd;
+        usedStale = true;
+      } else {
+        markUnpriced(`${w.address}: liquidity lookup failed (${err.message})`);
+      }
+    }
+
     // Funds currently staked/farmed at a known YieldFarm/CoreAscension contract don't show up as a
     // wallet token balance at all (they've moved into that contract) — without this, they'd simply
     // be invisible from the portfolio total. See defiPositionValuation.js's own header comment for
@@ -177,7 +238,7 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
           usedStale = true;
         } else {
           totalUsd += defiUsd;
-          hasUnpriced = true;
+          markUnpriced(`${w.address}: a farm/staking position couldn't be valued${defi.unpricedReason ? ` (${defi.unpricedReason})` : ""}`);
         }
       }
     } catch (err) {
@@ -187,10 +248,10 @@ export async function getPortfolioUsdValue(provider, ownerWallet) {
         totalUsd += last.usd;
         usedStale = true;
       } else {
-        hasUnpriced = true;
+        markUnpriced(`${w.address}: farm/staking lookup failed (${err.message})`);
       }
     }
   }
 
-  return { totalUsd, hasUnpriced, usedStale };
+  return { totalUsd, hasUnpriced, usedStale, unpriced };
 }
