@@ -44,7 +44,7 @@ async function main() {
   // Led by ETN ACCUMULATED: ETN the bot's trades have added, which is what it's for. The stablecoin is
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
-  const accumulated = s.realizedGainEtn + s.gapGainEtn;
+  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn;
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
   const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);
@@ -52,6 +52,7 @@ async function main() {
   console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt.slice(0, 16)}Z, updated ${state.updatedAt.slice(0, 16)}Z)`);
   console.log(`\n  ETN ACCUMULATED:     ${signed(accumulated)} ETN   (${((accumulated / s.budgetEtn) * 100).toFixed(2)}% of the ${etn(s.budgetEtn)} ETN budget, ~${signed(accumulated / days)} ETN/day)`);
   if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)`);
+  if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 
   console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
@@ -67,6 +68,11 @@ async function main() {
   if (state.gap?.recent?.length) {
     console.log("\n  Recent gap trades:  sold in   ETN sold    $       ETN back    gain");
     for (const t of state.gap.recent.slice(-10)) console.log(`  ${(t.at || "").slice(5, 16).padEnd(18)} ${t.dear.padEnd(6)} ${etn(t.etnSold).padStart(9)}  ${t.stableReceived.toFixed(2).padStart(6)}  ${etn(t.etnBought).padStart(9)}   ${t.gainEtn >= 0 ? "+" : ""}${etn(t.gainEtn)}`);
+  }
+
+  if (state.tri?.recent?.length) {
+    console.log("\n  Recent triangles:   route                 ETN in     ETN out    gain");
+    for (const t of state.tri.recent.slice(-10)) console.log(`  ${(t.at || "").slice(5, 16).padEnd(18)} ${t.route.padEnd(20)} ${etn(t.etnIn).padStart(8)}  ${etn(t.etnOut).padStart(9)}   ${signed(t.gainEtn)}`);
   }
 
   if (state.lots.length) {
