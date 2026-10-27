@@ -50,7 +50,8 @@ export function botEtnInventory(state) {
   const triangles = state.tri?.gainEtn || 0; // triangle loops return ETN in the same transaction, so only the gain stays out
   // KuCoin catch-up: its open lots' ETN was bought with the mode's own stablecoin and is held back to
   // close them, so only the closed lots' gain joins the inventory.
-  const catchup = state.cu?.gainEtn || 0;
+  // Open sell-first lots have sold the bot's own ETN, so it's out until bought back.
+  const catchup = (state.cu?.gainEtn || 0) - (state.cu?.lots || []).filter((l) => l.kind === "sellFirst").reduce((s, l) => s + l.etn, 0);
   return state.budgetEtn + state.realizedGainEtn - openSold + gap + triangles + catchup;
 }
 

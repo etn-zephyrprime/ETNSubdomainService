@@ -74,8 +74,15 @@ async function main() {
   if (state.cu) {
     const cu = state.cu;
     console.log(`\n  KuCoin catch-up pot: $${(cu.cash.USDT || 0).toFixed(2)} USDT + $${(cu.cash.USDC || 0).toFixed(2)} USDC free (target $${(cu.target || 0).toFixed(2)}, funded $${(cu.funded || 0).toFixed(2)}); ${cu.lots.length} open lot(s)`);
-    for (const l of cu.lots) console.log(`    open #${l.id}: $${l.usd.toFixed(2)} ${l.stable} -> ${etn(l.etn)} ETN at ${(l.openedAt || "").slice(5, 16)} (ElectroSwap was ${l.lagPct != null ? l.lagPct.toFixed(1) + "%" : "?"} vs KuCoin)`);
-    for (const r of (cu.recent || []).slice(-10)) console.log(`    closed #${r.id}: ${etn(r.etnBought)} ETN in, ${etn(r.etnSold)} sold back for $${r.usdReceived.toFixed(2)} -> ${signed(r.gainEtn)} ETN`);
+    for (const l of cu.lots) {
+      const when = `at ${(l.openedAt || "").slice(5, 16)} (ElectroSwap was ${l.lagPct != null ? (l.lagPct >= 0 ? "+" : "") + l.lagPct.toFixed(1) + "%" : "?"} vs KuCoin)`;
+      console.log(l.kind === "sellFirst"
+        ? `    open #${l.id} (sell first): sold ${etn(l.etn)} ETN for $${l.usd.toFixed(2)} ${l.stable} ${when}`
+        : `    open #${l.id}: $${l.usd.toFixed(2)} ${l.stable} -> ${etn(l.etn)} ETN ${when}`);
+    }
+    for (const r of (cu.recent || []).slice(-10)) console.log(r.kind === "sellFirst"
+      ? `    closed #${r.id} (sell first): sold ${etn(r.etnSold)} ETN, bought back ${etn(r.etnBought)} -> ${signed(r.gainEtn)} ETN`
+      : `    closed #${r.id}: ${etn(r.etnBought)} ETN in, ${etn(r.etnSold)} sold back for $${r.usdReceived.toFixed(2)} -> ${signed(r.gainEtn)} ETN`);
   }
 
   if (state.tri?.recent?.length) {
