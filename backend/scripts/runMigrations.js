@@ -81,6 +81,26 @@ async function main() {
     enabled++;
   }
   console.log(`🔒 Row Level Security: ${tables.length - tables.filter((t) => !t.rowsecurity).length + enabled}/${tables.length} public tables protected`);
+
+  // Views too: a view runs with its owner's permissions unless security_invoker is set, and the owner
+  // bypasses RLS — so without this a view would be a way around the tables' RLS (see
+  // 024_views_security_invoker.sql). Idempotent; only views this role owns.
+  const { rows: views } = await pool.query(
+    `SELECT c.relname AS viewname, pg_get_userbyid(c.relowner) AS viewowner,
+            COALESCE('security_invoker=true' = ANY (c.reloptions), false) OR COALESCE('security_invoker=on' = ANY (c.reloptions), false) AS invoker
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind = 'v' ORDER BY c.relname`
+  );
+  for (const v of views) {
+    if (v.invoker) continue;
+    if (v.viewowner !== me) {
+      console.warn(`⚠️  View public.${v.viewname} runs with its owner's permissions (owned by ${v.viewowner}, not ${me}) — set security_invoker by hand`);
+      continue;
+    }
+    await pool.query(`ALTER VIEW public."${v.viewname.replace(/"/g, '""')}" SET (security_invoker = true)`);
+    console.log(`🔒 security_invoker set on view public.${v.viewname}`);
+  }
+  if (views.length) console.log(`🔒 Views: ${views.length} public view(s) run with the caller's permissions`);
   await pool.end();
 }
 
