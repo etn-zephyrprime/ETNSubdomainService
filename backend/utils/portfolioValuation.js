@@ -82,6 +82,7 @@ export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) 
   const priceCache = await getEtnPriceCache();
   const etnUsd = priceCache?.usd ?? null;
   const unpriced = [];
+  const noMarket = []; // held tokens with no market at all — counted as $0, not as unpriced
   const markUnpriced = (reason) => {
     hasUnpriced = true;
     unpriced.push(reason);
@@ -166,7 +167,19 @@ export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) 
         // near-guaranteed miss. Falls straight to the on-chain path.
         const tokenEtnPrice = await getTokenEtnPrice(provider, tb.token.address, { skipElectroSwap: true });
         if (tokenEtnPrice == null) {
-          await priceUnavailable();
+          // NO MARKET: no ElectroSwap price and no WETN pool at all (a test or unlisted token, or an LP
+          // token — those are valued from pool reserves further down). Nothing can sell it, so it's worth
+          // $0, and it's $0 every day — counting it as "unpriced" (as this used to) only blanked the digest's
+          // comparison forever (Oct 2026: ZEPH and the T*ISA25 tokens in a tracked wallet). A token that
+          // once had a price keeps its last known one. "Unpriced" is kept for a lookup that FAILED (the
+          // catch below), which is the transient case the digest's retries exist for.
+          const last = await getLastKnownPrice(addressLc);
+          if (last != null) {
+            totalUsd += amount * last;
+            usedStale = true;
+          } else {
+            noMarket.push(`${tb.token?.symbol || "?"} (${tb.token.address})`);
+          }
           continue;
         }
         totalUsd += amount * tokenEtnPrice * etnUsd;
@@ -253,5 +266,5 @@ export async function getPortfolioUsdValue(provider, ownerWallet, options = {}) 
     }
   }
 
-  return { totalUsd, hasUnpriced, usedStale, unpriced };
+  return { totalUsd, hasUnpriced, usedStale, unpriced, noMarket };
 }
