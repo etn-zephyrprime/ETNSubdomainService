@@ -32,7 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
-import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, PRESCREEN_EDGE_PCT, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
+import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
 const SWAP_ROUTER = "0x5A3AB7e9f405250B36e7e0a4654c1052EADC1F07"; // ElectroSwap SwapRouter02 (V3)
@@ -97,7 +97,12 @@ const poolIface = new ethers.Interface(POOL_ABI);
 // final WETN to native ETN for us) is how a filled loop's ETN out is read from its receipt.
 const QUOTER_PATH_ABI = ["function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)"];
 const WETN_IFACE = new ethers.Interface(["event Withdrawal(address indexed src, uint256 wad)"]);
-const triPath = (route) => ethers.solidityPacked(["address", "uint24", "address", "uint24", "address", "uint24", "address"], [route.tokens[0], TRIANGLE_FEE, route.tokens[1], TRIANGLE_FEE, route.tokens[2], TRIANGLE_FEE, route.tokens[3]]);
+// A V3 multi-hop path: token, fee, token, fee, ..., token (any number of hops).
+const triPath = (route) =>
+  ethers.solidityPacked(
+    route.tokens.flatMap((_, i) => (i === 0 ? ["address"] : ["uint24", "address"])),
+    route.tokens.flatMap((t, i) => (i === 0 ? [t] : [TRIANGLE_FEE, t]))
+  );
 const routerIface = new ethers.Interface(ROUTER_ABI);
 
 const fmtEtn = (n) => Math.round(n).toLocaleString("en-US");
@@ -350,8 +355,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     const edges = routeEdges(sqrtPrices);
     const quoter = new ethers.Contract(QUOTER, QUOTER_PATH_ABI, provider);
     const quotes = [];
-    for (const e of edges.filter((x) => x.edgePct != null && x.edgePct > PRESCREEN_EDGE_PCT)) {
+    for (const e of edges.filter((x) => x.edgePct != null)) {
       const route = TRIANGLE_ROUTES.find((r) => r.name === e.name);
+      if (e.edgePct <= prescreenEdgePct(route)) continue;
       for (const etnIn of TRIANGLE_DEFAULTS.sizesEtn.filter((s) => s <= cfg.triMaxEtn)) {
         try {
           const r = await quoter.quoteExactInput.staticCall(triPath(route), ethers.parseEther(String(etnIn)));
@@ -553,7 +559,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
             await saveWithRetry(state);
             return;
           }
-          triNote = ` · best triangle ${best ? `${best.name} ${best.edgePct >= 0 ? "+" : ""}${best.edgePct.toFixed(2)}% before ~0.9% fees` : "unreadable"} (+${fmtEtn(state.tri.gainEtn)} ETN over ${state.tri.trades})`;
+          triNote = ` · best triangle ${best ? `${best.name} ${best.edgePct >= 0 ? "+" : ""}${best.edgePct.toFixed(2)}% before ~${prescreenEdgePct(TRIANGLE_ROUTES.find((r) => r.name === best.name)).toFixed(1)}% fees` : "unreadable"} (+${fmtEtn(state.tri.gainEtn)} ETN over ${state.tri.trades})`;
         } else {
           triNote = ` · triangle daily cap (${cfg.triMaxTradesPerDay}) reached`;
         }
