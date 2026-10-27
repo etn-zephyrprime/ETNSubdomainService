@@ -61,6 +61,26 @@ async function main() {
   }
 
   if (!ranAny) console.log("Nothing to do — schema already up to date.");
+
+  // Keep every public table behind Row Level Security, including any a migration above just created
+  // (same step as 023_enable_rls_on_public_tables.sql — see its header for why RLS with no policies is
+  // right here). Idempotent; only touches tables this role owns, and reports the rest.
+  const { rows: tables } = await pool.query(
+    "SELECT tablename, tableowner, rowsecurity FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+  );
+  const { rows: [{ current_user: me }] } = await pool.query("SELECT current_user");
+  let enabled = 0;
+  for (const t of tables) {
+    if (t.rowsecurity) continue;
+    if (t.tableowner !== me) {
+      console.warn(`⚠️  RLS is off on public.${t.tablename} (owned by ${t.tableowner}, not ${me}) — enable it by hand`);
+      continue;
+    }
+    await pool.query(`ALTER TABLE public."${t.tablename.replace(/"/g, '""')}" ENABLE ROW LEVEL SECURITY`);
+    console.log(`🔒 RLS enabled on public.${t.tablename}`);
+    enabled++;
+  }
+  console.log(`🔒 Row Level Security: ${tables.length - tables.filter((t) => !t.rowsecurity).length + enabled}/${tables.length} public tables protected`);
   await pool.end();
 }
 
