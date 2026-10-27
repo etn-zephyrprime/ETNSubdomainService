@@ -1,7 +1,7 @@
 // Pure decision tests for services/etnTriangleStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TRIANGLE_POOLS, TRIANGLE_ROUTES, poolRate, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade, WETN, DYNO } from "../services/etnTriangleStrategy.js";
+import { TRIANGLE_POOLS, TRIANGLE_ROUTES, prescreenEdgePct, poolRate, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade, WETN, DYNO } from "../services/etnTriangleStrategy.js";
 import { botEtnInventory, summarize } from "../services/etnAccumulatorStrategy.js";
 
 const Q96 = 2n ** 96n;
@@ -26,7 +26,18 @@ test("route edges: a consistent set of prices loops back to ~0, a skewed one sho
   assert.ok(Math.abs(byName["ETN>CLUB>DYNO>ETN"] - 2) < 1e-6);
   assert.ok(Math.abs(byName["ETN>DYNO>CLUB>ETN"] - (1 / 1.02 - 1) * 100) < 1e-6);
   assert.equal(routeEdges({ ...flat, "DYNO/CLUB": undefined }).find((e) => e.name === "ETN>DYNO>CLUB>ETN").edgePct, null);
-  assert.equal(TRIANGLE_ROUTES.length, 4);
+  assert.equal(TRIANGLE_ROUTES.length, 6);
+  // The 4-swap loop through DYNO/CLUB picks up the same skew: BOLT -> DYNO -> CLUB sells DYNO for CLUB.
+  assert.ok(Math.abs(byName["ETN>BOLT>DYNO>CLUB>ETN"] - (1 / 1.02 - 1) * 100) < 1e-6);
+  assert.ok(Math.abs(byName["ETN>CLUB>DYNO>BOLT>ETN"] - 2) < 1e-6);
+});
+
+test("pre-screen threshold is 0.3% per hop", () => {
+  const tri = TRIANGLE_ROUTES.find((r) => r.name === "ETN>DYNO>CLUB>ETN");
+  const quad = TRIANGLE_ROUTES.find((r) => r.name === "ETN>BOLT>DYNO>CLUB>ETN");
+  assert.ok(Math.abs(prescreenEdgePct(tri) - 0.9) < 1e-12);
+  assert.ok(Math.abs(prescreenEdgePct(quad) - 1.2) < 1e-12);
+  for (const r of TRIANGLE_ROUTES) assert.equal(r.tokens.length, r.pools.length + 1);
 });
 
 test("decide: biggest gain that clears the minimum and the bot can afford", () => {

@@ -10,6 +10,11 @@
 // in, so it either ends with more ETN or reverts — the only cost of a miss is gas. ETN only: no
 // stablecoin, and the ETN is back in the wallet in the same transaction.
 //
+// Two 4-swap loops through the same three tokens (ETN -> BOLT -> DYNO -> CLUB -> ETN and its reverse)
+// are included too: a scan of every live pool found only these (Oct 2026), and adding them backtested
+// +187 ETN on top of the triangles over the same 43.6 days (+6%) — fills when a gap runs through all
+// three tokens at once. "Triangle" below covers both lengths.
+//
 // Research (Oct 2026, 43.6 days of swaps, one trade per gap episode): ~+3,165 ETN (~73 ETN/day);
 // the 25 ETN minimum gain kept all of it with 20 trades instead of 36. QuoterV2 crossed no ticks even
 // at 30,000 ETN, and an eth_call of the full loop through the router returned exactly the quote on
@@ -35,6 +40,8 @@ export const TRIANGLE_ROUTES = [
   { name: "ETN>CLUB>DYNO>ETN", tokens: [WETN, CLUB, DYNO, WETN], pools: ["CLUB/WETN", "DYNO/CLUB", "DYNO/WETN"] },
   { name: "ETN>DYNO>BOLT>ETN", tokens: [WETN, DYNO, BOLT, WETN], pools: ["DYNO/WETN", "DYNO/BOLT", "BOLT/WETN"] },
   { name: "ETN>BOLT>DYNO>ETN", tokens: [WETN, BOLT, DYNO, WETN], pools: ["BOLT/WETN", "DYNO/BOLT", "DYNO/WETN"] },
+  { name: "ETN>BOLT>DYNO>CLUB>ETN", tokens: [WETN, BOLT, DYNO, CLUB, WETN], pools: ["BOLT/WETN", "DYNO/BOLT", "DYNO/CLUB", "CLUB/WETN"] },
+  { name: "ETN>CLUB>DYNO>BOLT>ETN", tokens: [WETN, CLUB, DYNO, BOLT, WETN], pools: ["CLUB/WETN", "DYNO/CLUB", "DYNO/BOLT", "BOLT/WETN"] },
 ];
 export const TRIANGLE_FEE = 3000;
 
@@ -50,13 +57,13 @@ export function poolRate(poolInfo, sqrtPriceX96, tokenIn) {
   return tokenIn.toLowerCase() === poolInfo.token0.toLowerCase() ? p : 1 / p;
 }
 
-/** Mid-price edge of each route, in %, before fees and price impact: the product of the three pool
- * rates around the loop, minus one. A route can only pay if this beats the three 0.3% fees — used as
- * a cheap pre-screen (five slot0 reads) before asking the quoter for real figures. */
+/** Mid-price edge of each route, in %, before fees and price impact: the product of the pool rates
+ * around the loop, minus one. A route can only pay if this beats its fees (0.3% per hop — see
+ * prescreenEdgePct) — used as a cheap pre-screen (five slot0 reads) before asking the quoter. */
 export function routeEdges(sqrtPrices) {
   return TRIANGLE_ROUTES.map((r) => {
     let x = 1;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < r.pools.length; i++) {
       const info = TRIANGLE_POOLS[r.pools[i]];
       const sp = sqrtPrices[r.pools[i]];
       if (!sp) return { name: r.name, edgePct: null };
@@ -66,8 +73,11 @@ export function routeEdges(sqrtPrices) {
   });
 }
 
-/** Fees alone take ~0.9% (three 0.3% hops), so below this mid edge nothing can clear. */
-export const PRESCREEN_EDGE_PCT = 0.9;
+/** Fees alone take 0.3% per hop (~0.9% for a triangle, ~1.2% for a 4-swap loop), so below this mid
+ * edge a route can't clear. */
+export function prescreenEdgePct(route) {
+  return (TRIANGLE_FEE / 1e4) * route.pools.length;
+}
 
 /**
  * The best triangle to run, or null.
