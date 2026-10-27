@@ -32,6 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
+import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, PRESCREEN_EDGE_PCT, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
 const SWAP_ROUTER = "0x5A3AB7e9f405250B36e7e0a4654c1052EADC1F07"; // ElectroSwap SwapRouter02 (V3)
@@ -65,6 +66,10 @@ export function readConfig() {
     gapClipEtn: num("ETN_BOT_GAP_CLIP_ETN", GAP_DEFAULTS.clipEtn),
     gapMinGainPct: num("ETN_BOT_GAP_MIN_GAIN_PCT", GAP_DEFAULTS.minGainPct),
     gapMaxTradesPerDay: num("ETN_BOT_GAP_MAX_TRADES_PER_DAY", 48),
+    triEnabled: process.env.ETN_BOT_TRI_ENABLED === "true",
+    triMinGainEtn: num("ETN_BOT_TRI_MIN_GAIN_ETN", TRIANGLE_DEFAULTS.minGainEtn),
+    triMaxEtn: num("ETN_BOT_TRI_MAX_ETN", 30000),
+    triMaxTradesPerDay: num("ETN_BOT_TRI_MAX_TRADES_PER_DAY", 48),
   };
 }
 
@@ -72,6 +77,7 @@ const QUOTER_ABI = [
   "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
 ];
 const ROUTER_ABI = [
+  "function exactInput((bytes path, address recipient, uint256 amountIn, uint256 amountOutMinimum) params) payable returns (uint256 amountOut)",
   "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)",
   "function unwrapWETH9(uint256 amountMinimum, address recipient) payable",
   "function refundETH() payable",
@@ -87,6 +93,11 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
 const poolIface = new ethers.Interface(POOL_ABI);
+// Triangles: QuoterV2 multi-hop quotes, and WETN's Withdrawal event (the router unwrapping the loop's
+// final WETN to native ETN for us) is how a filled loop's ETN out is read from its receipt.
+const QUOTER_PATH_ABI = ["function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)"];
+const WETN_IFACE = new ethers.Interface(["event Withdrawal(address indexed src, uint256 wad)"]);
+const triPath = (route) => ethers.solidityPacked(["address", "uint24", "address", "uint24", "address", "uint24", "address"], [route.tokens[0], TRIANGLE_FEE, route.tokens[1], TRIANGLE_FEE, route.tokens[2], TRIANGLE_FEE, route.tokens[3]]);
 const routerIface = new ethers.Interface(ROUTER_ABI);
 
 const fmtEtn = (n) => Math.round(n).toLocaleString("en-US");
@@ -253,6 +264,12 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         notify(`🔁 Gap trade: sold ${fmtEtn(leg.etnSold)} ETN for ${fmtUsd(leg.stableReceived)} ${leg.dear}, bought ${fmtEtn(etnOut)} ETN with ${fmtUsd(stableIn)} ${order.stable} — ${signedEtn(etnOut - leg.etnSold)} ETN. Gap total: ${signedEtn(gap.gainEtn)} ETN over ${gap.trades} trade(s)`);
         break;
       }
+      case "triangle": {
+        state.tri = state.tri || freshTriangleBook();
+        applyTriangleTrade(state.tri, { route: order.route, etnIn: order.amountIn, etnOut: amounts.etnOut, txHash, at });
+        notify(`🔺 Triangle ${order.route}: ${fmtEtn(order.amountIn)} ETN in, ${fmtEtn(amounts.etnOut)} out — ${signedEtn(amounts.etnOut - order.amountIn)} ETN. Triangle total: ${signedEtn(state.tri.gainEtn)} ETN over ${state.tri.trades} trade(s)`);
+        break;
+      }
       default:
         throw new Error(`Unknown order kind ${order.kind}`);
     }
@@ -280,7 +297,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       notify(`❌ ${pending.kind} tx ${pending.txHash} reverted.`);
       return "failed";
     }
-    const amounts = swapAmounts(receipt, POOLS[pending.stable]);
+    const amounts = pending.kind === "triangle" ? triangleAmounts(receipt) : swapAmounts(receipt, POOLS[pending.stable]);
     if (!amounts) throw new Error(`No Swap event in ${pending.txHash}`); // left pending — needs a look, not a guess
     state.pending = null;
     consecutiveFailures = 0;
@@ -288,16 +305,76 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     return "filled";
   }
 
+  /** A triangle loop as ONE transaction: exactInput over the 3-hop path into the router, then unwrap
+   * to native ETN for us — with a minimum out above the ETN put in (triangleMinOut), so it either
+   * ends with more ETN or reverts. Simulated first. */
+  async function sendTriangle(order) {
+    const route = TRIANGLE_ROUTES.find((r) => r.name === order.route);
+    const amountIn = ethers.parseEther(order.amountIn.toFixed(18));
+    const minOut = ethers.parseEther(triangleMinOut(order.amountIn, order.expectedOut).toFixed(18));
+    const router = new ethers.Contract(SWAP_ROUTER, ROUTER_ABI, wallet);
+    const calls = [
+      routerIface.encodeFunctionData("exactInput", [{ path: triPath(route), recipient: ADDRESS_THIS, amountIn, amountOutMinimum: minOut }]),
+      routerIface.encodeFunctionData("unwrapWETH9", [minOut, wallet.address]),
+    ];
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+    await router.multicall.staticCall(deadline, calls, { value: amountIn });
+    return router.multicall(deadline, calls, { value: amountIn });
+  }
+
+  /** ETN a filled triangle returned: WETN's Withdrawal by the router (the final unwrap). */
+  function triangleAmounts(receipt) {
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== WETN.toLowerCase()) continue;
+      try {
+        const ev = WETN_IFACE.parseLog(log);
+        if (ev?.name === "Withdrawal" && ev.args.src.toLowerCase() === SWAP_ROUTER.toLowerCase()) return { etnOut: Number(ethers.formatEther(ev.args.wad)) };
+      } catch {
+        // not the Withdrawal event
+      }
+    }
+    return null;
+  }
+
+  /** Live triangle quotes. A cheap pre-screen first (the five pools' slot0): only a route whose mid-price
+   * loop beats the ~0.9% of fees gets real QuoterV2 figures, at each size up to triMaxEtn. */
+  async function triangleQuotes() {
+    const sqrtPrices = {};
+    for (const [k, info] of Object.entries(TRIANGLE_POOLS)) {
+      try {
+        sqrtPrices[k] = (await new ethers.Contract(info.pool, POOL_ABI, provider).slot0()).sqrtPriceX96;
+      } catch {
+        // unreadable this tick — routes through it are skipped
+      }
+    }
+    const edges = routeEdges(sqrtPrices);
+    const quoter = new ethers.Contract(QUOTER, QUOTER_PATH_ABI, provider);
+    const quotes = [];
+    for (const e of edges.filter((x) => x.edgePct != null && x.edgePct > PRESCREEN_EDGE_PCT)) {
+      const route = TRIANGLE_ROUTES.find((r) => r.name === e.name);
+      for (const etnIn of TRIANGLE_DEFAULTS.sizesEtn.filter((s) => s <= cfg.triMaxEtn)) {
+        try {
+          const r = await quoter.quoteExactInput.staticCall(triPath(route), ethers.parseEther(String(etnIn)));
+          quotes.push({ route: route.name, etnIn, etnOut: Number(ethers.formatEther(r.amountOut)) });
+        } catch {
+          // this size can't be filled — skip
+        }
+      }
+    }
+    const best = edges.filter((x) => x.edgePct != null).reduce((a, x) => (!a || x.edgePct > a.edgePct ? x : a), null);
+    return { quotes, best, sqrtKey: Object.values(sqrtPrices).map(String).join("|") };
+  }
+
   /** Paper: fills at the quote. Live: sends, records it as pending, waits, settles. */
   async function execute(state, order) {
     if (cfg.mode === "paper") {
-      const amounts = order.side === "sellEtn" ? { etnDelta: order.amountIn, stableDelta: -order.expectedOut } : { etnDelta: -order.expectedOut, stableDelta: order.amountIn };
+      const amounts = order.kind === "triangle" ? { etnOut: order.expectedOut } : order.side === "sellEtn" ? { etnDelta: order.amountIn, stableDelta: -order.expectedOut } : { etnDelta: -order.expectedOut, stableDelta: order.amountIn };
       settleFill(state, order, amounts, null);
       return "filled";
     }
     let tx;
     try {
-      tx = await sendSwap(order.side, order.stable, order.amountIn, order.expectedOut);
+      tx = order.kind === "triangle" ? await sendTriangle(order) : await sendSwap(order.side, order.stable, order.amountIn, order.expectedOut);
     } catch (err) {
       consecutiveFailures++;
       throw err;
@@ -376,6 +453,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         state.budgetEtn = cfg.budgetEtn;
       }
       if (cfg.gapEnabled && !state.gap) state.gap = freshGapBook();
+      if (cfg.triEnabled && !state.tri) state.tri = freshTriangleBook();
 
       // A trade still in flight from a previous tick/process: settle it before anything else.
       if (state.pending) {
@@ -414,6 +492,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       const day = new Date().toISOString().slice(0, 10);
       state.tradesByDay = { [day]: state.tradesByDay?.[day] || 0 }; // keep today only
       state.gapTradesByDay = { [day]: state.gapTradesByDay?.[day] || 0 };
+      state.triTradesByDay = { [day]: state.triTradesByDay?.[day] || 0 };
       const lotCapHit = state.tradesByDay[day] >= cfg.maxTradesPerDay;
 
       // 1. Lot buybacks — they lock in ETN.
@@ -459,7 +538,28 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         }
       }
 
-      // 4. A lot sale.
+      // 4. A triangle (ETN -> DYNO/BOLT/CLUB -> ETN in one transaction; ETN only, no stablecoin).
+      let triNote = "";
+      if (cfg.triEnabled) {
+        if (state.triTradesByDay[day] < cfg.triMaxTradesPerDay) {
+          const { quotes: triQuotes, best, sqrtKey } = await triangleQuotes();
+          // Paper fills don't move the pools — same guard as the gap trade's: wait for a pool to change.
+          const paperStale = cfg.mode === "paper" && state.triPaperKey === sqrtKey;
+          const t = paperStale ? null : decideTriangle(triQuotes, { minGainEtn: cfg.triMinGainEtn }, canSpendEtn);
+          if (t) {
+            if (cfg.mode === "paper") state.triPaperKey = sqrtKey;
+            state.triTradesByDay[day]++;
+            await execute(state, { kind: "triangle", route: t.route, amountIn: t.etnIn, expectedOut: t.etnOut });
+            await saveWithRetry(state);
+            return;
+          }
+          triNote = ` · best triangle ${best ? `${best.name} ${best.edgePct >= 0 ? "+" : ""}${best.edgePct.toFixed(2)}% before ~0.9% fees` : "unreadable"} (+${fmtEtn(state.tri.gainEtn)} ETN over ${state.tri.trades})`;
+        } else {
+          triNote = ` · triangle daily cap (${cfg.triMaxTradesPerDay}) reached`;
+        }
+      }
+
+      // 5. A lot sale.
       if (decision.action === "sell" && !lotCapHit) {
         state.tradesByDay[day]++;
         await execute(state, { kind: "sell", side: "sellEtn", stable: decision.stable, amountIn: decision.etnAmount, expectedOut: decision.expectedStable, lotId: state.nextLotId++ });
@@ -468,7 +568,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       }
 
       const reason = decision.action === "hold" ? decision.reason : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
-      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${gapNote}`);
+      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${gapNote}${triNote}`);
       await saveWithRetry(state);
     } catch (err) {
       console.error("⚠️  ETN bot tick failed:", err.shortMessage || err.message);
@@ -508,7 +608,9 @@ export async function startEtnAccumulatorBot() {
     const bal = Number(ethers.formatEther(await provider.getBalance(wallet.address)));
     if (bal < needed) console.warn(`⚠️  ETN bot: wallet holds ${fmtEtn(bal)} ETN, below the ${fmtEtn(needed)} it may need at once (lots + gap seed + gas reserve) — trades will stop when the balance runs short`);
   }
-  const gapText = cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off";
+  const gapText =
+    (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off") +
+    (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();

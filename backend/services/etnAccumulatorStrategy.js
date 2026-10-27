@@ -47,7 +47,8 @@ export function updateEma(prevEma, price, dtMs, halfLifeMs) {
 export function botEtnInventory(state) {
   const openSold = state.lots.filter((l) => l.status === "open").reduce((s, l) => s + l.etnSold, 0);
   const gap = state.gap ? state.gap.gainEtn - state.gap.seedEtn - (state.gapLeg?.etnSold || 0) : 0;
-  return state.budgetEtn + state.realizedGainEtn - openSold + gap;
+  const triangles = state.tri?.gainEtn || 0; // triangle loops return ETN in the same transaction, so only the gain stays out
+  return state.budgetEtn + state.realizedGainEtn - openSold + gap + triangles;
 }
 
 /**
@@ -133,6 +134,8 @@ export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0) {
     gapTrades: state.gap?.trades || 0,
     gapGainEtn: state.gap?.gainEtn || 0,
     gapSeedEtn: state.gap?.seedEtn || 0,
+    triTrades: state.tri?.trades || 0,
+    triGainEtn: state.tri?.gainEtn || 0,
     gapStablesEtn,
     gapDepositsUsd: state.gap?.depositsUsd || {},
     contributedEtn,
