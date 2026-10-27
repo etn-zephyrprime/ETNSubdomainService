@@ -32,6 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
+import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
@@ -70,6 +71,15 @@ export function readConfig() {
     triMinGainEtn: num("ETN_BOT_TRI_MIN_GAIN_ETN", TRIANGLE_DEFAULTS.minGainEtn),
     triMaxEtn: num("ETN_BOT_TRI_MAX_ETN", 30000),
     triMaxTradesPerDay: num("ETN_BOT_TRI_MAX_TRADES_PER_DAY", 48),
+    cuEnabled: process.env.ETN_BOT_CU_ENABLED === "true",
+    cuPotUsd: num("ETN_BOT_CU_POT_USD", CATCHUP_DEFAULTS.potUsd),
+    cuLagPct: num("ETN_BOT_CU_LAG_PCT", CATCHUP_DEFAULTS.lagPct),
+    cuClipUsd: num("ETN_BOT_CU_CLIP_USD", CATCHUP_DEFAULTS.clipUsd),
+    cuMinGainPct: num("ETN_BOT_CU_MIN_GAIN_PCT", CATCHUP_DEFAULTS.minGainPct),
+    cuReentryMinutes: num("ETN_BOT_CU_REENTRY_MIN", CATCHUP_DEFAULTS.reentryMinutes),
+    cuMaxTradesPerDay: num("ETN_BOT_CU_MAX_TRADES_PER_DAY", 48),
+    cuSellEnabled: process.env.ETN_BOT_CU_SELL_ENABLED === "true",
+    cuMaxSellEtn: num("ETN_BOT_CU_MAX_SELL_ETN", CATCHUP_DEFAULTS.maxSellEtn),
   };
 }
 
@@ -97,6 +107,9 @@ const poolIface = new ethers.Interface(POOL_ABI);
 // final WETN to native ETN for us) is how a filled loop's ETN out is read from its receipt.
 const QUOTER_PATH_ABI = ["function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)"];
 const WETN_IFACE = new ethers.Interface(["event Withdrawal(address indexed src, uint256 wad)"]);
+// KuCoin catch-up: how much ETN it takes to get a lot's dollars back (exact output), and KuCoin's live book.
+const QUOTER_OUT_ABI = ["function quoteExactOutputSingle((address tokenIn, address tokenOut, uint256 amount, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)"];
+const KUCOIN_LEVEL1_URL = "https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=ETN-USDT";
 // A V3 multi-hop path: token, fee, token, fee, ..., token (any number of hops).
 const triPath = (route) =>
   ethers.solidityPacked(
@@ -269,6 +282,28 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         notify(`🔁 Gap trade: sold ${fmtEtn(leg.etnSold)} ETN for ${fmtUsd(leg.stableReceived)} ${leg.dear}, bought ${fmtEtn(etnOut)} ETN with ${fmtUsd(stableIn)} ${order.stable} — ${signedEtn(etnOut - leg.etnSold)} ETN. Gap total: ${signedEtn(gap.gainEtn)} ETN over ${gap.trades} trade(s)`);
         break;
       }
+      case "cuBuy": {
+        applyCatchupBuy(state.cu, { stable: order.stable, usdSpent: stableIn, etnBought: etnOut, at, txHash, lagPct: order.lagPct });
+        notify(`📥 Catch-up buy: ElectroSwap ${Math.abs(order.lagPct).toFixed(1)}% below KuCoin — ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN (lot #${state.cu.nextId - 1}; pot ${fmtUsd(state.cu.cash.USDT)} USDT / ${fmtUsd(state.cu.cash.USDC)} USDC)`);
+        break;
+      }
+      case "cuSell": {
+        const lot = state.cu.lots.find((l) => l.id === order.lotId);
+        applyCatchupClose(state.cu, order.lotId, { etnSold: etnIn, usdReceived: stableOut, at, txHash });
+        notify(`📤 Catch-up close: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}, kept ${signedEtn(lot.etn - etnIn)} ETN (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
+        break;
+      }
+      case "cuSellFirst": {
+        applyCatchupSell(state.cu, { stable: order.stable, etnSold: etnIn, usdReceived: stableOut, at, txHash, lagPct: order.lagPct });
+        notify(`📤 Catch-up sell: ElectroSwap ${order.lagPct.toFixed(1)}% above KuCoin — sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} (lot #${state.cu.nextId - 1}; ${fmtEtn(openSellEtn(state.cu))} ETN out on the sell side)`);
+        break;
+      }
+      case "cuBuyBack": {
+        const lot = state.cu.lots.find((l) => l.id === order.lotId);
+        applyCatchupBuyBack(state.cu, order.lotId, { usdSpent: stableIn, etnBought: etnOut, at, txHash });
+        notify(`📥 Catch-up buy-back: ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN, ${signedEtn(etnOut - lot.etn)} ETN vs the ${fmtEtn(lot.etn)} sold (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
+        break;
+      }
       case "triangle": {
         state.tri = state.tri || freshTriangleBook();
         applyTriangleTrade(state.tri, { route: order.route, etnIn: order.amountIn, etnOut: amounts.etnOut, txHash, at });
@@ -417,17 +452,66 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
    * the wallet by hand) shrinks the book to match, so the bot never plans a trade it can't pay for.
    * Only runs between trades: the caller has already settled anything pending. */
   async function reconcileGapStables(state, mids) {
+    // The wallet's USDT/USDC should be exactly: open sell/buyback lots + the gap book + the catch-up pot's
+    // cash. A surplus is a deposit: it fills the catch-up pot up to its target first (that's how the pot
+    // is funded), then joins the gap book. A shortfall comes off the gap book, then the pot.
     const gap = state.gap;
+    const cu = cfg.cuEnabled ? state.cu : null;
     for (const [k, p] of Object.entries(POOLS)) {
       const held = Number(ethers.formatUnits(await new ethers.Contract(p.token, ERC20_ABI, provider).balanceOf(wallet.address), p.decimals));
       const inLots = state.lots.filter((l) => l.status === "open" && l.stable === k).reduce((s, l) => s + l.stableAmount, 0);
-      const diff = held - inLots - (gap.stables[k] || 0);
+      const diff = held - inLots - (gap?.stables[k] || 0) - (state.cu?.cash[k] || 0) - openSellUsd(state.cu, k);
       if (Math.abs(diff) < 0.01) continue;
-      applyGapDeposit(gap, k, diff, diff / mids[k]);
-      notify(diff > 0
-        ? `💵 ${fmtUsd(diff)} ${k} found in the wallet — added to the gap book (now ${fmtUsd(gap.stables[k])} ${k})`
-        : `⚠️ ${fmtUsd(-diff)} ${k} missing from the wallet — gap book reduced to ${fmtUsd(gap.stables[k])} ${k}`);
+      if (diff > 0) {
+        const { toCatchup, rest } = splitDeposit(cu, k, diff);
+        if (toCatchup > 0) {
+          applyCatchupFunding(cu, k, toCatchup);
+          notify(`💵 ${fmtUsd(toCatchup)} ${k} found in the wallet — added to the KuCoin catch-up pot (now ${fmtUsd(cu.cash.USDT)} USDT / ${fmtUsd(cu.cash.USDC)} USDC of a ${fmtUsd(cu.target)} target)`);
+        }
+        if (rest >= 0.01 && gap) {
+          applyGapDeposit(gap, k, rest, rest / mids[k]);
+          notify(`💵 ${fmtUsd(rest)} ${k} found in the wallet — added to the gap book (now ${fmtUsd(gap.stables[k])} ${k})`);
+        } else if (rest >= 0.01) {
+          notify(`ℹ️ ${fmtUsd(rest)} ${k} in the wallet isn't assigned to any mode (gap mode is off and the catch-up pot is full)`);
+        }
+      } else {
+        let short = -diff;
+        if (gap) {
+          const before = gap.stables[k] || 0;
+          applyGapDeposit(gap, k, -short, -short / mids[k]);
+          short -= before - (gap.stables[k] || 0);
+        }
+        if (short >= 0.01 && state.cu) state.cu.cash[k] = Math.max(0, (state.cu.cash[k] || 0) - short);
+        notify(`⚠️ ${fmtUsd(-diff)} ${k} missing from the wallet — books reduced to match`);
+      }
     }
+  }
+
+  /** KuCoin's live ETN-USDT mid (null when unavailable or its book looks too thin to trust). */
+  async function kucoinPrice() {
+    try {
+      const res = await fetch(KUCOIN_LEVEL1_URL, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return null;
+      return kucoinMid((await res.json())?.data, CATCHUP_DEFAULTS.maxSpreadPct);
+    } catch {
+      return null;
+    }
+  }
+
+  /** ETN it would take right now to get each open catch-up lot's dollars back in its own pool. */
+  async function catchupNeeds(book) {
+    const quoter = new ethers.Contract(QUOTER, QUOTER_OUT_ABI, provider);
+    const needs = {};
+    for (const lot of book.lots.filter((l) => l.kind !== "sellFirst")) {
+      const p = POOLS[lot.stable];
+      try {
+        const r = await quoter.quoteExactOutputSingle.staticCall({ tokenIn: WETN, tokenOut: p.token, amount: ethers.parseUnits(floorTo(lot.usd, p.decimals), p.decimals), fee: p.fee, sqrtPriceLimitX96: 0 });
+        needs[lot.id] = Number(ethers.formatEther(r.amountIn));
+      } catch {
+        // unquotable this tick — not eligible
+      }
+    }
+    return needs;
   }
 
   /** Gap trade candidates — only quoted when the pools' mid prices are far enough apart to clear the
@@ -460,6 +544,15 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       }
       if (cfg.gapEnabled && !state.gap) state.gap = freshGapBook();
       if (cfg.triEnabled && !state.tri) state.tri = freshTriangleBook();
+      if (cfg.cuEnabled && !state.cu) state.cu = freshCatchupBook(cfg.cuPotUsd);
+      if (state.cu) {
+        state.cu.target = cfg.cuPotUsd; // follows ETN_BOT_CU_POT_USD; only new deposits fill it
+        if (cfg.mode === "paper" && (state.cu.funded || 0) < state.cu.target) {
+          const room = state.cu.target - (state.cu.funded || 0); // paper: a virtual pot, half in each stablecoin
+          applyCatchupFunding(state.cu, "USDT", room / 2);
+          applyCatchupFunding(state.cu, "USDC", room / 2);
+        }
+      }
 
       // A trade still in flight from a previous tick/process: settle it before anything else.
       if (state.pending) {
@@ -484,7 +577,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       state.samples = (state.samples || 0) + 1;
 
       // USDT/USDC you send to the wallet joins the gap book (live only; see reconcileGapStables).
-      if (cfg.gapEnabled && cfg.mode === "live" && wallet) await reconcileGapStables(state, mids);
+      if ((cfg.gapEnabled || cfg.cuEnabled) && cfg.mode === "live" && wallet) await reconcileGapStables(state, mids);
 
       const quotes = await gatherQuotes(provider, state, cfg.clipEtn);
       if (wallet) {
@@ -499,6 +592,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       state.tradesByDay = { [day]: state.tradesByDay?.[day] || 0 }; // keep today only
       state.gapTradesByDay = { [day]: state.gapTradesByDay?.[day] || 0 };
       state.triTradesByDay = { [day]: state.triTradesByDay?.[day] || 0 };
+      state.cuTradesByDay = { [day]: state.cuTradesByDay?.[day] || 0 };
       const lotCapHit = state.tradesByDay[day] >= cfg.maxTradesPerDay;
 
       // 1. Lot buybacks — they lock in ETN.
@@ -507,6 +601,57 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         await execute(state, { kind: "buyback", side: "buyEtn", stable: decision.stable, amountIn: decision.stableAmount, expectedOut: decision.expectedEtn, lotId: decision.lotId });
         await saveWithRetry(state);
         return;
+      }
+
+      // 2. KuCoin catch-up: close a lot that's caught up (locks in ETN), else buy if ElectroSwap lags.
+      let cuNote = "";
+      if (cfg.cuEnabled && state.cuTradesByDay[day] < cfg.cuMaxTradesPerDay) {
+        const cu = state.cu;
+        const kMid = await kucoinPrice();
+        if (cu.lots.length) {
+          const close = decideCatchupClose(cu, await catchupNeeds(cu), { minGainPct: cfg.cuMinGainPct });
+          if (close && (quotes.walletEtn == null || quotes.walletEtn >= close.needEtn)) {
+            state.cuTradesByDay[day]++;
+            await execute(state, { kind: "cuSell", side: "sellEtn", stable: close.stable, amountIn: close.needEtn, expectedOut: close.usd, lotId: close.lotId });
+            await saveWithRetry(state);
+            return;
+          }
+        }
+        // Sell-first lots: buy back once their dollars get minGain% more ETN than was sold.
+        const sellLots = cu.lots.filter((l) => l.kind === "sellFirst");
+        if (sellLots.length) {
+          const etnBack = {};
+          for (const l of sellLots) etnBack[l.id] = await quoteBuyEtn(l.stable, l.usd).catch(() => 0);
+          const back = decideCatchupBuyBack(cu, etnBack, { minGainPct: cfg.cuMinGainPct });
+          if (back) {
+            state.cuTradesByDay[day]++;
+            await execute(state, { kind: "cuBuyBack", side: "buyEtn", stable: back.stable, amountIn: back.usd, expectedOut: back.etnBack, lotId: back.lotId });
+            await saveWithRetry(state);
+            return;
+          }
+        }
+        if (kMid) {
+          const lags = lagsPct(mids, kMid);
+          const buy = decideCatchupBuy(cu, lags, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes });
+          if (buy) {
+            state.cuTradesByDay[day]++;
+            await execute(state, { kind: "cuBuy", side: "buyEtn", stable: buy.stable, amountIn: buy.usd, expectedOut: await quoteBuyEtn(buy.stable, buy.usd), lagPct: buy.lagPct });
+            await saveWithRetry(state);
+            return;
+          }
+          const sell = cfg.cuSellEnabled
+            ? decideCatchupSell(cu, lags, mids, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes, maxSellEtn: cfg.cuMaxSellEtn }, Date.now(), canSpendEtn)
+            : null;
+          if (sell) {
+            state.cuTradesByDay[day]++;
+            await execute(state, { kind: "cuSellFirst", side: "sellEtn", stable: sell.stable, amountIn: sell.etn, expectedOut: await quoteSellEtn(sell.stable, sell.etn), lagPct: sell.lagPct });
+            await saveWithRetry(state);
+            return;
+          }
+          cuNote = ` · KuCoin ${kMid.toPrecision(4)} (ElectroSwap ${lags.USDT >= 0 ? "+" : ""}${lags.USDT.toFixed(1)}% USDT / ${lags.USDC >= 0 ? "+" : ""}${lags.USDC.toFixed(1)}% USDC; catch-up ${signedEtn(cu.gainEtn)} ETN over ${cu.closed}, ${cu.lots.length} open, pot ${fmtUsd(cu.cash.USDT + cu.cash.USDC)})`;
+        } else {
+          cuNote = " · KuCoin price unavailable";
+        }
       }
 
       let gapNote = "";
@@ -574,7 +719,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       }
 
       const reason = decision.action === "hold" ? decision.reason : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
-      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${gapNote}${triNote}`);
+      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${cuNote}${gapNote}${triNote}`);
       await saveWithRetry(state);
     } catch (err) {
       console.error("⚠️  ETN bot tick failed:", err.shortMessage || err.message);
@@ -616,7 +761,8 @@ export async function startEtnAccumulatorBot() {
   }
   const gapText =
     (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off") +
-    (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off");
+    (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
+    (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();

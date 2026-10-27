@@ -44,7 +44,7 @@ async function main() {
   // Led by ETN ACCUMULATED: ETN the bot's trades have added, which is what it's for. The stablecoin is
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
-  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn;
+  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn;
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
   const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);
@@ -53,6 +53,7 @@ async function main() {
   console.log(`\n  ETN ACCUMULATED:     ${signed(accumulated)} ETN   (${((accumulated / s.budgetEtn) * 100).toFixed(2)}% of the ${etn(s.budgetEtn)} ETN budget, ~${signed(accumulated / days)} ETN/day)`);
   if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)`);
   if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
+  if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 
   console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
@@ -68,6 +69,20 @@ async function main() {
   if (state.gap?.recent?.length) {
     console.log("\n  Recent gap trades:  sold in   ETN sold    $       ETN back    gain");
     for (const t of state.gap.recent.slice(-10)) console.log(`  ${(t.at || "").slice(5, 16).padEnd(18)} ${t.dear.padEnd(6)} ${etn(t.etnSold).padStart(9)}  ${t.stableReceived.toFixed(2).padStart(6)}  ${etn(t.etnBought).padStart(9)}   ${t.gainEtn >= 0 ? "+" : ""}${etn(t.gainEtn)}`);
+  }
+
+  if (state.cu) {
+    const cu = state.cu;
+    console.log(`\n  KuCoin catch-up pot: $${(cu.cash.USDT || 0).toFixed(2)} USDT + $${(cu.cash.USDC || 0).toFixed(2)} USDC free (target $${(cu.target || 0).toFixed(2)}, funded $${(cu.funded || 0).toFixed(2)}); ${cu.lots.length} open lot(s)`);
+    for (const l of cu.lots) {
+      const when = `at ${(l.openedAt || "").slice(5, 16)} (ElectroSwap was ${l.lagPct != null ? (l.lagPct >= 0 ? "+" : "") + l.lagPct.toFixed(1) + "%" : "?"} vs KuCoin)`;
+      console.log(l.kind === "sellFirst"
+        ? `    open #${l.id} (sell first): sold ${etn(l.etn)} ETN for $${l.usd.toFixed(2)} ${l.stable} ${when}`
+        : `    open #${l.id}: $${l.usd.toFixed(2)} ${l.stable} -> ${etn(l.etn)} ETN ${when}`);
+    }
+    for (const r of (cu.recent || []).slice(-10)) console.log(r.kind === "sellFirst"
+      ? `    closed #${r.id} (sell first): sold ${etn(r.etnSold)} ETN, bought back ${etn(r.etnBought)} -> ${signed(r.gainEtn)} ETN`
+      : `    closed #${r.id}: ${etn(r.etnBought)} ETN in, ${etn(r.etnSold)} sold back for $${r.usdReceived.toFixed(2)} -> ${signed(r.gainEtn)} ETN`);
   }
 
   if (state.tri?.recent?.length) {
