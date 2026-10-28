@@ -27,6 +27,9 @@ const selectStyle = {
 // shortly after it happens, same reasoning/cadence as TeamWalletsTab.jsx's own poll.
 const POLL_INTERVAL_MS = 60000;
 
+// Addresses holding less than this are hidden from the list by default (see listedAddresses).
+const MIN_LISTED_BALANCE_WEI = 1000n * 10n ** 18n; // 1,000 ETN
+
 function balanceOf(entry) {
   try {
     return BigInt(entry.balance || "0");
@@ -86,6 +89,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
   // one you're looking at (same pattern as CoreTierPnl.jsx's own token filter) is the more usable
   // way to answer "who's actually reducing their ETN" one exchange at a time.
   const [selected, setSelected] = useState("combined");
+  const [showSmall, setShowSmall] = useState(false);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= MOBILE_MAX_WIDTH);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth <= MOBILE_MAX_WIDTH);
@@ -197,6 +201,11 @@ export default function CexBalancesTab({ onSelectAddress }) {
     const diff = balanceOf(b) - balanceOf(a);
     return diff > 0n ? 1 : diff < 0n ? -1 : 0;
   });
+  // Addresses holding under MIN_LISTED_BALANCE_WEI (deposit wallets that sweep to the exchange's main
+  // one sit at ~0) are tucked behind a "show more" button — same pattern as the Team Wallets tab. They
+  // still count in the combined total, the chart and the dropdown, which are about history, not now.
+  const smallAddresses = sortedAddresses.filter((a) => balanceOf(a) < MIN_LISTED_BALANCE_WEI);
+  const listedAddresses = showSmall ? sortedAddresses : sortedAddresses.filter((a) => balanceOf(a) >= MIN_LISTED_BALANCE_WEI);
 
   return (
     <div>
@@ -279,7 +288,7 @@ export default function CexBalancesTab({ onSelectAddress }) {
         ) : addresses.length === 0 ? (
           <div style={{ fontSize: 12, color: muted, padding: "14px 0" }}>No CEX addresses recorded yet.</div>
         ) : (
-          sortedAddresses.map((a) => (
+          listedAddresses.map((a) => (
             <button
               key={a.address}
               className="dash-cex-row"
@@ -315,6 +324,16 @@ export default function CexBalancesTab({ onSelectAddress }) {
               </div>
             </button>
           ))
+        )}
+        {series !== null && smallAddresses.length > 0 && (
+          <div style={{ padding: "10px 0 4px", textAlign: "center" }}>
+            <button
+              onClick={() => setShowSmall((v) => !v)}
+              style={{ background: "transparent", border: `1px solid ${border}`, borderRadius: 6, color: mutedLight, fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6, fontSize: 11, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+            >
+              {showSmall ? "Show fewer" : `Show ${smallAddresses.length} more (under 1,000 ETN)`}
+            </button>
+          </div>
         )}
       </div>
     </div>
