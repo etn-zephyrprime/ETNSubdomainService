@@ -114,3 +114,16 @@ test("inventory: sold-first ETN is out until bought back", () => {
   applyCatchupBuyBack(b, 1, { usdSpent: 45, etnBought: 20500 });
   assert.equal(botEtnInventory(state), 100500);
 });
+
+test("mark-to-market: the pot counts as money put in; its lots and cash count as held", async () => {
+  const { catchupContributedEtn } = await import("../services/etnCatchupStrategy.js");
+  const b = freshCatchupBook(100);
+  applyCatchupFunding(b, "USDT", 52.69); // funded before deposit values were recorded
+  applyCatchupFunding(b, "USDC", 46.85, 21900); // recorded on arrival
+  assert.ok(Math.abs(catchupContributedEtn(b, 460) - (21900 + 52.69 * 460)) < 1e-6);
+  assert.equal(catchupContributedEtn(null, 460), 0);
+  const state = { budgetEtn: 100000, realizedGainEtn: 0, lots: [], cu: b };
+  const s = summarize(state, {}, 0, { heldEtn: 44483, stablesEtn: 2090, contributedEtn: 46137 });
+  assert.equal(s.etnEquivalentNow, 100000 + 44483 + 2090);
+  assert.equal(s.contributedEtn, 146137);
+});

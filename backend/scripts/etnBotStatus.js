@@ -13,6 +13,7 @@ import { getBotState } from "../state/etnAccumulatorBotState.js";
 import { ethers } from "ethers";
 import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
 import { summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { catchupContributedEtn } from "../services/etnCatchupStrategy.js";
 
 dotenv.config();
 
@@ -28,18 +29,37 @@ async function main() {
   }
   const provider = createRpcProvider();
   const { buyback } = await gatherQuotes(provider, state, readConfig().clipEtn);
-  // What the gap book's stablecoin would buy in ETN right now.
-  let gapStablesEtn = 0;
-  if (state.gap) {
-    const quoter = new ethers.Contract(process.env.ELECTROSWAP_V3_QUOTER_ADDRESS || "0xba3CAfCc197E71b9d114E515E75c037dA09A6312", ["function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160, uint32, uint256)"], provider);
+  // What stablecoin would buy in ETN right now (one quote per pool for each pile of dollars).
+  const quoter = new ethers.Contract(process.env.ELECTROSWAP_V3_QUOTER_ADDRESS || "0xba3CAfCc197E71b9d114E515E75c037dA09A6312", ["function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut, uint160, uint32, uint256)"], provider);
+  const usdToEtn = async (byStable) => {
+    let total = 0;
     for (const [k, p] of Object.entries(POOLS)) {
-      const usd = state.gap.stables[k] || 0;
+      const usd = byStable[k] || 0;
       if (usd < 0.01) continue;
       const r = await quoter.quoteExactInputSingle.staticCall({ tokenIn: p.token, tokenOut: "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77", amountIn: ethers.parseUnits((Math.floor(usd * 1e6) / 1e6).toFixed(6), 6), fee: p.fee, sqrtPriceLimitX96: 0 });
-      gapStablesEtn += Number(ethers.formatEther(r[0]));
+      total += Number(ethers.formatEther(r[0]));
     }
+    return total;
+  };
+  const gapStablesEtn = state.gap ? await usdToEtn(state.gap.stables) : 0;
+  // KuCoin catch-up: ETN its buy-first lots hold, plus its pot cash and sell-first lots' dollars
+  // converted back to ETN; its pot counts as money put in (at the ETN value recorded on arrival — or,
+  // for dollars funded before that was recorded, at today's price, flagged as an estimate).
+  let catchup = {};
+  let cuEstimated = false;
+  if (state.cu) {
+    const cu = state.cu;
+    const dollars = { USDT: cu.cash.USDT || 0, USDC: cu.cash.USDC || 0 };
+    for (const l of cu.lots) if (l.kind === "sellFirst") dollars[l.stable] = (dollars[l.stable] || 0) + l.usd;
+    const etnPerUsd = (await usdToEtn({ USDT: 10 })) / 10; // today's rate, for any unrecorded deposit value
+    cuEstimated = (cu.funded || 0) - (cu.fundedEtnUsd || 0) > 0.01;
+    catchup = {
+      heldEtn: cu.lots.filter((l) => l.kind !== "sellFirst").reduce((sum, l) => sum + l.etn, 0),
+      stablesEtn: await usdToEtn(dollars),
+      contributedEtn: catchupContributedEtn(cu, etnPerUsd),
+    };
   }
-  const s = summarize(state, buyback, gapStablesEtn);
+  const s = summarize(state, buyback, gapStablesEtn, catchup);
 
   // Led by ETN ACCUMULATED: ETN the bot's trades have added, which is what it's for. The stablecoin is
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
@@ -62,7 +82,7 @@ async function main() {
     console.log(`  Working capital:     $${usdt.toFixed(2)} USDT + $${usdc.toFixed(2)} USDC = $${(usdt + usdc).toFixed(2)}   (from the ${etn(s.gapSeedEtn)} ETN seed${deposits.length ? ` + your top-ups of ${deposits.map(([k, v]) => `$${v.toFixed(2)} ${k}`).join(" + ")}` : ""})`);
     if (state.gapLeg) console.log(`  GAP LEG OPEN:        sold ${etn(state.gapLeg.etnSold)} ETN into ${state.gapLeg.dear}; buy leg in ${state.gapLeg.cheap} still to run`);
   }
-  console.log(`  Open lots:           ${s.lotsOpen}${s.lotsOpen ? `   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})` : ""}`);
+  console.log(`  Sell/buyback lots:   ${s.lotsOpen}${s.lotsOpen ? `   (${etn(s.openEtnSold)} ETN sold${s.openBuybackEtn != null ? `, would buy back ${etn(s.openBuybackEtn)} now` : ""})` : ""}`);
   console.log(`  Price EMA:           $${state.ema?.toPrecision(4)} over ${state.samples} samples`);
   if (state.pending) console.log(`  PENDING tx:          ${state.pending.kind} ${state.pending.txHash}`);
 
@@ -99,7 +119,7 @@ async function main() {
     }
   }
 
-  console.log(`\n  (Mark-to-market, moves with ETN's price: converting everything back to ETN right now would leave ${etn(s.etnEquivalentNow)} ETN against ${etn(s.contributedEtn)} ETN put in — after one-off fees and price impact.)`);
+  console.log(`\n  (Mark-to-market, moves with ETN's price: converting everything back to ETN right now would leave ${etn(s.etnEquivalentNow)} ETN against ${etn(s.contributedEtn)} ETN put in — after one-off fees and price impact${state.cu ? `; includes the KuCoin catch-up pot and its open lots${cuEstimated ? " (pot deposits made before 28 Oct valued at today's price)" : ""}` : ""}.)`);
 }
 
 main().catch((err) => {
