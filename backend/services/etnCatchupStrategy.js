@@ -152,11 +152,26 @@ export function applyCatchupBuyBack(book, lotId, { usdSpent, etnBought, at = nul
   return book;
 }
 
-/** Adds stablecoin to the pot (a deposit claimed by splitDeposit, or the virtual pot in paper mode). */
-export function applyCatchupFunding(book, stable, usd) {
+/** Adds stablecoin to the pot (a deposit claimed by splitDeposit, or the virtual pot in paper mode).
+ * `etnValue` (optional): what it was worth in ETN when it arrived — kept so the status script can
+ * count the pot as money put in, like the gap book's deposits. Pots funded before this existed have
+ * no figure for those dollars (fundedEtnUsd says how many dollars are covered). */
+export function applyCatchupFunding(book, stable, usd, etnValue = null) {
   book.cash[stable] = (book.cash[stable] || 0) + usd;
   book.funded = (book.funded || 0) + usd;
+  if (etnValue != null) {
+    book.fundedEtn = (book.fundedEtn || 0) + etnValue;
+    book.fundedEtnUsd = (book.fundedEtnUsd || 0) + usd;
+  }
   return book;
+}
+
+/** The pot as money put in, in ETN: the recorded ETN value of its deposits, plus any dollars funded
+ * before values were recorded, at `etnPerUsd` (an estimate — today's price). */
+export function catchupContributedEtn(book, etnPerUsd) {
+  if (!book) return 0;
+  const unvalued = Math.max(0, (book.funded || 0) - (book.fundedEtnUsd || 0));
+  return (book.fundedEtn || 0) + unvalued * etnPerUsd;
 }
 
 /** Splits a stablecoin surplus found in the wallet: the catch-up pot is filled up to its target

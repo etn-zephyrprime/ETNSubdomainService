@@ -117,17 +117,21 @@ export function applyBuyback(state, lotId, { etnBought, txHash, at }) {
 }
 
 /** Headline figures: realized gain, plus what the open lots' stablecoin would buy back right now.
- * `gapStablesEtn`: what the gap book's stablecoin would buy in ETN right now (0 without the gap mode). */
-export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0) {
+ * `gapStablesEtn`: what the gap book's stablecoin would buy in ETN right now (0 without the gap mode).
+ * `catchup` (KuCoin catch-up, all optional): heldEtn — ETN its open buy-first lots hold; stablesEtn —
+ * what its pot cash plus its sell-first lots' dollars would buy in ETN now; contributedEtn — its pot
+ * as money put in (catchupContributedEtn). */
+export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0, catchup = {}) {
   const open = state.lots.filter((l) => l.status === "open");
   const closed = state.lots.filter((l) => l.status === "closed");
   const openEtnSold = open.reduce((s, l) => s + l.etnSold, 0);
   const openBuybackEtn = open.reduce((s, l) => s + (buybackQuotes[l.id] ?? 0), 0);
   const allQuoted = open.every((l) => buybackQuotes[l.id] > 0);
-  const etnNow = botEtnInventory(state) + (allQuoted ? openBuybackEtn : openEtnSold) + gapStablesEtn;
-  // Everything put in, in ETN: the budget plus any stablecoin topped up into the gap book (at the ETN
-  // value it had when it arrived).
-  const contributedEtn = state.budgetEtn + (state.gap?.depositEtn || 0);
+  const cuHeldEtn = catchup.heldEtn || 0, cuStablesEtn = catchup.stablesEtn || 0;
+  const etnNow = botEtnInventory(state) + (allQuoted ? openBuybackEtn : openEtnSold) + gapStablesEtn + cuHeldEtn + cuStablesEtn;
+  // Everything put in, in ETN: the budget plus any stablecoin topped up into the gap book or the
+  // catch-up pot (at the ETN value it had when it arrived).
+  const contributedEtn = state.budgetEtn + (state.gap?.depositEtn || 0) + (catchup.contributedEtn || 0);
   return {
     budgetEtn: state.budgetEtn,
     cyclesClosed: closed.length,

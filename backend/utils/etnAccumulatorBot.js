@@ -465,7 +465,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       if (diff > 0) {
         const { toCatchup, rest } = splitDeposit(cu, k, diff);
         if (toCatchup > 0) {
-          applyCatchupFunding(cu, k, toCatchup);
+          applyCatchupFunding(cu, k, toCatchup, toCatchup / mids[k]);
           notify(`💵 ${fmtUsd(toCatchup)} ${k} found in the wallet — added to the KuCoin catch-up pot (now ${fmtUsd(cu.cash.USDT)} USDT / ${fmtUsd(cu.cash.USDC)} USDC of a ${fmtUsd(cu.target)} target)`);
         }
         if (rest >= 0.01 && gap) {
