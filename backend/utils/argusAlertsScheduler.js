@@ -19,7 +19,10 @@
 import { ethers } from "ethers";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createRpcProvider } from "./rpcProvider.js";
-import { sendZephyrosMessage, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import path from "path";
+import { sendZephyrosMessage, sendZephyrosPhoto, visibleLength, footerVisibleLength, zephyrosBotConfigured, GENERAL_THREAD_ID } from "./coreClashTelegram.js";
 import { getTeamWalletsCache } from "../state/teamWalletsState.js";
 import { getValidatorWalletsCache } from "../state/validatorWalletsState.js";
 import { getTokenLocksCache } from "../state/tokenLocksState.js";
@@ -37,6 +40,10 @@ const DIGEST_HOUR_UTC = num("ARGUS_ALERTS_DIGEST_HOUR_UTC", 9);
 const EXPLORER = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 const STATE_KEY = "argus-alerts-state.json";
 const NAME_TTL_MS = 6 * 60 * 60 * 1000; // re-check a wallet's ENS name at most every 6 hours
+// The Argus logo on every alert — a still of the dashboard header (scripts/renderArgusLogo.js).
+// Uploaded once; Telegram's file_id is kept in the alert state and reused after that.
+const LOGO_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets", "ArgusLogo.png");
+const CAPTION_LIMIT = 1024;
 const MAX_MESSAGE = 3600; // under Telegram's 4,096-character limit, leaving room for the group footer
 
 let r2 = null;
@@ -172,12 +179,29 @@ export function startArgusAlertsScheduler() {
 
       // State first: a failed send then can't be re-sent on the next tick as a duplicate.
       await saveState(state);
+
+      // Each alert goes out as the Argus logo with the alert as its caption. Telegram caps captions at
+      // 1,024 characters, so a longer one (a big lock list, a long weekly summary) goes as the logo
+      // captioned with its title line, followed by the full alert as a message.
+      let logoId = state.logoFileId || null;
+      const sendWithLogo = async (html) => {
+        const fits = visibleLength(html) + footerVisibleLength() <= CAPTION_LIMIT;
+        const caption = fits ? html : html.split("\n")[0];
+        const result = await sendZephyrosPhoto(logoId || readFileSync(LOGO_PATH), caption, { threadId: GENERAL_THREAD_ID, footer: fits, filename: "ArgusLogo.png" });
+        const sizes = result?.photo || [];
+        if (!logoId && sizes.length) logoId = sizes[sizes.length - 1].file_id;
+        if (!fits) await sendZephyrosMessage(html, { threadId: GENERAL_THREAD_ID });
+      };
       for (const raw of messages) {
         const m = await resolveWalletNames(raw);
         for (const part of chunks(m)) {
-          await sendZephyrosMessage(mdToHtml(part), { threadId: GENERAL_THREAD_ID }).catch((err) => console.warn("⚠️  Argus alerts: Telegram send failed:", err.message));
+          await sendWithLogo(mdToHtml(part)).catch(async (err) => {
+            console.warn("⚠️  Argus alerts: photo send failed, sending as text:", err.message);
+            await sendZephyrosMessage(mdToHtml(part), { threadId: GENERAL_THREAD_ID }).catch((e) => console.warn("⚠️  Argus alerts: Telegram send failed:", e.message));
+          });
         }
       }
+      if (logoId && logoId !== state.logoFileId) await saveState({ ...state, logoFileId: logoId });
       if (messages.length) console.log(`📣 Argus alerts: sent ${messages.length} alert(s)`);
     } catch (err) {
       console.error("⚠️  Argus alerts tick failed:", err.message);
