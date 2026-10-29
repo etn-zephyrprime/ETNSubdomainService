@@ -104,6 +104,42 @@ export async function sendZephyrosAnimation(animation, caption, { threadId, foot
   });
 }
 
+/**
+ * Sends a photo with an HTML caption via the Zephyros bot. `photo` is a Telegram file_id (re-sending an
+ * image already uploaded once) or a Buffer (uploaded as multipart). Returns Telegram's result — its
+ * `photo` array carries the file_id to reuse next time. Captions are limited to 1,024 characters.
+ */
+export async function sendZephyrosPhoto(photo, caption, { threadId, footer = true, filename = "image.png" } = {}) {
+  if (!zephyrosBotConfigured()) {
+    console.warn("ℹ️  [CoreClash] Zephyros bot not configured — skipping photo:", caption.slice(0, 80));
+    return null;
+  }
+  const fields = {
+    chat_id: COREBOT_TELEGRAM_CHAT_ID,
+    caption: footer ? caption + buildFooter() : caption,
+    parse_mode: "HTML",
+    ...(threadId != null ? { message_thread_id: threadId } : {}),
+  };
+  if (typeof photo === "string") return callTelegramApi(COREBOT_ZEPHYROS_BOT_TOKEN, "sendPhoto", { ...fields, photo });
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, String(v));
+  form.append("photo", new Blob([photo], { type: "image/png" }), filename);
+  const res = await fetch(`https://api.telegram.org/bot${COREBOT_ZEPHYROS_BOT_TOKEN}/sendPhoto`, { method: "POST", body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data?.description || `Telegram sendPhoto failed with status ${res.status}`);
+  return data.result;
+}
+
+/** Visible length of an HTML caption once Telegram strips the tags (its 1,024 limit counts this). */
+export function visibleLength(html) {
+  return String(html).replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt|quot);/g, "x").length;
+}
+
+/** The group footer's visible length, for callers sizing a caption around it. */
+export function footerVisibleLength() {
+  return visibleLength(buildFooter());
+}
+
 /** Sends an HTML-formatted text message via the Core Clash bot (adverts only), General topic. */
 export async function sendCoreClashMessage(text, { footer = true } = {}) {
   if (!coreClashBotConfigured()) {
