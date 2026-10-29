@@ -31,6 +31,8 @@ const TICK_INTERVAL_MS = 60 * 1000;
  * @param {string} opts.startedLog - log line prefix used for the startup/tick/error messages.
  * @param {number} [opts.cycleDays=1]
  * @param {number} [opts.minGapHours=3]
+ * @param {boolean} [opts.sendOnFirstStartup=true] - post advert 0 the very first time this stateKey
+ *   starts. Pass false when a scheduler is (re)introduced under a new key, so a deploy doesn't post at once.
  * @returns {() => Promise<void>} start() — call once at boot.
  */
 export function createAdvertScheduler({
@@ -45,6 +47,7 @@ export function createAdvertScheduler({
   startedLog,
   cycleDays = 1,
   minGapHours = 3,
+  sendOnFirstStartup = true,
 }) {
   const CYCLE_MS = cycleDays * ONE_DAY_MS;
   const MIN_GAP_MS = minGapHours * 60 * 60 * 1000;
@@ -77,19 +80,21 @@ export function createAdvertScheduler({
     return [...arr].sort(() => Math.random() - 0.5);
   }
 
-  function randomDelayWithinCycleMs() {
-    return Math.floor(Math.random() * CYCLE_MS);
-  }
-
   function buildCycleQueue(date, lastSentIndex) {
     const cycleStartMs = Math.floor(date.getTime() / CYCLE_MS) * CYCLE_MS;
+    // Random times across what's LEFT of the cycle: normally the queue is built right at the cycle's
+    // start (so this is the whole cycle), but one built mid-cycle (first start, or a restart after the
+    // cycle changed) would otherwise put some sends in the past and fire them all at once.
+    const windowStartMs = Math.max(cycleStartMs, date.getTime());
+    const windowMs = cycleStartMs + CYCLE_MS - windowStartMs;
+    const randomDelayWithinCycleMs = () => Math.floor(Math.random() * windowMs);
     let scheduled = [];
 
     for (let attempts = 0; attempts < 1000; attempts++) {
       const indexes = shuffle(Array.from({ length: advertCount }, (_, i) => i));
 
       scheduled = indexes
-        .map((index) => ({ index, sendAtMs: cycleStartMs + randomDelayWithinCycleMs(), sent: false }))
+        .map((index) => ({ index, sendAtMs: windowStartMs + randomDelayWithinCycleMs(), sent: false }))
         .sort((a, b) => a.sendAtMs - b.sendAtMs);
 
       const hasGap = scheduled.every((item, idx) => idx === 0 || item.sendAtMs - scheduled[idx - 1].sendAtMs >= MIN_GAP_MS);
@@ -143,7 +148,10 @@ export function createAdvertScheduler({
     let state = await readAdvertState();
     const currentCycleKey = getCycleKey(new Date());
 
-    if (!state.firstStartupSent) {
+    if (!state.firstStartupSent && !sendOnFirstStartup) {
+      state = { ...state, firstStartupSent: true };
+      await writeAdvertState(state);
+    } else if (!state.firstStartupSent) {
       console.log(`${startedLog}: first startup → sending first advert immediately`);
       try {
         await sendByIndex(0);
