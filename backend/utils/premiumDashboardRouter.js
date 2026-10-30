@@ -704,7 +704,10 @@ router.post("/premium/portfolio-summary", async (req, res) => {
     const liquidity = cleanUsd(w.liquidity);
     const staking = cleanUsd(w.staking);
     if ([native, tokens, liquidity, staking].some((v) => v === null)) continue;
-    perWallet.push({ address: String(w.address).toLowerCase(), native, tokens, liquidity, staking });
+    // The ETN amount itself (Core Tier's ETN Balance headline card) — optional, so a summary saved
+    // by an older page still goes through; the card estimates from `native` when it's missing.
+    const nativeEtn = cleanUsd(w.nativeEtn);
+    perWallet.push({ address: String(w.address).toLowerCase(), native, tokens, liquidity, staking, ...(nativeEtn !== null ? { nativeEtn } : {}) });
   }
   if (perWallet.length === 0) return res.status(400).json({ error: "No valid wallets in summary" });
 

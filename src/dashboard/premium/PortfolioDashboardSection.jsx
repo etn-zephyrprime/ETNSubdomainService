@@ -13,6 +13,7 @@ import CoreTierNftPnl from "./components/CoreTierNftPnl.jsx";
 import CoreTierRecentActivity from "./components/CoreTierRecentActivity.jsx";
 import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
+import CoreTierHeadlineCards from "./components/CoreTierHeadlineCards.jsx";
 import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
@@ -120,8 +121,16 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   const [walletFilterRaw, setWalletFilter] = useState("all");
   const walletFilter = walletFilterRaw === "all" || active.some((w) => w.address === walletFilterRaw) ? walletFilterRaw : "all";
 
+  // Shared with the headline cards: the Portfolio panel's settled live balances, and the latest PnL
+  // snapshot (fetched by the cards, or by the PnL panel when it's open) — so the cards show the same
+  // numbers as the panels without computing anything twice.
+  const [liveSummary, setLiveSummary] = useState(null);
+  const [pnlSnapshot, setPnlSnapshot] = useState(null);
+
   useEffect(() => {
     setWalletFilter("all");
+    setLiveSummary(null);
+    setPnlSnapshot(null);
   }, [wallet.isConnected, wallet.account]);
 
   // Reported by MembershipPurchase itself (see that component's own computeExpiryStatus comment)
@@ -231,15 +240,27 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         </div>
       </div>
 
+      <CoreTierHeadlineCards
+        wallet={wallet}
+        getAuthParams={getAuthParams}
+        hasAccess={hasAccess}
+        active={active}
+        walletFilter={walletFilter}
+        liveSummary={liveSummary}
+        pnlSnapshot={pnlSnapshot}
+        onPnlSnapshot={setPnlSnapshot}
+        pnlTabOpen={activePanel === "pnl"}
+      />
+
       <div style={{ marginBottom: 20 }}>
         {activePanel === "portfolio" && (
-          <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onViewDemo={onViewDemo} />
+          <CoreTierPortfolio wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onViewDemo={onViewDemo} onLiveSummary={setLiveSummary} />
         )}
         {activePanel === "balance" && (
           <CoreTierBalanceHistory wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
         {activePanel === "pnl" && (
-          <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+          <CoreTierPnl wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} walletFilter={walletFilter} onSnapshot={setPnlSnapshot} />
         )}
         {activePanel === "nftpnl" && (
           <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
