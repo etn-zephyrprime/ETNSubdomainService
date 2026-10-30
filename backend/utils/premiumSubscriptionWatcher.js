@@ -111,7 +111,9 @@ async function handleMembershipPurchased(event, tier, resolveDisplayName) {
   // independently.
   const existing = await getMembership(subscriber);
   const priorExpiry = tier === "annual" ? existing?.annual_expiry : existing?.monthly_expiry;
-  const isRenewal = priorExpiry != null;
+  // A free trial (scripts/grantCoreTrial.js, last_tx_hash "trial:…") isn't a previous purchase —
+  // buying after one is announced as a new subscriber.
+  const isRenewal = priorExpiry != null && !String(existing?.last_tx_hash || "").startsWith("trial");
 
   await upsertMembership(subscriber, tier, expiryTimestamp, event.transactionHash);
   console.log(`💳 ${tier === "annual" ? "Annual" : "Monthly"} membership purchased: ${subscriber} — now expires ${expiryTimestamp.toISOString()} (tx ${event.transactionHash})`);
