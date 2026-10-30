@@ -151,12 +151,18 @@ export function validatorAlerts(validators, state = {}, { minEtn = 100_000 } = {
 
 // ---- 4. CEX balances ----------------------------------------------------------------------------
 
+const TX_URL = (hash) => `https://blockexplorer.electroneum.com/tx/${hash}`;
+const CEX_MAX_TRANSFERS = 5;
+const CEX_MIN_TRANSFER_ETN = 1000; // smaller ones aren't listed
+
 /**
  * An exchange's combined balance (all its addresses, grouped by label) moving by `minEtn` or more
  * since the last alert for it (then that's its new base). `balances`: [{ address, label, etn }].
+ * Also returns `moves`: the scheduler looks up the transfers behind each one and rebuilds its
+ * message with them (cexMoveMessage) — `messages` here is the version without transfers.
  */
-export function cexAlerts(balances, state = {}, { minEtn = 10_000_000 } = {}) {
-  const messages = [];
+export function cexAlerts(balances, state = {}, { minEtn = 10_000_000, nowMs = Date.now() } = {}) {
+  const moves = [];
   const byLabel = new Map();
   for (const b of balances || []) {
     const g = byLabel.get(b.label) || { total: 0, addrs: [] };
@@ -166,27 +172,54 @@ export function cexAlerts(balances, state = {}, { minEtn = 10_000_000 } = {}) {
   }
   const cexBase = { ...(state.cexBase || {}) };
   const cexAddrBase = { ...(state.cexAddrBase || {}) };
+  // When each exchange's base was set — the start of the window its transfers are looked up over.
+  const cexBaseAt = { ...(state.cexBaseAt || {}) };
+  const nowIso = new Date(nowMs).toISOString();
   for (const [label, g] of byLabel) {
     const base = cexBase[label];
     if (base == null) {
       cexBase[label] = g.total;
+      cexBaseAt[label] = nowIso;
       for (const a of g.addrs) cexAddrBase[a.address] = a.etn;
       continue;
     }
     const delta = g.total - base;
     if (Math.abs(delta) >= minEtn) {
       const moved = g.addrs
-        .map((a) => ({ a, d: a.etn - (cexAddrBase[a.address] ?? a.etn) }))
+        .map((a) => ({ address: a.address, etn: a.etn, d: a.etn - (cexAddrBase[a.address] ?? a.etn) }))
         .filter((x) => Math.abs(x.d) >= 1)
-        .sort((x, y) => Math.abs(y.d) - Math.abs(x.d))
-        .slice(0, 5)
-        .map((x) => `  ${walletRef(x.a.address)}: ${signed(x.d)} → ${fmtEtn(x.a.etn)}`);
-      messages.push(`🏦 *${md(label)}* ${delta >= 0 ? "📥 inflow" : "📤 outflow"} *${signed(delta)} ETN*\n\n${fmtEtn(base)} → *${fmtEtn(g.total)} ETN* across ${g.addrs.length} address${g.addrs.length === 1 ? "" : "es"}${moved.length ? `\n${moved.join("\n")}` : ""}`);
+        .sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+      const sinceMs = Date.parse(cexBaseAt[label] || "") || nowMs - 7 * DAY_MS;
+      moves.push({ label, delta, base, total: g.total, addrCount: g.addrs.length, addresses: g.addrs.map((a) => a.address), moved, sinceMs });
       cexBase[label] = g.total;
+      cexBaseAt[label] = nowIso;
       for (const a of g.addrs) cexAddrBase[a.address] = a.etn;
     }
   }
-  return { messages, state: { ...state, cexBase, cexAddrBase } };
+  return { messages: moves.map((m) => cexMoveMessage(m)), moves, state: { ...state, cexBase, cexAddrBase, cexBaseAt } };
+}
+
+/**
+ * One exchange move as a message. `transfers` ([{ hash, from, to, etn }] — native ETN in or out of
+ * the exchange's addresses over the move's window) lists the biggest, each with From / To and a
+ * block-explorer link. Wallets are walletRef markers: the scheduler shows an exchange address as
+ * that exchange's tag, anything else as its ENS name (or short address). Without transfers (the
+ * lookup failed or found none) it falls back to each address's balance change.
+ */
+export function cexMoveMessage(move, transfers = null) {
+  const head = `🏦 *${md(move.label)}* ${move.delta >= 0 ? "📥 inflow" : "📤 outflow"} *${signed(move.delta)} ETN*\n\n${fmtEtn(move.base)} → *${fmtEtn(move.total)} ETN* across ${move.addrCount} address${move.addrCount === 1 ? "" : "es"}`;
+  const own = new Set((move.addresses || move.moved.map((m) => m.address)).map((a) => a.toLowerCase()));
+  const internal = (t) => own.has(t.from.toLowerCase()) && own.has(t.to.toLowerCase()); // between its own addresses
+  const list = (transfers || []).filter((t) => t.etn >= CEX_MIN_TRANSFER_ETN && !internal(t)).sort((a, b) => b.etn - a.etn);
+  if (list.length === 0) {
+    const lines = move.moved.slice(0, 5).map((x) => `  ${walletRef(x.address)}: ${signed(x.d)} → ${fmtEtn(x.etn)}`);
+    return lines.length ? `${head}\n${lines.join("\n")}` : head;
+  }
+  const shown = list
+    .slice(0, CEX_MAX_TRANSFERS)
+    .map((t) => `*${fmtEtn(t.etn)} ETN*\nFrom: ${walletRef(t.from)}\nTo: ${walletRef(t.to)}\n[View transaction](${TX_URL(t.hash)})`);
+  const rest = list.length - shown.length;
+  return `${head}\n\n${shown.join("\n\n")}${rest > 0 ? `\n\n+${rest} more transfer${rest === 1 ? "" : "s"}` : ""}`;
 }
 
 // ---- 5. ETN Bridge daily ------------------------------------------------------------------------
