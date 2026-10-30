@@ -174,10 +174,19 @@ export function cexAlerts(balances, state = {}, { minEtn = 10_000_000, nowMs = D
   const cexAddrBase = { ...(state.cexAddrBase || {}) };
   // When each exchange's base was set — the start of the window its transfers are looked up over.
   const cexBaseAt = { ...(state.cexBaseAt || {}) };
+  // Which addresses each label's base was taken over. If that set changes (an address added to the
+  // list, or missing from a partial refresh of it) the totals aren't comparable — re-base quietly
+  // rather than reporting the difference as a move (confirmed live: a refresh that dropped half of
+  // KuCoin's addresses would otherwise read as a huge outflow).
+  const cexAddrSet = { ...(state.cexAddrSet || {}) };
   const nowIso = new Date(nowMs).toISOString();
   for (const [label, g] of byLabel) {
     const base = cexBase[label];
-    if (base == null) {
+    const addrSet = g.addrs.map((a) => a.address.toLowerCase()).sort().join(",");
+    // Missing counts as changed: state saved before this existed may hold a base taken over a partial list.
+    const setChanged = cexAddrSet[label] !== addrSet;
+    cexAddrSet[label] = addrSet;
+    if (base == null || setChanged) {
       cexBase[label] = g.total;
       cexBaseAt[label] = nowIso;
       for (const a of g.addrs) cexAddrBase[a.address] = a.etn;
@@ -196,7 +205,7 @@ export function cexAlerts(balances, state = {}, { minEtn = 10_000_000, nowMs = D
       for (const a of g.addrs) cexAddrBase[a.address] = a.etn;
     }
   }
-  return { messages: moves.map((m) => cexMoveMessage(m)), moves, state: { ...state, cexBase, cexAddrBase, cexBaseAt } };
+  return { messages: moves.map((m) => cexMoveMessage(m)), moves, state: { ...state, cexBase, cexAddrBase, cexBaseAt, cexAddrSet } };
 }
 
 /**
