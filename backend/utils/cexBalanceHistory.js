@@ -92,6 +92,41 @@ export function forwardFill(perDate, startDate, endDate) {
   return filled;
 }
 
+const FETCH_CONCURRENCY = 3;
+const RETRY_DELAYS_MS = [2000, 6000]; // after the 1st and 2nd failed attempt
+
+/** One address's forward-filled daily balances, retried on failure. { row, filled } — filled is null
+ * if every attempt failed. */
+async function fetchWithRetry(row, cutoffDate, today) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const events = await fetchAddressBalanceEvents(row.address, cutoffDate);
+      return { row, filled: forwardFill(events, cutoffDate, today) };
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length) {
+        console.warn(`⚠️  CEX balance history: failed to fetch ${row.address} (${row.label}) after ${attempt + 1} tries:`, err.message);
+        return { row, filled: null };
+      }
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+/** A previously published per-address series ([{ date, balance }]) re-laid over `dateRange`: each
+ * day takes its published balance, and days since the last publish hold the last known one. */
+export function carryForward(prevSeries, dateRange) {
+  const byDate = new Map(prevSeries.map((p) => [p.date, BigInt(p.balance)]));
+  const filled = new Map();
+  let current = 0n;
+  const firstInRange = prevSeries.filter((p) => p.date <= dateRange[0]).pop();
+  if (firstInRange) current = BigInt(firstInRange.balance);
+  for (const d of dateRange) {
+    if (byDate.has(d)) current = byDate.get(d);
+    filled.set(d, current);
+  }
+  return filled;
+}
+
 let isRunning = false;
 
 // Exported so scripts/runCexBalanceHistory.js can trigger a real refresh on demand (e.g. right
@@ -109,27 +144,37 @@ export async function refreshAndPublish() {
 
     const today = new Date().toISOString().slice(0, 10);
     const cutoffDate = addDays(today, -BACKFILL_DAYS);
+    const dateRange = [];
+    for (let d = cutoffDate; d <= today; d = addDays(d, 1)) dateRange.push(d);
 
-    const perAddressFilled = await Promise.all(
-      cexAddresses.map(async (row) => {
-        try {
-          const events = await fetchAddressBalanceEvents(row.address, cutoffDate);
-          return { row, filled: forwardFill(events, cutoffDate, today) };
-        } catch (err) {
-          console.warn(`⚠️  CEX balance history: failed to fetch ${row.address} (${row.label}):`, err.message);
-          return null;
-        }
-      })
-    );
+    // A few at a time with retries, not all at once: confirmed live that firing every address's
+    // paginated history walk together (each restart) got Blockscout 500s for half of them.
+    const fetched = [];
+    for (let i = 0; i < cexAddresses.length; i += FETCH_CONCURRENCY) {
+      fetched.push(...(await Promise.all(cexAddresses.slice(i, i + FETCH_CONCURRENCY).map((row) => fetchWithRetry(row, cutoffDate, today)))));
+    }
 
-    const succeeded = perAddressFilled.filter(Boolean);
+    // An address that still failed keeps what was published for it last time (its series carried to
+    // today at its last known balance) — confirmed live that dropping it instead made whole exchanges
+    // (MEXC, Biconomy) vanish from the tab, and their totals look like a crash to the Argus CEX alert.
+    const previous = fetched.some((f) => !f.filled) ? await getCexBalanceHistoryCache().catch(() => null) : null;
+    const prevByAddress = new Map((previous?.addresses || []).map((a) => [String(a.address).toLowerCase(), a]));
+    let carried = 0;
+    const succeeded = [];
+    for (const { row, filled } of fetched) {
+      if (filled) {
+        succeeded.push({ row, filled });
+        continue;
+      }
+      const prev = prevByAddress.get(row.address.toLowerCase());
+      if (!prev?.series?.length) continue; // never published before — nothing to carry
+      succeeded.push({ row, filled: carryForward(prev.series, dateRange) });
+      carried++;
+    }
     if (succeeded.length === 0) {
       console.warn("⚠️  CEX balance history: every address fetch failed this cycle — keeping previous published series");
       return;
     }
-
-    const dateRange = [];
-    for (let d = cutoffDate; d <= today; d = addDays(d, 1)) dateRange.push(d);
 
     const series = dateRange.map((d) => ({
       date: d,
@@ -148,7 +193,9 @@ export async function refreshAndPublish() {
     }));
 
     await setCexBalanceHistoryCache(series, addresses);
-    console.log(`📈 CEX balance history updated — ${series.length} day(s), ${succeeded.length}/${cexAddresses.length} address(es)`);
+    console.log(
+      `📈 CEX balance history updated — ${series.length} day(s), ${succeeded.length - carried}/${cexAddresses.length} address(es) fresh${carried ? `, ${carried} carried over from the last run` : ""}`
+    );
   } catch (err) {
     console.error("⚠️  CEX balance history refresh failed:", err.message);
   } finally {

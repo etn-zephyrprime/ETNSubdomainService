@@ -1,4 +1,5 @@
 // Pure tests for services/argusAlertRules.js. Run from backend/: npm test
+import { carryForward } from "../utils/cexBalanceHistory.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tokenLockAlerts, teamWalletAlerts, validatorAlerts, cexAlerts, cexMoveMessage, bridgeDailyAlert, bridgePacePerDay, hyperlaneFlows, hyperlaneWeeklyAlert, mdToHtml, md } from "../services/argusAlertRules.js";
@@ -62,6 +63,24 @@ test("CEX: per exchange, 10M+ against the last alerted balance", () => {
   assert.equal(cexAlerts(b(885e6, 50e6), r.state).messages.length, 0); // re-based
   assert.equal(r.moves[0].label, "KuCoin");
   assert.deepEqual(r.moves[0].moved.map((m) => m.address), ["0x1"]);
+});
+
+test("CEX: an exchange's address list changing (partial refresh, or an address added) re-bases quietly", () => {
+  const full = [{ address: "0x1", label: "KuCoin", etn: 900e6 }, { address: "0x2", label: "KuCoin", etn: 50e6 }];
+  let r = cexAlerts(full, {});
+  r = cexAlerts(full.slice(0, 1), r.state); // 0x2 missing: looks like −50M, but isn't
+  assert.equal(r.messages.length, 0);
+  r = cexAlerts(full, r.state); // back again: no false +50M inflow
+  assert.equal(r.messages.length, 0);
+  // Old state (no address sets saved) re-bases once rather than comparing against a possibly partial base.
+  assert.equal(cexAlerts(full, { cexBase: { KuCoin: 10e6 } }).messages.length, 0);
+  // And real moves still alert after that.
+  assert.equal(cexAlerts([{ ...full[0], etn: 880e6 }, full[1]], r.state).messages.length, 1);
+});
+
+test("CEX history: a failed address carries its last published series forward", () => {
+  const filled = carryForward([{ date: "2026-10-28", balance: "5" }, { date: "2026-10-29", balance: "7" }], ["2026-10-28", "2026-10-29", "2026-10-30"]);
+  assert.deepEqual([...filled.values()], [5n, 7n, 7n]);
 });
 
 test("CEX: only 5M+ transfers listed (From / To / explorer link, biggest first), the rest counted, internal ones left out", () => {
