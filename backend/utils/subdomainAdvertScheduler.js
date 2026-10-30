@@ -276,23 +276,40 @@ export async function startSubdomainAdvertScheduler() {
   const legacyMarketplaces = LEGACY_MARKETPLACE_ADDRESSES.map((addr) => new ethers.Contract(addr, MARKETPLACE_ABI, provider));
   const nameWrapper = new ethers.Contract(NAME_WRAPPER_ADDRESS, NAME_WRAPPER_ABI, provider);
 
-  const start = createAdvertScheduler({
+  // Two schedules on the same engine, each at a random time within its own cycle (the owner's
+  // frequencies, Oct 2026): "Activate your domain" once every 7 days; "Get a subname" and
+  // "Marketplace" once every 3 days each, at least 3 hours apart. (Until Oct 2026 all three shared one
+  // daily cycle under the "advert-scheduler" key, now unused.) New keys, so sendOnFirstStartup: false —
+  // the deploy itself doesn't post; each cycle's queue is spread over what's left of it.
+  const startActivate = createAdvertScheduler({
     getState,
     setState,
-    stateKey: "advert-scheduler",
-    advertCount: 3,
-    buildMessage: async (index) => {
-      if (index === 0) return buildActivateAdvert();
-      if (index === 1) return buildSubnamesAdvert();
-      return buildMarketplaceAdvert(marketplace, legacyMarketplaces, nameWrapper);
-    },
+    stateKey: "advert-scheduler-activate",
+    advertCount: 1,
+    buildMessage: async () => buildActivateAdvert(),
     sendMessage: (text) => sendTelegramMessage(text),
     isConfigured: telegramConfigured,
     notConfiguredLog: "ℹ️  Telegram not configured — subdomain advert scheduler disabled",
-    startedLog: "📢 Subdomain advert scheduler",
-    cycleDays: 1,
+    startedLog: "📢 Subdomain advert scheduler (Activate your domain, every 7 days)",
+    cycleDays: 7,
     minGapHours: 3,
+    sendOnFirstStartup: false,
+  });
+  const startListings = createAdvertScheduler({
+    getState,
+    setState,
+    stateKey: "advert-scheduler-subnames-marketplace",
+    advertCount: 2,
+    buildMessage: async (index) => (index === 0 ? buildSubnamesAdvert() : buildMarketplaceAdvert(marketplace, legacyMarketplaces, nameWrapper)),
+    sendMessage: (text) => sendTelegramMessage(text),
+    isConfigured: telegramConfigured,
+    notConfiguredLog: "ℹ️  Telegram not configured — subdomain advert scheduler disabled",
+    startedLog: "📢 Subdomain advert scheduler (Get a subname + Marketplace, every 3 days)",
+    cycleDays: 3,
+    minGapHours: 3,
+    sendOnFirstStartup: false,
   });
 
-  await start();
+  await startActivate();
+  await startListings();
 }

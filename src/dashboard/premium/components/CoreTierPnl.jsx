@@ -233,7 +233,7 @@ const selectStyle = {
 // a quick read) — fetched once on load, then only again if the member explicitly asks via
 // Refresh, not on a timer. The chart below reads a cheap pre-computed daily rollup instead
 // (pnlSnapshotScheduler.js), so it loads fast even though the "right now" numbers above it don't.
-export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter }) {
+export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter, onSnapshot }) {
   // Access + tracked-wallet-list state and the page-wide wallet filter both live in
   // PortfolioDashboardSection.jsx now — see that file's own comment on why (one shared fetch for
   // all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
@@ -282,6 +282,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
         const res = await getLiveSnapshot(wallet.account, signature, timestamp, priorityTokens);
         setSnapshot(res);
+        onSnapshot?.(res); // keeps the headline Net PnL card in step with a Refresh here
         // Seed the picker for any wallet that newly needs one — existing selections for a wallet
         // already being configured are left alone, not reset, so a partial in-progress picker
         // (e.g. one wallet already confirmed, another still needsSelection) doesn't lose its state.

@@ -151,7 +151,7 @@ function CooldownNotice({ children }) {
 // consequence spelled out in the confirmation itself, not
 // just mentioned once in passing — a member should never be surprised by a 30-day lock they didn't
 // see coming.
-export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter, onViewDemo }) {
+export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken, coreTierAccess, walletFilter, onViewDemo, onLiveSummary }) {
   // Access + tracked-wallet-list state now lives in PortfolioDashboardSection.jsx, called ONCE for
   // all four Core Tier panels (was: each of them calling useCoreTierAccess.js independently — four
   // separate /premium/tracked-wallets fetches for the same data) — also the prerequisite for the
@@ -689,7 +689,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
         // etnUsd/tokensUsd broken out separately (not just `total`) so the category filter below
         // can toggle Native ETN and Tokens independently for the per-wallet breakdown rows too —
         // `total` is kept as-is since portfolioChange.js/other math may still want the unfiltered sum.
-        return { address: w.address, etnUsd: etnUsd || 0, tokensUsd, total: (etnUsd || 0) + tokensUsd, hasUnpriced, changeParts };
+        return { address: w.address, etnAmount, etnUsd: etnUsd || 0, tokensUsd, total: (etnUsd || 0) + tokensUsd, hasUnpriced, changeParts };
       })
     : [];
   // Scoped to the filtered wallet when one's selected — same wallets perWalletTotals already
@@ -826,6 +826,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
     const perWallet = perWalletTotals.map((w) => ({
       address: w.address,
       native: w.etnUsd,
+      nativeEtn: w.etnAmount, // the ETN amount itself — the headline ETN Balance card reads this
       tokens: w.tokensUsd,
       liquidity: Number(lpPositions.perWallet?.find((x) => x.walletAddress === w.address)?.totalUsd ?? 0),
       staking: Number(defiPositions.perWallet?.find((x) => x.walletAddress === w.address)?.totalUsd ?? 0),
@@ -843,6 +844,12 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // few seconds — only save once they've held still, and skip the write when the total is within
   // 0.5% of what's already saved (this runs on every visit; most of the time nothing moved).
   const liveSummaryTotal = liveSummary ? Math.round(liveSummary.total) : null;
+  // Hands the settled live figures up to the headline cards (CoreTierHeadlineCards.jsx), which
+  // otherwise only have the saved summary from the last visit.
+  useEffect(() => {
+    if (liveSummary) onLiveSummary?.(liveSummary);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSummaryTotal]);
   useEffect(() => {
     if (!liveSummary || !hasAccess) return;
     const t = setTimeout(async () => {
