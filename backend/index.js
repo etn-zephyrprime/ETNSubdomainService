@@ -37,6 +37,7 @@ import { startDailyBlockStatsCache } from "./utils/dailyBlockStatsCache.js";
 import { startHourlyActivityCache } from "./utils/hourlyActivityCache.js";
 import { startValidatorRewardsCache } from "./utils/validatorRewardsCache.js";
 import { startValidatorWalletsCache } from "./utils/validatorWalletsCache.js";
+import { startArgusAlertsScheduler } from "./utils/argusAlertsScheduler.js";
 import { startSubdomainAdvertScheduler } from "./utils/subdomainAdvertScheduler.js";
 import { startCoreClashBurnWatcher } from "./utils/coreClashBurnWatcher.js";
 import { startCoreClashSwapWatcher } from "./utils/coreClashSwapWatcher.js";
@@ -187,6 +188,8 @@ app.listen(PORT, () => {
   safeStart("Subscription reminder scheduler", startSubscriptionReminderScheduler);
   safeStart("PnL snapshot scheduler", startPnlSnapshotScheduler);
   safeStart("Price top-up scheduler", startPriceTopUpScheduler);
+  // Argus alerts to the Planet Zephyros group (token locks, team wallets, validators, CEX, ETN bridge, Hyperlane).
+  safeStart("Argus alerts", startArgusAlertsScheduler);
 
   // ETN accumulator bot — off unless ETN_BOT_ENABLED=true; paper-trades unless ETN_BOT_MODE=live.
   safeStart("ETN accumulator bot", startEtnAccumulatorBot);
