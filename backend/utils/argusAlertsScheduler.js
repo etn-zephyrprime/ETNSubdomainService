@@ -29,7 +29,7 @@ import { getTokenLocksCache } from "../state/tokenLocksState.js";
 import { getEtnBridgeData } from "../state/etnBridgeState.js";
 import { getHyperlaneBridgeData } from "../state/hyperlaneBridgeState.js";
 import { getCexBalanceHistoryCache } from "../state/cexBalanceHistoryState.js";
-import { tokenLockAlerts, teamWalletAlerts, validatorAlerts, cexAlerts, bridgeDailyAlert, hyperlaneWeeklyAlert, mdToHtml, md, WALLET_REF_RE } from "../services/argusAlertRules.js";
+import { tokenLockAlerts, teamWalletAlerts, validatorAlerts, cexAlerts, cexMoveMessage, bridgeDailyAlert, hyperlaneWeeklyAlert, mdToHtml, md, WALLET_REF_RE } from "../services/argusAlertRules.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
 import { REVERSE_REGISTRAR_ADDRESS } from "./coreClashConfig.js";
 
@@ -93,9 +93,22 @@ async function tokenSymbols(provider, addresses, known = {}) {
   return symbols;
 }
 
-async function cexBalances() {
+// address -> exchange label, refreshed whenever the CEX list is read: any alert naming one of these
+// wallets shows the exchange's tag instead of an address (resolveWalletNames).
+const cexLabels = new Map();
+
+async function cexAddressList() {
   const cex = await getCexBalanceHistoryCache().catch(() => null);
   const list = (cex?.addresses || []).map((a) => ({ address: a.address.toLowerCase(), label: a.label }));
+  if (list.length) {
+    cexLabels.clear();
+    for (const a of list) cexLabels.set(a.address, a.label);
+  }
+  return list;
+}
+
+async function cexBalances() {
+  const list = await cexAddressList();
   const out = [];
   for (const a of list) {
     const res = await fetch(`${EXPLORER}/addresses/${a.address}`, { signal: AbortSignal.timeout(15000) });
@@ -104,6 +117,34 @@ async function cexBalances() {
     out.push({ ...a, etn: Number(ethers.formatEther(info.coin_balance || "0")) });
   }
   return out;
+}
+
+const CEX_TX_PAGES = 5; // per address, 50 transactions a page
+
+/** Native ETN transfers in or out of a move's changed addresses since its window began — the
+ * transfers behind an exchange alert. [{ hash, from, to, etn }], or null if the lookup failed. */
+export async function cexTransfers(move) {
+  const seen = new Map();
+  for (const { address } of move.moved) {
+    let params = "";
+    for (let page = 0; page < CEX_TX_PAGES; page++) {
+      const res = await fetch(`${EXPLORER}/addresses/${address}/transactions${params}`, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`Blockscout ${address} transactions returned ${res.status}`);
+      const data = await res.json();
+      let older = false;
+      for (const t of data.items || []) {
+        if (Date.parse(t.timestamp) < move.sinceMs) {
+          older = true;
+          break;
+        }
+        if (t.status !== "ok" || !t.to?.hash || BigInt(t.value || 0) === 0n) continue;
+        seen.set(t.hash, { hash: t.hash, from: t.from.hash.toLowerCase(), to: t.to.hash.toLowerCase(), etn: Number(ethers.formatEther(t.value)) });
+      }
+      if (older || !data.next_page_params) break;
+      params = `?${new URLSearchParams(data.next_page_params)}`;
+    }
+  }
+  return [...seen.values()];
 }
 
 export function startArgusAlertsScheduler() {
@@ -128,13 +169,15 @@ export function startArgusAlertsScheduler() {
 
   /** Swaps every wallet marker (walletRef) in a message for that wallet's display name. */
   async function resolveWalletNames(text) {
-    const addrs = [...new Set([...text.matchAll(WALLET_REF_RE)].map((m) => m[1]))];
+    if (cexLabels.size === 0) await cexAddressList();
+    const addrs = [...new Set([...text.matchAll(WALLET_REF_RE)].map((m) => m[1]))].filter((a) => !cexLabels.has(a));
     for (const a of addrs) {
       const hit = names.get(a);
       if (hit && Date.now() - hit.at < NAME_TTL_MS) continue;
       names.set(a, { name: await resolveDisplayName(a).catch(() => shortAddr(a)), at: Date.now() });
     }
-    return text.replace(WALLET_REF_RE, (_, a) => md(names.get(a)?.name || shortAddr(a)));
+    // An exchange's own address shows as its tag (e.g. KuCoin), not a name or address.
+    return text.replace(WALLET_REF_RE, (_, a) => md(cexLabels.get(a) || names.get(a)?.name || shortAddr(a)));
   }
   let running = false;
 
@@ -171,8 +214,18 @@ export function startArgusAlertsScheduler() {
       });
       await run("CEX balances", async (s) => {
         if (s.cexPolledAt && now - Date.parse(s.cexPolledAt) < CEX_POLL_MS) return null;
-        const r = cexAlerts(await cexBalances(), s);
-        return { ...r, state: { ...r.state, cexPolledAt: new Date(now).toISOString() } };
+        const r = cexAlerts(await cexBalances(), s, { nowMs: now });
+        // Each move gets the transfers behind it (From / To / link); if that lookup fails it still
+        // goes out, with the per-address balance changes instead.
+        const messages = [];
+        for (const move of r.moves) {
+          const transfers = await cexTransfers(move).catch((err) => {
+            console.warn(`⚠️  Argus alerts: ${move.label} transfer lookup failed:`, err.message);
+            return null;
+          });
+          messages.push(cexMoveMessage(move, transfers));
+        }
+        return { messages, state: { ...r.state, cexPolledAt: new Date(now).toISOString() } };
       });
       await run("ETN bridge", async (s) => bridgeDailyAlert(await getEtnBridgeData(), s, now, { hourUtc: DIGEST_HOUR_UTC }));
       await run("Hyperlane", async (s) => hyperlaneWeeklyAlert(await getHyperlaneBridgeData(), s, now, { weekday: 1, hourUtc: DIGEST_HOUR_UTC }));
