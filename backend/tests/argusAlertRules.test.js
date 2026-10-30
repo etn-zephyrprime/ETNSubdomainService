@@ -64,21 +64,24 @@ test("CEX: per exchange, 10M+ against the last alerted balance", () => {
   assert.deepEqual(r.moves[0].moved.map((m) => m.address), ["0x1"]);
 });
 
-test("CEX: the move's transfers with From / To / explorer link, biggest first, internal ones left out", () => {
+test("CEX: only 5M+ transfers listed (From / To / explorer link, biggest first), the rest counted, internal ones left out", () => {
   const move = { label: "KuCoin", delta: -15e6, base: 900e6, total: 885e6, addrCount: 2, addresses: ["0x1", "0x2"], moved: [{ address: "0x1", d: -15e6, etn: 885e6 }], sinceMs: 0 };
   const transfers = [
     { hash: "0xsmall", from: "0x1", to: "0xaaa", etn: 2e6 },
     { hash: "0xbig", from: "0x1", to: "0xbbb", etn: 12e6 },
+    { hash: "0xmid", from: "0xddd", to: "0x2", etn: 5e6 },
     { hash: "0xinternal", from: "0x1", to: "0x2", etn: 50e6 }, // between KuCoin's own addresses
     { hash: "0xdust", from: "0x1", to: "0xccc", etn: 10 },
   ];
   const m = cexMoveMessage(move, transfers);
   assert.ok(m.includes("*12.00M ETN*\nFrom: @@0x1@@\nTo: @@0xbbb@@\n[View transaction](https://blockexplorer.electroneum.com/tx/0xbig)"));
-  assert.ok(m.indexOf("0xbig") < m.indexOf("0xsmall"));
-  assert.doesNotMatch(m, /0xinternal|0xdust/);
-  // No transfers found: falls back to the per-address balance change.
-  assert.match(cexMoveMessage(move, []), /@@0x1@@: −15\.00M → 885\.00M/);
-  assert.match(cexMoveMessage(move, null), /@@0x1@@: −15\.00M/);
+  assert.ok(m.indexOf("0xbig") < m.indexOf("0xmid"));
+  assert.doesNotMatch(m, /0xsmall|0xinternal|0xdust/);
+  assert.match(m, /\+2 smaller transfers under 5\.00M$/);
+  // Nothing 5M+: says so rather than listing small ones.
+  assert.match(cexMoveMessage(move, transfers.slice(0, 1)), /No single transfer of 5\.00M\+ ETN — made up of 1 smaller transfer$/);
+  // Lookup failed: falls back to the per-address balance change.
+  assert.match(cexMoveMessage(move, null), /@@0x1@@: −15\.00M → 885\.00M/);
 });
 
 test("ETN bridge: daily at the hour, 24h change from the previous snapshot, stops after the deadline", () => {
