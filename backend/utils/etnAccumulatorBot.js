@@ -32,6 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
+import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
@@ -80,6 +81,11 @@ export function readConfig() {
     cuMaxTradesPerDay: num("ETN_BOT_CU_MAX_TRADES_PER_DAY", 48),
     cuSellEnabled: process.env.ETN_BOT_CU_SELL_ENABLED === "true",
     cuMaxSellEtn: num("ETN_BOT_CU_MAX_SELL_ETN", CATCHUP_DEFAULTS.maxSellEtn),
+    // Fast watcher (see startFastWatcher): 0 turns it off.
+    fastMs: num("ETN_BOT_FAST_MS", 5000),
+    fastMovePct: num("ETN_BOT_FAST_MOVE_PCT", FAST_DEFAULTS.movePct),
+    fastKucoinMs: num("ETN_BOT_FAST_KUCOIN_MS", 15000),
+    fastMinSpacingMs: num("ETN_BOT_FAST_MIN_SPACING_MS", 15000),
   };
 }
 
@@ -197,6 +203,10 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   }
   let running = false;
   let consecutiveFailures = 0;
+  // What the last full check saw and whether it traded — the fast watcher compares against this.
+  let lastTick = null;
+  let actedThisTick = false;
+  let fastWakes = 0;
   let pausedReason = null;
   // Fills and problems go to the Render logs only (no Telegram, by request).
   function notify(text) {
@@ -408,6 +418,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
 
   /** Paper: fills at the quote. Live: sends, records it as pending, waits, settles. */
   async function execute(state, order) {
+    actedThisTick = true;
     if (cfg.mode === "paper") {
       const amounts = order.kind === "triangle" ? { etnOut: order.expectedOut } : order.side === "sellEtn" ? { etnDelta: order.amountIn, stableDelta: -order.expectedOut } : { etnDelta: -order.expectedOut, stableDelta: order.amountIn };
       settleFill(state, order, amounts, null);
@@ -536,6 +547,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   async function tick() {
     if (running || pausedReason) return;
     running = true;
+    actedThisTick = false;
+    let tickMids = null;
+    let tickK = null;
     try {
       const state = (await store.get(cfg.mode)) || freshState(cfg);
       if (state.budgetEtn !== cfg.budgetEtn) {
@@ -570,6 +584,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       // Price EMA (mid of both pools).
       const mids = {};
       for (const [stable, p] of Object.entries(POOLS)) mids[stable] = await midPrice(provider, p);
+      tickMids = mids;
       const mid = (mids.USDT + mids.USDC) / 2;
       const now = Date.now();
       state.ema = updateEma(state.ema, mid, state.emaAt ? now - new Date(state.emaAt).getTime() : 0, cfg.emaHalfLifeHours * 3600000);
@@ -608,6 +623,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       if (cfg.cuEnabled && state.cuTradesByDay[day] < cfg.cuMaxTradesPerDay) {
         const cu = state.cu;
         const kMid = await kucoinPrice();
+        tickK = kMid;
         if (cu.lots.length) {
           const close = decideCatchupClose(cu, await catchupNeeds(cu), { minGainPct: cfg.cuMinGainPct });
           if (close && (quotes.walletEtn == null || quotes.walletEtn >= close.needEtn)) {
@@ -719,11 +735,12 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       }
 
       const reason = decision.action === "hold" ? decision.reason : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
-      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${cuNote}${gapNote}${triNote}`);
+      if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${cuNote}${gapNote}${triNote}${cfg.fastMs > 0 ? ` · ${fastWakes} early check(s) since start` : ""}`);
       await saveWithRetry(state);
     } catch (err) {
       console.error("⚠️  ETN bot tick failed:", err.shortMessage || err.message);
     } finally {
+      if (tickMids) lastTick = { mids: tickMids, kMid: tickK ?? lastTick?.kMid ?? null, acted: actedThisTick, at: Date.now() };
       running = false;
       if (consecutiveFailures >= 3 && !pausedReason) {
         pausedReason = "3 failed trades in a row";
@@ -732,7 +749,48 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     }
   }
 
-  return { tick };
+  return {
+    tick,
+    kucoinPrice,
+    lastTick: () => lastTick,
+    isRunning: () => running,
+    noteFastWake: () => fastWakes++,
+  };
+}
+
+/**
+ * Runs a full check early when something worth acting on happens between the regular ones: every
+ * cfg.fastMs it reads just the two USD pools' prices (two calls) and, every cfg.fastKucoinMs, KuCoin's,
+ * and asks fastTriggerReason. An urgent reason (a pool moved 1%+) runs a check at once; a standing
+ * gap/lag at most every cfg.fastMinSpacingMs. Never overlaps a check already running.
+ */
+export function startFastWatcher(bot, provider, cfg) {
+  let busy = false;
+  let kMid = null;
+  let kAt = 0;
+  let lastWake = 0;
+  const triggerCfg = { ...FAST_DEFAULTS, movePct: cfg.fastMovePct, gapPct: cfg.gapMinGainPct, lagPct: cfg.cuLagPct };
+  return setInterval(async () => {
+    if (busy || bot.isRunning()) return;
+    busy = true;
+    try {
+      const mids = {};
+      for (const [stable, p] of Object.entries(POOLS)) mids[stable] = await midPrice(provider, p);
+      if (cfg.cuEnabled && Date.now() - kAt >= cfg.fastKucoinMs) {
+        kMid = await bot.kucoinPrice();
+        kAt = Date.now();
+      }
+      const hit = fastTriggerReason({ mids, kMid: cfg.cuEnabled ? kMid : null, last: bot.lastTick() }, triggerCfg);
+      if (!hit || (!hit.urgent && Date.now() - lastWake < cfg.fastMinSpacingMs)) return;
+      lastWake = Date.now();
+      bot.noteFastWake();
+      await bot.tick();
+    } catch {
+      // a missed read just waits for the next one; the regular check still runs on its own clock
+    } finally {
+      busy = false;
+    }
+  }, cfg.fastMs);
 }
 
 export async function startEtnAccumulatorBot() {
@@ -767,4 +825,8 @@ export async function startEtnAccumulatorBot() {
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();
   setInterval(() => bot.tick(), cfg.intervalMs);
+  if (cfg.fastMs > 0) {
+    startFastWatcher(bot, provider, cfg);
+    console.log(`⚡ ETN bot fast watcher on — pool prices every ${cfg.fastMs / 1000}s${cfg.cuEnabled ? `, KuCoin every ${cfg.fastKucoinMs / 1000}s` : ""}; checks early on a ${cfg.fastMovePct}%+ pool move, a ${cfg.gapMinGainPct}%+ pool gap${cfg.cuEnabled ? ` or ${cfg.cuLagPct}%+ off KuCoin` : ""}`);
+  }
 }
