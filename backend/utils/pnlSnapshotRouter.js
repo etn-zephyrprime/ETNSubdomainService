@@ -20,6 +20,7 @@ import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../servic
 import { getRecentActivity } from "../services/recentActivityService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
 import { computeTokenPnlHistory, combineTokenPnlHistory } from "../services/tokenPnlService.js";
+import { computeLpCompositionHistory } from "../services/lpCompositionHistory.js";
 import { fetchBlockscoutJson } from "./blockscoutClient.js";
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
@@ -260,6 +261,34 @@ router.get("/premium/nft-pnl", async (req, res) => {
     console.error("NFT PnL computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your NFT PnL right now — try again shortly" });
   }
+});
+
+// Liquidity / yield farm token composition over time — each position's token0 and token1 amounts per
+// day (see lpCompositionHistory.js). Read-only over what's already ingested: never starts ingestion
+// itself (the PnL panel on the same page does that), and cached per wallet per ingestion state per day.
+router.get("/premium/lp-composition", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  const active = await getCoveredWallets(wallet);
+  const addresses = active.map((w) => w.address);
+  const perWallet = [];
+  const failed = [];
+  for (const address of addresses) {
+    try {
+      const r = await computeLpCompositionHistory(address, addresses.filter((a) => a !== address));
+      perWallet.push({ walletAddress: address, ...r });
+    } catch (err) {
+      console.error(`LP composition history failed for wallet ${address}:`, err.message);
+      failed.push(address);
+    }
+  }
+  res.json({ perWallet, failed });
 });
 
 // Recent Activity — a chronological, filterable feed of what's actually happened in a wallet

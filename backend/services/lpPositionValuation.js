@@ -343,7 +343,7 @@ async function finalizeV2LpPosition(candidate, priceMap) {
 // ---------------------------------------------------------------------------------------------
 // V3 — TickMath.getSqrtRatioAtTick, hand-ported from Uniswap v3-core (see this file's own header
 // comment for how this was verified against real live data before shipping).
-function getSqrtRatioAtTick(tick) {
+export function getSqrtRatioAtTick(tick) {
   tick = BigInt(tick);
   const absTick = tick < 0n ? -tick : tick;
   if (absTick > MAX_TICK) throw new Error("tick out of range");
@@ -382,7 +382,7 @@ function getAmount1ForLiquidity(sqrtA, sqrtB, liquidity) {
   if (sqrtA > sqrtB) [sqrtA, sqrtB] = [sqrtB, sqrtA];
   return liquidity * (sqrtB - sqrtA) / Q96;
 }
-function getAmountsForLiquidity(sqrtCurrent, sqrtLower, sqrtUpper, liquidity) {
+export function getAmountsForLiquidity(sqrtCurrent, sqrtLower, sqrtUpper, liquidity) {
   if (sqrtLower > sqrtUpper) [sqrtLower, sqrtUpper] = [sqrtUpper, sqrtLower];
   if (sqrtCurrent <= sqrtLower) return { amount0: getAmount0ForLiquidity(sqrtLower, sqrtUpper, liquidity), amount1: 0n };
   if (sqrtCurrent < sqrtUpper) {
