@@ -15,12 +15,13 @@ function fmtAmount(v) {
   return v.toLocaleString("en-US", { maximumSignificantDigits: 4 });
 }
 
-// The PnL tab's "Tokens" view for Liquidity Positions / Staking & Yield Farms: one position's token0
+// The Yield Farms tab's "your positions over time" chart: one liquidity or farm position's token0
 // and token1 amounts over time, each on its own axis — as the pool's price moves, one line climbs
 // while the other falls and the position ends up weighted towards one token. Data from
 // /premium/lp-composition (backend/services/lpCompositionHistory.js), fetched the first time this
-// view is opened. Follows the page-wide wallet filter; "liquidity" lists V2/V3 positions, "farm_staking"
-// the yield farm positions (single-token staking has no pair to show).
+// view is opened. Follows the page-wide wallet filter. `category` ("liquidity" = V2/V3 positions,
+// "farm_staking" = yield farm positions) narrows the list; omit it for both, farms first. Single-token
+// staking has no pair to show, so it never appears.
 export default function LpCompositionChart({ wallet, getAuthParams, category, walletFilter, resolveWalletName, multiWallet }) {
   const { getLpComposition } = usePnlSnapshot();
   const [data, setData] = useState(null);
@@ -47,9 +48,10 @@ export default function LpCompositionChart({ wallet, getAuthParams, category, wa
     const list = [];
     for (const w of data?.perWallet || []) {
       if (walletFilter !== "all" && w.walletAddress.toLowerCase() !== String(walletFilter).toLowerCase()) continue;
-      for (const p of w.positions || []) if (p.category === category) list.push({ ...p, walletAddress: w.walletAddress, key: `${w.walletAddress}|${p.id}` });
+      for (const p of w.positions || []) if (!category || p.category === category) list.push({ ...p, walletAddress: w.walletAddress, key: `${w.walletAddress}|${p.id}` });
     }
-    return list;
+    // Farms first, then open before closed (the backend already orders open first within a wallet).
+    return list.sort((a, b) => Number(b.category === "farm_staking") - Number(a.category === "farm_staking") || Number(b.open) - Number(a.open));
   }, [data, walletFilter, category]);
 
   const current = positions.find((p) => p.key === selected) || positions[0] || null;
@@ -59,7 +61,7 @@ export default function LpCompositionChart({ wallet, getAuthParams, category, wa
   if (!current) {
     return (
       <div style={{ fontSize: 12, color: mutedLight }}>
-        {category === "liquidity" ? "No liquidity positions" : "No yield farm positions"} in the last year{walletFilter !== "all" ? " for this wallet" : ""}.
+        {category === "liquidity" ? "No liquidity positions" : category === "farm_staking" ? "No yield farm positions" : "No liquidity or yield farm positions"} in the last year{walletFilter !== "all" ? " for this wallet" : ""}.
       </div>
     );
   }

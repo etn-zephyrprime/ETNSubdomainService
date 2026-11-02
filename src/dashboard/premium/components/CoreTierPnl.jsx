@@ -11,7 +11,6 @@ import { formatUsdPrice, formatChartDate, formatEtnAmount } from "../../utils/fo
 import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import TokenLogo from "../../components/TokenLogo.jsx";
-import LpCompositionChart from "./LpCompositionChart.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 // Matches categoryPnlService.js's own CATEGORIES export (kept as a plain literal here rather than
@@ -65,11 +64,10 @@ export function pnlOverTimeValue(p, pnlSubMode) {
 
 /** The PnL/Value toggle buttons — one of two (otherwise identical) right-side header controls
  * shared by the whole-portfolio chart and the per-category chart below it. */
-const PNL_VALUE_OPTIONS = [{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }];
-export function PnlValueToggle({ chartMode, setChartMode, options = PNL_VALUE_OPTIONS }) {
+export function PnlValueToggle({ chartMode, setChartMode }) {
   return (
     <div style={{ display: "flex", gap: 4 }}>
-      {options.map((opt) => (
+      {[{ key: "pnl", label: "PnL" }, { key: "value", label: "Value" }].map((opt) => (
         <button
           key={opt.key}
           type="button"
@@ -771,20 +769,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
             <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <div style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
-                  {categoryChartMode === "pnl" ? "PnL Over Time" : categoryChartMode === "value" ? "Value Over Time" : "Token Balances Over Time"}
-                  <InfoTooltip
-                    text={
-                      categoryChartMode === "tokens"
-                        ? "One position at a time: how much of each of its two tokens it held each day, each on its own axis. As the pool's price moves, one token's amount climbs while the other's falls — the position becomes weighted towards the token that's been falling in price (impermanent loss at work)."
-                        : "Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that."
-                    }
-                  />
+                  {categoryChartMode === "pnl" ? "PnL Over Time" : "Value Over Time"}
+                  <InfoTooltip text="Same idea as the chart above, scoped to one category — pick Liquidity Positions (V2/V3, held directly) or Staking / Yield Farms below. Covers realized gains/losses and reward income; does NOT include the live value of a position that's currently open/locked — see Liquidity Positions / Staked & Farming Positions above for that." />
                 </div>
-                <PnlValueToggle
-                  chartMode={categoryChartMode}
-                  setChartMode={setCategoryChartMode}
-                  options={[...PNL_VALUE_OPTIONS, { key: "tokens", label: "Tokens" }]}
-                />
+                <PnlValueToggle chartMode={categoryChartMode} setChartMode={setCategoryChartMode} />
               </div>
               {categoryChartMode === "pnl" && <PnlSubModeToggle pnlSubMode={categoryPnlSubMode} setPnlSubMode={setCategoryPnlSubMode} />}
 
@@ -798,16 +786,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                 ))}
               </select>
 
-              {categoryChartMode === "tokens" ? (
-                <LpCompositionChart
-                  wallet={wallet}
-                  getAuthParams={getAuthParams}
-                  category={selectedCategory}
-                  walletFilter={walletFilter}
-                  resolveWalletName={resolveWalletName}
-                  multiWallet={active.length > 1}
-                />
-              ) : categoryHistoryError ? (
+              {categoryHistoryError ? (
                 <div style={{ fontSize: 12, color: errorColor }}>{categoryHistoryError}</div>
               ) : !categoryHistory ? (
                 <div style={{ fontSize: 12, color: mutedLight }}>Loading…</div>

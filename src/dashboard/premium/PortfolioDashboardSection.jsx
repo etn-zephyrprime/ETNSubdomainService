@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -15,6 +15,7 @@ import CoreTierGasSpend from "./components/CoreTierGasSpend.jsx";
 import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import CoreTierHeadlineCards from "./components/CoreTierHeadlineCards.jsx";
 import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
+import CoreTierYieldFarms from "./components/CoreTierYieldFarms.jsx";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
@@ -33,6 +34,7 @@ const PANELS = [
   { id: "balance", label: "Balance History", icon: LineChart },
   { id: "pnl", label: "PnL", icon: TrendingUp },
   { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
+  { id: "farms", label: "Yield Farms", icon: Sprout },
   { id: "scenarios", label: "Scenarios", icon: FlaskConical },
   { id: "activity", label: "Recent Activity", icon: Activity },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
@@ -264,6 +266,9 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         )}
         {activePanel === "nftpnl" && (
           <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
+        )}
+        {activePanel === "farms" && (
+          <CoreTierYieldFarms wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
         {activePanel === "scenarios" && (
           <CoreTierScenarios wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
