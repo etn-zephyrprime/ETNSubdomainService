@@ -75,3 +75,12 @@ test("position value in ETN: both legs at the pool's price, through the WETN leg
   assert.equal(valueInEtn({ amount0: 1, amount1: 1 }, 1, null), null);
   close(priceFromSqrt(sqrtPriceX96FromUsd(0.002, 1, 18, 6), 18, 6), 0.002);
 });
+
+test("farm liquidity: the exact liquidityWithdrawn recorded at ingestion wins over the sqrt estimate", () => {
+  const days = ["2026-10-01", "2026-10-02"];
+  const rows = [
+    { event_type: "farm_deposit", raw_args: { liquidityAdded: "1000" }, timestamp: "2026-10-01T10:00:00Z" },
+    { event_type: "farm_withdraw", raw_args: { amount0Withdrawn: "250", amount1Withdrawn: "1600", liquidityWithdrawn: "700" }, timestamp: "2026-10-02T10:00:00Z" },
+  ];
+  assert.deepEqual(dailyFarmLiquidity(rows, days), [1000n, 300n]); // not 1000 - 632
+});

@@ -125,8 +125,11 @@ function isqrt(n) {
 }
 
 /** A farm position's liquidity at the end of each day from its defi_activity rows. Deposits add their
- * liquidityAdded. A withdrawal removes the liquidity its amounts came from — every farm is full range,
- * where amount0 = L / sqrtP and amount1 = L * sqrtP, so L = sqrt(amount0 * amount1) in raw units.
+ * liquidityAdded. A withdrawal removes exactly raw_args.liquidityWithdrawn when ingestion recorded it
+ * (decoded from the withdraw() call's own calldata — FarmWithdrawl doesn't emit it; see
+ * pnlIngestion.js's enrichFarmWithdrawalsWithLiquidity). Rows ingested before that existed fall back
+ * to the liquidity its amounts came from — every farm is full range, where amount0 = L / sqrtP and
+ * amount1 = L * sqrtP, so L = sqrt(amount0 * amount1) in raw units.
  * Confirmed live (burny.etn, CLUB/DYNO farm, 2 Nov 2026): collecting rewards emits FarmWithdrawl with
  * 0 of both tokens, dozens of times — treating each as "closed" (the first version) dropped every
  * deposit before the last claim and showed ~1/7 of the real position. */
@@ -141,7 +144,8 @@ export function dailyFarmLiquidity(rows, days) {
       const r = sorted[i];
       if (r.event_type === "farm_deposit") L += BigInt(r.raw_args?.liquidityAdded || 0);
       else if (r.event_type === "farm_withdraw") {
-        const removed = isqrt(BigInt(r.raw_args?.amount0Withdrawn || 0) * BigInt(r.raw_args?.amount1Withdrawn || 0));
+        const raw = r.raw_args || {};
+        const removed = raw.liquidityWithdrawn != null ? BigInt(raw.liquidityWithdrawn) : isqrt(BigInt(raw.amount0Withdrawn || 0) * BigInt(raw.amount1Withdrawn || 0));
         L = removed >= L ? 0n : L - removed;
       }
     }
