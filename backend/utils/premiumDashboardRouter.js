@@ -21,6 +21,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
+import { getYieldFarmSnapshot } from "../services/yieldFarmSnapshot.js";
 import {
   getCoveredWallets,
   getCoolingDownWallets,
@@ -665,6 +666,25 @@ function cleanUsd(v) {
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 && n <= MAX_SUMMARY_USD ? n : null;
 }
+
+// Core Tier "Yield Farms" tab: every farm's wallets and their remaining token0/token1 (see
+// yieldFarmSnapshot.js). The same for every member — cached 10 minutes server-side.
+router.get("/premium/yield-farms", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: "Query param wallet must be a valid address" });
+  }
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  if (!(await hasCoreAccess(wallet))) {
+    return res.status(403).json({ error: "Core tier membership required" });
+  }
+  try {
+    res.json(await getYieldFarmSnapshot());
+  } catch (err) {
+    console.error("⚠️  Yield farm snapshot failed:", err.message);
+    res.status(502).json({ error: "Couldn't read the yield farms right now — try again shortly" });
+  }
+});
 
 router.get("/premium/portfolio-summary", async (req, res) => {
   const { wallet, signature, timestamp } = req.query;

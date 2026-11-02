@@ -53,6 +53,14 @@ export function usePnlSnapshot() {
   // Computed on demand (not a stored rollup like getHistory/getCategoryHistory) — see
   // tokenPnlService.js's own header comment for why. Expect a real wait the first time a given
   // token is requested, same as getLiveSnapshot above.
+  // Each liquidity/farm position's token0 and token1 amounts per day — /premium/lp-composition.
+  const getLpComposition = useCallback(async (wallet, signature, timestamp) => {
+    const params = new URLSearchParams({ wallet, signature, timestamp });
+    const res = await fetch(`${PNL_BACKEND_URL}/api/premium/lp-composition?${params}`);
+    await parseErrorOrThrow(res);
+    return res.json(); // { perWallet: [{ walletAddress, positions: [{ id, kind, category, label, token0, token1, open, points: [{date, amount0, amount1}] }], skipped }], failed }
+  }, []);
+
   const getTokenHistory = useCallback(async (wallet, signature, timestamp, tokenAddress, days) => {
     const params = new URLSearchParams({ wallet, signature, timestamp, tokenAddress, ...(days ? { days: String(days) } : {}) });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-token-history?${params}`);
@@ -60,5 +68,5 @@ export function usePnlSnapshot() {
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}], failed: [address,...] }
   }, []);
 
-  return { getLiveSnapshot, getHistory, getCategoryHistory, getTokenHistory };
+  return { getLiveSnapshot, getHistory, getCategoryHistory, getTokenHistory, getLpComposition };
 }
