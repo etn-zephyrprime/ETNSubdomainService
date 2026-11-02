@@ -65,6 +65,17 @@ const FARM_EVENT_DIRECTIONS = {
   reward_paid: "in",
 };
 
+/** A farm_withdraw that took no liquidity out — just collecting rewards/fees. The farm emits the same
+ * FarmWithdrawl event for both (confirmed live: burny.etn's weekly claims, 0 of both tokens), so
+ * without this every claim read as "Farm Withdraw". The liquidity actually removed (decoded from the
+ * withdraw() calldata at ingestion) decides it when recorded; otherwise 0 of both tokens does. */
+export function isFarmRewardClaim(row) {
+  if (row.event_type !== "farm_withdraw") return false;
+  const raw = row.raw_args || {};
+  if (raw.liquidityWithdrawn != null) return BigInt(raw.liquidityWithdrawn) === 0n;
+  return BigInt(raw.amount0Withdrawn || 0) === 0n && BigInt(raw.amount1Withdrawn || 0) === 0n;
+}
+
 function isPureGasMarkerRow(row) {
   return row.asset_type === "native" && Number(row.amount_decimal) === 0;
 }
@@ -173,7 +184,7 @@ export async function getRecentActivity(trackedWallet, asOf = new Date(), limit 
       category: "farm",
       kind: "defi",
       eventType: row.event_type,
-      label: FARM_EVENT_LABELS[row.event_type] || row.event_type,
+      label: isFarmRewardClaim(row) ? "Farm Rewards Claimed" : FARM_EVENT_LABELS[row.event_type] || row.event_type,
       direction: FARM_EVENT_DIRECTIONS[row.event_type] || "out",
       txHash: row.tx_hash,
       contractAddress: row.contract_address,
