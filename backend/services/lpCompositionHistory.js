@@ -14,6 +14,8 @@
 //          amounts, which never change while the farm's own position does)
 //   2. the pool's price that day — from the two tokens' stored daily USD prices (price_points), so
 //      token1 per token0 = price0 / price1.
+// Each point also carries valueEtn: the whole position in ETN (see valueInEtn) — e.g. 10,000 CLUB +
+// 183 DYNO, each worth ~280k ETN, is 560k ETN that day.
 // and turns them into token amounts with the pool's own maths:
 //   - V2 constant product: per LP token, amount0 = g / sqrt(P), amount1 = g * sqrt(P), where
 //     g = sqrt(reserve0 * reserve1) / totalSupply, read live today. g only grows as fees accrue, so
@@ -60,6 +62,20 @@ export function v3Amounts(liquidity, sqrtPriceX96, tickLower, tickUpper, decimal
     ({ amount0: a0, amount1: a1 } = getAmountsForLiquidity(sqrtPriceX96, getSqrtRatioAtTick(tickLower), getSqrtRatioAtTick(tickUpper), L));
   }
   return { amount0: Number(ethers.formatUnits(a0, decimals0)), amount1: Number(ethers.formatUnits(a1, decimals1)) };
+}
+
+/** Human token1-per-token0 price from a pool's sqrtPriceX96. */
+export function priceFromSqrt(sqrtPriceX96, decimals0, decimals1) {
+  return (Number(sqrtPriceX96) / 2 ** 96) ** 2 * 10 ** (decimals0 - decimals1);
+}
+
+/** A position's whole value in ETN: both legs expressed in one of them at the POOL's own price P
+ * (token1 per token0), then that leg in ETN — so the two halves are always valued consistently with
+ * the amounts shown. `anchor` = { leg: 0 | 1, etnPerToken } — the WETN leg when the pool has one
+ * (etnPerToken 1, exact), else token0 at its daily ETN price. */
+export function valueInEtn({ amount0, amount1 }, priceRatio, anchor) {
+  if (!anchor || !(anchor.etnPerToken > 0) || !(priceRatio > 0)) return null;
+  return anchor.leg === 0 ? (amount0 + amount1 / priceRatio) * anchor.etnPerToken : (amount1 + amount0 * priceRatio) * anchor.etnPerToken;
 }
 
 /** Human token amounts of `lpTokens` V2 LP tokens at price ratio P (human token1 per token0). */
@@ -204,6 +220,11 @@ export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddres
     if (!priceCache.has(a)) priceCache.set(a, await dailyPrices(a, days).catch(() => days.map(() => null)));
     return priceCache.get(a);
   };
+  const pEtn = await pricesFor(WETN);
+  // The leg to value each day's position in ETN through (see valueInEtn).
+  const anchorFor = (t0, t1, p0, d) =>
+    t0.toLowerCase() === WETN ? { leg: 0, etnPerToken: 1 } : t1.toLowerCase() === WETN ? { leg: 1, etnPerToken: 1 } : p0[d] > 0 && pEtn[d] > 0 ? { leg: 0, etnPerToken: p0[d] / pEtn[d] } : null;
+  const withValue = (amounts, P, anchor) => (amounts ? { ...amounts, valueEtn: valueInEtn(amounts, P, anchor) } : null);
   const sqrtAt = (p0, p1, m0, m1, d) => (p0[d] > 0 && p1[d] > 0 ? sqrtPriceX96FromUsd(p0[d], p1[d], m0.decimals, m1.decimals) : null);
 
   // V2 LP tokens and V3 positions, from the ledger.
@@ -229,7 +250,7 @@ export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddres
       positions.push({
         id: key.toLowerCase(), kind: "v2", category: "liquidity", label: `${m0.symbol}/${m1.symbol} V2 LP`,
         token0: { address: token0, symbol: m0.symbol }, token1: { address: token1, symbol: m1.symbol }, open: q[q.length - 1] > 0,
-        points: toPoints(days, q, (d) => (p0[d] > 0 && p1[d] > 0 ? v2Amounts(q[d], g, p0[d] / p1[d]) : null)),
+        points: toPoints(days, q, (d) => (p0[d] > 0 && p1[d] > 0 ? withValue(v2Amounts(q[d], g, p0[d] / p1[d]), p0[d] / p1[d], anchorFor(token0, token1, p0, d)) : null)),
       });
     } catch (err) {
       skipped.push({ id: key, reason: err.shortMessage || err.message });
@@ -249,7 +270,7 @@ export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddres
         token0: { address: pos.token0, symbol: m0.symbol }, token1: { address: pos.token1, symbol: m1.symbol }, open: q[q.length - 1] > 0,
         points: toPoints(days, q, (d) => {
           const sp = sqrtAt(p0, p1, m0, m1, d);
-          return sp ? v3Amounts(BigInt(Math.round(q[d])), sp, Number(pos.tickLower), Number(pos.tickUpper), m0.decimals, m1.decimals) : null;
+          return sp ? withValue(v3Amounts(BigInt(Math.round(q[d])), sp, Number(pos.tickLower), Number(pos.tickUpper), m0.decimals, m1.decimals), priceFromSqrt(sp, m0.decimals, m1.decimals), anchorFor(pos.token0, pos.token1, p0, d)) : null;
         }),
       });
     } catch (err) {
@@ -280,7 +301,7 @@ export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddres
         token0: { address: f.token0, symbol: m0.symbol }, token1: { address: f.token1, symbol: m1.symbol }, open: L[L.length - 1] > 0n,
         points: toPoints(days, L.map((x) => (x > 0n ? 1 : 0)), (d) => {
           const sp = d === days.length - 1 && liveSqrt ? liveSqrt : sqrtAt(p0, p1, m0, m1, d);
-          return sp ? v3Amounts(L[d], sp, fullRange ? null : Number(f.tickLower), fullRange ? null : Number(f.tickUpper), m0.decimals, m1.decimals) : null;
+          return sp ? withValue(v3Amounts(L[d], sp, fullRange ? null : Number(f.tickLower), fullRange ? null : Number(f.tickUpper), m0.decimals, m1.decimals), priceFromSqrt(sp, m0.decimals, m1.decimals), anchorFor(f.token0, f.token1, p0, d)) : null;
         }),
       });
     } catch (err) {

@@ -3,14 +3,18 @@ import { blue, orange, muted, mutedLight, panel, border } from "../theme.js";
 
 const identity = (v) => String(v);
 
-// Two lines, each on its own y-axis (left for `a`, right for `b`) — for two quantities in different
-// units that move against each other, e.g. an LP position's token0 vs token1 amounts. Same
+// Two (or three) lines, each on its own y-axis — `a` on the left, `b` on the right, and an optional
+// `c` on a second right-hand axis — for quantities in different units, e.g. an LP position's token0
+// vs token1 amounts plus the whole position's value in ETN. Same
 // hand-rolled SVG conventions as SparklineChart.jsx (see its header comment): the SVG stretches to
 // fill its card, so axis labels and the tooltip are HTML, never SVG text, and the strokes are
 // non-scaling so a steep line doesn't get fatter on a wide card.
 //
-// data: [{ label, a, b }] oldest first. a/b: { name, format(value) } for each series.
-export default function DualAxisLineChart({ data, a, b, height = 160, width = 300, formatLabel = identity }) {
+// data: [{ label, a, b, c? }] oldest first. a/b/c: { name, format(value), color? } for each series.
+export default function DualAxisLineChart({ data, a, b, c = null, height = 160, width = 300, formatLabel = identity }) {
+  const colorA = a.color || blue;
+  const colorB = b.color || orange;
+  const colorC = c?.color || blue;
   const svgRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
 
@@ -33,6 +37,7 @@ export default function DualAxisLineChart({ data, a, b, height = 160, width = 30
   };
   const sa = scale("a");
   const sb = scale("b");
+  const sc = c && data.some((d) => Number.isFinite(d.c)) ? scale("c") : null;
   const stepX = width / (data.length - 1);
   const pts = (key, s) => data.map((d, i) => (Number.isFinite(d[key]) ? `${i * stepX},${s.y(d[key])}` : null)).filter(Boolean).join(" ");
 
@@ -57,11 +62,14 @@ export default function DualAxisLineChart({ data, a, b, height = 160, width = 30
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 6, fontSize: 11, fontWeight: 700 }}>
-        <span style={{ color: blue }}>━ {a.name} (left)</span>
-        <span style={{ color: orange }}>{b.name} (right) ━</span>
+        <span style={{ color: colorA }}>━ {a.name} (left)</span>
+        <span style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <span style={{ color: colorB }}>{b.name} (right) ━</span>
+          {sc && <span style={{ color: colorC }}>{c.name} (far right) ━</span>}
+        </span>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        {axis(sa, a.format, blue, "right")}
+        {axis(sa, a.format, colorA, "right")}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ position: "relative" }}>
             <svg
@@ -78,13 +86,15 @@ export default function DualAxisLineChart({ data, a, b, height = 160, width = 30
               {[0, height / 2, height].map((y, i) => (
                 <line key={i} x1={0} y1={y} x2={width} y2={y} stroke={border} strokeWidth={0.5} strokeDasharray="2,2" vectorEffect="non-scaling-stroke" />
               ))}
-              <polyline points={pts("a", sa)} fill="none" stroke={blue} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
-              <polyline points={pts("b", sb)} fill="none" stroke={orange} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+              <polyline points={pts("a", sa)} fill="none" stroke={colorA} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+              <polyline points={pts("b", sb)} fill="none" stroke={colorB} strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+              {sc && <polyline points={pts("c", sc)} fill="none" stroke={colorC} strokeWidth={2.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />}
               {hover && (
                 <>
                   <line x1={hoverX} y1={0} x2={hoverX} y2={height} stroke={mutedLight} strokeWidth={1} strokeDasharray="3,3" vectorEffect="non-scaling-stroke" />
-                  {Number.isFinite(hover.a) && <circle cx={hoverX} cy={sa.y(hover.a)} r={3.5} fill={blue} stroke={panel} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
-                  {Number.isFinite(hover.b) && <circle cx={hoverX} cy={sb.y(hover.b)} r={3.5} fill={orange} stroke={panel} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+                  {Number.isFinite(hover.a) && <circle cx={hoverX} cy={sa.y(hover.a)} r={3.5} fill={colorA} stroke={panel} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+                  {Number.isFinite(hover.b) && <circle cx={hoverX} cy={sb.y(hover.b)} r={3.5} fill={colorB} stroke={panel} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+                  {sc && Number.isFinite(hover.c) && <circle cx={hoverX} cy={sc.y(hover.c)} r={3.5} fill={colorC} stroke={panel} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
                 </>
               )}
             </svg>
@@ -108,8 +118,9 @@ export default function DualAxisLineChart({ data, a, b, height = 160, width = 30
                 }}
               >
                 <div style={{ color: mutedLight, marginBottom: 2 }}>{formatLabel(hover.label, true)}</div>
-                <div style={{ color: blue, fontWeight: 700 }}>{a.format(hover.a)} {a.name}</div>
-                <div style={{ color: orange, fontWeight: 700 }}>{b.format(hover.b)} {b.name}</div>
+                <div style={{ color: colorA, fontWeight: 700 }}>{a.format(hover.a)} {a.name}</div>
+                <div style={{ color: colorB, fontWeight: 700 }}>{b.format(hover.b)} {b.name}</div>
+                {sc && <div style={{ color: colorC, fontWeight: 700 }}>{c.format(hover.c)} {c.unit || c.name}</div>}
               </div>
             )}
           </div>
@@ -119,7 +130,8 @@ export default function DualAxisLineChart({ data, a, b, height = 160, width = 30
             <span style={{ fontSize: 10, color: muted }}>{formatLabel(data[data.length - 1].label)}</span>
           </div>
         </div>
-        {axis(sb, b.format, orange, "left")}
+        {axis(sb, b.format, colorB, "left")}
+        {sc && axis(sc, c.format, colorC, "left")}
       </div>
     </div>
   );
