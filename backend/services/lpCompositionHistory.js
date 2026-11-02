@@ -8,7 +8,8 @@
 //   1. how much of the position the wallet held — replayed from the ingested history:
 //        - V2 LP: the LP token balance (the ledger's own events for that pair address)
 //        - V3 position (NonfungiblePositionManager): its liquidity units (the ledger's composite key)
-//        - Yield farm: liquidityAdded on each FarmDeposit/FarmIncrease, back to 0 on FarmWithdrawl
+//        - Yield farm: + liquidityAdded on each FarmDeposit/FarmIncrease, - the liquidity actually taken
+//          out on each FarmWithdrawl (a reward claim is a FarmWithdrawl of 0 tokens — no change)
 //          (raw defi_activity rows — the ledger only records a farm's token0/token1 as locked
 //          amounts, which never change while the farm's own position does)
 //   2. the pool's price that day — from the two tokens' stored daily USD prices (price_points), so
@@ -98,7 +99,21 @@ export function dailyQuantities(events, keys, days) {
   return { byKey: out, first };
 }
 
-/** A farm position's liquidity at the end of each day from its defi_activity rows. */
+/** Integer square root (floor) of a non-negative BigInt. */
+function isqrt(n) {
+  if (n < 2n) return n;
+  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  while (x * x > n) x--;
+  while ((x + 1n) * (x + 1n) <= n) x++;
+  return x;
+}
+
+/** A farm position's liquidity at the end of each day from its defi_activity rows. Deposits add their
+ * liquidityAdded. A withdrawal removes the liquidity its amounts came from — every farm is full range,
+ * where amount0 = L / sqrtP and amount1 = L * sqrtP, so L = sqrt(amount0 * amount1) in raw units.
+ * Confirmed live (burny.etn, CLUB/DYNO farm, 2 Nov 2026): collecting rewards emits FarmWithdrawl with
+ * 0 of both tokens, dozens of times — treating each as "closed" (the first version) dropped every
+ * deposit before the last claim and showed ~1/7 of the real position. */
 export function dailyFarmLiquidity(rows, days) {
   const sorted = [...rows].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   let L = 0n;
@@ -109,7 +124,10 @@ export function dailyFarmLiquidity(rows, days) {
     for (; i < sorted.length && new Date(sorted[i].timestamp).getTime() < end; i++) {
       const r = sorted[i];
       if (r.event_type === "farm_deposit") L += BigInt(r.raw_args?.liquidityAdded || 0);
-      else if (r.event_type === "farm_withdraw") L = 0n; // a farm withdrawal closes the whole position
+      else if (r.event_type === "farm_withdraw") {
+        const removed = isqrt(BigInt(r.raw_args?.amount0Withdrawn || 0) * BigInt(r.raw_args?.amount1Withdrawn || 0));
+        L = removed >= L ? 0n : L - removed;
+      }
     }
     out.push(L);
   }
@@ -255,11 +273,13 @@ export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddres
       const [p0, p1] = [await pricesFor(f.token0), await pricesFor(f.token1)];
       const L = dailyFarmLiquidity(rows, days);
       const fullRange = Number(f.tickLower) <= -880000 && Number(f.tickUpper) >= 880000;
+      // Today at the pool's live price (daily closes are an estimate; today's can be read exactly).
+      const liveSqrt = await new ethers.Contract(f.poolAddr, ["function slot0() view returns (uint160,int24,uint16,uint16,uint16,uint8,bool)"], provider).slot0().then((r) => r[0]).catch(() => null);
       positions.push({
         id: k, kind: "farm", category: "farm_staking", label: `${f.name || `${m0.symbol}/${m1.symbol}`} (farm #${farmId})`,
         token0: { address: f.token0, symbol: m0.symbol }, token1: { address: f.token1, symbol: m1.symbol }, open: L[L.length - 1] > 0n,
         points: toPoints(days, L.map((x) => (x > 0n ? 1 : 0)), (d) => {
-          const sp = sqrtAt(p0, p1, m0, m1, d);
+          const sp = d === days.length - 1 && liveSqrt ? liveSqrt : sqrtAt(p0, p1, m0, m1, d);
           return sp ? v3Amounts(L[d], sp, fullRange ? null : Number(f.tickLower), fullRange ? null : Number(f.tickUpper), m0.decimals, m1.decimals) : null;
         }),
       });

@@ -49,14 +49,16 @@ test("daily quantities: in/out/self/swap move the position; lock/unlock don't", 
   assert.deepEqual(dailyQuantities(events, new Set(["lp"]), days).byKey.get("lp"), [10, 15, 0, 0]);
 });
 
-test("farm liquidity: deposits/increases add liquidityAdded, a withdrawal closes it", () => {
-  const days = ["2026-10-01", "2026-10-02", "2026-10-03"];
+test("farm liquidity: deposits add liquidityAdded; reward claims (0-token withdrawals) change nothing; real withdrawals remove sqrt(a0*a1)", () => {
+  const days = ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"];
   const rows = [
-    { event_type: "farm_deposit", raw_args: { liquidityAdded: "100" }, timestamp: "2026-10-01T10:00:00Z" },
-    { event_type: "farm_deposit", raw_args: { liquidityAdded: "50" }, timestamp: "2026-10-02T10:00:00Z" },
-    { event_type: "farm_withdraw", raw_args: {}, timestamp: "2026-10-03T10:00:00Z" },
+    { event_type: "farm_deposit", raw_args: { liquidityAdded: "1000" }, timestamp: "2026-10-01T10:00:00Z" },
+    { event_type: "farm_withdraw", raw_args: { amount0Withdrawn: "0", amount1Withdrawn: "0" }, timestamp: "2026-10-02T09:00:00Z" }, // a reward claim: no change
+    { event_type: "farm_deposit", raw_args: { liquidityAdded: "500" }, timestamp: "2026-10-02T10:00:00Z" },
+    { event_type: "farm_withdraw", raw_args: { amount0Withdrawn: "250", amount1Withdrawn: "1600" }, timestamp: "2026-10-03T10:00:00Z" }, // removes sqrt(400000) = 632
+    { event_type: "farm_withdraw", raw_args: { amount0Withdrawn: "10000", amount1Withdrawn: "10000" }, timestamp: "2026-10-04T10:00:00Z" }, // everything left
   ];
-  assert.deepEqual(dailyFarmLiquidity(rows, days), [100n, 150n, 0n]);
+  assert.deepEqual(dailyFarmLiquidity(rows, days), [1000n, 1500n, 868n, 0n, 0n]);
 });
 
 test("chart points: held days, plus a zero on the day it closed; unpriced days skipped", () => {
