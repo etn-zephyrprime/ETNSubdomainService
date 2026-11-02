@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import DualAxisLineChart from "../../components/DualAxisLineChart.jsx";
 import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
 import { formatChartDate } from "../../utils/format.js";
-import { mutedLight, muted, error as errorColor, border, panel2, monoFont } from "../../theme.js";
+import { mutedLight, muted, error as errorColor, border, panel2, monoFont, blue, orange } from "../../theme.js";
+
+// token0 purple, token1 orange, the position's ETN value blue (the owner's pick).
+const TOKEN0_COLOR = "#c792ea";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 
@@ -71,6 +74,7 @@ export default function LpCompositionChart({ wallet, getAuthParams, category, wa
   const change = (from, to) => (from > 0 ? ((to / from - 1) * 100).toFixed(1) : null);
   const c0 = change(first.amount0, last.amount0);
   const c1 = change(first.amount1, last.amount1);
+  const cv = change(first.valueEtn, last.valueEtn);
 
   return (
     <div>
@@ -90,15 +94,21 @@ export default function LpCompositionChart({ wallet, getAuthParams, category, wa
       {positions.length === 1 && <div style={{ fontFamily: monoFont, fontSize: 12, color: "#fff", marginBottom: 10 }}>{current.label}{current.open ? "" : " (closed)"}</div>}
 
       <DualAxisLineChart
-        data={current.points.map((p) => ({ label: p.date, a: p.amount0, b: p.amount1 }))}
-        a={{ name: current.token0.symbol, format: fmtAmount }}
-        b={{ name: current.token1.symbol, format: fmtAmount }}
+        data={current.points.map((p) => ({ label: p.date, a: p.amount0, b: p.amount1, c: p.valueEtn }))}
+        a={{ name: current.token0.symbol, format: fmtAmount, color: TOKEN0_COLOR }}
+        b={{ name: current.token1.symbol, format: fmtAmount, color: orange }}
+        c={{ name: "Value in ETN", unit: "ETN total", format: fmtAmount, color: blue }}
         formatLabel={formatChartDate}
       />
 
       {c0 != null && c1 != null && (
         <div style={{ fontSize: 11, color: mutedLight, marginTop: 8 }}>
           Since {formatChartDate(first.date, true)}: {current.token0.symbol} {c0 >= 0 ? "+" : ""}{c0}%, {current.token1.symbol} {c1 >= 0 ? "+" : ""}{c1}%
+          {cv != null && (
+            <>
+              , value in ETN {cv >= 0 ? "+" : ""}{cv}% ({fmtAmount(first.valueEtn)} → {fmtAmount(last.valueEtn)} ETN)
+            </>
+          )}
           {current.open ? "" : " (to when it closed)"}
         </div>
       )}

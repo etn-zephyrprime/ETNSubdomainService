@@ -1,7 +1,7 @@
 // Pure tests for services/lpCompositionHistory.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sqrtPriceX96FromUsd, v3Amounts, v2Amounts, dailyQuantities, dailyFarmLiquidity, toPoints } from "../services/lpCompositionHistory.js";
+import { sqrtPriceX96FromUsd, v3Amounts, v2Amounts, dailyQuantities, dailyFarmLiquidity, toPoints, valueInEtn, priceFromSqrt } from "../services/lpCompositionHistory.js";
 
 const close = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -65,4 +65,13 @@ test("chart points: held days, plus a zero on the day it closed; unpriced days s
   const days = ["d1", "d2", "d3", "d4", "d5"];
   const pts = toPoints(days, [0, 2, 3, 0, 0], (d) => (d === 2 ? null : { amount0: d, amount1: -d }));
   assert.deepEqual(pts, [{ date: "d2", amount0: 1, amount1: -1 }, { date: "d4", amount0: 0, amount1: 0 }]);
+});
+
+test("position value in ETN: both legs at the pool's price, through the WETN leg or token0's ETN price", () => {
+  // CLUB/DYNO: 10,000 CLUB + 183 DYNO, pool price 0.0183 DYNO per CLUB, 1 CLUB = 28 ETN -> 280k + 280k
+  close(valueInEtn({ amount0: 10000, amount1: 183 }, 0.0183, { leg: 0, etnPerToken: 28 }), 560000);
+  // USDT/ETN with ETN as token1: 1,000,000 ETN + $2,000 at 500 ETN per USDT -> 2,000,000 ETN
+  close(valueInEtn({ amount0: 2000, amount1: 1000000 }, 500, { leg: 1, etnPerToken: 1 }), 2000000);
+  assert.equal(valueInEtn({ amount0: 1, amount1: 1 }, 1, null), null);
+  close(priceFromSqrt(sqrtPriceX96FromUsd(0.002, 1, 18, 6), 18, 6), 0.002);
 });

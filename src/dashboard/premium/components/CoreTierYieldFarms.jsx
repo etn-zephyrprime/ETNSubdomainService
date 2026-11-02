@@ -27,11 +27,11 @@ function ago(iso) {
   return mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
 }
 
-// Core Tier — Yield Farms. Top: a live snapshot of every ElectroSwap yield farm — which wallets are
-// in it and how much of each token each still has in it (backend/services/yieldFarmSnapshot.js,
-// read from the YieldFarm contract's getFarmerByFarmIdAndAddress; cached 10 minutes). The member's
-// own tracked wallets are highlighted. Bottom: the member's own liquidity and farm positions'
-// token0 vs token1 balances over time (LpCompositionChart).
+// Core Tier — Yield Farms. Top (the part that matters most to a member): their own liquidity and farm
+// positions' token0 vs token1 balances and ETN value over time (LpCompositionChart). Below: a live
+// snapshot of every ElectroSwap yield farm — which wallets are in it and how much of each token each
+// still has in it (backend/services/yieldFarmSnapshot.js, read from the YieldFarm contract's
+// getFarmerByFarmIdAndAddress; cached 10 minutes), with the member's own wallets highlighted.
 export default function CoreTierYieldFarms({ wallet, getAuthParams, coreTierAccess, walletFilter }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getYieldFarms } = useYieldFarms();
@@ -97,6 +97,20 @@ export default function CoreTierYieldFarms({ wallet, getAuthParams, coreTierAcce
         checkAccessOnce={checkAccessOnce}
         featureDescription="see who's in each ElectroSwap yield farm and how much they hold"
       >
+        <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: `1px solid ${border}` }}>
+          <div style={sectionHeaderStyle}>Your positions — token balances over time</div>
+          {active.length === 0 ? (
+            <div style={{ fontSize: 12, color: mutedLight }}>Track a wallet under Core Tier — Portfolio to see its positions here.</div>
+          ) : (
+            <LpCompositionChart
+              wallet={wallet}
+              getAuthParams={getAuthParams}
+              walletFilter={walletFilter}
+              resolveWalletName={resolveMine}
+              multiWallet={active.length > 1}
+            />
+          )}
+        </div>
         <div style={sectionHeaderStyle}>Farm snapshot</div>
         {error ? (
           <div style={{ fontSize: 12, color: errorColor }}>{error}</div>
@@ -200,20 +214,6 @@ export default function CoreTierYieldFarms({ wallet, getAuthParams, coreTierAcce
           </>
         )}
 
-        <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px solid ${border}` }}>
-          <div style={sectionHeaderStyle}>Your positions — token balances over time</div>
-          {active.length === 0 ? (
-            <div style={{ fontSize: 12, color: mutedLight }}>Track a wallet under Core Tier — Portfolio to see its positions here.</div>
-          ) : (
-            <LpCompositionChart
-              wallet={wallet}
-              getAuthParams={getAuthParams}
-              walletFilter={walletFilter}
-              resolveWalletName={resolveMine}
-              multiWallet={active.length > 1}
-            />
-          )}
-        </div>
       </CoreTierGate>
     </CollapsibleCoreTierPanel>
   );
