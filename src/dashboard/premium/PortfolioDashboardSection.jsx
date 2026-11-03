@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -16,6 +16,8 @@ import CoreTierAlerts from "./components/CoreTierAlerts.jsx";
 import CoreTierHeadlineCards from "./components/CoreTierHeadlineCards.jsx";
 import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
 import CoreTierYieldFarms from "./components/CoreTierYieldFarms.jsx";
+import CoreTierEtnBot from "./components/CoreTierEtnBot.jsx";
+import { ETN_BOT_VIEWERS } from "../hooks/useEtnBot.js";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
@@ -39,6 +41,8 @@ const PANELS = [
   { id: "activity", label: "Recent Activity", icon: Activity },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
 ];
+// Owner-only: shown just for the ETN_BOT_VIEWERS wallets (the backend enforces it too — see useEtnBot.js).
+const BOT_PANEL = { id: "etnbot", label: "ETN Bot", icon: Bot };
 
 // Gold-accented even when inactive (a faint tint, same convention NavButton's own accented tabs
 // use) so the whole row reads as a cohesive, premium feature set at a glance — not just whichever
@@ -85,6 +89,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   // Which of the panels below is showing — see PANELS' own comment on why this replaced the old
   // stacked/collapsible layout.
   const [activePanel, setActivePanel] = useState("portfolio");
+  const isBotViewer = Boolean(wallet.isConnected && wallet.account && ETN_BOT_VIEWERS.has(wallet.account.toLowerCase()));
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
   // within each of those, several concurrent callers) each prompting their own wallet signature.
@@ -236,7 +241,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
           }
         `}</style>
         <div className="core-tier-panel-switcher">
-          {PANELS.map((p) => (
+          {(isBotViewer ? [...PANELS, BOT_PANEL] : PANELS).map((p) => (
             <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
           ))}
         </div>
@@ -267,6 +272,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         {activePanel === "nftpnl" && (
           <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
+        {activePanel === "etnbot" && isBotViewer && <CoreTierEtnBot wallet={wallet} getAuthParams={getAuthParams} />}
         {activePanel === "farms" && (
           <CoreTierYieldFarms wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}

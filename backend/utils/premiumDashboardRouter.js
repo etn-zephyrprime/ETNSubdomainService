@@ -22,6 +22,7 @@ import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { getYieldFarmSnapshot } from "../services/yieldFarmSnapshot.js";
+import { getBotReport, botViewers } from "../services/etnBotReport.js";
 import {
   getCoveredWallets,
   getCoolingDownWallets,
@@ -683,6 +684,21 @@ router.get("/premium/yield-farms", async (req, res) => {
   } catch (err) {
     console.error("⚠️  Yield farm snapshot failed:", err.message);
     res.status(502).json({ error: "Couldn't read the yield farms right now — try again shortly" });
+  }
+});
+
+// The ETN accumulator bot's report — owner-only. Only a SIGNED request from one of botViewers()
+// (ETN_BOT_VIEWERS) gets it; anyone else gets a plain 404, so the endpoint doesn't advertise itself.
+// Hiding the tab in the frontend is cosmetic; this is the real gate.
+router.get("/premium/etn-bot", async (req, res) => {
+  const { wallet, signature, timestamp } = req.query;
+  if (!wallet || !ethers.isAddress(wallet) || !botViewers().has(wallet.toLowerCase())) return res.status(404).json({ error: "Not found" });
+  if (!requireAuthAndAccess(req, res, wallet, signature, timestamp)) return;
+  try {
+    res.json(await getBotReport());
+  } catch (err) {
+    console.error("⚠️  ETN bot report failed:", err.message);
+    res.status(502).json({ error: "Couldn't build the bot report right now — try again shortly" });
   }
 });
 
