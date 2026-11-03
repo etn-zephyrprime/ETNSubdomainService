@@ -53,8 +53,12 @@ export async function getTradeBalances() {
 
 /** A symbol's order rules (default ETN-USDT): { baseIncrement, baseMinSize, quoteIncrement, minFunds } (numbers). */
 export async function getSymbolRules(symbol = KUCOIN_SYMBOL) {
-  const r = await request("GET", `/api/v2/symbols/${symbol}`);
-  return { baseIncrement: Number(r.baseIncrement), baseMinSize: Number(r.baseMinSize), quoteIncrement: Number(r.quoteIncrement), minFunds: Number(r.minFunds || 0) };
+  // Public — no key needed.
+  const res = await fetch(`${BASE}/api/v2/symbols/${symbol}`, { signal: AbortSignal.timeout(10000) });
+  const json = await res.json().catch(() => ({}));
+  if (json.code !== "200000" || !json.data) throw new Error(`KuCoin symbol ${symbol} unavailable`);
+  const r = json.data;
+  return { baseIncrement: Number(r.baseIncrement), baseMinSize: Number(r.baseMinSize), quoteIncrement: Number(r.quoteIncrement), priceIncrement: Number(r.priceIncrement || r.quoteIncrement), minFunds: Number(r.minFunds || 0) };
 }
 
 /** Rounds a quantity DOWN to an increment (KuCoin rejects sizes off its increment). */
@@ -155,4 +159,45 @@ export async function marketSellOn(symbol, size, clientOid) {
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`KuCoin order ${orderId} didn't finish in time`);
+}
+
+/** Places an IOC limit order (anything not filled at once at `price` or better is cancelled) and waits
+ * for it to finish. side "buy" | "sell"; size in ETN. */
+export async function iocOrder({ side, size, price, clientOid }) {
+  const orderId = await placeIoc({ side, size, price, clientOid });
+  for (let i = 0; i < 20; i++) {
+    const o = await getOrder(orderId).catch(() => null);
+    if (o?.done) return { orderId, ...o };
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`KuCoin order ${orderId} didn't finish in time`);
+}
+async function placeIoc({ side, size, price, clientOid }) {
+  return (await request("POST", "/api/v1/orders", { clientOid, side, symbol: KUCOIN_SYMBOL, type: "limit", price: String(price), size: String(size), timeInForce: "IOC" })).orderId;
+}
+
+/** ETN/USDT's top-20 order book (public): { bids, asks, ts } with [price, size] numbers, best first. */
+export async function getBook() {
+  const res = await fetch(`${BASE}/api/v1/market/orderbook/level2_20?symbol=${KUCOIN_SYMBOL}`, { signal: AbortSignal.timeout(5000) });
+  const json = await res.json().catch(() => ({}));
+  const d = json?.data;
+  if (json.code !== "200000" || !d?.bids?.length) throw new Error("KuCoin book unavailable");
+  const num = (rows) => rows.map(([p, s]) => [Number(p), Number(s)]);
+  return { bids: num(d.bids), asks: num(d.asks), ts: Number(d.time || Date.now()) };
+}
+
+/** Deposit/withdraw status of a currency on KuCoin (public): { deposit, withdraw } on `chain`, or on any
+ * chain when none is given. */
+export async function getAssetStatus(currency, chain = null) {
+  const res = await fetch(`${BASE}/api/v3/currencies/${currency}`, { signal: AbortSignal.timeout(10000) });
+  const json = await res.json().catch(() => ({}));
+  const chains = (json?.data?.chains || []).filter((c) => !chain || String(c.chainId).toLowerCase() === chain);
+  return { deposit: chains.some((c) => c.isDepositEnabled), withdraw: chains.some((c) => c.isWithdrawEnabled) };
+}
+
+/** Whether ETN-USDT is trading (public). */
+export async function getTradingEnabled() {
+  const res = await fetch(`${BASE}/api/v2/symbols/${KUCOIN_SYMBOL}`, { signal: AbortSignal.timeout(10000) });
+  const json = await res.json().catch(() => ({}));
+  return Boolean(json?.data?.enableTrading);
 }

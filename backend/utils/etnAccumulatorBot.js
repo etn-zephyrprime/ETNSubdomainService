@@ -33,7 +33,10 @@ import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumu
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
-import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival } from "../services/etnHedgeStrategy.js";
+import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount } from "../services/etnHedgeStrategy.js";
+import { VENUES, allBooks, feesOf } from "../services/cexVenues.js";
+import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
+import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw } from "./htxClient.js";
 import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn } from "./kucoinClient.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
@@ -102,6 +105,25 @@ export function readConfig() {
     // key's Withdrawal permission; only with ETN_BOT_HEDGE_REBALANCE=true on top of live hedging.
     hedgeRebalance: process.env.ETN_BOT_HEDGE_REBALANCE === "true" && process.env.ETN_BOT_HEDGE_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured(),
     hedgeRebalanceEveryMs: num("ETN_BOT_HEDGE_REBALANCE_EVERY_MIN", 10) * 60000,
+    // CEX-vs-CEX arbitrage (KuCoin <-> HTX, cexArbCheck). PAPER logs opportunities from public data unless
+    // ETN_BOT_CEX_ARB_PAPER=false; LIVE needs ETN_BOT_CEX_ARB_LIVE=true, live mode, and BOTH venues' keys.
+    // Sweeping excess ETN off the exchanges back to the bot wallet (sweepExcessEtn): ETN_BOT_CEX_SWEEP=true,
+    // live mode; each venue whose key is set (and allowed to withdraw) keeps only its float.
+    cexSweep: process.env.ETN_BOT_CEX_SWEEP === "true" && process.env.ETN_BOT_MODE === "live",
+    cexSweepEveryMs: num("ETN_BOT_CEX_SWEEP_EVERY_MIN", 10) * 60000,
+    sweep: {
+      kucoin: { float: num("ETN_BOT_KUCOIN_ETN_FLOAT", SWEEP_DEFAULTS.kucoin.float), minBatch: num("ETN_BOT_KUCOIN_SWEEP_MIN", SWEEP_DEFAULTS.kucoin.minBatch) },
+      htx: { float: num("ETN_BOT_HTX_ETN_FLOAT", SWEEP_DEFAULTS.htx.float), minBatch: num("ETN_BOT_HTX_SWEEP_MIN", SWEEP_DEFAULTS.htx.minBatch) },
+    },
+    arbPaper: process.env.ETN_BOT_CEX_ARB_PAPER !== "false",
+    arbLive: process.env.ETN_BOT_CEX_ARB_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured() && htxConfigured(),
+    arb: {
+      ...ARB_DEFAULTS,
+      minEdgePct: num("ETN_BOT_CEX_ARB_MIN_EDGE_PCT", ARB_DEFAULTS.minEdgePct),
+      sizesUsd: ARB_DEFAULTS.sizesUsd.filter((u) => u <= num("ETN_BOT_CEX_ARB_MAX_USD", 90)),
+      maxTradesPerDay: num("ETN_BOT_CEX_ARB_MAX_TRADES_PER_DAY", ARB_DEFAULTS.maxTradesPerDay),
+      maxUsdPerDay: num("ETN_BOT_CEX_ARB_MAX_USD_PER_DAY", ARB_DEFAULTS.maxUsdPerDay),
+    },
     rebalance: {
       ...REBALANCE_DEFAULTS,
       etnHigh: num("ETN_BOT_HEDGE_KC_ETN_HIGH", REBALANCE_DEFAULTS.etnHigh),
@@ -348,6 +370,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
           esEtn: sellOnEs ? etnIn : etnOut,
           esUsd: sellOnEs ? stableOut : stableIn,
           lagPct: order.lagPct,
+          venue: order.venue || "kucoin",
           txHash,
           at,
           clientOid: `etnbot-${(txHash || "0x" + Date.now()).slice(2, 20)}`,
@@ -566,10 +589,53 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   }
 
   let symbolRules = null;
+  const nowMs = () => Date.now();
   // A pause of live hedging is saved with the books (so the next check doesn't carry on); a restart of
   // the service is the "I've sorted KuCoin out" signal, so the first check after one lifts it.
   let hedgePauseCheckedSinceStart = false;
   let lastRebalanceAt = 0;
+  let lastSweepAt = 0;
+
+  /** Brings each exchange's ETN above its float back to the bot wallet (SWEEP_DEFAULTS / ETN_BOT_*_ETN_FLOAT)
+   * — the ETN hedges and the arbitrage gain lands on the exchanges. At most one withdrawal per run, always
+   * to the bot's own wallet, never while a hedge or arbitrage leg is unfinished. Returns true if it moved
+   * something. */
+  async function sweepExcessEtn(state) {
+    if (!wallet || state.hedgeLeg || state.arbLeg) return false;
+    state.cexSweep = state.cexSweep || {};
+    for (const venue of ["htx", "kucoin"]) {
+      const v = VENUES[venue];
+      if (!v.configured()) continue;
+      const have = (await v.balances().catch(() => null))?.ETN;
+      if (!(have > 0)) continue;
+      const rules = venue === "kucoin" ? await getWithdrawRules("ETN", "etnevm") : await htxWithdrawRules("ETN", "etn1");
+      if (!rules.enabled) continue;
+      const amount = sweepAmount(have, cfg.sweep[venue], rules.min);
+      if (!amount) continue;
+      if (venue === "kucoin") {
+        // withdrawals leave from KuCoin's Main account; the fee comes out on top
+        await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: Math.ceil(amount + rules.fee), clientOid: `etnbot-sw-${Date.now()}` });
+        await withdraw({ currency: "ETN", address: wallet.address, amount, chain: "etnevm" });
+      } else {
+        await htxWithdraw({ currency: "ETN", address: wallet.address, amount, chain: "etn1", fee: rules.fee });
+      }
+      const rec = (state.cexSweep[venue] = state.cexSweep[venue] || { count: 0, etn: 0, feesEtn: 0, last: null });
+      rec.count += 1;
+      rec.etn += amount;
+      rec.feesEtn += rules.fee;
+      rec.last = new Date().toISOString();
+      const hb = state.hedgeLive;
+      if (hb) {
+        hb.walletEtnNet += amount;
+        hb.costsEtn = (hb.costsEtn || 0) + rules.fee;
+        if (venue === "kucoin") hb.kucoinEtnNet -= amount + rules.fee;
+      }
+      notify(`🏠 Swept ${fmtEtn(amount)} ETN from ${v.name} back to the bot wallet (kept ${fmtEtn(cfg.sweep[venue].float)} there; fee ${rules.fee} ETN)`);
+      actedThisTick = true;
+      return true;
+    }
+    return false;
+  }
 
   // Hyperlane warp routes on Electroneum (see utils/hyperlaneBridge.js): USDC -> Base (domain 8453, the
   // cheapest, ~64 ETN), USDT -> Ethereum (domain 1, its only route, ~391 ETN). Both release the native
@@ -589,7 +655,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     const [trade, main] = await Promise.all([getBalances("trade"), getBalances("main")]);
     const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn - 1000;
     const room = Math.max(0, Math.min(cfg.hedgeMaxEtnOut + hb.walletEtnNet, walletEtn));
-    const a = decideRebalance({ trade, main }, hb, room, cfg.rebalance);
+    const a = decideRebalance({ trade, main }, hb, room, cfg.cexSweep ? { ...cfg.rebalance, etnHigh: Infinity } : cfg.rebalance);
     if (!a) return false;
     const oid = (tag) => `etnbot-rb-${tag}-${Date.now()}`;
     const at = new Date().toISOString();
@@ -663,13 +729,13 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     return true;
   }
 
-  /** Hedged catch-up (see etnHedgeStrategy.js). When a pool is far enough from KuCoin, prices selling on
-   * one venue and buying the same ETN on the other — real ElectroSwap quotes, KuCoin's live book.
-   *  - PAPER (always): records the best hedge it could have made, once per pool state.
-   *  - LIVE (cfg.hedgeLive): also trades it — the ElectroSwap leg, then at once the KuCoin leg
-   *    (completeHedgeLeg). Returns true when it traded (one action per check).
-   * Live sell-side hedges spend the bot's ETN (at most hedgeMaxEtnOut sitting on KuCoin) and KuCoin
-   * USDT; buy-side ones spend the dollars earlier sell-side hedges left in the wallet, and KuCoin ETN. */
+  /** Hedged trades (see etnHedgeStrategy.js), across every CEX in cexVenues.js. When a pool is far enough
+   * from KuCoin's price, prices selling ETN on ElectroSwap and buying it back on a CEX (or the reverse) —
+   * real ElectroSwap quotes, each venue's live book, after its fee — and takes the best venue.
+   *  - PAPER (always, public data): records the best hedge it could have made, once per pool state.
+   *  - LIVE (cfg.hedgeLive): trades it on a venue whose key is set — the ElectroSwap leg, then the CEX leg
+   *    at once (runCexLeg: an IOC limit order capped at break-even, so the pair can't lose money).
+   * Returns true when it traded (one action per check). */
   async function hedgeCheck(state, mids, kMid, canSpendEtn, day) {
     if (!state.hedge) state.hedge = freshHedgeBook();
     if (cfg.hedgeLive && !state.hedgeLive) state.hedgeLive = freshLiveHedgeBook();
@@ -683,96 +749,280 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     const midsKey = `${mids.USDT}|${mids.USDC}`;
     const liveReady = Boolean(cfg.hedgeLive && hb && !hb.pausedReason && !state.hedgeLeg && (state.hedgeTradesByDay?.[day] || 0) < cfg.hedgeMaxTradesPerDay);
     if (state.hedgeLastKey === midsKey && !liveReady) return false;
-    const book = await kucoinBook();
-    if (!book) return false;
-    const candidates = [];
+    const books = await allBooks();
+    if (!Object.keys(books).length) return false;
+    // ElectroSwap side quoted once per size, then priced against every venue's book.
+    const esSell = {}, esBuy = {};
     for (const usd of HEDGE_DEFAULTS.sizesUsd) {
-      if (sellSide) {
-        const etn = usd / mids[dear];
-        const kc = kucoinFill(book.asks, etn, "buy");
-        if (kc) candidates.push({ dir: "sellOnEs", stable: dear, etn, esUsd: await quoteSellEtn(dear, etn).catch(() => 0), kcUsd: kc.usd, lagPct: lags[dear] });
-      }
-      if (buySide) {
-        const etn = await quoteBuyEtn(cheap, usd).catch(() => 0);
-        const kc = etn > 0 ? kucoinFill(book.bids, etn, "sell") : null;
-        if (kc) candidates.push({ dir: "buyOnEs", stable: cheap, usd, etn, kcUsd: kc.usd, lagPct: lags[cheap] });
+      if (sellSide) esSell[usd] = await quoteSellEtn(dear, usd / mids[dear]).catch(() => 0);
+      if (buySide) esBuy[usd] = await quoteBuyEtn(cheap, usd).catch(() => 0);
+    }
+    const candidates = [];
+    for (const [venue, book] of Object.entries(books)) {
+      for (const usd of HEDGE_DEFAULTS.sizesUsd) {
+        if (sellSide) {
+          const etn = usd / mids[dear];
+          const kc = kucoinFill(book.asks, etn, "buy");
+          if (kc) candidates.push({ venue, dir: "sellOnEs", stable: dear, etn, esUsd: esSell[usd], kcUsd: kc.usd, lagPct: lags[dear] });
+        }
+        if (buySide && esBuy[usd] > 0) {
+          const kc = kucoinFill(book.bids, esBuy[usd], "sell");
+          if (kc) candidates.push({ venue, dir: "buyOnEs", stable: cheap, usd, etn: esBuy[usd], kcUsd: kc.usd, lagPct: lags[cheap] });
+        }
       }
     }
-    const hcfg = { ...HEDGE_DEFAULTS, lagPct: cfg.hedgeLagPct, kucoinFeePct: cfg.hedgeKucoinFeePct };
+    const best = (list) => {
+      let pick = null;
+      for (const v of Object.keys(VENUES)) {
+        const h = decideHedge(list.filter((c) => c.venue === v), { ...HEDGE_DEFAULTS, lagPct: cfg.hedgeLagPct, kucoinFeePct: VENUES[v].feePct });
+        if (h && (!pick || h.profitUsd > pick.profitUsd)) pick = h;
+      }
+      return pick;
+    };
 
-    // Paper record — every opportunity, sized without balance limits, once per pool state.
-    const paper = decideHedge(candidates, hcfg);
+    // Paper record — every opportunity on any venue, sized without balance limits, once per pool state.
+    const paper = best(candidates);
     if (paper && state.hedgeLastKey !== midsKey) {
       state.hedgeLastKey = midsKey;
       applyHedge(state.hedge, paper, { kucoinPrice: kMid, at: new Date().toISOString() });
+      const fee = VENUES[paper.venue].feePct / 100;
       const what = paper.dir === "sellOnEs"
-        ? `sell ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.esUsd)} ${paper.stable}, buy it back on KuCoin for ${fmtUsd(paper.kcUsd * (1 + cfg.hedgeKucoinFeePct / 100))}`
-        : `buy ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.usd)} ${paper.stable}, sell it on KuCoin for ${fmtUsd(paper.kcUsd * (1 - cfg.hedgeKucoinFeePct / 100))}`;
+        ? `sell ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.esUsd)} ${paper.stable}, buy it back on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 + fee))}`
+        : `buy ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.usd)} ${paper.stable}, sell it on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 - fee))}`;
       console.log(`🧪 ETN bot (hedge, paper): ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — would ${what}: +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Paper total +${fmtUsd(state.hedge.profitUsd)} over ${state.hedge.trades}`);
     }
     if (!liveReady) return false;
 
-    // Live: the best hedge within the size cap AND what both venues actually hold.
-    const kc = await getTradeBalances();
-    const affordable = candidates.filter((c) =>
-      c.dir === "sellOnEs"
-        ? (c.esUsd || 0) <= cfg.hedgeMaxUsd && canSpendEtn(c.etn) && hb.walletEtnNet - c.etn >= -cfg.hedgeMaxEtnOut && kc.USDT >= (c.esUsd || 0)
-        : c.usd <= cfg.hedgeMaxUsd && (hb.stables[c.stable] || 0) >= c.usd && kc.ETN >= c.etn
-    );
-    const h = decideHedge(affordable, hcfg);
+    // Live: only venues with a key whose market is open, within the size cap and what both sides hold.
+    const usable = {};
+    for (const v of Object.keys(books)) {
+      if (!VENUES[v].configured()) continue;
+      const st = await VENUES[v].status().catch(() => null);
+      if (!st?.trading || nowMs() - books[v].ts > ARB_DEFAULTS.maxBookAgeMs) continue;
+      usable[v] = await VENUES[v].balances().catch(() => null);
+    }
+    const affordable = candidates.filter((c) => {
+      const bal = usable[c.venue];
+      if (!bal) return false;
+      return c.dir === "sellOnEs"
+        ? (c.esUsd || 0) <= cfg.hedgeMaxUsd && canSpendEtn(c.etn) && hb.walletEtnNet - c.etn >= -cfg.hedgeMaxEtnOut && bal.USDT >= (c.esUsd || 0) * 1.02
+        : c.usd <= cfg.hedgeMaxUsd && (hb.stables[c.stable] || 0) >= c.usd && bal.ETN >= c.etn * 1.02;
+    });
+    const h = best(affordable);
     if (!h) return false;
     state.hedgeTradesByDay = { [day]: (state.hedgeTradesByDay?.[day] || 0) + 1 };
     const order = h.dir === "sellOnEs"
-      ? { kind: "hedgeSellEs", side: "sellEtn", stable: h.stable, amountIn: h.etn, expectedOut: h.esUsd, lagPct: h.lagPct }
-      : { kind: "hedgeBuyEs", side: "buyEtn", stable: h.stable, amountIn: h.usd, expectedOut: h.etn, lagPct: h.lagPct };
+      ? { kind: "hedgeSellEs", side: "sellEtn", stable: h.stable, amountIn: h.etn, expectedOut: h.esUsd, lagPct: h.lagPct, venue: h.venue }
+      : { kind: "hedgeBuyEs", side: "buyEtn", stable: h.stable, amountIn: h.usd, expectedOut: h.etn, lagPct: h.lagPct, venue: h.venue };
     const first = await execute(state, order);
     if (first === "filled" && state.hedgeLeg) await completeHedgeLeg(state);
     await saveWithRetry(state);
     return true;
   }
 
-  /** The KuCoin leg of a live hedge, straight after its ElectroSwap leg (or retried on the next check if
-   * it failed). sellOnEs: spend the dollars received on KuCoin ETN. buyOnEs: sell just enough of the ETN
-   * bought to get the dollars spent back. KuCoin's clientOid makes a retry safe — if an earlier attempt's
-   * order went through, its fill is read back instead of placing a second one. Three failures in a row
-   * pause live hedging (the leg stays recorded, unhedged, until it's sorted out). */
+  /** The CEX leg of a live hedge (after its ElectroSwap leg, or retried on the next check). */
   async function completeHedgeLeg(state) {
     const leg = state.hedgeLeg;
     const hb = state.hedgeLive || (state.hedgeLive = freshLiveHedgeBook());
-    try {
-      if (!symbolRules) symbolRules = await getSymbolRules();
-      let fill = await getOrderByClientOid(leg.clientOid);
-      if (!fill?.done) {
-        if (leg.dir === "sellOnEs") {
-          const funds = floorToIncrement(leg.esUsd / (1 + cfg.hedgeKucoinFeePct / 100), symbolRules.quoteIncrement);
-          fill = await marketOrderAndWait({ side: "buy", funds, clientOid: leg.clientOid });
-        } else {
-          const book = await kucoinBook();
-          let size = book ? etnToSellForUsd(book.bids, leg.esUsd, cfg.hedgeKucoinFeePct) : null;
-          if (size == null || size > leg.esEtn) size = leg.esEtn; // never sell more than was bought
-          size = floorToIncrement(size, symbolRules.baseIncrement);
-          fill = await marketOrderAndWait({ side: "sell", size, clientOid: leg.clientOid });
-        }
-      }
-      const feeUsd = fill.feeCurrency === "USDT" ? fill.fee : 0;
-      const kcEtn = fill.dealSize;
-      const kcUsd = leg.dir === "sellOnEs" ? fill.dealFunds + feeUsd : fill.dealFunds - feeUsd;
-      const gain = applyLiveHedge(hb, { ...leg, kcEtn, kcUsd, orderId: fill.orderId });
+    if (!leg.cex) {
+      leg.cex = leg.dir === "sellOnEs"
+        ? { venue: leg.venue || "kucoin", side: "buy", budgetUsd: leg.esUsd, breakEvenEtn: leg.esEtn, gotEtn: 0, spentUsd: 0, attempts: 0, clientOid: leg.clientOid }
+        : { venue: leg.venue || "kucoin", side: "sell", targetUsd: leg.esUsd, availableEtn: leg.esEtn, soldEtn: 0, gotUsd: 0, attempts: 0, clientOid: leg.clientOid };
+    }
+    const r = await runCexLeg(leg.cex, (msg) => notify(`⚠️ Hedge ${VENUES[leg.cex.venue].name} leg: ${msg}`));
+    if (r === "done") {
+      const c = leg.cex;
+      const kcEtn = c.side === "buy" ? c.gotEtn : c.soldEtn;
+      const kcUsd = c.side === "buy" ? c.spentUsd : c.gotUsd;
+      const gain = applyLiveHedge(hb, { ...leg, kcEtn, kcUsd });
+      hb.byVenue = hb.byVenue || {};
+      const bv = (hb.byVenue[c.venue] = hb.byVenue[c.venue] || { trades: 0, gainEtn: 0 });
+      bv.trades += 1;
+      bv.gainEtn += gain;
       state.hedgeLeg = null;
       hb.failures = 0;
       const lag = `${(leg.lagPct ?? 0) >= 0 ? "+" : ""}${(leg.lagPct ?? 0).toFixed(1)}%`;
+      const name = VENUES[c.venue].name;
       notify(
         leg.dir === "sellOnEs"
-          ? `⚖️ Hedge: ElectroSwap ${lag} vs KuCoin — sold ${fmtEtn(leg.esEtn)} ETN there for ${fmtUsd(leg.esUsd)} ${leg.stable}, bought ${fmtEtn(kcEtn)} ETN on KuCoin for ${fmtUsd(kcUsd)} — ${signedEtn(gain)} ETN. Hedge total: ${signedEtn(hb.gainEtn)} ETN over ${hb.trades}`
-          : `⚖️ Hedge: ElectroSwap ${lag} vs KuCoin — bought ${fmtEtn(leg.esEtn)} ETN there for ${fmtUsd(leg.esUsd)} ${leg.stable}, sold ${fmtEtn(kcEtn)} ETN on KuCoin for ${fmtUsd(kcUsd)} — ${signedEtn(gain)} ETN. Hedge total: ${signedEtn(hb.gainEtn)} ETN over ${hb.trades}`
+          ? `⚖️ Hedge: ElectroSwap ${lag} vs KuCoin — sold ${fmtEtn(leg.esEtn)} ETN there for ${fmtUsd(leg.esUsd)} ${leg.stable}, bought ${fmtEtn(kcEtn)} ETN on ${name} for ${fmtUsd(kcUsd)} — ${signedEtn(gain)} ETN. Hedge total: ${signedEtn(hb.gainEtn)} ETN over ${hb.trades}`
+          : `⚖️ Hedge: ElectroSwap ${lag} vs KuCoin — bought ${fmtEtn(leg.esEtn)} ETN there for ${fmtUsd(leg.esUsd)} ${leg.stable}, sold ${fmtEtn(kcEtn)} ETN on ${name} for ${fmtUsd(kcUsd)} — ${signedEtn(gain)} ETN. Hedge total: ${signedEtn(hb.gainEtn)} ETN over ${hb.trades}`
       );
-    } catch (err) {
+    } else if (r === "failed") {
       hb.failures = (hb.failures || 0) + 1;
-      const what = leg.dir === "sellOnEs" ? `${fmtEtn(leg.esEtn)} ETN sold on ElectroSwap, not yet bought back on KuCoin` : `${fmtEtn(leg.esEtn)} ETN bought on ElectroSwap, not yet sold on KuCoin`;
-      notify(`⚠️ Hedge KuCoin leg failed (${hb.failures}/3) — ${what}: ${err.message}`);
       if (hb.failures >= 3) {
-        hb.pausedReason = `KuCoin leg failed 3 times (${err.message})`;
-        notify(`⏸️ Live hedging paused: ${hb.pausedReason}. The unfinished leg stays in the bot's state (hedgeLeg); restart the service once KuCoin is sorted to retry it.`);
+        hb.pausedReason = `${VENUES[leg.cex.venue].name} leg failed 3 times`;
+        notify(`⏸️ Live hedging paused: ${hb.pausedReason}. The unfinished leg stays in the bot's state (hedgeLeg); a restart retries it.`);
+      }
+    }
+  }
+
+  /**
+   * Runs (or continues) the second leg of a two-venue trade on a CEX, as IOC limit orders capped at
+   * break-even (buyLegOrder / sellLegOrder) — so whatever fills, the pair doesn't lose money. Mutates
+   * `c` with each fill, so a partial fill carries on next time with what's left:
+   *   buy:  c.budgetUsd to spend, c.breakEvenEtn still needed; c.gotEtn / c.spentUsd so far
+   *   sell: c.targetUsd still to raise, c.availableEtn left; c.soldEtn / c.gotUsd so far
+   * Every attempt has its own clientOid, checked first — an order that went through before a crash is
+   * read back, never placed twice. Returns "done" | "pending" (nothing filled this time — the market
+   * is beyond break-even; try again next check) | "failed" (an error).
+   */
+  async function runCexLeg(c, warn) {
+    const v = VENUES[c.venue];
+    try {
+      const rules = await v.rules();
+      const oid = `${c.clientOid}-${c.attempts}`;
+      let fill = await v.byClientOid(oid).catch(() => null);
+      if (!fill?.done) {
+        const book = await v.book();
+        const order = c.side === "buy"
+          ? buyLegOrder({ asks: book.asks, budgetUsd: c.budgetUsd, breakEvenEtn: Math.max(c.breakEvenEtn, 1e-9), feePct: v.feePct, rules })
+          : sellLegOrder({ bids: book.bids, targetUsd: c.targetUsd, availableEtn: c.availableEtn, feePct: v.feePct, rules });
+        if (!order) return "done"; // what's left is below the venue's minimum order: dust, kept as is
+        fill = await v.ioc({ side: c.side, size: order.size, price: order.price, clientOid: oid });
+      }
+      c.attempts += 1;
+      const n = netFill(c.side, fill);
+      if (c.side === "buy") {
+        c.gotEtn += n.etn;
+        c.spentUsd += n.usd;
+        c.budgetUsd -= n.usd;
+        c.breakEvenEtn -= n.etn;
+        if (c.breakEvenEtn <= 0 || c.budgetUsd < Math.max(1, (await v.rules()).minFunds)) return "done";
+      } else {
+        c.soldEtn += n.etn;
+        c.gotUsd += n.usd;
+        c.targetUsd -= n.usd;
+        c.availableEtn -= n.etn;
+        if (c.targetUsd <= 0.01 || c.availableEtn < (await v.rules()).minSize) return "done";
+      }
+      if (n.etn <= 0) warn?.(`nothing filled within break-even (attempt ${c.attempts}); retrying next check`);
+      return "pending";
+    } catch (err) {
+      warn?.(err.message);
+      return "failed";
+    }
+  }
+
+  /** CEX-vs-CEX arbitrage (services/cexArbStrategy.js): buy ETN on the venue where it's cheap, sell it on
+   * the one where it's dear. Every check in arbChecks must pass before the first leg is placed; the
+   * first leg is on the thinner venue (HTX) as an IOC at the planned worst price, the second sized to
+   * what actually filled and capped at break-even (runCexLeg). PAPER logs what it would do. Returns true
+   * when it traded. */
+  async function cexArbCheck(state, day) {
+    if (!state.cexArb) state.cexArb = freshArbBook();
+    const ab = state.cexArb;
+    if (ab.today?.day !== day) ab.today = { day, trades: 0, usd: 0 };
+    const books = await allBooks();
+    if (Object.keys(books).length < 2) return false;
+    const plan = planArb(books, feesOf(), cfg.arb);
+    if (!plan) return false;
+    const key = `${plan.buyVenue}>${plan.sellVenue}|${books[plan.buyVenue].asks[0][0]}|${books[plan.sellVenue].bids[0][0]}`;
+    const status = {};
+    for (const v of [plan.buyVenue, plan.sellVenue]) status[v] = await VENUES[v].status().catch(() => null);
+    const publicChecks = arbChecks({ plan, books, nowMs: nowMs(), status, balances: { [plan.buyVenue]: { USDT: Infinity }, [plan.sellVenue]: { ETN: Infinity } }, book: ab, paused: null }, cfg.arb);
+    if (ab.paperKey !== key && !publicChecks.length) {
+      ab.paperKey = key;
+      ab.paper = ab.paper || { trades: 0, profitUsd: 0 };
+      ab.paper.trades += 1;
+      ab.paper.profitUsd += plan.profitUsd;
+      console.log(`🧪 ETN bot (CEX arb, paper): buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Paper total +${fmtUsd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
+    }
+    if (!cfg.arbLive || state.arbLeg || !VENUES[plan.buyVenue].configured() || !VENUES[plan.sellVenue].configured()) return false;
+
+    const balances = {};
+    for (const v of [plan.buyVenue, plan.sellVenue]) balances[v] = await VENUES[v].balances();
+    const fails = arbChecks({ plan, books, nowMs: nowMs(), status, balances, book: ab, paused: ab.paused }, cfg.arb);
+    if (fails.length) {
+      if (ab.lastBlockedKey !== key) {
+        ab.lastBlockedKey = key;
+        console.log(`🛑 ETN bot (CEX arb): ${plan.edgePct.toFixed(2)}% ${VENUES[plan.buyVenue].name} -> ${VENUES[plan.sellVenue].name} not traded — ${fails.join("; ")}`);
+      }
+      return false;
+    }
+
+    // First leg on the thinner venue (HTX when it's one of the two), as an IOC at the planned worst price.
+    const firstIsSell = plan.sellVenue === "htx" || plan.buyVenue !== "htx";
+    const firstVenue = firstIsSell ? plan.sellVenue : plan.buyVenue;
+    const fv = VENUES[firstVenue];
+    const rules = await fv.rules();
+    const oid = `etnarb-${Date.now()}`;
+    const firstOrder = firstIsSell
+      ? { venue: firstVenue, side: "sell", size: roundDown(plan.etn, rules.sizeStep), price: roundUp(plan.sellLimit, rules.priceStep), clientOid: `${oid}-a` }
+      : { venue: firstVenue, side: "buy", size: roundDown(plan.etn, rules.sizeStep), price: roundDown(plan.buyLimit, rules.priceStep), clientOid: `${oid}-a` };
+    // Recorded BEFORE it's placed: if placing it throws (a timeout, a restart) after it actually went
+    // through, the next check finds it by its clientOid instead of losing track of real money.
+    ab.lastTradeAt = new Date().toISOString();
+    state.arbLeg = { stage: "first", firstOrder, plan: { buyVenue: plan.buyVenue, sellVenue: plan.sellVenue, edgePct: plan.edgePct }, oid, at: ab.lastTradeAt };
+    await saveWithRetry(state);
+    const fill = await fv.ioc(firstOrder).catch((err) => {
+      notify(`⚠️ CEX arb: first leg on ${fv.name} errored (${err.message}) — checking it by its order id next check`);
+      return null;
+    });
+    if (fill) startSecondLeg(state, fill);
+    if (state.arbLeg?.stage === "second") await completeArbLeg(state);
+    await saveWithRetry(state);
+    return true;
+  }
+
+  /** First leg filled (or found filled): set up the second, sized to what actually filled. Nothing filled
+   * -> no trade, nothing held. */
+  function startSecondLeg(state, fill) {
+    const leg = state.arbLeg;
+    const fo = leg.firstOrder;
+    const f = netFill(fo.side, fill);
+    if (!(f.etn > 0)) {
+      console.log(`🤖 ETN bot (CEX arb): first leg on ${VENUES[fo.venue].name} filled nothing (the book moved) — no trade`);
+      state.arbLeg = null;
+      return;
+    }
+    const secondVenue = fo.side === "sell" ? leg.plan.buyVenue : leg.plan.sellVenue;
+    leg.stage = "second";
+    leg.first = { venue: fo.venue, side: fo.side, etn: f.etn, usd: f.usd };
+    leg.cex = fo.side === "sell"
+      ? { venue: secondVenue, side: "buy", budgetUsd: f.usd, breakEvenEtn: f.etn, gotEtn: 0, spentUsd: 0, attempts: 0, clientOid: `${leg.oid}-b` }
+      : { venue: secondVenue, side: "sell", targetUsd: f.usd, availableEtn: f.etn, soldEtn: 0, gotUsd: 0, attempts: 0, clientOid: `${leg.oid}-b` };
+  }
+
+  async function completeArbLeg(state) {
+    const ab = state.cexArb || (state.cexArb = freshArbBook());
+    if (state.arbLeg?.stage === "first") {
+      // A first leg whose result we never saw: look it up by its clientOid.
+      const fo = state.arbLeg.firstOrder;
+      const found = await VENUES[fo.venue].byClientOid(fo.clientOid).catch(() => undefined);
+      if (found === undefined) return; // couldn't ask — try again next check
+      if (!found) {
+        notify(`ℹ️ CEX arb: the first leg on ${VENUES[fo.venue].name} was never placed — nothing to finish`);
+        state.arbLeg = null;
+        return;
+      }
+      if (!found.done) return; // still working
+      startSecondLeg(state, found);
+      if (!state.arbLeg) return;
+    }
+    const leg = state.arbLeg;
+    const r = await runCexLeg(leg.cex, (msg) => notify(`⚠️ CEX arb ${VENUES[leg.cex.venue].name} leg: ${msg}`));
+    if (r === "done") {
+      const c = leg.cex;
+      // ETN gained = ETN bought minus ETN sold; dollars left over (sell proceeds minus buy cost) kept as $.
+      const gainEtn = c.side === "buy" ? c.gotEtn - leg.first.etn : leg.first.etn - c.soldEtn;
+      const gainUsd = c.side === "buy" ? leg.first.usd - c.spentUsd : c.gotUsd - leg.first.usd;
+      ab.trades += 1;
+      ab.gainEtn += gainEtn;
+      ab.gainUsd += gainUsd;
+      ab.notionalUsd += leg.first.usd;
+      ab.today.trades += 1;
+      ab.today.usd += leg.first.usd;
+      ab.failures = 0;
+      ab.recent.push({ at: leg.at, buyVenue: leg.plan.buyVenue, sellVenue: leg.plan.sellVenue, etn: leg.first.etn, usd: leg.first.usd, gainEtn, gainUsd, edgePct: leg.plan.edgePct });
+      if (ab.recent.length > 50) ab.recent.shift();
+      state.arbLeg = null;
+      notify(`↔️ CEX arb: bought on ${VENUES[leg.plan.buyVenue].name}, sold on ${VENUES[leg.plan.sellVenue].name} (${fmtEtn(leg.first.etn)} ETN, ${fmtUsd(leg.first.usd)}) — ${signedEtn(gainEtn)} ETN${Math.abs(gainUsd) >= 0.01 ? ` ${gainUsd >= 0 ? "+" : "−"}${fmtUsd(Math.abs(gainUsd))}` : ""}. Arb total: ${signedEtn(ab.gainEtn)} ETN over ${ab.trades}`);
+    } else if (r === "failed" || leg.cex.attempts >= 10) {
+      ab.failures = (ab.failures || 0) + 1;
+      if (ab.failures >= 3 || leg.cex.attempts >= 10) {
+        ab.paused = `${VENUES[leg.cex.venue].name} leg didn't complete (${leg.cex.attempts} attempts)`;
+        notify(`⏸️ CEX arb paused: ${ab.paused}. The unfinished leg stays in the bot's state (arbLeg); a restart retries it.`);
       }
     }
   }
@@ -850,12 +1100,29 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
           state.hedgeLive.pausedReason = null;
           state.hedgeLive.failures = 0;
         }
+        if (state.cexArb?.paused) {
+          notify(`▶️ CEX arb resumed after a restart (was paused: ${state.cexArb.paused})${state.arbLeg ? " — retrying the unfinished leg" : ""}`);
+          state.cexArb.paused = null;
+          state.cexArb.failures = 0;
+        }
       }
       // A live hedge whose KuCoin leg hasn't run yet: finish it first (unless hedging is paused over it).
       if (state.hedgeLeg && cfg.hedgeLive && !state.hedgeLive?.pausedReason) {
         await completeHedgeLeg(state);
         await saveWithRetry(state);
         return;
+      }
+      // Excess ETN off the exchanges, at most every cexSweepEveryMs.
+      if (cfg.cexSweep && Date.now() - lastSweepAt >= cfg.cexSweepEveryMs) {
+        lastSweepAt = Date.now();
+        const swept = await sweepExcessEtn(state).catch((err) => {
+          notify(`⚠️ Sweeping ETN back to the wallet failed: ${err.message}`);
+          return false;
+        });
+        if (swept) {
+          await saveWithRetry(state);
+          return;
+        }
       }
       // The round trip, at most every hedgeRebalanceEveryMs and never mid-hedge.
       if (cfg.hedgeRebalance && state.hedgeLive && !state.hedgeLeg && !state.hedgeLive.pausedReason && Date.now() - lastRebalanceAt >= cfg.hedgeRebalanceEveryMs) {
@@ -869,10 +1136,27 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
           return;
         }
       }
+      if (state.arbLeg && cfg.arbLive && !state.cexArb?.paused) {
+        await completeArbLeg(state);
+        await saveWithRetry(state);
+        return;
+      }
       if (state.gapLeg) {
         await completeGapLeg(state);
         await saveWithRetry(state);
         return;
+      }
+
+      // CEX-vs-CEX arbitrage — its own action (it doesn't touch the pools).
+      if (cfg.arbPaper || cfg.arbLive) {
+        const traded = await cexArbCheck(state, new Date().toISOString().slice(0, 10)).catch((err) => {
+          console.warn("⚠️  ETN bot: CEX arb check failed:", err.message);
+          return false;
+        });
+        if (traded) {
+          await saveWithRetry(state);
+          return;
+        }
       }
 
       // Price EMA (mid of both pools).
@@ -1121,7 +1405,8 @@ export async function startEtnAccumulatorBot() {
   const gapText =
     (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off") +
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
-    (cfg.hedgeLive ? `; HEDGING LIVE (KuCoin; ${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on KuCoin; round trip ${cfg.hedgeRebalance ? "ON" : "off"})` : cfg.hedgePaper ? "; hedging paper-only" : "") +
+    (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
+    (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
     (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
