@@ -33,8 +33,8 @@ import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumu
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
-import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge } from "../services/etnHedgeStrategy.js";
-import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid } from "./kucoinClient.js";
+import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival } from "../services/etnHedgeStrategy.js";
+import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn } from "./kucoinClient.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
@@ -98,6 +98,17 @@ export function readConfig() {
     hedgeMaxUsd: num("ETN_BOT_HEDGE_MAX_USD", 180), // largest hedge
     hedgeMaxEtnOut: num("ETN_BOT_HEDGE_MAX_ETN_OUT", 60000), // most of the bot's ETN that may sit on KuCoin at once
     hedgeMaxTradesPerDay: num("ETN_BOT_HEDGE_MAX_TRADES_PER_DAY", 48),
+    // The round trip (rebalanceHedge): moving ETN and dollars back between KuCoin and the wallet. Needs the
+    // key's Withdrawal permission; only with ETN_BOT_HEDGE_REBALANCE=true on top of live hedging.
+    hedgeRebalance: process.env.ETN_BOT_HEDGE_REBALANCE === "true" && process.env.ETN_BOT_HEDGE_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured(),
+    hedgeRebalanceEveryMs: num("ETN_BOT_HEDGE_REBALANCE_EVERY_MIN", 10) * 60000,
+    rebalance: {
+      ...REBALANCE_DEFAULTS,
+      etnHigh: num("ETN_BOT_HEDGE_KC_ETN_HIGH", REBALANCE_DEFAULTS.etnHigh),
+      etnTarget: num("ETN_BOT_HEDGE_KC_ETN_TARGET", REBALANCE_DEFAULTS.etnTarget),
+      etnLow: num("ETN_BOT_HEDGE_KC_ETN_LOW", REBALANCE_DEFAULTS.etnLow),
+      usdtLow: num("ETN_BOT_HEDGE_KC_USDT_LOW", REBALANCE_DEFAULTS.usdtLow),
+    },
   };
 }
 
@@ -558,6 +569,99 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   // A pause of live hedging is saved with the books (so the next check doesn't carry on); a restart of
   // the service is the "I've sorted KuCoin out" signal, so the first check after one lifts it.
   let hedgePauseCheckedSinceStart = false;
+  let lastRebalanceAt = 0;
+
+  // Hyperlane warp routes on Electroneum (see utils/hyperlaneBridge.js): USDC -> Base (domain 8453, the
+  // cheapest, ~64 ETN), USDT -> Ethereum (domain 1, its only route, ~391 ETN). Both release the native
+  // token there — the exact contracts KuCoin credits — straight into KuCoin's deposit address.
+  const HYP_ABI = ["function transferRemote(uint32 _destination, bytes32 _recipient, uint256 _amountOrId) payable returns (bytes32)", "function quoteGasPayment(uint32) view returns (uint256)"];
+  const BRIDGE = { USDC: { domain: 8453, chain: "base" }, USDT: { domain: 1, chain: "eth" } };
+
+  /** One round-trip transfer if one is due (decideRebalance). Returns true when it moved something. Every
+   * fee is added to the live hedge book's costs, so its net result stays honest. The bot only ever
+   * withdraws to its own wallet. */
+  async function rebalanceHedge(state) {
+    const hb = state.hedgeLive;
+    if (!hb || !wallet) return false;
+    hb.inTransit = hb.inTransit || [];
+    hb.costsEtn = hb.costsEtn || 0;
+    hb.costsUsd = hb.costsUsd || 0;
+    const [trade, main] = await Promise.all([getBalances("trade"), getBalances("main")]);
+    const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn - 1000;
+    const room = Math.max(0, Math.min(cfg.hedgeMaxEtnOut + hb.walletEtnNet, walletEtn));
+    const a = decideRebalance({ trade, main }, hb, room, cfg.rebalance);
+    if (!a) return false;
+    const oid = (tag) => `etnbot-rb-${tag}-${Date.now()}`;
+    const at = new Date().toISOString();
+    switch (a.type) {
+      case "sweepUsdc": {
+        await innerTransfer({ currency: "USDC", from: "main", to: "trade", amount: floorToIncrement(a.amount, 0.000001), clientOid: oid("t") });
+        notify(`🔄 Round trip: ${fmtUsd(a.amount)} USDC arrived on KuCoin, moved to its trading account`);
+        break;
+      }
+      case "convertUsdc": {
+        const rules = await getSymbolRules("USDC-USDT");
+        const fill = await marketSellOn("USDC-USDT", floorToIncrement(a.amount, rules.baseIncrement), oid("cv"));
+        const usdt = fill.dealFunds - (fill.feeCurrency === "USDT" ? fill.fee : 0);
+        hb.kucoinUsdNet += usdt;
+        hb.costsUsd += a.amount - usdt;
+        settleArrival(hb, "USDC", a.amount);
+        notify(`🔄 Round trip: converted ${fmtUsd(a.amount)} USDC to ${fmtUsd(usdt)} USDT on KuCoin for hedging`);
+        break;
+      }
+      case "sweepUsdt":
+      case "sweepEtn": {
+        const cur = a.type === "sweepUsdt" ? "USDT" : "ETN";
+        await innerTransfer({ currency: cur, from: "main", to: "trade", amount: cur === "ETN" ? Math.floor(a.amount) : floorToIncrement(a.amount, 0.000001), clientOid: oid("t") });
+        if (cur === "USDT") hb.kucoinUsdNet += a.amount;
+        else hb.kucoinEtnNet += a.amount;
+        settleArrival(hb, cur, a.amount);
+        notify(`🔄 Round trip: ${cur === "ETN" ? `${fmtEtn(a.amount)} ETN` : fmtUsd(a.amount) + " USDT"} arrived on KuCoin, moved to its trading account`);
+        break;
+      }
+      case "withdrawEtn": {
+        const rules = await getWithdrawRules("ETN", "etnevm");
+        if (!rules.enabled) throw new Error("KuCoin ETN withdrawals are suspended");
+        await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: Math.ceil(a.amount + rules.fee), clientOid: oid("t") });
+        await withdraw({ currency: "ETN", address: wallet.address, amount: a.amount, chain: "etnevm" });
+        hb.kucoinEtnNet -= a.amount + rules.fee;
+        hb.walletEtnNet += a.amount;
+        hb.costsEtn += rules.fee;
+        notify(`🔄 Round trip: withdrew ${fmtEtn(a.amount)} ETN from KuCoin to the bot wallet (fee ${fmtEtn(rules.fee)} ETN)`);
+        break;
+      }
+      case "bridgeUsdc":
+      case "bridgeUsdt": {
+        const cur = a.type === "bridgeUsdc" ? "USDC" : "USDT";
+        const route = BRIDGE[cur];
+        const dep = await getDepositAddress(cur, route.chain);
+        if (!dep?.address) throw new Error(`no KuCoin ${cur} deposit address on ${route.chain} — create one on KuCoin's Deposit page first`);
+        const token = new ethers.Contract(POOLS[cur].token, HYP_ABI, wallet);
+        const fee = await token.quoteGasPayment(route.domain);
+        const tx = await token.transferRemote(route.domain, ethers.zeroPadValue(dep.address, 32), ethers.parseUnits(floorTo(a.amount, 6), 6), { value: fee });
+        await tx.wait();
+        hb.stables[cur] = (hb.stables[cur] || 0) - a.amount;
+        hb.inTransit.push({ currency: cur, usd: a.amount, tx: tx.hash, at });
+        hb.costsEtn += Number(ethers.formatEther(fee));
+        notify(`🔄 Round trip: bridged ${fmtUsd(a.amount)} ${cur} to KuCoin via Hyperlane (${route.chain}, fee ${fmtEtn(Number(ethers.formatEther(fee)))} ETN) — tx ${tx.hash}`);
+        break;
+      }
+      case "depositEtn": {
+        const dep = await getDepositAddress("ETN", "etnevm");
+        if (!dep?.address) throw new Error("no KuCoin ETN deposit address — create one on KuCoin's Deposit page first");
+        const tx = await wallet.sendTransaction({ to: dep.address, value: ethers.parseEther(String(a.amount)) });
+        await tx.wait();
+        hb.walletEtnNet -= a.amount;
+        hb.inTransit.push({ currency: "ETN", etn: a.amount, tx: tx.hash, at });
+        notify(`🔄 Round trip: sent ${fmtEtn(a.amount)} ETN to KuCoin for buy-side hedges — tx ${tx.hash}`);
+        break;
+      }
+      default:
+        return false;
+    }
+    actedThisTick = true;
+    return true;
+  }
 
   /** Hedged catch-up (see etnHedgeStrategy.js). When a pool is far enough from KuCoin, prices selling on
    * one venue and buying the same ETN on the other — real ElectroSwap quotes, KuCoin's live book.
@@ -752,6 +856,18 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         await completeHedgeLeg(state);
         await saveWithRetry(state);
         return;
+      }
+      // The round trip, at most every hedgeRebalanceEveryMs and never mid-hedge.
+      if (cfg.hedgeRebalance && state.hedgeLive && !state.hedgeLeg && !state.hedgeLive.pausedReason && Date.now() - lastRebalanceAt >= cfg.hedgeRebalanceEveryMs) {
+        lastRebalanceAt = Date.now();
+        const moved = await rebalanceHedge(state).catch((err) => {
+          notify(`⚠️ Round trip step failed: ${err.message}`);
+          return false;
+        });
+        if (moved) {
+          await saveWithRetry(state);
+          return;
+        }
       }
       if (state.gapLeg) {
         await completeGapLeg(state);
@@ -1005,7 +1121,7 @@ export async function startEtnAccumulatorBot() {
   const gapText =
     (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off") +
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
-    (cfg.hedgeLive ? `; HEDGING LIVE (KuCoin; ${cfg.hedgeLagPct}%+ gap, up to ${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on KuCoin)` : cfg.hedgePaper ? "; hedging paper-only" : "") +
+    (cfg.hedgeLive ? `; HEDGING LIVE (KuCoin; ${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on KuCoin; round trip ${cfg.hedgeRebalance ? "ON" : "off"})` : cfg.hedgePaper ? "; hedging paper-only" : "") +
     (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });

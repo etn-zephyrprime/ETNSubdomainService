@@ -9,7 +9,7 @@
 //   node scripts/kucoinCheck.js
 //   node scripts/kucoinCheck.js --test-order
 import dotenv from "dotenv";
-import { kucoinConfigured, getTradeBalances, getSymbolRules, marketOrderAndWait, floorToIncrement } from "../utils/kucoinClient.js";
+import { kucoinConfigured, getTradeBalances, getSymbolRules, marketOrderAndWait, floorToIncrement, getBalances, getDepositAddress, getWithdrawRules } from "../utils/kucoinClient.js";
 
 dotenv.config();
 
@@ -20,7 +20,17 @@ async function main() {
   if (bal.USDT < 1 && bal.ETN < 1) console.log("   (Both are ~0 — move funds into the TRADING account, not Main/Funding, before hedging.)");
   const rules = await getSymbolRules();
   console.log(`   ETN-USDT rules: size step ${rules.baseIncrement} ETN, min ${rules.baseMinSize} ETN, funds step ${rules.quoteIncrement}, min funds ${rules.minFunds || "n/a"}`);
-  console.log(`   Live hedging switch: ETN_BOT_HEDGE_LIVE=${process.env.ETN_BOT_HEDGE_LIVE || "(unset — off)"}, ETN_BOT_MODE=${process.env.ETN_BOT_MODE || "(unset)"}`);
+  console.log(`   Live hedging switch: ETN_BOT_HEDGE_LIVE=${process.env.ETN_BOT_HEDGE_LIVE || "(unset — off)"}, ETN_BOT_MODE=${process.env.ETN_BOT_MODE || "(unset)"}, round trip ETN_BOT_HEDGE_REBALANCE=${process.env.ETN_BOT_HEDGE_REBALANCE || "(unset — off)"}`);
+
+  // The round trip (ETN_BOT_HEDGE_REBALANCE): needs the Main account readable and these deposit addresses.
+  const main = await getBalances("main").catch((err) => ({ error: err.message }));
+  console.log(main.error ? `   Main account: unreadable (${main.error})` : `   Main (funding) account: ${main.ETN.toLocaleString("en-US", { maximumFractionDigits: 2 })} ETN, $${main.USDT.toFixed(2)} USDT, $${main.USDC.toFixed(2)} USDC`);
+  for (const [cur, chain, why] of [["USDC", "base", "the wallet's USDC arrives here (Hyperlane -> Base)"], ["USDT", "eth", "the wallet's USDT arrives here (Hyperlane -> Ethereum)"], ["ETN", "etnevm", "ETN sent from the wallet arrives here"]]) {
+    const dep = await getDepositAddress(cur, chain).catch(() => null);
+    console.log(`   ${cur} deposit address on ${chain}: ${dep?.address || "NONE — create one on KuCoin's Deposit page (" + cur + ", network " + chain + ")"}  — ${why}`);
+  }
+  const wr = await getWithdrawRules("ETN", "etnevm").catch(() => null);
+  if (wr) console.log(`   ETN withdrawals (etnevm): ${wr.enabled ? "enabled" : "SUSPENDED"}, fee ${wr.fee} ETN, minimum ${wr.min} ETN`);
 
   if (process.argv.includes("--test-order")) {
     if (bal.USDT < 1.1) throw new Error("Need at least $1.10 USDT in the Trading account for the test order.");
