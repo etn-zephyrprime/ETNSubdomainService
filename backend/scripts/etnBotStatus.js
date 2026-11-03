@@ -65,7 +65,7 @@ async function main() {
   // Led by ETN ACCUMULATED: ETN the bot's trades have added, which is what it's for. The stablecoin is
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
-  const hedgeGainEtn = state.hedgeLive?.gainEtn || 0;
+  const hedgeGainEtn = (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0); // net of round-trip fees
   const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn + hedgeGainEtn;
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
@@ -76,7 +76,7 @@ async function main() {
   if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)`);
   if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
   if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
-  if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s) (the ETN gained lands on KuCoin)`);
+  if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s), net of round-trip fees`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 
   console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
@@ -110,25 +110,27 @@ async function main() {
 
   if (state.hedgeLive) {
     const hb = state.hedgeLive;
-    console.log(`
-  Hedged trades (LIVE): ${signed(hb.gainEtn)} ETN over ${hb.trades} hedge(s), ${hb.notionalUsd.toFixed(0)} traded, since ${hb.since.slice(0, 10)}${hb.pausedReason ? ` — PAUSED: ${hb.pausedReason}` : ""}`);
-    console.log(`    wallet: ${signed(hb.walletEtnNet)} ETN net, hedge dollars ${(hb.stables.USDT || 0).toFixed(2)} USDT + ${(hb.stables.USDC || 0).toFixed(2)} USDC`);
-    console.log(`    KuCoin: ${signed(hb.kucoinEtnNet)} ETN net, ${hb.kucoinUsdNet >= 0 ? "+" : "−"}${Math.abs(hb.kucoinUsdNet).toFixed(2)} USDT net`);
+    const usd = (n) => `$${Math.abs(n).toFixed(2)}`;
+    console.log(`\n  Hedged trades (LIVE): ${signed(hb.gainEtn)} ETN over ${hb.trades} hedge(s), ${usd(hb.notionalUsd)} traded, since ${hb.since.slice(0, 10)}${hb.pausedReason ? ` — PAUSED: ${hb.pausedReason}` : ""}`);
+    if (hb.costsEtn || hb.costsUsd) console.log(`    round-trip costs: ${etn(hb.costsEtn || 0)} ETN (withdrawal + bridge fees)${hb.costsUsd ? ` + ${usd(hb.costsUsd)} (USDC->USDT)` : ""} — net ${signed(hb.gainEtn - (hb.costsEtn || 0))} ETN`);
+    console.log(`    wallet: ${signed(hb.walletEtnNet)} ETN net, hedge dollars ${usd(hb.stables.USDT || 0)} USDT + ${usd(hb.stables.USDC || 0)} USDC`);
+    console.log(`    KuCoin: ${signed(hb.kucoinEtnNet)} ETN net, ${hb.kucoinUsdNet >= 0 ? "+" : "−"}${usd(hb.kucoinUsdNet)} USDT net`);
+    for (const t of hb.inTransit || []) console.log(`    in transit to KuCoin: ${t.currency === "ETN" ? `${etn(t.etn)} ETN` : `${usd(t.usd)} ${t.currency}`} since ${(t.at || "").slice(0, 16)} (${t.tx})`);
     if (state.hedgeLeg) console.log(`    ⚠️ unfinished leg: ${state.hedgeLeg.dir === "sellOnEs" ? `${etn(state.hedgeLeg.esEtn)} ETN sold on ElectroSwap, not yet bought back on KuCoin` : `${etn(state.hedgeLeg.esEtn)} ETN bought on ElectroSwap, not yet sold on KuCoin`} (${state.hedgeLeg.txHash})`);
     if (kucoinConfigured()) {
       const kc = await getTradeBalances().catch((err) => ({ error: err.message }));
-      console.log(kc.error ? `    KuCoin balances unavailable: ${kc.error}` : `    KuCoin trading account now: ${etn(kc.ETN)} ETN + ${kc.USDT.toFixed(2)} USDT`);
+      console.log(kc.error ? `    KuCoin balances unavailable: ${kc.error}` : `    KuCoin trading account now: ${etn(kc.ETN)} ETN + ${usd(kc.USDT)} USDT`);
     }
-    for (const r of (hb.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sold ES / bought KuCoin" : "bought ES / sold KuCoin"}  ${etn(r.esEtn).padStart(8)} / ${etn(r.kcEtn).padStart(8)} ETN  ${r.esUsd.toFixed(2).padStart(7)}  ${signed(r.gainEtn)} ETN`);
+    for (const r of (hb.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sold ES / bought KuCoin" : "bought ES / sold KuCoin"}  ${etn(r.esEtn).padStart(8)} / ${etn(r.kcEtn).padStart(8)} ETN  ${usd(r.esUsd).padStart(8)}  ${signed(r.gainEtn)} ETN`);
   }
 
   if (state.hedge) {
     const h = state.hedge;
+    const usd = (n) => `$${Math.abs(n).toFixed(2)}`;
     const days = Math.max(1 / 24, (Date.now() - Date.parse(h.since)) / 86400000);
-    console.log(`
-  Hedged catch-up (PAPER — nothing traded): +${h.profitUsd.toFixed(2)} (≈ ${signed(h.profitEtn)} ETN) over ${h.trades} hedge(s), ${h.notionalUsd.toFixed(0)} traded, since ${h.since.slice(0, 10)} (~${(h.profitUsd / days).toFixed(2)}/day)`);
-    console.log(`    rebalancing it would need: ${h.drift.etnToWallet >= 0 ? `move ${etn(h.drift.etnToWallet)} ETN KuCoin -> wallet` : `move ${etn(-h.drift.etnToWallet)} ETN wallet -> KuCoin`}, and ${h.drift.usdToKucoin >= 0 ? `${h.drift.usdToKucoin.toFixed(2)} wallet -> KuCoin` : `${(-h.drift.usdToKucoin).toFixed(2)} KuCoin -> wallet`} (each move has a withdrawal/bridge fee — the bridge is ~64 ETN)`);
-    for (const r of (h.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sell ES / buy KuCoin" : "buy ES / sell KuCoin"}  ${etn(r.etn).padStart(8)} ETN  ${r.notional.toFixed(2).padStart(7)}  +${r.profitUsd.toFixed(2)} (${r.profitPct.toFixed(2)}%)`);
+    console.log(`\n  Hedged catch-up (PAPER — nothing traded): +${usd(h.profitUsd)} (≈ ${signed(h.profitEtn)} ETN) over ${h.trades} hedge(s), ${usd(h.notionalUsd)} traded, since ${h.since.slice(0, 10)} (~${usd(h.profitUsd / days)}/day)`);
+    console.log(`    rebalancing it would need: ${h.drift.etnToWallet >= 0 ? `move ${etn(h.drift.etnToWallet)} ETN KuCoin -> wallet` : `move ${etn(-h.drift.etnToWallet)} ETN wallet -> KuCoin`}, and ${h.drift.usdToKucoin >= 0 ? `${usd(h.drift.usdToKucoin)} wallet -> KuCoin` : `${usd(h.drift.usdToKucoin)} KuCoin -> wallet`}`);
+    for (const r of (h.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sell ES / buy KuCoin" : "buy ES / sell KuCoin"}  ${etn(r.etn).padStart(8)} ETN  ${usd(r.notional).padStart(8)}  +${usd(r.profitUsd)} (${r.profitPct.toFixed(2)}%)`);
   }
 
   if (state.tri?.recent?.length) {

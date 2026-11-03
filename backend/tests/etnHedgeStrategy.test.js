@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -59,4 +59,35 @@ test("live hedge book: profit in ETN both ways; dollars and ETN shift between ve
   assert.equal(b.walletEtnNet, -14000);
   assert.equal(b.kucoinEtnNet, 15600);
   assert.equal(b.kucoinUsdNet, -32);
+});
+
+test("rebalancing: one transfer per check, in priority order", () => {
+  const hb = { stables: { USDC: 120, USDT: 50 }, inTransit: [] };
+  const kc = (trade, main = { ETN: 0, USDT: 0, USDC: 0 }) => ({ trade: { USDC: 0, ...trade }, main });
+  // an arrived deposit is swept first
+  assert.deepEqual(decideRebalance(kc({ ETN: 300000, USDT: 10 }, { ETN: 0, USDT: 0, USDC: 119.5 }), hb, 1e9), { type: "sweepUsdc", amount: 119.5 });
+  // ETN piled up on KuCoin -> withdraw down to the target
+  assert.deepEqual(decideRebalance(kc({ ETN: 300000, USDT: 10 }), hb, 1e9), { type: "withdrawEtn", amount: 200000 });
+  // KuCoin short of USDT -> bridge the hedge's USDC (Base)
+  assert.deepEqual(decideRebalance(kc({ ETN: 150000, USDT: 10 }), hb, 1e9), { type: "bridgeUsdc", amount: 120 });
+  // ...but not while a USDC bridge is already on its way
+  assert.equal(decideRebalance(kc({ ETN: 150000, USDT: 10 }), { ...hb, inTransit: [{ currency: "USDC", usd: 100 }] }, 1e9), null);
+  // USDT only in batches of $300+
+  assert.deepEqual(decideRebalance(kc({ ETN: 150000, USDT: 500 }), { stables: { USDT: 320 }, inTransit: [] }, 1e9), { type: "bridgeUsdt", amount: 320 });
+  // KuCoin short of ETN -> deposit up to the target, within what the bot may send
+  assert.deepEqual(decideRebalance(kc({ ETN: 20000, USDT: 500 }), { stables: {}, inTransit: [] }, 50000), { type: "depositEtn", amount: 50000 });
+  assert.equal(decideRebalance(kc({ ETN: 150000, USDT: 500 }), { stables: {}, inTransit: [] }, 1e9), null);
+});
+
+test("arrivals clear what they cover", () => {
+  const hb = { inTransit: [{ currency: "USDC", usd: 60 }, { currency: "USDC", usd: 50 }, { currency: "ETN", etn: 1000 }] };
+  settleArrival(hb, "USDC", 59.9);
+  assert.deepEqual(hb.inTransit, [{ currency: "USDC", usd: 50 }, { currency: "ETN", etn: 1000 }]);
+});
+
+test("rebalancing: USDC already in the trading account is converted (retry-safe), after any sweep", () => {
+  const hb = { stables: {}, inTransit: [] };
+  const z = { ETN: 0, USDT: 0, USDC: 0 };
+  assert.deepEqual(decideRebalance({ trade: { ETN: 150000, USDT: 500, USDC: 52.5 }, main: z }, hb, 0), { type: "convertUsdc", amount: 52.5 });
+  assert.equal(decideRebalance({ trade: { ETN: 150000, USDT: 500, USDC: 52.5 }, main: { ...z, USDC: 10 } }, hb, 0).type, "sweepUsdc");
 });

@@ -135,3 +135,64 @@ export function applyLiveHedge(book, { dir, stable, esEtn, esUsd, kcEtn, kcUsd, 
   if (book.recent.length > 50) book.recent.shift();
   return gainEtn;
 }
+
+// ---- round trip: keeping both venues stocked ------------------------------------------------------
+// Sell-side hedges (the common kind) leave ETN piling up on KuCoin and dollars in the wallet; buy-side
+// ones do the reverse. decideRebalance picks at most ONE transfer per check to put them back:
+//   sweep*      a deposit that's arrived in KuCoin's MAIN account -> its TRADE account
+//   convertUsdc USDC in the TRADE account -> USDT (KuCoin has no ETN-USDC market). Its own step, driven
+//               by the trade balance, so a conversion that fails after the sweep is simply retried
+//   withdrawEtn KuCoin ETN above etnHigh -> withdraw down to etnTarget, to the bot wallet
+//   bridgeUsdc  KuCoin USDT below usdtLow -> the hedge's wallet USDC to KuCoin via Hyperlane to Base
+//               (63.6 ETN; KuCoin takes Base USDC with no minimum)
+//   bridgeUsdt  the hedge's wallet USDT -> KuCoin via Hyperlane to Ethereum (391 ETN — the only USDT
+//               route), only in batches of usdtBatchMin
+//   depositEtn  KuCoin ETN below etnLow -> send wallet ETN up to etnTarget (for buy-side hedges)
+
+export const REBALANCE_DEFAULTS = {
+  etnHigh: 200000,
+  etnTarget: 100000,
+  etnLow: 40000,
+  usdtLow: 100,
+  usdcBatchMin: 40,
+  usdtBatchMin: 300,
+  minWithdrawEtn: 50000,
+};
+
+/** @param kc { trade: {ETN, USDT, USDC}, main: {ETN, USDT, USDC} } — KuCoin balances
+ *  @param hb the live hedge book (stables, inTransit[], walletEtnNet)
+ *  @param walletEtnRoom how much of the bot's ETN may still go to KuCoin (cap and wallet, combined) */
+export function decideRebalance(kc, hb, walletEtnRoom, cfg = REBALANCE_DEFAULTS) {
+  const inTransit = (cur) => (hb.inTransit || []).some((t) => t.currency === cur);
+  if (kc.main.USDC >= 1) return { type: "sweepUsdc", amount: kc.main.USDC };
+  if ((kc.trade.USDC || 0) >= 1) return { type: "convertUsdc", amount: kc.trade.USDC };
+  if (kc.main.USDT >= 1) return { type: "sweepUsdt", amount: kc.main.USDT };
+  if (kc.main.ETN >= 100) return { type: "sweepEtn", amount: kc.main.ETN };
+  if (kc.trade.ETN > cfg.etnHigh) {
+    const amount = Math.floor(kc.trade.ETN - cfg.etnTarget);
+    if (amount >= cfg.minWithdrawEtn) return { type: "withdrawEtn", amount };
+  }
+  const usdc = hb.stables?.USDC || 0;
+  const usdt = hb.stables?.USDT || 0;
+  if (kc.trade.USDT < cfg.usdtLow && usdc >= cfg.usdcBatchMin && !inTransit("USDC")) return { type: "bridgeUsdc", amount: usdc };
+  if (usdt >= cfg.usdtBatchMin && !inTransit("USDT")) return { type: "bridgeUsdt", amount: usdt };
+  if (kc.trade.ETN < cfg.etnLow && !inTransit("ETN")) {
+    const amount = Math.floor(Math.min(cfg.etnTarget - kc.trade.ETN, walletEtnRoom));
+    if (amount >= 10000) return { type: "depositEtn", amount };
+  }
+  return null;
+}
+
+/** Clears in-transit entries of `currency` that an arrival of `amount` covers (oldest first). */
+export function settleArrival(hb, currency, amount) {
+  let left = amount * 1.02; // a little slack: bridge/rounding dust
+  hb.inTransit = (hb.inTransit || []).filter((t) => {
+    if (t.currency !== currency || left <= 0) return true;
+    const size = t.usd ?? t.etn ?? 0;
+    if (size <= left) {
+      left -= size;
+      return false;
+    }
+    return true;
+  });
+}
