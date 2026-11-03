@@ -595,6 +595,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   let hedgePauseCheckedSinceStart = false;
   let lastRebalanceAt = 0;
   let lastSweepAt = 0;
+  // A venue whose key can't withdraw (e.g. KuCoin drops Withdraw from a key without an IP restriction):
+  // its sweep stops until the next restart instead of failing every run. venue -> reason
+  const sweepOff = new Map();
 
   /** Brings each exchange's ETN above its float back to the bot wallet (SWEEP_DEFAULTS / ETN_BOT_*_ETN_FLOAT)
    * — the ETN hedges and the arbitrage gain lands on the exchanges. At most one withdrawal per run, always
@@ -605,19 +608,37 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     state.cexSweep = state.cexSweep || {};
     for (const venue of ["htx", "kucoin"]) {
       const v = VENUES[venue];
-      if (!v.configured()) continue;
+      if (!v.configured() || sweepOff.has(venue)) continue;
       const have = (await v.balances().catch(() => null))?.ETN;
       if (!(have > 0)) continue;
       const rules = venue === "kucoin" ? await getWithdrawRules("ETN", "etnevm") : await htxWithdrawRules("ETN", "etn1");
       if (!rules.enabled) continue;
       const amount = sweepAmount(have, cfg.sweep[venue], rules.min);
       if (!amount) continue;
-      if (venue === "kucoin") {
-        // withdrawals leave from KuCoin's Main account; the fee comes out on top
-        await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: Math.ceil(amount + rules.fee), clientOid: `etnbot-sw-${Date.now()}` });
-        await withdraw({ currency: "ETN", address: wallet.address, amount, chain: "etnevm" });
-      } else {
-        await htxWithdraw({ currency: "ETN", address: wallet.address, amount, chain: "etn1", fee: rules.fee });
+      try {
+        if (venue === "kucoin") {
+          // withdrawals leave from KuCoin's Main account; the fee comes out on top
+          const moved = Math.ceil(amount + rules.fee);
+          await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: moved, clientOid: `etnbot-sw-${Date.now()}` });
+          try {
+            await withdraw({ currency: "ETN", address: wallet.address, amount, chain: "etnevm" });
+          } catch (err) {
+            // Never leave it stranded in Main (where trading can't reach it): straight back to Trade.
+            await innerTransfer({ currency: "ETN", from: "main", to: "trade", amount: moved, clientOid: `etnbot-sw-back-${Date.now()}` }).catch((e) =>
+              notify(`⚠️ Sweep: couldn't move ${fmtEtn(moved)} ETN back to KuCoin's trading account (${e.message}) — it's in Main; move it in the KuCoin app`)
+            );
+            throw err;
+          }
+        } else {
+          await htxWithdraw({ currency: "ETN", address: wallet.address, amount, chain: "etn1", fee: rules.fee });
+        }
+      } catch (err) {
+        if (/400007|permission|withdraw.*(not|disabled)|api-not-support|forbidden/i.test(err.message)) {
+          sweepOff.set(venue, err.message);
+          notify(`⏸️ Sweep off for ${v.name} until the next restart — its key can't withdraw (${err.message}). Give the key Withdraw permission (${venue === "kucoin" ? "KuCoin only allows that with an IP restriction" : "with its IP binding"}), or withdraw by hand.`);
+          continue;
+        }
+        throw err;
       }
       const rec = (state.cexSweep[venue] = state.cexSweep[venue] || { count: 0, etn: 0, feesEtn: 0, last: null });
       rec.count += 1;
