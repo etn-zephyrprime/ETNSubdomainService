@@ -27,7 +27,10 @@ async function cached(key, ms, fn) {
 export const VENUES = {
   kucoin: {
     name: "KuCoin",
+    // Starts at the configured rate; refreshFees() replaces it with the account's real one (never lower).
     feePct: num("ETN_BOT_KUCOIN_FEE_PCT", num("ETN_BOT_HEDGE_KUCOIN_FEE_PCT", 0.1)),
+    configuredFeePct: num("ETN_BOT_KUCOIN_FEE_PCT", num("ETN_BOT_HEDGE_KUCOIN_FEE_PCT", 0.1)),
+    readFeePct: kucoin.getTakerFeePct,
     configured: kucoin.kucoinConfigured,
     book: kucoin.getBook,
     balances: kucoin.getTradeBalances,
@@ -48,6 +51,8 @@ export const VENUES = {
   htx: {
     name: "HTX",
     feePct: num("ETN_BOT_HTX_FEE_PCT", 0.2),
+    configuredFeePct: num("ETN_BOT_HTX_FEE_PCT", 0.2),
+    readFeePct: htx.getTakerFeePct,
     configured: htx.htxConfigured,
     book: htx.getBook,
     balances: htx.getBalances,
@@ -79,3 +84,18 @@ export async function allBooks() {
 }
 
 export const feesOf = () => Object.fromEntries(Object.entries(VENUES).map(([k, v]) => [k, v.feePct]));
+
+let feesReadAt = 0;
+/** Reads each configured venue's real taker fee (hourly) and uses the HIGHER of it and the configured
+ * rate — every break-even price depends on this, so an understated fee could make a "can't lose" leg
+ * lose. A venue whose fee can't be read keeps the configured rate. Returns { venue: feePct }. */
+export async function refreshFees(force = false) {
+  if (!force && Date.now() - feesReadAt < 3600000) return feesOf();
+  feesReadAt = Date.now();
+  for (const v of Object.values(VENUES)) {
+    if (!v.configured()) continue;
+    const real = await v.readFeePct().catch(() => null);
+    if (Number.isFinite(real) && real > 0) v.feePct = Math.max(real, v.configuredFeePct);
+  }
+  return feesOf();
+}

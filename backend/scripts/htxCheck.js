@@ -9,7 +9,7 @@
 //   node scripts/htxCheck.js
 //   node scripts/htxCheck.js --test-order
 import dotenv from "dotenv";
-import { htxConfigured, getBalances, getSymbolRules, getAssetStatus, getBook, iocOrder, getWithdrawRules } from "../utils/htxClient.js";
+import { htxConfigured, getBalances, getSymbolRules, getAssetStatus, getBook, iocOrder, getWithdrawRules, getTakerFeePct } from "../utils/htxClient.js";
 
 dotenv.config();
 
@@ -18,6 +18,8 @@ async function main() {
   const bal = await getBalances();
   console.log(`✅ Key works. Spot account: ${bal.ETN.toLocaleString("en-US", { maximumFractionDigits: 2 })} ETN, $${bal.USDT.toFixed(2)} USDT`);
   const rules = await getSymbolRules();
+  const fee = await getTakerFeePct().catch((err) => `unreadable (${err.message})`);
+  console.log(`   Your ETN/USDT taker fee: ${typeof fee === "number" ? fee + "%" : fee} (the bot uses the higher of this and ETN_BOT_HTX_FEE_PCT)`);
   console.log(`   ETN/USDT rules: trading ${rules.trading ? "ON" : "OFF"}, size step ${rules.sizeStep} ETN, min ${rules.minSize} ETN, price step ${rules.priceStep}, min order $${rules.minFunds}`);
   for (const c of ["ETN", "USDT"]) {
     const s = await getAssetStatus(c);

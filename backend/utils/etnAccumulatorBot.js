@@ -34,7 +34,7 @@ import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInven
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount } from "../services/etnHedgeStrategy.js";
-import { VENUES, allBooks, feesOf } from "../services/cexVenues.js";
+import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
 import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw } from "./htxClient.js";
 import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn } from "./kucoinClient.js";
@@ -1146,6 +1146,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
         await saveWithRetry(state);
         return;
       }
+
+      // The venues' real taker fees (hourly) — every break-even price below uses them.
+      if (cfg.hedgeLive || cfg.arbLive || cfg.hedgePaper || cfg.arbPaper) await refreshFees().catch(() => null);
 
       // CEX-vs-CEX arbitrage — its own action (it doesn't touch the pools).
       if (cfg.arbPaper || cfg.arbLive) {
