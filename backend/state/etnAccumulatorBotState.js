@@ -105,3 +105,11 @@ export async function releaseBotLease(owner) {
   const cur = await readLease(r2);
   if (cur?.owner === owner) await writeLease(r2, { owner, at: cur.at, released: true });
 }
+
+/** Takes the lease regardless of who holds it — for one-off maintenance scripts that must edit the books
+ * while the bot stands by. Release it with releaseBotLease(owner) afterwards. */
+export async function forceBotLease(owner) {
+  const r2 = getR2Client();
+  if (!r2) throw new Error("R2 not configured");
+  await writeLease(r2, { owner, at: Date.now() });
+}
