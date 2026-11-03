@@ -7,22 +7,19 @@
 import { ethers } from "ethers";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getBotState } from "../state/etnAccumulatorBotState.js";
-import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
+import { gatherQuotes, readConfig, POOLS, botViewers } from "../utils/etnAccumulatorBot.js";
 import { summarize, botEtnInventory } from "./etnAccumulatorStrategy.js";
 import { catchupContributedEtn } from "./etnCatchupStrategy.js";
 import { VENUES } from "./cexVenues.js";
 import { getBalances as kucoinBalances } from "../utils/kucoinClient.js";
 
+// Wallets allowed to see the bot (ETN_BOT_VIEWERS, comma-separated; defaults to the owner's two).
+export { botViewers };
+
 const CACHE_MS = 60 * 1000;
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
 const QUOTER = process.env.ELECTROSWAP_V3_QUOTER_ADDRESS || "0xba3CAfCc197E71b9d114E515E75c037dA09A6312";
 const ERC20 = ["function balanceOf(address) view returns (uint256)"];
-
-/** Wallets allowed to see the bot (ETN_BOT_VIEWERS, comma-separated; defaults to the owner's two). */
-export function botViewers() {
-  const list = process.env.ETN_BOT_VIEWERS || "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099,0x696A7B9Ea5c86dA15D569d99D75ed788CcE4db2e";
-  return new Set(list.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean));
-}
 
 let cached = null;
 let inFlight = null;

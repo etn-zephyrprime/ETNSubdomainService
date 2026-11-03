@@ -57,3 +57,51 @@ export async function setBotState(mode, state) {
     })
   );
 }
+
+// ── Single ownership ─────────────────────────────────────────────────────────────────────────────
+// During a Render deploy the old and new instances run side by side for a while; two bots trading the
+// same wallet and the same books (each saving over the other's) is how a bridged $89 got "reduced"
+// out of the books. Whichever instance holds this lease is the only one allowed to tick; it renews it
+// every tick and releases it on shutdown, so the new instance takes over as soon as the old one stops
+// (or LEASE_MS after it dies without releasing).
+const LEASE_KEY = "etn-accumulator-bot-lease.json";
+export const LEASE_MS = 150000;
+
+async function readLease(r2) {
+  try {
+    const res = await r2.send(new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: LEASE_KEY }));
+    return JSON.parse(await res.Body.transformToString());
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NoSuchKey") return null;
+    throw err;
+  }
+}
+
+async function writeLease(r2, lease) {
+  await r2.send(
+    new PutObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: LEASE_KEY, Body: JSON.stringify(lease), ContentType: "application/json", CacheControl: "no-store" })
+  );
+}
+
+/** Takes or renews the lease for `owner`. Returns { ok: true } when this instance may tick, or
+ * { ok: false, holder } when another instance holds a live one. Throws on R2 failures (skip the tick). */
+export async function claimBotLease(owner, now = Date.now()) {
+  const r2 = getR2Client();
+  if (!r2) throw new Error("R2 not configured");
+  const cur = await readLease(r2);
+  if (cur && cur.owner !== owner && !cur.released && now - cur.at < LEASE_MS) return { ok: false, holder: cur.owner };
+  await writeLease(r2, { owner, at: now });
+  if (cur?.owner === owner) return { ok: true };
+  // Taking it over: read back, in case another instance claimed it in the same moment (last write wins).
+  await new Promise((r) => setTimeout(r, 1000));
+  const check = await readLease(r2);
+  return check?.owner === owner ? { ok: true, took: cur?.owner || null } : { ok: false, holder: check?.owner };
+}
+
+/** Gives the lease up (shutdown), if this instance still holds it. */
+export async function releaseBotLease(owner) {
+  const r2 = getR2Client();
+  if (!r2) return;
+  const cur = await readLease(r2);
+  if (cur?.owner === owner) await writeLease(r2, { owner, at: cur.at, released: true });
+}
