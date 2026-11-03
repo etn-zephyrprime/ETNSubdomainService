@@ -85,7 +85,7 @@ export function applyHedge(book, h, { kucoinPrice, at = null } = {}) {
   const sign = h.dir === "sellOnEs" ? 1 : -1;
   book.drift.etnToWallet += sign * h.etn;
   book.drift.usdToKucoin += sign * h.notional;
-  book.recent.push({ at, dir: h.dir, stable: h.stable, etn: h.etn, notional: h.notional, profitUsd: h.profitUsd, profitPct: h.profitPct, lagPct: h.lagPct ?? null });
+  book.recent.push({ at, venue: h.venue ?? null, dir: h.dir, stable: h.stable, etn: h.etn, notional: h.notional, profitUsd: h.profitUsd, profitPct: h.profitPct, lagPct: h.lagPct ?? null });
   if (book.recent.length > 50) book.recent.shift();
   return book;
 }
@@ -195,4 +195,19 @@ export function settleArrival(hb, currency, amount) {
     }
     return true;
   });
+}
+
+// ---- sweeping excess ETN back to the wallet ---------------------------------------------------------
+// ETN gained by hedges and the CEX arbitrage builds up on the exchanges. Each keeps a working float (what
+// its trades need on hand) and anything above float + minBatch comes back to the bot wallet — the batch
+// minimum keeps a fixed withdrawal fee (KuCoin 308 ETN) a small share of what's moved.
+export const SWEEP_DEFAULTS = {
+  kucoin: { float: 50000, minBatch: 50000 },
+  htx: { float: 100000, minBatch: 10000 },
+};
+
+/** How much ETN to withdraw from a venue holding `etn` now (0 = leave it). */
+export function sweepAmount(etn, { float, minBatch }, withdrawMin = 0) {
+  const excess = Math.floor(etn - float);
+  return excess >= Math.max(minBatch, withdrawMin) ? excess : 0;
 }

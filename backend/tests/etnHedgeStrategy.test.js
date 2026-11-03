@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -90,4 +90,12 @@ test("rebalancing: USDC already in the trading account is converted (retry-safe)
   const z = { ETN: 0, USDT: 0, USDC: 0 };
   assert.deepEqual(decideRebalance({ trade: { ETN: 150000, USDT: 500, USDC: 52.5 }, main: z }, hb, 0), { type: "convertUsdc", amount: 52.5 });
   assert.equal(decideRebalance({ trade: { ETN: 150000, USDT: 500, USDC: 52.5 }, main: { ...z, USDC: 10 } }, hb, 0).type, "sweepUsdc");
+});
+
+test("sweeping: only what's above the float, and only in worthwhile batches", () => {
+  assert.equal(sweepAmount(220000, SWEEP_DEFAULTS.kucoin), 170000); // keep 50k, withdraw the rest
+  assert.equal(sweepAmount(90000, SWEEP_DEFAULTS.kucoin), 0); // 40k over: under the 50k batch (fee 308 ETN)
+  assert.equal(sweepAmount(115000, SWEEP_DEFAULTS.htx), 15000); // HTX: nearly free, smaller batches
+  assert.equal(sweepAmount(105000, SWEEP_DEFAULTS.htx), 0);
+  assert.equal(sweepAmount(100500, { float: 100000, minBatch: 0 }, 616), 0); // below the venue's withdrawal minimum
 });

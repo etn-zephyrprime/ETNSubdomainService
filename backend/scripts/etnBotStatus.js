@@ -15,6 +15,7 @@ import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
 import { summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { catchupContributedEtn } from "../services/etnCatchupStrategy.js";
 import { kucoinConfigured, getTradeBalances } from "../utils/kucoinClient.js";
+import { htxConfigured, getBalances as htxBalances } from "../utils/htxClient.js";
 
 dotenv.config();
 
@@ -66,7 +67,8 @@ async function main() {
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
   const hedgeGainEtn = (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0); // net of round-trip fees
-  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn + hedgeGainEtn;
+  const arbGainEtn = state.cexArb?.gainEtn || 0;
+  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn + hedgeGainEtn + arbGainEtn;
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
   const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);
@@ -77,6 +79,7 @@ async function main() {
   if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
   if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
   if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s), net of round-trip fees`);
+  if (state.cexArb?.trades) console.log(`    from CEX arbitrage:   ${signed(arbGainEtn)} ETN over ${state.cexArb.trades} trade(s) (KuCoin <-> HTX)`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 
   console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
@@ -122,6 +125,26 @@ async function main() {
       console.log(kc.error ? `    KuCoin balances unavailable: ${kc.error}` : `    KuCoin trading account now: ${etn(kc.ETN)} ETN + ${usd(kc.USDT)} USDT`);
     }
     for (const r of (hb.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sold ES / bought KuCoin" : "bought ES / sold KuCoin"}  ${etn(r.esEtn).padStart(8)} / ${etn(r.kcEtn).padStart(8)} ETN  ${usd(r.esUsd).padStart(8)}  ${signed(r.gainEtn)} ETN`);
+  }
+
+  if (state.cexSweep && Object.keys(state.cexSweep).length) {
+    const parts = Object.entries(state.cexSweep).map(([v, r]) => `${v === "htx" ? "HTX" : "KuCoin"} ${etn(r.etn)} ETN in ${r.count} withdrawal(s), fees ${etn(r.feesEtn)} ETN, last ${(r.last || "").slice(0, 16)}`);
+    console.log(`
+  Swept back to the wallet: ${parts.join("; ")}`);
+  }
+
+  if (state.cexArb) {
+    const ab = state.cexArb;
+    const usd = (n) => `${Math.abs(n).toFixed(2)}`;
+    console.log(`
+  CEX arbitrage (KuCoin <-> HTX, LIVE): ${signed(ab.gainEtn)} ETN${Math.abs(ab.gainUsd) >= 0.01 ? ` ${ab.gainUsd >= 0 ? "+" : "−"}${usd(ab.gainUsd)}` : ""} over ${ab.trades} trade(s), ${usd(ab.notionalUsd)} traded${ab.paused ? ` — PAUSED: ${ab.paused}` : ""}`);
+    if (ab.paper?.trades) console.log(`    paper (every opportunity that passed the public checks): +${usd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
+    if (state.arbLeg) console.log(`    ⚠️ unfinished: ${state.arbLeg.stage === "first" ? `first leg on ${state.arbLeg.firstOrder.venue} not yet confirmed (${state.arbLeg.firstOrder.clientOid})` : `second leg on ${state.arbLeg.cex.venue} — ${state.arbLeg.cex.attempts} attempt(s)`}`);
+    if (htxConfigured()) {
+      const hb = await htxBalances().catch((err) => ({ error: err.message }));
+      console.log(hb.error ? `    HTX balances unavailable: ${hb.error}` : `    HTX spot account now: ${etn(hb.ETN)} ETN + ${usd(hb.USDT)} USDT`);
+    }
+    for (const r of (ab.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  buy ${r.buyVenue} / sell ${r.sellVenue}  ${etn(r.etn).padStart(8)} ETN  ${usd(r.usd).padStart(8)}  ${signed(r.gainEtn)} ETN`);
   }
 
   if (state.hedge) {
