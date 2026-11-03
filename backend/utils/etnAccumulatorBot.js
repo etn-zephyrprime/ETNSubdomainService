@@ -29,7 +29,9 @@
 //     failed trades in a row pause the bot until the next restart.
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
-import { getBotState, setBotState, botStateConfigured } from "../state/etnAccumulatorBotState.js";
+import os from "os";
+import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
+import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
@@ -53,6 +55,12 @@ export const POOLS = {
 };
 
 const num = (name, dflt) => (process.env[name] != null && process.env[name] !== "" ? Number(process.env[name]) : dflt);
+/** The wallets that see the ETN Bot tab (services/etnBotReport.js) and get its Telegram alerts. */
+export function botViewers() {
+  const list = process.env.ETN_BOT_VIEWERS || "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099,0x696A7B9Ea5c86dA15D569d99D75ed788CcE4db2e";
+  return new Set(list.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean));
+}
+
 export function readConfig() {
   return {
     mode: process.env.ETN_BOT_MODE === "live" ? "live" : "paper",
@@ -236,7 +244,10 @@ const floorTo = (n, decimals) => (Math.floor(n * 10 ** decimals) / 10 ** decimal
 const other = (stable) => (stable === "USDT" ? "USDC" : "USDT");
 
 // `store` is swappable for tests (in-memory books); the bot itself always uses R2.
-export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: getBotState, set: setBotState } }) {
+const DEFAULT_STORE = { get: getBotState, set: setBotState, claimLease: claimBotLease, releaseLease: releaseBotLease };
+const DEFAULT_ALERT = { viewers: botViewers, chatIdFor: getNotisLinkedChatId, send: sendNotisDirectMessage };
+
+export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT_STORE, owner = `${process.env.RENDER_INSTANCE_ID || os.hostname()}:${process.pid}`, alert = DEFAULT_ALERT }) {
   async function saveWithRetry(state) {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -254,6 +265,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   let actedThisTick = false;
   let fastWakes = 0;
   let pausedReason = null;
+  // Shutdown (stop()): no new ticks start; the lease is released once the running one ends.
+  let stopped = false;
+  let leaseHolderLogged = null;
   // Fills and problems go to the Render logs only (no Telegram, by request).
   function notify(text) {
     console.log(`🤖 ETN bot${cfg.mode === "paper" ? " (paper)" : ""}: ${text}`);
@@ -656,6 +670,47 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
       return true;
     }
     return false;
+  }
+
+  let lastWithdrawAlertCheckAt = 0;
+  /** When the bot can't sweep KuCoin itself (its key has no Withdraw permission, or the sweep is off),
+   * Telegram-DMs the ETN Bot viewers (botViewers, via the Core Tier Notis bot) how much ETN to withdraw
+   * by hand: anything over the KuCoin float, once it's at least the sweep minimum. Once per amount — again
+   * when it grows by half or after a day; it resets when the excess is gone. Returns true if state changed. */
+  async function kucoinWithdrawAlert(state) {
+    if (!wallet || !kucoinConfigured()) return false;
+    if (cfg.cexSweep && !sweepOff.has("kucoin")) return false; // the sweep handles it
+    const prev = state.kucoinWithdrawAlert || null;
+    const [trade, main, rules] = await Promise.all([getTradeBalances(), getBalances("main"), getWithdrawRules("ETN", "etnevm")]);
+    const have = (trade.ETN || 0) + (main.ETN || 0);
+    const amount = Math.floor(sweepAmount(have, cfg.sweep.kucoin, rules.min) / 100) * 100;
+    if (!amount) {
+      if (!prev) return false;
+      state.kucoinWithdrawAlert = null;
+      return true;
+    }
+    const now = Date.now();
+    if (prev && amount < prev.etn * 1.5 && now - Date.parse(prev.at) < 86400000) return false;
+    const fromTrade = Math.max(0, amount + rules.fee - (main.ETN || 0));
+    const text =
+      `🏦 *ETN Bot — withdraw ETN from KuCoin*\n\n` +
+      `KuCoin holds ${fmtEtn(have)} ETN (Trading ${fmtEtn(trade.ETN || 0)}, Main ${fmtEtn(main.ETN || 0)}); the bot keeps ${fmtEtn(cfg.sweep.kucoin.float)} there.\n\n` +
+      `Withdraw *${fmtEtn(amount)} ETN* to the bot wallet:\n\`${wallet.address}\`\n` +
+      `Network: Electroneum (ETN-EVM) · fee ${rules.fee} ETN` +
+      (fromTrade > 0 ? `\n\nMove ${fmtEtn(Math.ceil(fromTrade))} ETN from Trading to Main in the KuCoin app first.` : "") +
+      `\n\n_The bot can't withdraw it itself: ${sweepOff.has("kucoin") ? "the KuCoin key has no Withdraw permission" : "the sweep (ETN_BOT_CEX_SWEEP) is off"}._`;
+    let sent = 0;
+    for (const viewer of alert.viewers()) {
+      const chatId = await alert.chatIdFor(viewer).catch(() => null);
+      if (chatId == null) {
+        console.log(`🤖 ETN bot: ${viewer} isn't linked to the Core Tier Telegram bot — no KuCoin withdraw alert for it`);
+        continue;
+      }
+      await alert.send(chatId, text).then(() => sent++, (err) => console.error(`⚠️  ETN bot: withdraw alert to ${viewer} failed:`, err.message));
+    }
+    notify(`📨 KuCoin withdraw alert: ${fmtEtn(amount)} ETN due, sent to ${sent} chat(s)`);
+    state.kucoinWithdrawAlert = { etn: amount, at: new Date(now).toISOString() };
+    return true;
   }
 
   // Hyperlane warp routes on Electroneum (see utils/hyperlaneBridge.js): USDC -> Base (domain 8453, the
@@ -1084,12 +1139,23 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
   }
 
   async function tick() {
-    if (running || pausedReason) return;
+    if (running || pausedReason || stopped) return;
     running = true;
     actedThisTick = false;
     let tickMids = null;
     let tickK = null;
     try {
+      // Only the instance holding the lease trades (see claimBotLease) — never two at once over a deploy.
+      if (store.claimLease) {
+        const lease = await store.claimLease(owner);
+        if (!lease.ok) {
+          if (leaseHolderLogged !== lease.holder) console.log(`🤖 ETN bot: standing by — another instance (${lease.holder}) is running the bot`);
+          leaseHolderLogged = lease.holder;
+          return;
+        }
+        if (leaseHolderLogged || lease.took) console.log(`🤖 ETN bot: took over from ${lease.took || leaseHolderLogged} (instance ${owner})`);
+        leaseHolderLogged = null;
+      }
       const state = (await store.get(cfg.mode)) || freshState(cfg);
       if (state.budgetEtn !== cfg.budgetEtn) {
         console.log(`🤖 ETN bot: budget ${state.budgetEtn} -> ${cfg.budgetEtn} ETN (ETN_BOT_BUDGET_ETN changed)`);
@@ -1144,6 +1210,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
           await saveWithRetry(state);
           return;
         }
+      }
+      if (cfg.mode === "live" && Date.now() - lastWithdrawAlertCheckAt >= cfg.cexSweepEveryMs) {
+        lastWithdrawAlertCheckAt = Date.now();
+        const changed = await kucoinWithdrawAlert(state).catch((err) => {
+          console.error("⚠️  ETN bot: KuCoin withdraw alert check failed:", err.message);
+          return false;
+        });
+        if (changed) await saveWithRetry(state);
       }
       // The round trip, at most every hedgeRebalanceEveryMs and never mid-hedge.
       if (cfg.hedgeRebalance && state.hedgeLive && !state.hedgeLeg && !state.hedgeLive.pausedReason && Date.now() - lastRebalanceAt >= cfg.hedgeRebalanceEveryMs) {
@@ -1358,11 +1432,22 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = { get: 
     }
   }
 
+  /** Shutdown: no new ticks; waits (up to waitMs) for a running one to finish, then releases the lease. */
+  async function stop(waitMs = 20000) {
+    stopped = true;
+    const until = Date.now() + waitMs;
+    while (running && Date.now() < until) await new Promise((r) => setTimeout(r, 250));
+    if (store.releaseLease) await store.releaseLease(owner).catch((err) => console.error("⚠️  ETN bot: couldn't release the lease:", err.message));
+    return !running;
+  }
+
   return {
     tick,
+    stop,
     kucoinPrice,
     lastTick: () => lastTick,
     isRunning: () => running,
+    isStopped: () => stopped,
     noteFastWake: () => fastWakes++,
   };
 }
@@ -1380,7 +1465,7 @@ export function startFastWatcher(bot, provider, cfg) {
   let lastWake = 0;
   const triggerCfg = { ...FAST_DEFAULTS, movePct: cfg.fastMovePct, gapPct: cfg.gapMinGainPct, lagPct: cfg.cuLagPct };
   return setInterval(async () => {
-    if (busy || bot.isRunning()) return;
+    if (busy || bot.isRunning() || bot.isStopped()) return;
     busy = true;
     try {
       const mids = {};
@@ -1435,9 +1520,24 @@ export async function startEtnAccumulatorBot() {
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();
-  setInterval(() => bot.tick(), cfg.intervalMs);
+  const timers = [setInterval(() => bot.tick(), cfg.intervalMs)];
+  // Render sends SIGTERM to the old instance during a deploy: stop trading at once and hand the lease over.
+  let stopping = false;
+  const onStop = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    timers.forEach(clearInterval);
+    console.log(`🤖 ETN bot: ${sig} — stopping (no new checks), then releasing the lease`);
+    bot.stop().then((clean) => {
+      console.log(`🤖 ETN bot: stopped${clean ? "" : " (a check was still running)"}, lease released`);
+      // Listening for the signal replaced Node's default exit; keep that behaviour unless something else handles it.
+      if (process.listenerCount(sig) === 0) process.exit(0);
+    });
+  };
+  process.once("SIGTERM", () => onStop("SIGTERM"));
+  process.once("SIGINT", () => onStop("SIGINT"));
   if (cfg.fastMs > 0) {
-    startFastWatcher(bot, provider, cfg);
+    timers.push(startFastWatcher(bot, provider, cfg));
     console.log(`⚡ ETN bot fast watcher on — pool prices every ${cfg.fastMs / 1000}s${cfg.cuEnabled ? `, KuCoin every ${cfg.fastKucoinMs / 1000}s` : ""}; checks early on a ${cfg.fastMovePct}%+ pool move, a ${cfg.gapMinGainPct}%+ pool gap${cfg.cuEnabled ? ` or ${cfg.cuLagPct}%+ off KuCoin` : ""}`);
   }
 }
