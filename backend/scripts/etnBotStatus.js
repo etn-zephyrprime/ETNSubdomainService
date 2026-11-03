@@ -105,6 +105,15 @@ async function main() {
       : `    closed #${r.id}: ${etn(r.etnBought)} ETN in, ${etn(r.etnSold)} sold back for $${r.usdReceived.toFixed(2)} -> ${signed(r.gainEtn)} ETN`);
   }
 
+  if (state.hedge) {
+    const h = state.hedge;
+    const days = Math.max(1 / 24, (Date.now() - Date.parse(h.since)) / 86400000);
+    console.log(`
+  Hedged catch-up (PAPER — nothing traded): +${h.profitUsd.toFixed(2)} (≈ ${signed(h.profitEtn)} ETN) over ${h.trades} hedge(s), ${h.notionalUsd.toFixed(0)} traded, since ${h.since.slice(0, 10)} (~${(h.profitUsd / days).toFixed(2)}/day)`);
+    console.log(`    rebalancing it would need: ${h.drift.etnToWallet >= 0 ? `move ${etn(h.drift.etnToWallet)} ETN KuCoin -> wallet` : `move ${etn(-h.drift.etnToWallet)} ETN wallet -> KuCoin`}, and ${h.drift.usdToKucoin >= 0 ? `${h.drift.usdToKucoin.toFixed(2)} wallet -> KuCoin` : `${(-h.drift.usdToKucoin).toFixed(2)} KuCoin -> wallet`} (each move has a withdrawal/bridge fee — the bridge is ~64 ETN)`);
+    for (const r of (h.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sell ES / buy KuCoin" : "buy ES / sell KuCoin"}  ${etn(r.etn).padStart(8)} ETN  ${r.notional.toFixed(2).padStart(7)}  +${r.profitUsd.toFixed(2)} (${r.profitPct.toFixed(2)}%)`);
+  }
+
   if (state.tri?.recent?.length) {
     console.log("\n  Recent triangles:   route                 ETN in     ETN out    gain");
     for (const t of state.tri.recent.slice(-10)) console.log(`  ${(t.at || "").slice(5, 16).padEnd(18)} ${t.route.padEnd(20)} ${etn(t.etnIn).padStart(8)}  ${etn(t.etnOut).padStart(9)}   ${signed(t.gainEtn)}`);
