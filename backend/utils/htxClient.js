@@ -151,3 +151,12 @@ export async function getWithdrawRules(currency, chain) {
 export async function withdraw({ currency, address, amount, chain, fee }) {
   return request("POST", "/v1/dw/withdraw/api/create", { body: { address, currency: currency.toLowerCase(), amount: String(amount), fee: String(fee), chain } });
 }
+
+/** This account's actual taker fee on ETN/USDT, in %. */
+export async function getTakerFeePct() {
+  const rows = await request("GET", "/v2/reference/transact-fee-rate", { params: { symbols: HTX_SYMBOL } });
+  const r = (rows || []).find((x) => x.symbol === HTX_SYMBOL);
+  if (!r) throw new Error("HTX returned no fee rate for etnusdt");
+  // actualTakerRate is after any discount; takerFeeRate the base rate
+  return Number(r.actualTakerRate ?? r.takerFeeRate) * 100;
+}

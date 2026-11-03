@@ -201,3 +201,12 @@ export async function getTradingEnabled() {
   const json = await res.json().catch(() => ({}));
   return Boolean(json?.data?.enableTrading);
 }
+
+/** This account's actual taker fee on ETN-USDT, in % (KuCoin puts some coins in higher fee classes —
+ * confirmed live: 0.3% on ETN-USDT, not the 0.1% headline rate). */
+export async function getTakerFeePct() {
+  const rows = await request("GET", `/api/v1/trade-fees?symbols=${KUCOIN_SYMBOL}`);
+  const r = (rows || []).find((x) => x.symbol === KUCOIN_SYMBOL);
+  if (!r) throw new Error("KuCoin returned no fee rate for ETN-USDT");
+  return Number(r.takerFeeRate) * 100;
+}

@@ -9,7 +9,7 @@
 //   node scripts/kucoinCheck.js
 //   node scripts/kucoinCheck.js --test-order
 import dotenv from "dotenv";
-import { kucoinConfigured, getTradeBalances, getSymbolRules, marketOrderAndWait, floorToIncrement, getBalances, getDepositAddress, getWithdrawRules } from "../utils/kucoinClient.js";
+import { kucoinConfigured, getTradeBalances, getSymbolRules, marketOrderAndWait, floorToIncrement, getBalances, getDepositAddress, getWithdrawRules, getTakerFeePct } from "../utils/kucoinClient.js";
 
 dotenv.config();
 
@@ -19,6 +19,8 @@ async function main() {
   console.log(`✅ Key works. Trading account: ${bal.ETN.toLocaleString("en-US", { maximumFractionDigits: 2 })} ETN, $${bal.USDT.toFixed(2)} USDT`);
   if (bal.USDT < 1 && bal.ETN < 1) console.log("   (Both are ~0 — move funds into the TRADING account, not Main/Funding, before hedging.)");
   const rules = await getSymbolRules();
+  const fee = await getTakerFeePct().catch((err) => `unreadable (${err.message})`);
+  console.log(`   Your ETN-USDT taker fee: ${typeof fee === "number" ? fee + "%" : fee} (the bot uses the higher of this and ETN_BOT_KUCOIN_FEE_PCT)`);
   console.log(`   ETN-USDT rules: size step ${rules.baseIncrement} ETN, min ${rules.baseMinSize} ETN, funds step ${rules.quoteIncrement}, min funds ${rules.minFunds || "n/a"}`);
   console.log(`   Live hedging switch: ETN_BOT_HEDGE_LIVE=${process.env.ETN_BOT_HEDGE_LIVE || "(unset — off)"}, ETN_BOT_MODE=${process.env.ETN_BOT_MODE || "(unset)"}, round trip ETN_BOT_HEDGE_REBALANCE=${process.env.ETN_BOT_HEDGE_REBALANCE || "(unset — off)"}`);
 
