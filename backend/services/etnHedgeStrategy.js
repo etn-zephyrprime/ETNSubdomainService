@@ -89,3 +89,49 @@ export function applyHedge(book, h, { kucoinPrice, at = null } = {}) {
   if (book.recent.length > 50) book.recent.shift();
   return book;
 }
+
+// ---- live ------------------------------------------------------------------------------------
+// Live hedges take their profit in ETN (the owner's yardstick), not dollars:
+//   sellOnEs: sell X ETN on ElectroSwap for $D, spend that $D on KuCoin -> Y ETN; gain Y - X ETN
+//   buyOnEs:  spend $D on ElectroSwap -> X ETN, sell just enough on KuCoin (Z ETN) to get $D back; gain X - Z
+// so the dollars only move between venues (the wallet's hedge stables <-> KuCoin USDT) and come back
+// the other way on the opposite hedge.
+
+/** ETN to sell into KuCoin's bids so the proceeds, after the fee, are at least `usd`; null if the book
+ * shown isn't deep enough. */
+export function etnToSellForUsd(bids, usd, feePct = HEDGE_DEFAULTS.kucoinFeePct) {
+  const target = usd / (1 - feePct / 100);
+  let got = 0, etn = 0;
+  for (const [p, s] of bids || []) {
+    const price = Number(p), size = Number(s);
+    if (!(price > 0) || !(size > 0)) continue;
+    const need = (target - got) / price;
+    if (need <= size) return etn + need;
+    got += size * price;
+    etn += size;
+  }
+  return null;
+}
+
+export function freshLiveHedgeBook() {
+  return { trades: 0, gainEtn: 0, notionalUsd: 0, stables: { USDT: 0, USDC: 0 }, walletEtnNet: 0, kucoinEtnNet: 0, kucoinUsdNet: 0, failures: 0, pausedReason: null, recent: [], since: new Date().toISOString() };
+}
+
+/**
+ * Books a completed live hedge. esEtn/esUsd: the ElectroSwap leg (ETN sold and $ received, or $ spent and
+ * ETN bought); kcEtn/kcUsd: the KuCoin leg (ETN bought and $ spent, or ETN sold and $ received, net of fee).
+ */
+export function applyLiveHedge(book, { dir, stable, esEtn, esUsd, kcEtn, kcUsd, at = null, txHash = null, orderId = null }) {
+  const sellOnEs = dir === "sellOnEs";
+  const gainEtn = sellOnEs ? kcEtn - esEtn : esEtn - kcEtn;
+  book.trades += 1;
+  book.gainEtn += gainEtn;
+  book.notionalUsd += esUsd;
+  book.stables[stable] = (book.stables[stable] || 0) + (sellOnEs ? esUsd : -esUsd); // the wallet's hedge dollars
+  book.walletEtnNet += sellOnEs ? -esEtn : esEtn;
+  book.kucoinEtnNet += sellOnEs ? kcEtn : -kcEtn;
+  book.kucoinUsdNet += sellOnEs ? -kcUsd : kcUsd;
+  book.recent.push({ at, dir, stable, esEtn, esUsd, kcEtn, kcUsd, gainEtn, txHash, orderId });
+  if (book.recent.length > 50) book.recent.shift();
+  return gainEtn;
+}

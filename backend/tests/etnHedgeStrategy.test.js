@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -39,4 +39,24 @@ test("the paper book: profit in $ and ETN, and the rebalancing each direction le
   close(b.profitUsd, 2.45);
   close(b.profitEtn, 1225);
   assert.deepEqual(b.drift, { etnToWallet: 15000, usdToKucoin: 33 });
+});
+
+test("live: ETN to sell on KuCoin for a dollar amount after the fee", () => {
+  const bids = [["0.0020", "10000"], ["0.0019", "100000"]];
+  // $25 after 0.1% fee needs $25.025 gross: 10,000 at 0.002 = $20, then $5.025 / 0.0019 = 2,644.7
+  close(etnToSellForUsd(bids, 25, 0.1), 10000 + 5.025025025 / 0.0019, 1e-6);
+  assert.equal(etnToSellForUsd(bids, 1000, 0.1), null);
+});
+
+test("live hedge book: profit in ETN both ways; dollars and ETN shift between venues", () => {
+  const b = freshLiveHedgeBook();
+  // sell 25,000 ETN on ElectroSwap for $52, spend it on KuCoin -> 26,000 ETN
+  close(applyLiveHedge(b, { dir: "sellOnEs", stable: "USDC", esEtn: 25000, esUsd: 52, kcEtn: 26000, kcUsd: 52 }), 1000);
+  // spend $20 of it on ElectroSwap -> 11,000 ETN, sell 10,400 on KuCoin for $20
+  close(applyLiveHedge(b, { dir: "buyOnEs", stable: "USDC", esEtn: 11000, esUsd: 20, kcEtn: 10400, kcUsd: 20 }), 600);
+  close(b.gainEtn, 1600);
+  assert.deepEqual(b.stables, { USDT: 0, USDC: 32 });
+  assert.equal(b.walletEtnNet, -14000);
+  assert.equal(b.kucoinEtnNet, 15600);
+  assert.equal(b.kucoinUsdNet, -32);
 });
