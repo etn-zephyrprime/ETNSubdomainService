@@ -211,3 +211,44 @@ export function sweepAmount(etn, { float, minBatch }, withdrawMin = 0) {
   const excess = Math.floor(etn - float);
   return excess >= Math.max(minBatch, withdrawMin) ? excess : 0;
 }
+
+// ---- refilling the exchanges for the CEX arbitrage -------------------------------------------------
+// The arbitrage mostly runs one way (HTX is usually the dearer venue): buy ETN on KuCoin with USDT, sell
+// it on HTX for USDT. That drains HTX's ETN and KuCoin's USDT. Two cheap transfers put them back:
+//   ETN  bot wallet -> HTX     an on-chain send (gas only), when HTX's ETN falls below htxEtnLow — up to
+//                              htxEtnTarget (kept under HTX's sweep float, or the sweep sends it straight
+//                              back), never leaving the wallet with less than walletKeepEtn + what its open
+//                              catch-up lots need
+//   USDT HTX -> KuCoin         an HTX withdrawal on BEP20 (0.01 USDT fee), when KuCoin's USDT falls below
+//                              kucoinUsdtLow — up to kucoinUsdtTarget, leaving htxUsdtKeep on HTX
+// One transfer of each kind in flight at a time. (The third leg — KuCoin's ETN back to the wallet — is
+// the sweep, or the withdraw alert while KuCoin's key can't withdraw.)
+
+export const REFILL_DEFAULTS = {
+  htxEtnLow: 50000,
+  htxEtnTarget: 80000,
+  walletKeepEtn: 50000,
+  minEtn: 10000,
+  kucoinUsdtLow: 100,
+  kucoinUsdtTarget: 200,
+  htxUsdtKeep: 50,
+  minUsdt: 30,
+};
+
+/** ETN to send from the wallet to HTX now (0 = none). walletEtn: the wallet's spendable ETN (after the gas
+ * reserve); lotEtn: ETN the open catch-up lots will need to sell back; depositMin: HTX's deposit minimum. */
+export function decideEtnRefill({ htxEtn, walletEtn, lotEtn = 0, pending = false, depositMin = 0 }, cfg = REFILL_DEFAULTS) {
+  if (pending || !(htxEtn < cfg.htxEtnLow)) return 0;
+  const spare = walletEtn - cfg.walletKeepEtn - lotEtn;
+  const amount = Math.floor(Math.min(cfg.htxEtnTarget - htxEtn, spare) / 100) * 100;
+  return amount >= Math.max(cfg.minEtn, depositMin) ? amount : 0;
+}
+
+/** USDT to withdraw from HTX to KuCoin now (0 = none), to the cent. kucoinUsdt: KuCoin's USDT (trading +
+ * funding accounts); fee/withdrawMin: HTX's rules for the chain. */
+export function decideUsdtRefill({ kucoinUsdt, htxUsdt, pending = false, fee = 0, withdrawMin = 0 }, cfg = REFILL_DEFAULTS) {
+  if (pending || !(kucoinUsdt < cfg.kucoinUsdtLow)) return 0;
+  const spare = htxUsdt - cfg.htxUsdtKeep - fee;
+  const amount = Math.floor(Math.min(cfg.kucoinUsdtTarget - kucoinUsdt, spare) * 100 + 1e-6) / 100; // 1e-6: float dust (149.07 - 50 = 99.0699…)
+  return amount >= Math.max(cfg.minUsdt, withdrawMin) ? amount : 0;
+}

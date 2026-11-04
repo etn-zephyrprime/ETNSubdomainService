@@ -100,6 +100,9 @@ export async function buildReportFrom(state, cfg = readConfig()) {
   for (const r of state.tri?.recent || []) push(r.at, "Triangle", `${r.route}: ${fmt(r.etnIn)} -> ${fmt(r.etnOut)} ETN`, r.gainEtn);
   for (const l of state.lots.filter((x) => x.status === "closed")) push(l.closedAt || l.boughtAt, "Sell/buyback", `Lot #${l.id}: sold ${fmt(l.etnSold)} ETN, bought back ${fmt(l.etnBought)}`, l.etnBought - l.etnSold);
   for (const [v, r] of Object.entries(state.cexSweep || {})) push(r.last, "Sweep", `Brought ETN home from ${VENUES[v]?.name || v} (${fmt(r.etn)} ETN in ${r.count} withdrawal(s) so far)`);
+  const rf = state.cexRefill || {};
+  if (rf.etn?.count) push(rf.etn.last, "Refill", `Sent ETN from the wallet to HTX (${fmt(rf.etn.etn)} ETN in ${rf.etn.count} transfer(s) so far)`);
+  if (rf.usdt?.count) push(rf.usdt.last, "Refill", `Moved USDT from HTX to KuCoin (${rf.usdt.usd.toFixed(2)} in ${rf.usdt.count} withdrawal(s) so far)`);
   activity.sort((a, b) => (a.at < b.at ? 1 : -1));
 
   const issues = [];
@@ -107,6 +110,8 @@ export async function buildReportFrom(state, cfg = readConfig()) {
   if (state.cexArb?.paused) issues.push(`CEX arbitrage paused: ${state.cexArb.paused}`);
   if (state.hedgeLeg) issues.push(`Unfinished hedge leg: ${fmt(state.hedgeLeg.esEtn)} ETN on ElectroSwap, ${state.hedgeLeg.venue || "kucoin"} leg pending`);
   if (state.arbLeg) issues.push(`Unfinished CEX arbitrage leg (${state.arbLeg.stage || "second"} leg)`);
+  if (rf.etn?.pending) issues.push(`Refill in flight: ${fmt(rf.etn.pending.etn)} ETN wallet -> HTX since ${rf.etn.pending.at.slice(5, 16)}`);
+  if (rf.usdt?.pending) issues.push(`Refill in flight: ${rf.usdt.pending.usd.toFixed(2)} USDT HTX -> KuCoin since ${rf.usdt.pending.at.slice(5, 16)}`);
   if (state.pending) issues.push(`On-chain trade in flight: ${state.pending.kind} ${state.pending.txHash}`);
   if (exchanges.kucoin?.main?.ETN >= 100) issues.push(`${fmt(exchanges.kucoin.main.ETN)} ETN sitting in KuCoin's Main account (not tradeable — move it to Trading or withdraw it)`);
 
@@ -141,6 +146,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
     hedgePaper: state.hedge ? { trades: state.hedge.trades, profitUsd: state.hedge.profitUsd } : null,
     arb: state.cexArb ? { trades: state.cexArb.trades, gainEtn: state.cexArb.gainEtn, gainUsd: state.cexArb.gainUsd, today: state.cexArb.today, paper: state.cexArb.paper || null } : null,
     sweeps: state.cexSweep || {},
+    refills: state.cexRefill || {},
     issues,
     activity: activity.slice(0, 40),
     generatedAt: new Date().toISOString(),

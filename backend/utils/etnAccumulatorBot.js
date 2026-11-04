@@ -35,10 +35,10 @@ import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
-import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount } from "../services/etnHedgeStrategy.js";
+import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
 import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
-import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw } from "./htxClient.js";
+import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw, getBalances as htxBalances, getDepositAddress as htxDepositAddress, getTransfers as htxTransfers } from "./htxClient.js";
 import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn } from "./kucoinClient.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
@@ -122,6 +122,24 @@ export function readConfig() {
     sweep: {
       kucoin: { float: num("ETN_BOT_KUCOIN_ETN_FLOAT", SWEEP_DEFAULTS.kucoin.float), minBatch: num("ETN_BOT_KUCOIN_SWEEP_MIN", SWEEP_DEFAULTS.kucoin.minBatch) },
       htx: { float: num("ETN_BOT_HTX_ETN_FLOAT", SWEEP_DEFAULTS.htx.float), minBatch: num("ETN_BOT_HTX_SWEEP_MIN", SWEEP_DEFAULTS.htx.minBatch) },
+    },
+    // Refilling the exchanges for the arbitrage (refillCex): ETN wallet -> HTX and USDT HTX -> KuCoin.
+    // ETN_BOT_CEX_REFILL=true, live mode, HTX key set (Withdraw on it, KuCoin's BEP20 USDT deposit address in
+    // HTX's address book). HTX's ETN target is held under its sweep float, or the sweep would send it back.
+    cexRefill: process.env.ETN_BOT_CEX_REFILL === "true" && process.env.ETN_BOT_MODE === "live" && htxConfigured(),
+    cexRefillEveryMs: num("ETN_BOT_CEX_REFILL_EVERY_MIN", 5) * 60000,
+    refill: {
+      htxEtnLow: num("ETN_BOT_REFILL_HTX_ETN_LOW", REFILL_DEFAULTS.htxEtnLow),
+      htxEtnTarget: Math.min(num("ETN_BOT_REFILL_HTX_ETN_TARGET", REFILL_DEFAULTS.htxEtnTarget), num("ETN_BOT_HTX_ETN_FLOAT", SWEEP_DEFAULTS.htx.float)),
+      walletKeepEtn: num("ETN_BOT_REFILL_WALLET_KEEP_ETN", REFILL_DEFAULTS.walletKeepEtn),
+      minEtn: num("ETN_BOT_REFILL_MIN_ETN", REFILL_DEFAULTS.minEtn),
+      kucoinUsdtLow: num("ETN_BOT_REFILL_KUCOIN_USDT_LOW", REFILL_DEFAULTS.kucoinUsdtLow),
+      kucoinUsdtTarget: num("ETN_BOT_REFILL_KUCOIN_USDT_TARGET", REFILL_DEFAULTS.kucoinUsdtTarget),
+      htxUsdtKeep: num("ETN_BOT_REFILL_HTX_USDT_KEEP", REFILL_DEFAULTS.htxUsdtKeep),
+      minUsdt: num("ETN_BOT_REFILL_MIN_USDT", REFILL_DEFAULTS.minUsdt),
+      // the USDT network: HTX's chain id and KuCoin's for the same chain (BEP20: 0.01 USDT fee on HTX)
+      usdtHtxChain: process.env.ETN_BOT_REFILL_USDT_HTX_CHAIN || "bep20usdt",
+      usdtKucoinChain: process.env.ETN_BOT_REFILL_USDT_KUCOIN_CHAIN || "bsc",
     },
     arbPaper: process.env.ETN_BOT_CEX_ARB_PAPER !== "false",
     arbLive: process.env.ETN_BOT_CEX_ARB_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured() && htxConfigured(),
@@ -659,15 +677,146 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       rec.etn += amount;
       rec.feesEtn += rules.fee;
       rec.last = new Date().toISOString();
+      // ETN the refill sent to HTX coming back isn't the hedges' — only the rest counts for them.
+      const er = venue === "htx" ? state.cexRefill?.etn : null;
+      const refillBack = er ? Math.min(amount, er.netOut || 0) : 0;
+      if (er) er.netOut -= refillBack;
       const hb = state.hedgeLive;
       if (hb) {
-        hb.walletEtnNet += amount;
+        hb.walletEtnNet += amount - refillBack;
         hb.costsEtn = (hb.costsEtn || 0) + rules.fee;
         if (venue === "kucoin") hb.kucoinEtnNet -= amount + rules.fee;
       }
       notify(`🏠 Swept ${fmtEtn(amount)} ETN from ${v.name} back to the bot wallet (kept ${fmtEtn(cfg.sweep[venue].float)} there; fee ${rules.fee} ETN)`);
       actedThisTick = true;
       return true;
+    }
+    return false;
+  }
+
+  let lastRefillAt = 0;
+  // A refill whose HTX side can't be done (no Withdraw on the key, KuCoin's address not in HTX's address
+  // book): off until the next restart instead of failing every run. kind ("etn"/"usdt") -> reason
+  const refillOff = new Map();
+  const REFILL_STUCK_MS = 6 * 3600000; // a transfer not seen arriving by then is dropped (with a warning)
+  const sameTx = (a, b) => String(a || "").toLowerCase().replace(/^0x/, "") === String(b || "").toLowerCase().replace(/^0x/, "");
+
+  /** Keeps the arbitrage stocked (see REFILL_DEFAULTS): sends the wallet's ETN to HTX when HTX runs low,
+   * and withdraws HTX's USDT to KuCoin when KuCoin runs low. One transfer of each kind in flight; settling
+   * one that's arrived counts as this run's action. ETN goes only to HTX's own deposit address, USDT only
+   * to KuCoin's (and HTX only withdraws to addresses in its address book). Returns true if state changed. */
+  async function refillCex(state) {
+    if (!wallet || state.hedgeLeg || state.arbLeg) return false;
+    const r = (state.cexRefill = state.cexRefill || {});
+    const er = (r.etn = r.etn || { count: 0, etn: 0, gasEtn: 0, netOut: 0, last: null, pending: null });
+    const ur = (r.usdt = r.usdt || { count: 0, usd: 0, feesUsd: 0, last: null, pending: null });
+    const age = (p) => Date.now() - Date.parse(p.at);
+
+    // ETN on its way to HTX: arrived (HTX's deposit record for the tx), orphaned, or lost track of.
+    if (er.pending) {
+      const p = er.pending;
+      const dep = (await htxTransfers("ETN", "deposit")).find((d) => sameTx(d.txHash, p.tx));
+      if (dep && (dep.state === "safe" || dep.state === "confirmed")) {
+        notify(`📥 Refill: ${fmtEtn(p.etn)} ETN arrived on HTX`);
+        er.pending = null;
+        return true;
+      }
+      if (dep?.state === "orphan" || age(p) > REFILL_STUCK_MS) {
+        notify(`⚠️ Refill: ${fmtEtn(p.etn)} ETN sent to HTX (tx ${p.tx}) ${dep ? `is "${dep.state}" there` : "hasn't shown up on HTX after 6h"} — check HTX's deposit history`);
+        er.pending = null;
+        return true;
+      }
+    }
+
+    // USDT on its way to KuCoin: refused by HTX, or arrived in KuCoin's Main account -> into Trade.
+    if (ur.pending && kucoinConfigured()) {
+      const p = ur.pending;
+      const wd = (await htxTransfers("USDT", "withdraw")).find((w) => String(w.id) === String(p.id));
+      if (wd && /cancel|reject|error|repeal/.test(wd.state)) {
+        notify(`⚠️ Refill: HTX's ${fmtUsd(p.usd)} USDT withdrawal to KuCoin was "${wd.state}" — nothing sent`);
+        ur.pending = null;
+        return true;
+      }
+      const main = await getBalances("main");
+      if (main.USDT >= 1) {
+        const amount = floorToIncrement(Math.min(main.USDT, p.usd), 0.000001);
+        await innerTransfer({ currency: "USDT", from: "main", to: "trade", amount, clientOid: `etnbot-rf-t-${Date.now()}` });
+        p.usd = Math.max(0, p.usd - amount);
+        notify(`📥 Refill: ${fmtUsd(amount)} USDT arrived on KuCoin, moved to its trading account`);
+        if (p.usd < 1) ur.pending = null;
+        return true;
+      }
+      if (age(p) > REFILL_STUCK_MS) {
+        notify(`⚠️ Refill: ${fmtUsd(p.usd)} USDT withdrawn from HTX (id ${p.id}) hasn't reached KuCoin after 6h — check both exchanges' histories`);
+        ur.pending = null;
+        return true;
+      }
+    }
+
+    const htx = await htxBalances();
+
+    // ETN wallet -> HTX
+    if (!er.pending && !refillOff.has("etn")) {
+      const rules = await htxWithdrawRules("ETN", "etn1");
+      const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn;
+      const lotEtn = (state.cu?.lots || []).filter((l) => l.kind !== "sellFirst").reduce((s, l) => s + l.etn, 0);
+      const amount = rules.depositEnabled ? decideEtnRefill({ htxEtn: htx.ETN, walletEtn, lotEtn, depositMin: rules.depositMin }, cfg.refill) : 0;
+      if (amount) {
+        const dep = await htxDepositAddress("ETN", "etn1");
+        if (!dep?.address || dep.tag || !ethers.isAddress(dep.address)) {
+          refillOff.set("etn", "no usable HTX ETN deposit address");
+          notify(`⏸️ Refill of HTX's ETN off until the next restart — HTX gave no plain ETN (etn1) deposit address${dep?.tag ? " (it wants a memo/tag)" : ""}`);
+        } else {
+          const tx = await wallet.sendTransaction({ to: dep.address, value: ethers.parseEther(String(amount)) });
+          // Recorded as soon as it's broadcast: if the wait below fails, the deposit check still finds it.
+          er.pending = { etn: amount, tx: tx.hash, at: new Date().toISOString() };
+          er.count += 1;
+          er.etn += amount;
+          er.netOut += amount;
+          er.last = er.pending.at;
+          await saveWithRetry(state);
+          const receipt = await tx.wait();
+          er.gasEtn += Number(ethers.formatEther(receipt.gasUsed * (receipt.gasPrice ?? receipt.effectiveGasPrice ?? 0n)));
+          notify(`📤 Refill: sent ${fmtEtn(amount)} ETN to HTX (it had ${fmtEtn(htx.ETN)}; target ${fmtEtn(cfg.refill.htxEtnTarget)}) — tx ${tx.hash}`);
+          actedThisTick = true;
+          return true;
+        }
+      }
+    }
+
+    // USDT HTX -> KuCoin
+    if (!ur.pending && !refillOff.has("usdt") && kucoinConfigured()) {
+      const chain = cfg.refill.usdtHtxChain;
+      const rules = await htxWithdrawRules("USDT", chain);
+      const [trade, main] = await Promise.all([getBalances("trade"), getBalances("main")]);
+      const amount = rules.enabled ? decideUsdtRefill({ kucoinUsdt: trade.USDT + main.USDT, htxUsdt: htx.USDT, fee: rules.fee, withdrawMin: rules.min }, cfg.refill) : 0;
+      if (amount) {
+        const dep = await getDepositAddress("USDT", cfg.refill.usdtKucoinChain);
+        if (!dep?.address || dep.memo) {
+          refillOff.set("usdt", "no KuCoin USDT deposit address");
+          notify(`⏸️ Refill of KuCoin's USDT off until the next restart — ${dep?.memo ? "KuCoin's USDT deposit address needs a memo" : `create a USDT deposit address on ${cfg.refill.usdtKucoinChain.toUpperCase()} on KuCoin's Deposit page first`}`);
+          return false;
+        }
+        let id;
+        try {
+          id = await htxWithdraw({ currency: "USDT", address: dep.address, amount, chain, fee: rules.fee });
+        } catch (err) {
+          if (/permission|address|api-not-support|forbidden|white/i.test(err.message)) {
+            refillOff.set("usdt", err.message);
+            notify(`⏸️ Refill of KuCoin's USDT off until the next restart — HTX refused the withdrawal (${err.message}). Add KuCoin's USDT ${cfg.refill.usdtKucoinChain.toUpperCase()} deposit address ${dep.address} to HTX's withdrawal address book (network ${chain}), then restart.`);
+            return false;
+          }
+          throw err;
+        }
+        ur.pending = { usd: amount, id, at: new Date().toISOString() };
+        ur.count += 1;
+        ur.usd += amount;
+        ur.feesUsd += rules.fee;
+        ur.last = ur.pending.at;
+        notify(`📤 Refill: withdrew ${fmtUsd(amount)} USDT from HTX to KuCoin (${chain}, fee ${rules.fee} USDT; KuCoin had ${fmtUsd(trade.USDT + main.USDT)}) — HTX id ${id}`);
+        actedThisTick = true;
+        return true;
+      }
     }
     return false;
   }
@@ -729,6 +878,8 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     hb.costsEtn = hb.costsEtn || 0;
     hb.costsUsd = hb.costsUsd || 0;
     const [trade, main] = await Promise.all([getBalances("trade"), getBalances("main")]);
+    // USDT the refill (refillCex) withdrew from HTX lands in Main too — it's the arbitrage's, not the hedges'.
+    main.USDT = Math.max(0, main.USDT - (state.cexRefill?.usdt?.pending?.usd || 0));
     const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn - 1000;
     const room = Math.max(0, Math.min(cfg.hedgeMaxEtnOut + hb.walletEtnNet, walletEtn));
     const a = decideRebalance({ trade, main }, hb, room, cfg.cexSweep ? { ...cfg.rebalance, etnHigh: Infinity } : cfg.rebalance);
@@ -1211,6 +1362,18 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           return;
         }
       }
+      // Restocking the exchanges for the arbitrage, at most every cexRefillEveryMs.
+      if (cfg.cexRefill && Date.now() - lastRefillAt >= cfg.cexRefillEveryMs) {
+        lastRefillAt = Date.now();
+        const changed = await refillCex(state).catch((err) => {
+          notify(`⚠️ Refilling the exchanges failed: ${err.message}`);
+          return false;
+        });
+        if (changed) {
+          await saveWithRetry(state);
+          return;
+        }
+      }
       if (cfg.mode === "live" && Date.now() - lastWithdrawAlertCheckAt >= cfg.cexSweepEveryMs) {
         lastWithdrawAlertCheckAt = Date.now();
         const changed = await kucoinWithdrawAlert(state).catch((err) => {
@@ -1516,6 +1679,7 @@ export async function startEtnAccumulatorBot() {
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
     (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
     (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
+    (cfg.cexRefill ? `; refills ON (HTX ETN < ${fmtEtn(cfg.refill.htxEtnLow)} -> ${fmtEtn(cfg.refill.htxEtnTarget)}, KuCoin USDT < $${cfg.refill.kucoinUsdtLow} -> $${cfg.refill.kucoinUsdtTarget})` : "") +
     (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
