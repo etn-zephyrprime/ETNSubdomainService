@@ -133,6 +133,13 @@ async function main() {
   Swept back to the wallet: ${parts.join("; ")}`);
   }
 
+  const rf = state.cexRefill;
+  if (rf?.etn?.count || rf?.usdt?.count) {
+    console.log("\n  Refills for the CEX arbitrage:");
+    if (rf.etn?.count) console.log(`    ETN wallet -> HTX:   ${etn(rf.etn.etn)} ETN in ${rf.etn.count} transfer(s), gas ${rf.etn.gasEtn.toFixed(4)} ETN, last ${(rf.etn.last || "").slice(5, 16)}${rf.etn.pending ? ` — ${etn(rf.etn.pending.etn)} ETN on its way` : ""}`);
+    if (rf.usdt?.count) console.log(`    USDT HTX -> KuCoin:  $${rf.usdt.usd.toFixed(2)} in ${rf.usdt.count} withdrawal(s), fees $${rf.usdt.feesUsd.toFixed(2)}, last ${(rf.usdt.last || "").slice(5, 16)}${rf.usdt.pending ? ` — $${rf.usdt.pending.usd.toFixed(2)} on its way` : ""}`);
+  }
+
   if (state.cexArb) {
     const ab = state.cexArb;
     const usd = (n) => `${Math.abs(n).toFixed(2)}`;

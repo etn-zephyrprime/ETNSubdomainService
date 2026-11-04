@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -98,4 +98,24 @@ test("sweeping: only what's above the float, and only in worthwhile batches", ()
   assert.equal(sweepAmount(115000, SWEEP_DEFAULTS.htx), 15000); // HTX: nearly free, smaller batches
   assert.equal(sweepAmount(105000, SWEEP_DEFAULTS.htx), 0);
   assert.equal(sweepAmount(100500, { float: 100000, minBatch: 0 }, 616), 0); // below the venue's withdrawal minimum
+});
+
+test("refilling HTX's ETN: below the low mark, up to the target, never draining the wallet", () => {
+  const cfg = REFILL_DEFAULTS;
+  assert.equal(decideEtnRefill({ htxEtn: 60000, walletEtn: 1e6 }, cfg), 0); // above the low mark
+  assert.equal(decideEtnRefill({ htxEtn: 22871, walletEtn: 1e6 }, cfg), 57100); // up to 80k, in 100s
+  assert.equal(decideEtnRefill({ htxEtn: 22871, walletEtn: 1e6, pending: true }, cfg), 0); // one in flight
+  // the wallet keeps 50k + the open catch-up lots' ETN
+  assert.equal(decideEtnRefill({ htxEtn: 20000, walletEtn: 100000, lotEtn: 23414 }, cfg), 26500);
+  assert.equal(decideEtnRefill({ htxEtn: 20000, walletEtn: 80000, lotEtn: 23414 }, cfg), 0); // only ~6.6k spare
+  assert.equal(decideEtnRefill({ htxEtn: 45000, walletEtn: 1e6, depositMin: 200 }, { ...cfg, minEtn: 0 }), 35000);
+});
+
+test("refilling KuCoin's USDT from HTX: below the low mark, keeping some on HTX", () => {
+  const cfg = REFILL_DEFAULTS;
+  assert.equal(decideUsdtRefill({ kucoinUsdt: 120, htxUsdt: 500 }, cfg), 0);
+  assert.equal(decideUsdtRefill({ kucoinUsdt: 41.43, htxUsdt: 149.07, fee: 0.01 }, cfg), 99.06); // HTX keeps $50
+  assert.equal(decideUsdtRefill({ kucoinUsdt: 41.43, htxUsdt: 500, fee: 0.01 }, cfg), 158.57); // up to $200
+  assert.equal(decideUsdtRefill({ kucoinUsdt: 10, htxUsdt: 70 }, cfg), 0); // $20 spare: under the $30 batch
+  assert.equal(decideUsdtRefill({ kucoinUsdt: 10, htxUsdt: 500, pending: true }, cfg), 0);
 });

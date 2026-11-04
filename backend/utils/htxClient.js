@@ -136,20 +136,35 @@ export async function getBook() {
   return { bids: json.tick.bids, asks: json.tick.asks, ts: Number(json.ts || Date.now()), changedAt: Number(json.tick.ts || 0) };
 }
 
-/** HTX's withdrawal rules for a currency on a chain (public): { fee, min, enabled }. HTX chain ids differ
+/** HTX's withdrawal (and deposit) rules for a currency on a chain (public): { fee, min, enabled, depositMin, depositEnabled }. HTX chain ids differ
  * from the coin name — ETN on the Electroneum chain is "etn1". */
 export async function getWithdrawRules(currency, chain) {
   const res = await fetch(`${BASE}/v2/reference/currencies?currency=${currency.toLowerCase()}`, { signal: AbortSignal.timeout(10000) });
   const json = await res.json().catch(() => ({}));
   const c = (json?.data?.[0]?.chains || []).find((x) => x.chain === chain);
   if (!c) throw new Error(`HTX has no ${currency} chain ${chain}`);
-  return { fee: Number(c.transactFeeWithdraw ?? c.minTransactFeeWithdraw ?? 0), min: Number(c.minWithdrawAmt || 0), enabled: c.withdrawStatus === "allowed" };
+  return { fee: Number(c.transactFeeWithdraw ?? c.minTransactFeeWithdraw ?? 0), min: Number(c.minWithdrawAmt || 0), enabled: c.withdrawStatus === "allowed", depositMin: Number(c.minDepositAmt || 0), depositEnabled: c.depositStatus === "allowed" };
 }
 
 /** Withdraws from the spot account to an address (it must be in HTX's withdrawal address book, and the
  * key needs Withdraw permission). Returns HTX's withdrawal id. */
 export async function withdraw({ currency, address, amount, chain, fee }) {
   return request("POST", "/v1/dw/withdraw/api/create", { body: { address, currency: currency.toLowerCase(), amount: String(amount), fee: String(fee), chain } });
+}
+
+/** The account's deposit address for a currency on an HTX chain ("etn1" for ETN): { address, tag } or null. */
+export async function getDepositAddress(currency, chain) {
+  const rows = await request("GET", "/v2/account/deposit/address", { params: { currency: currency.toLowerCase() } });
+  const r = (rows || []).find((x) => x.chain === chain);
+  return r?.address ? { address: r.address, tag: r.addressTag || null } : null;
+}
+
+/** Recent deposits or withdrawals of a currency (newest first): [{ id, txHash, amount, fee, state, chain }].
+ * Deposit states: confirming, confirmed, safe, orphan; withdrawals: submitted ... confirmed, or canceled,
+ * reject, wallet-reject, confirm-error, repealed. */
+export async function getTransfers(currency, type) {
+  const rows = await request("GET", "/v1/query/deposit-withdraw", { params: { currency: currency.toLowerCase(), type, size: 50 } });
+  return (rows || []).map((r) => ({ id: r.id, txHash: r["tx-hash"] ?? r.txHash ?? "", amount: Number(r.amount), fee: Number(r.fee || 0), state: r.state, chain: r.chain }));
 }
 
 /** This account's actual taker fee on ETN/USDT, in %. */
