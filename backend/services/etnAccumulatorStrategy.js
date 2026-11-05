@@ -161,7 +161,10 @@ export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0, catchup 
  *   ladderBack[id]  ETN an open sell/buyback lot's stablecoin would buy back now
  *   cuBack[id]      the same for a sell-first catch-up lot
  *   cuNeed[id]      ETN a buy-first catch-up lot would have to sell to get its dollars back
- * allQuoted is false when any open lot couldn't be quoted (it's then left out of openEtn).
+ * openEtn splits into the two sides, which lose in opposite markets: sellOpenEtn (ladder lots and
+ * sell-first lots — they sold ETN, so they lose when it rises) and buyOpenEtn (buy-first lots — they
+ * bought it, so they lose when it falls). allQuoted is false when any open lot couldn't be quoted (it's
+ * then left out).
  */
 export function profitNowEtn(state, { ladderBack = {}, cuBack = {}, cuNeed = {} } = {}) {
   const lockedEtn =
@@ -171,13 +174,29 @@ export function profitNowEtn(state, { ladderBack = {}, cuBack = {}, cuNeed = {} 
     (state.cu?.gainEtn || 0) +
     (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0) +
     (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0);
-  let openEtn = 0;
+  let sellOpenEtn = 0;
+  let buyOpenEtn = 0;
   let allQuoted = true;
-  const add = (quoted, delta) => (quoted > 0 ? (openEtn += delta) : (allQuoted = false));
-  for (const l of state.lots.filter((x) => x.status === "open")) add(ladderBack[l.id], ladderBack[l.id] - l.etnSold);
+  const sell = (quoted, delta) => (quoted > 0 ? (sellOpenEtn += delta) : (allQuoted = false));
+  const buy = (quoted, delta) => (quoted > 0 ? (buyOpenEtn += delta) : (allQuoted = false));
+  for (const l of state.lots.filter((x) => x.status === "open")) sell(ladderBack[l.id], ladderBack[l.id] - l.etnSold);
   for (const l of state.cu?.lots || []) {
-    if (l.kind === "sellFirst") add(cuBack[l.id], cuBack[l.id] - l.etn);
-    else add(cuNeed[l.id], l.etn - cuNeed[l.id]);
+    if (l.kind === "sellFirst") sell(cuBack[l.id], cuBack[l.id] - l.etn);
+    else buy(cuNeed[l.id], l.etn - cuNeed[l.id]);
   }
-  return { lockedEtn, openEtn, profitEtn: lockedEtn + openEtn, allQuoted };
+  const openEtn = sellOpenEtn + buyOpenEtn;
+  return { lockedEtn, openEtn, sellOpenEtn, buyOpenEtn, profitEtn: lockedEtn + openEtn, allQuoted };
+}
+
+/**
+ * What the profit floor blocks, from a profitNowEtn reading: below the floor, no new lots on the side
+ * that's losing (buys when buy-first lots are under water, sells when sell-side lots are) — the other
+ * side stays open, since it's the one the current market pays. Below the floor with neither side losing
+ * (the locked-in profit itself is under it), both are blocked. Returns { below, buys, sells }.
+ */
+export function profitFloorBlocks({ profitEtn, sellOpenEtn = 0, buyOpenEtn = 0 }, floorEtn) {
+  const below = floorEtn > 0 && profitEtn < floorEtn;
+  if (!below) return { below: false, buys: false, sells: false };
+  const neither = buyOpenEtn >= 0 && sellOpenEtn >= 0;
+  return { below: true, buys: neither || buyOpenEtn < 0, sells: neither || sellOpenEtn < 0 };
 }

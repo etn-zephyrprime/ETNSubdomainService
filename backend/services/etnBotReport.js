@@ -110,7 +110,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
   if (state.cexArb?.paused) issues.push(`CEX arbitrage paused: ${state.cexArb.paused}`);
   if (state.hedgeLeg) issues.push(`Unfinished hedge leg: ${fmt(state.hedgeLeg.esEtn)} ETN on ElectroSwap, ${state.hedgeLeg.venue || "kucoin"} leg pending`);
   if (state.arbLeg) issues.push(`Unfinished CEX arbitrage leg (${state.arbLeg.stage || "second"} leg)`);
-  if (state.profitFloor?.below) issues.push(`Profit floor hit: ${fmt(state.profitFloor.profitEtn)} ETN counting open lots, under the ${fmt(state.profitFloor.floorEtn)} ETN floor — no new lots`);
+  if (state.profitFloor?.below) issues.push(`Profit floor hit: ${fmt(state.profitFloor.profitEtn)} ETN counting open lots, under the ${fmt(state.profitFloor.floorEtn)} ETN floor — no new ${state.profitFloor.blockBuys && state.profitFloor.blockSells ? "lots" : state.profitFloor.blockBuys ? "buy lots (sells carry on)" : "sell lots (buys carry on)"}`);
   if (rf.etn?.pending) issues.push(`Refill in flight: ${fmt(rf.etn.pending.etn)} ETN wallet -> HTX since ${rf.etn.pending.at.slice(5, 16)}`);
   if (rf.usdt?.pending) issues.push(`Refill in flight: ${rf.usdt.pending.usd.toFixed(2)} USDT HTX -> KuCoin since ${rf.usdt.pending.at.slice(5, 16)}`);
   if (state.pending) issues.push(`On-chain trade in flight: ${state.pending.kind} ${state.pending.txHash}`);

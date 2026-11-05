@@ -80,7 +80,7 @@ async function main() {
   if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
   if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s), net of round-trip fees`);
   const pf = state.profitFloor;
-  if (pf?.floorEtn > 0) console.log(`    profit floor:      ${etn(pf.floorEtn)} ETN — ${signed(pf.profitEtn)} ETN counting open lots (${signed(pf.openEtn)} in them) at ${(pf.at || "").slice(5, 16)} — ${pf.below ? `BELOW since ${(pf.since || "").slice(5, 16)}: no new lots` : "OK"}`);
+  if (pf?.floorEtn > 0) console.log(`    profit floor:      ${etn(pf.floorEtn)} ETN — ${signed(pf.profitEtn)} ETN counting open lots (buy side ${signed(pf.buyOpenEtn ?? pf.openEtn)}, sell side ${signed(pf.sellOpenEtn ?? 0)}) at ${(pf.at || "").slice(5, 16)} — ${pf.below ? `BELOW since ${(pf.since || "").slice(5, 16)}: no new ${pf.blockBuys && pf.blockSells ? "lots" : pf.blockBuys ? "buy lots (sells carry on)" : "sell lots (buys carry on)"}` : "OK"}`);
   if (state.cexArb?.trades) console.log(`    from CEX arbitrage:   ${signed(arbGainEtn)} ETN over ${state.cexArb.trades} trade(s) (KuCoin <-> HTX)${state.cexArb.costsEtn ? ", net of withdrawal fees" : ""}`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 

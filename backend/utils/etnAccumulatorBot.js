@@ -32,7 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import os from "os";
 import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
@@ -890,30 +890,37 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     }
   }
 
-  /** Works out the profit if every open lot closed now (profitNowEtn) and whether it's under the floor.
-   * Only flips on a fully quoted reading; announces each crossing (logs + DM). Returns true while below. */
+  /** Works out the profit if every open lot closed now (profitNowEtn) and which side the floor blocks
+   * (profitFloorBlocks: below it, only the losing side). Only changes on a fully quoted reading; announces
+   * each change (logs + DM). Returns { buys, sells } — true = no new lots on that side. */
   async function checkProfitFloor(state, ladderBack) {
     const cuLots = state.cu?.lots || [];
     const cuBack = {};
     for (const l of cuLots.filter((x) => x.kind === "sellFirst")) cuBack[l.id] = await quoteBuyEtn(l.stable, l.usd).catch(() => 0);
     const cuNeed = cuLots.some((x) => x.kind !== "sellFirst") ? await catchupNeeds(state.cu) : {};
     const p = profitNowEtn(state, { ladderBack, cuBack, cuNeed });
-    const pf = (state.profitFloor = state.profitFloor || { below: false, since: null });
+    const pf = (state.profitFloor = state.profitFloor || { below: false, blockBuys: false, blockSells: false, since: null });
     pf.floorEtn = cfg.profitFloorEtn;
     pf.profitEtn = p.profitEtn;
     pf.openEtn = p.openEtn;
+    pf.buyOpenEtn = p.buyOpenEtn;
+    pf.sellOpenEtn = p.sellOpenEtn;
     pf.at = new Date().toISOString();
-    const below = p.profitEtn < cfg.profitFloorEtn;
-    if (p.allQuoted && below !== pf.below) {
-      pf.below = below;
+    const b = profitFloorBlocks(p, cfg.profitFloorEtn);
+    if (p.allQuoted && (b.below !== pf.below || b.buys !== Boolean(pf.blockBuys) || b.sells !== Boolean(pf.blockSells))) {
+      pf.below = b.below;
+      pf.blockBuys = b.buys;
+      pf.blockSells = b.sells;
       pf.since = pf.at;
-      const text = below
-        ? `🛡️ *ETN Bot — profit floor hit*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (${signedEtn(p.openEtn)} of it in open lots), under the ${fmtEtn(cfg.profitFloorEtn)} ETN floor. No new lots open until it's back above; open lots still close, and gap/triangle/hedge/arbitrage round trips carry on.`
-        : `✅ *ETN Bot — back above the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (floor ${fmtEtn(cfg.profitFloorEtn)} ETN). New lots can open again.`;
+      const blocked = b.buys && b.sells ? "No new lots on either side" : b.buys ? "No new BUY lots (catch-up buys) — the buy side is the one losing; sells (ladder, catch-up sells) carry on" : "No new SELL lots (ladder, catch-up sells) — the sell side is the one losing; catch-up buys carry on";
+      const text = b.below
+        ? `🛡️ *ETN Bot — under the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (buy side ${signedEtn(p.buyOpenEtn)}, sell side ${signedEtn(p.sellOpenEtn)}), under the ${fmtEtn(cfg.profitFloorEtn)} ETN floor. ${blocked} until it's back above. Open lots still close, and gap/triangle/hedge/arbitrage round trips carry on.`
+        : `✅ *ETN Bot — back above the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (floor ${fmtEtn(cfg.profitFloorEtn)} ETN). New lots can open on both sides again.`;
       notify(text.replace(/\*/g, "").replace(/\n+/g, " "));
       await dmViewers(text);
     }
-    return pf.below;
+    // A floor state saved before the per-side split (below, no sides yet) blocks both until a quoted reading.
+    return { buys: pf.blockBuys ?? Boolean(pf.below), sells: pf.blockSells ?? Boolean(pf.below) };
   }
 
   let lastWithdrawAlertCheckAt = 0;
@@ -1546,7 +1553,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const decision = decide(state, quotes, cfg);
       const inventory = botEtnInventory(state);
       const canSpendEtn = (etn) => inventory >= etn && (quotes.walletEtn == null || quotes.walletEtn >= etn);
-      const floorBlocks = cfg.profitFloorEtn > 0 ? await checkProfitFloor(state, quotes.buyback) : false;
+      const floorBlocks = cfg.profitFloorEtn > 0 ? await checkProfitFloor(state, quotes.buyback) : { buys: false, sells: false };
 
       const day = new Date().toISOString().slice(0, 10);
       state.tradesByDay = { [day]: state.tradesByDay?.[day] || 0 }; // keep today only
@@ -1600,14 +1607,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         }
         if (kMid) {
           const lags = lagsPct(mids, kMid);
-          const buy = floorBlocks ? null : decideCatchupBuy(cu, lags, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes });
+          const buy = floorBlocks.buys ? null : decideCatchupBuy(cu, lags, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes });
           if (buy) {
             state.cuTradesByDay[day]++;
             await execute(state, { kind: "cuBuy", side: "buyEtn", stable: buy.stable, amountIn: buy.usd, expectedOut: await quoteBuyEtn(buy.stable, buy.usd), lagPct: buy.lagPct });
             await saveWithRetry(state);
             return;
           }
-          const sell = cfg.cuSellEnabled && !floorBlocks
+          const sell = cfg.cuSellEnabled && !floorBlocks.sells
             ? decideCatchupSell(cu, lags, mids, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes, maxSellEtn: cfg.cuMaxSellEtn }, Date.now(), canSpendEtn)
             : null;
           if (sell) {
@@ -1679,14 +1686,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       }
 
       // 5. A lot sale.
-      if (decision.action === "sell" && !lotCapHit && !floorBlocks) {
+      if (decision.action === "sell" && !lotCapHit && !floorBlocks.sells) {
         state.tradesByDay[day]++;
         await execute(state, { kind: "sell", side: "sellEtn", stable: decision.stable, amountIn: decision.etnAmount, expectedOut: decision.expectedStable, lotId: state.nextLotId++ });
         await saveWithRetry(state);
         return;
       }
 
-      const reason = decision.action === "hold" ? decision.reason : floorBlocks ? `profit floor: ${signedEtn(state.profitFloor.profitEtn)} ETN is under ${fmtEtn(cfg.profitFloorEtn)}, no new lots` : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
+      const reason = decision.action === "hold" ? decision.reason : floorBlocks.sells ? `profit floor: ${signedEtn(state.profitFloor.profitEtn)} ETN is under ${fmtEtn(cfg.profitFloorEtn)}, no new sell lots` : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
       if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${cuNote}${gapNote}${triNote}${cfg.fastMs > 0 ? ` · ${fastWakes} early check(s) since start` : ""}`);
       await saveWithRetry(state);
     } catch (err) {
