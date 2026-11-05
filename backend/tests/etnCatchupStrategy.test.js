@@ -1,7 +1,7 @@
 // Pure decision tests for services/etnCatchupStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellEtn, openSellUsd } from "../services/etnCatchupStrategy.js";
+import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellEtn, openSellUsd, SELL_SIZING_DEFAULTS, parseLagTiers } from "../services/etnCatchupStrategy.js";
 import { botEtnInventory, summarize } from "../services/etnAccumulatorStrategy.js";
 
 const cfg = { ...CATCHUP_DEFAULTS, lagPct: 3, clipUsd: 50, minGainPct: 1, reentryMinutes: 15 };
@@ -126,4 +126,35 @@ test("mark-to-market: the pot counts as money put in; its lots and cash count as
   const s = summarize(state, {}, 0, { heldEtn: 44483, stablesEtn: 2090, contributedEtn: 46137 });
   assert.equal(s.etnEquivalentNow, 100000 + 44483 + 2090);
   assert.equal(s.contributedEtn, 146137);
+});
+
+test("sell side sized by premium: bigger clips and shorter waits as the premium grows, trimmed to the cap", () => {
+  const sized = { ...cfg, ...SELL_SIZING_DEFAULTS, maxSellEtn: 75000 };
+  const mids = { USDT: 0.0015, USDC: 0.0015 };
+  const t = Date.parse("2026-11-05T12:00:00Z");
+  const b = funded();
+  // 3.5% -> $45 clip
+  assert.ok(Math.abs(decideCatchupSell(b, { USDT: 3.5, USDC: 1 }, mids, sized, t).etn - 45 / 0.0015) < 1e-6);
+  // 6% -> $90, on the dearer pool
+  const d = decideCatchupSell(b, { USDT: 1, USDC: 6 }, mids, sized, t);
+  assert.equal(d.stable, "USDC");
+  assert.ok(Math.abs(d.etn - 90 / 0.0015) < 1e-6); // 60,000 ETN
+  // 9% -> $180 = 120k ETN, trimmed to the 75k room
+  assert.equal(decideCatchupSell(b, { USDT: 9, USDC: 1 }, mids, sized, t).etn, 75000);
+  applyCatchupSell(b, { stable: "USDT", etnSold: 60000, usdReceived: 89, at: "2026-11-05T12:00:00Z" });
+  // room left 15k: a 9% clip trims to 15k; under minSellEtn it's skipped
+  assert.equal(decideCatchupSell(b, { USDT: 9, USDC: 1 }, mids, sized, t + 120000).etn, 15000);
+  assert.equal(decideCatchupSell(b, { USDT: 9, USDC: 1 }, mids, { ...sized, maxSellEtn: 63000 }, t + 120000), null);
+  // waits: 1 min at 5%+, 5 min at 3%+
+  assert.equal(decideCatchupSell(b, { USDT: 6, USDC: 1 }, mids, sized, t + 30000), null);
+  assert.ok(decideCatchupSell(b, { USDT: 6, USDC: 1 }, mids, sized, t + 61000));
+  assert.equal(decideCatchupSell(b, { USDT: 4, USDC: 1 }, mids, sized, t + 120000), null);
+  assert.ok(decideCatchupSell(b, { USDT: 4, USDC: 1 }, mids, sized, t + 301000));
+});
+
+test("lag tiers parse highest premium first; off/empty = none", () => {
+  assert.deepEqual(parseLagTiers("3:45,8:180,5:90", "usd"), [{ lag: 8, usd: 180 }, { lag: 5, usd: 90 }, { lag: 3, usd: 45 }]);
+  assert.equal(parseLagTiers("off", "usd"), null);
+  assert.equal(parseLagTiers(undefined, "usd"), undefined);
+  assert.throws(() => parseLagTiers("3:x", "usd"));
 });
