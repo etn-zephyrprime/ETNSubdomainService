@@ -62,12 +62,12 @@ export async function buildReportFrom(state, cfg = readConfig()) {
   }
   const s = summarize(state, buyback, gapStablesEtn, catchup);
   const hedgeNet = (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0);
-  const arbGain = state.cexArb?.gainEtn || 0;
+  const arbGain = (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0); // net of withdrawal fees
   const byStrategy = [
     { key: "cu", label: "KuCoin catch-up", gainEtn: s.cuGainEtn || 0, count: s.cuClosed || 0, unit: "closed lots", on: Boolean(state.cu) },
     { key: "gap", label: "Gap trades", gainEtn: s.gapGainEtn || 0, count: s.gapTrades || 0, unit: "trades", on: Boolean(state.gap) },
     { key: "hedge", label: "Hedged trades (net of fees)", gainEtn: hedgeNet, count: state.hedgeLive?.trades || 0, unit: "hedges", on: Boolean(state.hedgeLive) },
-    { key: "arb", label: "CEX arbitrage", gainEtn: arbGain, count: state.cexArb?.trades || 0, unit: "trades", on: Boolean(state.cexArb) },
+    { key: "arb", label: "CEX arbitrage (net of fees)", gainEtn: arbGain, count: state.cexArb?.trades || 0, unit: "trades", on: Boolean(state.cexArb) },
     { key: "lots", label: "Sell / buyback", gainEtn: s.realizedGainEtn || 0, count: s.cyclesClosed || 0, unit: "cycles", on: true },
     { key: "tri", label: "Triangles", gainEtn: s.triGainEtn || 0, count: s.triTrades || 0, unit: "trades", on: Boolean(state.tri) },
   ];
@@ -144,7 +144,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
     catchupPot: state.cu ? { USDT: state.cu.cash.USDT, USDC: state.cu.cash.USDC, target: state.cu.target } : null,
     hedge: state.hedgeLive ? { trades: state.hedgeLive.trades, gainEtn: state.hedgeLive.gainEtn, costsEtn: state.hedgeLive.costsEtn || 0, byVenue: state.hedgeLive.byVenue || {}, stables: state.hedgeLive.stables } : null,
     hedgePaper: state.hedge ? { trades: state.hedge.trades, profitUsd: state.hedge.profitUsd } : null,
-    arb: state.cexArb ? { trades: state.cexArb.trades, gainEtn: state.cexArb.gainEtn, gainUsd: state.cexArb.gainUsd, today: state.cexArb.today, paper: state.cexArb.paper || null } : null,
+    arb: state.cexArb ? { trades: state.cexArb.trades, gainEtn: state.cexArb.gainEtn, gainUsd: state.cexArb.gainUsd, costsEtn: state.cexArb.costsEtn || 0, today: state.cexArb.today, paper: state.cexArb.paper || null } : null,
     sweeps: state.cexSweep || {},
     refills: state.cexRefill || {},
     issues,

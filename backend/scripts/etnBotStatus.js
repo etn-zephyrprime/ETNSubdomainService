@@ -67,7 +67,7 @@ async function main() {
   // working capital, shown in dollars; its ETN value moves with ETN's price and isn't the goal, so the
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
   const hedgeGainEtn = (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0); // net of round-trip fees
-  const arbGainEtn = state.cexArb?.gainEtn || 0;
+  const arbGainEtn = (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0); // net of withdrawal fees
   const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn + hedgeGainEtn + arbGainEtn;
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
@@ -79,7 +79,7 @@ async function main() {
   if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
   if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
   if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s), net of round-trip fees`);
-  if (state.cexArb?.trades) console.log(`    from CEX arbitrage:   ${signed(arbGainEtn)} ETN over ${state.cexArb.trades} trade(s) (KuCoin <-> HTX)`);
+  if (state.cexArb?.trades) console.log(`    from CEX arbitrage:   ${signed(arbGainEtn)} ETN over ${state.cexArb.trades} trade(s) (KuCoin <-> HTX)${state.cexArb.costsEtn ? ", net of withdrawal fees" : ""}`);
   console.log(`    from sell/buyback: ${signed(s.realizedGainEtn)} ETN over ${s.cyclesClosed} cycle(s)`);
 
   console.log(`\n  ETN held by the bot: ${etn(botEtnInventory(state))} ETN   (budget${state.gap ? ", less the seed," : ""} plus gains${s.lotsOpen ? ", less open lots" : ""})`);
@@ -145,6 +145,7 @@ async function main() {
     const usd = (n) => `${Math.abs(n).toFixed(2)}`;
     console.log(`
   CEX arbitrage (KuCoin <-> HTX, LIVE): ${signed(ab.gainEtn)} ETN${Math.abs(ab.gainUsd) >= 0.01 ? ` ${ab.gainUsd >= 0 ? "+" : "−"}${usd(ab.gainUsd)}` : ""} over ${ab.trades} trade(s), ${usd(ab.notionalUsd)} traded${ab.paused ? ` — PAUSED: ${ab.paused}` : ""}`);
+    if (ab.costsEtn) console.log(`    withdrawal fees: ${etn(ab.costsEtn)} ETN (${ab.manual?.count || 0} manual KuCoin withdrawal(s), ${etn(ab.manual?.etn || 0)} ETN brought home) — net ${signed(ab.gainEtn - ab.costsEtn)} ETN`);
     if (ab.paper?.trades) console.log(`    paper (every opportunity that passed the public checks): +${usd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
     if (state.arbLeg) console.log(`    ⚠️ unfinished: ${state.arbLeg.stage === "first" ? `first leg on ${state.arbLeg.firstOrder.venue} not yet confirmed (${state.arbLeg.firstOrder.clientOid})` : `second leg on ${state.arbLeg.cex.venue} — ${state.arbLeg.cex.attempts} attempt(s)`}`);
     if (htxConfigured()) {
