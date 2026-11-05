@@ -154,3 +154,30 @@ export function summarize(state, buybackQuotes = {}, gapStablesEtn = 0, catchup 
     vsHoldPct: (etnNow / contributedEtn - 1) * 100,
   };
 }
+
+/**
+ * The bot's ETN profit if every open position were closed now: what its trades have locked in (hedging
+ * and the CEX arbitrage net of their fees) plus each open lot's gain or loss at current quotes.
+ *   ladderBack[id]  ETN an open sell/buyback lot's stablecoin would buy back now
+ *   cuBack[id]      the same for a sell-first catch-up lot
+ *   cuNeed[id]      ETN a buy-first catch-up lot would have to sell to get its dollars back
+ * allQuoted is false when any open lot couldn't be quoted (it's then left out of openEtn).
+ */
+export function profitNowEtn(state, { ladderBack = {}, cuBack = {}, cuNeed = {} } = {}) {
+  const lockedEtn =
+    (state.realizedGainEtn || 0) +
+    (state.gap?.gainEtn || 0) +
+    (state.tri?.gainEtn || 0) +
+    (state.cu?.gainEtn || 0) +
+    (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0) +
+    (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0);
+  let openEtn = 0;
+  let allQuoted = true;
+  const add = (quoted, delta) => (quoted > 0 ? (openEtn += delta) : (allQuoted = false));
+  for (const l of state.lots.filter((x) => x.status === "open")) add(ladderBack[l.id], ladderBack[l.id] - l.etnSold);
+  for (const l of state.cu?.lots || []) {
+    if (l.kind === "sellFirst") add(cuBack[l.id], cuBack[l.id] - l.etn);
+    else add(cuNeed[l.id], l.etn - cuNeed[l.id]);
+  }
+  return { lockedEtn, openEtn, profitEtn: lockedEtn + openEtn, allQuoted };
+}

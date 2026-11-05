@@ -32,7 +32,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import os from "os";
 import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
@@ -76,6 +76,10 @@ export function readConfig() {
     slippageBps: num("ETN_BOT_SLIPPAGE_BPS", 50),
     // After 3 swaps in a row rejected in simulation only (nothing sent): pause this long, then carry on. 0 = wait for a restart.
     simPauseMs: num("ETN_BOT_SIM_PAUSE_MIN", 15) * 60000,
+    // Profit floor (checkProfitFloor): while the bot's profit, counting open lots at today's quotes, is
+    // below this many ETN, no NEW lots open (ladder sells, catch-up buys and sells); closes and the
+    // instant round trips (gap, triangles, hedges, CEX arb) carry on. 0 = off.
+    profitFloorEtn: num("ETN_BOT_PROFIT_FLOOR_ETN", 0),
     gasReserveEtn: num("ETN_BOT_GAS_RESERVE_ETN", 100),
     maxTradesPerDay: num("ETN_BOT_MAX_TRADES_PER_DAY", 24),
     gapEnabled: process.env.ETN_BOT_GAP_ENABLED === "true",
@@ -878,6 +882,40 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     return changed;
   }
 
+  /** Telegram-DMs the ETN Bot viewers (as the KuCoin withdraw alert does). */
+  async function dmViewers(text) {
+    for (const viewer of alert.viewers()) {
+      const chatId = await alert.chatIdFor(viewer).catch(() => null);
+      if (chatId != null) await alert.send(chatId, text).catch((err) => console.error(`⚠️  ETN bot: DM to ${viewer} failed:`, err.message));
+    }
+  }
+
+  /** Works out the profit if every open lot closed now (profitNowEtn) and whether it's under the floor.
+   * Only flips on a fully quoted reading; announces each crossing (logs + DM). Returns true while below. */
+  async function checkProfitFloor(state, ladderBack) {
+    const cuLots = state.cu?.lots || [];
+    const cuBack = {};
+    for (const l of cuLots.filter((x) => x.kind === "sellFirst")) cuBack[l.id] = await quoteBuyEtn(l.stable, l.usd).catch(() => 0);
+    const cuNeed = cuLots.some((x) => x.kind !== "sellFirst") ? await catchupNeeds(state.cu) : {};
+    const p = profitNowEtn(state, { ladderBack, cuBack, cuNeed });
+    const pf = (state.profitFloor = state.profitFloor || { below: false, since: null });
+    pf.floorEtn = cfg.profitFloorEtn;
+    pf.profitEtn = p.profitEtn;
+    pf.openEtn = p.openEtn;
+    pf.at = new Date().toISOString();
+    const below = p.profitEtn < cfg.profitFloorEtn;
+    if (p.allQuoted && below !== pf.below) {
+      pf.below = below;
+      pf.since = pf.at;
+      const text = below
+        ? `🛡️ *ETN Bot — profit floor hit*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (${signedEtn(p.openEtn)} of it in open lots), under the ${fmtEtn(cfg.profitFloorEtn)} ETN floor. No new lots open until it's back above; open lots still close, and gap/triangle/hedge/arbitrage round trips carry on.`
+        : `✅ *ETN Bot — back above the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (floor ${fmtEtn(cfg.profitFloorEtn)} ETN). New lots can open again.`;
+      notify(text.replace(/\*/g, "").replace(/\n+/g, " "));
+      await dmViewers(text);
+    }
+    return pf.below;
+  }
+
   let lastWithdrawAlertCheckAt = 0;
   /** When the bot can't sweep KuCoin itself (its key has no Withdraw permission, or the sweep is off),
    * Telegram-DMs the ETN Bot viewers (botViewers, via the Core Tier Notis bot) how much ETN to withdraw
@@ -1508,6 +1546,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const decision = decide(state, quotes, cfg);
       const inventory = botEtnInventory(state);
       const canSpendEtn = (etn) => inventory >= etn && (quotes.walletEtn == null || quotes.walletEtn >= etn);
+      const floorBlocks = cfg.profitFloorEtn > 0 ? await checkProfitFloor(state, quotes.buyback) : false;
 
       const day = new Date().toISOString().slice(0, 10);
       state.tradesByDay = { [day]: state.tradesByDay?.[day] || 0 }; // keep today only
@@ -1561,14 +1600,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         }
         if (kMid) {
           const lags = lagsPct(mids, kMid);
-          const buy = decideCatchupBuy(cu, lags, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes });
+          const buy = floorBlocks ? null : decideCatchupBuy(cu, lags, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes });
           if (buy) {
             state.cuTradesByDay[day]++;
             await execute(state, { kind: "cuBuy", side: "buyEtn", stable: buy.stable, amountIn: buy.usd, expectedOut: await quoteBuyEtn(buy.stable, buy.usd), lagPct: buy.lagPct });
             await saveWithRetry(state);
             return;
           }
-          const sell = cfg.cuSellEnabled
+          const sell = cfg.cuSellEnabled && !floorBlocks
             ? decideCatchupSell(cu, lags, mids, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes, maxSellEtn: cfg.cuMaxSellEtn }, Date.now(), canSpendEtn)
             : null;
           if (sell) {
@@ -1640,14 +1679,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       }
 
       // 5. A lot sale.
-      if (decision.action === "sell" && !lotCapHit) {
+      if (decision.action === "sell" && !lotCapHit && !floorBlocks) {
         state.tradesByDay[day]++;
         await execute(state, { kind: "sell", side: "sellEtn", stable: decision.stable, amountIn: decision.etnAmount, expectedOut: decision.expectedStable, lotId: state.nextLotId++ });
         await saveWithRetry(state);
         return;
       }
 
-      const reason = decision.action === "hold" ? decision.reason : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
+      const reason = decision.action === "hold" ? decision.reason : floorBlocks ? `profit floor: ${signedEtn(state.profitFloor.profitEtn)} ETN is under ${fmtEtn(cfg.profitFloorEtn)}, no new lots` : `daily trade cap (${cfg.maxTradesPerDay}) reached`;
       if (state.samples % 30 === 1) console.log(`🤖 ETN bot: hold — ${reason} (mid ${mid.toPrecision(4)}, EMA ${state.ema.toPrecision(4)}, inventory ${fmtEtn(inventory)} ETN)${cuNote}${gapNote}${triNote}${cfg.fastMs > 0 ? ` · ${fastWakes} early check(s) since start` : ""}`);
       await saveWithRetry(state);
     } catch (err) {
@@ -1752,6 +1791,7 @@ export async function startEtnAccumulatorBot() {
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
     (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
     (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
+    (cfg.profitFloorEtn > 0 ? `; profit floor ${fmtEtn(cfg.profitFloorEtn)} ETN` : "") +
     (cfg.cexRefill ? `; refills ON (HTX ETN < ${fmtEtn(cfg.refill.htxEtnLow)} -> ${fmtEtn(cfg.refill.htxEtnTarget)}, KuCoin USDT < $${cfg.refill.kucoinUsdtLow} -> $${cfg.refill.kucoinUsdtTarget})` : "") +
     (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
