@@ -74,6 +74,8 @@ export function readConfig() {
     warmupSamples: num("ETN_BOT_WARMUP_SAMPLES", DEFAULT_CONFIG.warmupSamples),
     intervalMs: num("ETN_BOT_INTERVAL_MS", 60000),
     slippageBps: num("ETN_BOT_SLIPPAGE_BPS", 50),
+    // After 3 swaps in a row rejected in simulation only (nothing sent): pause this long, then carry on. 0 = wait for a restart.
+    simPauseMs: num("ETN_BOT_SIM_PAUSE_MIN", 15) * 60000,
     gasReserveEtn: num("ETN_BOT_GAS_RESERVE_ETN", 100),
     maxTradesPerDay: num("ETN_BOT_MAX_TRADES_PER_DAY", 24),
     gapEnabled: process.env.ETN_BOT_GAP_ENABLED === "true",
@@ -278,6 +280,11 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
   }
   let running = false;
   let consecutiveFailures = 0;
+  // Of those, how many were real — a sent tx that reverted, or a send that errored. A run of failures that
+  // were ALL rejected in simulation (nothing sent, no gas: a fast-moving pool beat the slippage floor)
+  // pauses only for cfg.simPauseMs and then resumes by itself; any real one needs a restart.
+  let realFailures = 0;
+  let pausedUntil = null;
   // What the last full check saw and whether it traded — the fast watcher compares against this.
   let lastTick = null;
   let actedThisTick = false;
@@ -300,6 +307,13 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     return Number(ethers.formatEther(await quote(provider, p.token, WETN, p.fee, ethers.parseUnits(floorTo(usd, p.decimals), p.decimals))));
   };
 
+  /** Marks a pre-send simulation that reverted, so it's told apart from a real failure. */
+  const simulated = (p) =>
+    p.catch((err) => {
+      err.simulated = true;
+      throw err;
+    });
+
   /** Sends one swap — "sellEtn" (native ETN -> stablecoin) or "buyEtn" (stablecoin -> native ETN) —
    * after simulating it. Amounts are human units; minimum out = expectedOut less the slippage. */
   async function sendSwap(side, stable, amountIn, expectedOut) {
@@ -314,7 +328,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: WETN, tokenOut: p.token, fee: p.fee, recipient: wallet.address, amountIn: inRaw, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
         routerIface.encodeFunctionData("refundETH", []),
       ];
-      await router.multicall.staticCall(deadline, calls, { value: inRaw });
+      await simulated(router.multicall.staticCall(deadline, calls, { value: inRaw }));
       return router.multicall(deadline, calls, { value: inRaw });
     }
     const inRaw = ethers.parseUnits(floorTo(amountIn, p.decimals), p.decimals);
@@ -329,7 +343,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       routerIface.encodeFunctionData("exactInputSingle", [{ tokenIn: p.token, tokenOut: WETN, fee: p.fee, recipient: ADDRESS_THIS, amountIn: inRaw, amountOutMinimum: minOut, sqrtPriceLimitX96: 0 }]),
       routerIface.encodeFunctionData("unwrapWETH9", [minOut, wallet.address]),
     ];
-    await router.multicall.staticCall(deadline, calls);
+    await simulated(router.multicall.staticCall(deadline, calls));
     return router.multicall(deadline, calls);
   }
 
@@ -439,6 +453,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     if (receipt.status !== 1) {
       state.pending = null;
       consecutiveFailures++;
+      realFailures++;
       notify(`❌ ${pending.kind} tx ${pending.txHash} reverted.`);
       return "failed";
     }
@@ -446,6 +461,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     if (!amounts) throw new Error(`No Swap event in ${pending.txHash}`); // left pending — needs a look, not a guess
     state.pending = null;
     consecutiveFailures = 0;
+    realFailures = 0;
     settleFill(state, pending, amounts, pending.txHash);
     return "filled";
   }
@@ -463,7 +479,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       routerIface.encodeFunctionData("unwrapWETH9", [minOut, wallet.address]),
     ];
     const deadline = Math.floor(Date.now() / 1000) + 300;
-    await router.multicall.staticCall(deadline, calls, { value: amountIn });
+    await simulated(router.multicall.staticCall(deadline, calls, { value: amountIn }));
     return router.multicall(deadline, calls, { value: amountIn });
   }
 
@@ -524,6 +540,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       tx = order.kind === "triangle" ? await sendTriangle(order) : await sendSwap(order.side, order.stable, order.amountIn, order.expectedOut);
     } catch (err) {
       consecutiveFailures++;
+      if (!err.simulated) realFailures++;
       throw err;
     }
     state.pending = { ...order, txHash: tx.hash, nonce: tx.nonce, sentAt: new Date().toISOString() };
@@ -1290,6 +1307,12 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
   }
 
   async function tick() {
+    if (pausedReason && pausedUntil && Date.now() >= pausedUntil) {
+      notify(`▶️ Resumed after a ${Math.round(cfg.simPauseMs / 60000)}-minute pause (${pausedReason})`);
+      pausedReason = null;
+      pausedUntil = null;
+      consecutiveFailures = 0;
+    }
     if (running || pausedReason || stopped) return;
     running = true;
     actedThisTick = false;
@@ -1589,8 +1612,14 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       if (tickMids) lastTick = { mids: tickMids, kMid: tickK ?? lastTick?.kMid ?? null, acted: actedThisTick, at: Date.now() };
       running = false;
       if (consecutiveFailures >= 3 && !pausedReason) {
-        pausedReason = "3 failed trades in a row";
-        notify(`⏸️ Paused: ${pausedReason}. Restart the service to resume.`);
+        if (realFailures === 0 && cfg.simPauseMs > 0) {
+          pausedReason = "3 swaps in a row rejected in simulation (nothing sent)";
+          pausedUntil = Date.now() + cfg.simPauseMs;
+          notify(`⏸️ Paused: ${pausedReason} — resuming by itself in ${Math.round(cfg.simPauseMs / 60000)} minutes.`);
+        } else {
+          pausedReason = "3 failed trades in a row";
+          notify(`⏸️ Paused: ${pausedReason}. Restart the service to resume.`);
+        }
       }
     }
   }
