@@ -73,17 +73,49 @@ export function decideCatchupBuy(book, lags, cfg = CATCHUP_DEFAULTS, nowMs = Dat
   return { stable, usd: cfg.clipUsd, lagPct };
 }
 
+// Sell side sized by the premium (backtest on 22 Oct–5 Nov swaps, bt2/sim*.mjs: other traders' swaps
+// replayed by amount on a pool our own trades move, sell-first lots closed at +1%). Against one $45 clip
+// per 15 minutes at a 75k cap: these tiers and waits +29% ETN; the cap is the bigger lever (100k: +78%).
+// The absolute replay runs ~2x the live result (other bots race for the same premiums), so it's the
+// ranking that counts. Each list is checked from the highest premium down.
+export const SELL_SIZING_DEFAULTS = {
+  sellTiers: [{ lag: 8, usd: 180 }, { lag: 5, usd: 90 }, { lag: 3, usd: 45 }], // clip by premium
+  sellReentry: [{ lag: 5, min: 1 }, { lag: 3, min: 5 }], // wait since the last sell, by premium
+  minSellEtn: 5000, // a clip trimmed to the cap's room below this isn't worth a lot
+};
+
+/** "3:45,5:90,8:180" -> [{ lag: 8, [key]: 180 }, ...] (highest premium first); "off"/"" -> null. */
+export function parseLagTiers(text, key) {
+  if (text == null) return undefined;
+  if (!text.trim() || text.trim() === "off") return null;
+  return text.split(",").map((pair) => {
+    const [lag, v] = pair.split(":").map(Number);
+    if (!(lag > 0) || !(v > 0)) throw new Error(`bad tier "${pair}" (want lag%:value)`);
+    return { lag, [key]: v };
+  }).sort((a, b) => b.lag - a.lag);
+}
+
+const pickTier = (tiers, lag) => (tiers || []).find((t) => lag >= t.lag);
+
 /**
  * A sell to open (the opt-in sell side), or null: the dearest pool, if it's at least lagPct ABOVE
  * KuCoin, selling clipUsd's worth of ETN at its mid — within maxSellEtn and what the bot can spend.
+ * With cfg.sellTiers the clip grows with the premium (and is trimmed to the cap's room, down to
+ * minSellEtn); with cfg.sellReentry the wait since the last sell shrinks as the premium grows.
  */
 export function decideCatchupSell(book, lags, mids, cfg = CATCHUP_DEFAULTS, nowMs = Date.now(), canSpendEtn = () => true) {
-  if (book.lastSellAt && nowMs - Date.parse(book.lastSellAt) < cfg.reentryMinutes * 60000) return null;
   const candidates = Object.entries(lags).filter(([, lag]) => lag >= cfg.lagPct).sort((a, b) => b[1] - a[1]);
   if (!candidates.length) return null;
   const [stable, lagPct] = candidates[0];
-  const etn = cfg.clipUsd / mids[stable];
-  if (!(etn > 0) || openSellEtn(book) + etn > cfg.maxSellEtn || !canSpendEtn(etn)) return null;
+  const waitMin = pickTier(cfg.sellReentry, lagPct)?.min ?? cfg.reentryMinutes;
+  if (book.lastSellAt && nowMs - Date.parse(book.lastSellAt) < waitMin * 60000) return null;
+  const room = cfg.maxSellEtn - openSellEtn(book);
+  let etn = (pickTier(cfg.sellTiers, lagPct)?.usd ?? cfg.clipUsd) / mids[stable];
+  if (cfg.sellTiers) {
+    etn = Math.min(etn, room);
+    if (etn < (cfg.minSellEtn ?? 0)) return null;
+  }
+  if (!(etn > 0) || etn > room || !canSpendEtn(etn)) return null;
   return { stable, etn, lagPct };
 }
 

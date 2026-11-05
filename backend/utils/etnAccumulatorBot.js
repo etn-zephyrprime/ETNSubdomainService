@@ -40,7 +40,7 @@ import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js"
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
 import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw, getBalances as htxBalances, getDepositAddress as htxDepositAddress, getTransfers as htxTransfers } from "./htxClient.js";
 import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn, getWithdrawals } from "./kucoinClient.js";
-import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
+import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn, SELL_SIZING_DEFAULTS, parseLagTiers } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
 const WETN = "0x138DAFbDA0CCB3d8E39C19edb0510Fc31b7C1c77";
@@ -55,6 +55,18 @@ export const POOLS = {
 };
 
 const num = (name, dflt) => (process.env[name] != null && process.env[name] !== "" ? Number(process.env[name]) : dflt);
+/** A "lag%:value,..." env list (parseLagTiers): unset = dflt, "off" = null; a malformed one is logged and dflt used. */
+function tiersEnv(name, key, dflt) {
+  try {
+    const t = parseLagTiers(process.env[name], key);
+    return t === undefined ? dflt : t;
+  } catch (err) {
+    console.error(`⚠️  ETN bot: ${name} ignored (${err.message}) — using the default`);
+    return dflt;
+  }
+}
+/** The catch-up sell side's decision settings (decideCatchupSell). */
+const catchupSellCfg = (cfg) => ({ lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes, maxSellEtn: cfg.cuMaxSellEtn, sellTiers: cfg.cuSellTiers, sellReentry: cfg.cuSellReentry, minSellEtn: SELL_SIZING_DEFAULTS.minSellEtn });
 /** The wallets that see the ETN Bot tab (services/etnBotReport.js) and get its Telegram alerts. */
 export function botViewers() {
   const list = process.env.ETN_BOT_VIEWERS || "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099,0x696A7B9Ea5c86dA15D569d99D75ed788CcE4db2e";
@@ -100,6 +112,13 @@ export function readConfig() {
     cuMaxTradesPerDay: num("ETN_BOT_CU_MAX_TRADES_PER_DAY", 48),
     cuSellEnabled: process.env.ETN_BOT_CU_SELL_ENABLED === "true",
     cuMaxSellEtn: num("ETN_BOT_CU_MAX_SELL_ETN", CATCHUP_DEFAULTS.maxSellEtn),
+    // Sell side sized by the premium (see SELL_SIZING_DEFAULTS): "lag%:usd,..." and "lag%:minutes,...";
+    // "off" = the old one $clip every ETN_BOT_CU_REENTRY_MIN.
+    cuSellTiers: tiersEnv("ETN_BOT_CU_SELL_TIERS", "usd", SELL_SIZING_DEFAULTS.sellTiers),
+    cuSellReentry: tiersEnv("ETN_BOT_CU_SELL_REENTRY", "min", SELL_SIZING_DEFAULTS.sellReentry),
+    // Fast path (fastSell): when the fast watcher sees a pool at least this far above KuCoin, it opens the
+    // catch-up sell straight away instead of waking a full check. 0 = off.
+    fastSellLagPct: num("ETN_BOT_FAST_SELL_LAG_PCT", 5),
     // Fast watcher (see startFastWatcher): 0 turns it off.
     fastMs: num("ETN_BOT_FAST_MS", 5000),
     fastMovePct: num("ETN_BOT_FAST_MOVE_PCT", FAST_DEFAULTS.movePct),
@@ -1615,7 +1634,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
             return;
           }
           const sell = cfg.cuSellEnabled && !floorBlocks.sells
-            ? decideCatchupSell(cu, lags, mids, { lagPct: cfg.cuLagPct, clipUsd: cfg.cuClipUsd, reentryMinutes: cfg.cuReentryMinutes, maxSellEtn: cfg.cuMaxSellEtn }, Date.now(), canSpendEtn)
+            ? decideCatchupSell(cu, lags, mids, catchupSellCfg(cfg), Date.now(), canSpendEtn)
             : null;
           if (sell) {
             state.cuTradesByDay[day]++;
@@ -1701,16 +1720,59 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     } finally {
       if (tickMids) lastTick = { mids: tickMids, kMid: tickK ?? lastTick?.kMid ?? null, acted: actedThisTick, at: Date.now() };
       running = false;
-      if (consecutiveFailures >= 3 && !pausedReason) {
-        if (realFailures === 0 && cfg.simPauseMs > 0) {
-          pausedReason = "3 swaps in a row rejected in simulation (nothing sent)";
-          pausedUntil = Date.now() + cfg.simPauseMs;
-          notify(`⏸️ Paused: ${pausedReason} — resuming by itself in ${Math.round(cfg.simPauseMs / 60000)} minutes.`);
-        } else {
-          pausedReason = "3 failed trades in a row";
-          notify(`⏸️ Paused: ${pausedReason}. Restart the service to resume.`);
-        }
-      }
+      pauseOnFailures();
+    }
+  }
+
+  /** After 3 failed trades in a row: pause — briefly if they were all rejected in simulation. */
+  function pauseOnFailures() {
+    if (consecutiveFailures < 3 || pausedReason) return;
+    if (realFailures === 0 && cfg.simPauseMs > 0) {
+      pausedReason = "3 swaps in a row rejected in simulation (nothing sent)";
+      pausedUntil = Date.now() + cfg.simPauseMs;
+      notify(`⏸️ Paused: ${pausedReason} — resuming by itself in ${Math.round(cfg.simPauseMs / 60000)} minutes.`);
+    } else {
+      pausedReason = "3 failed trades in a row";
+      notify(`⏸️ Paused: ${pausedReason}. Restart the service to resume.`);
+    }
+  }
+
+  /**
+   * The fast path (startFastWatcher, cfg.fastSellLagPct): a pool already well above KuCoin opens the
+   * catch-up sell at once, from the watcher's own prices, instead of waking a full check (which reads
+   * the exchanges, both books and every lot first). Same rules as the full check's sell — the sizing,
+   * waits, cap, profit floor, daily cap, what the bot can spend — and never alongside a running check or
+   * an unfinished trade. Returns true if it sold.
+   */
+  async function fastSell(mids, kMid) {
+    if (running || pausedReason || stopped || !cfg.cuEnabled || !cfg.cuSellEnabled || !kMid || !(cfg.fastSellLagPct > 0)) return false;
+    running = true;
+    actedThisTick = false;
+    try {
+      if (store.claimLease && !(await store.claimLease(owner)).ok) return false;
+      const state = await store.get(cfg.mode);
+      if (!state?.cu || state.pending || state.hedgeLeg || state.arbLeg || state.gapLeg) return false;
+      if (cfg.profitFloorEtn > 0 && (state.profitFloor?.blockSells ?? Boolean(state.profitFloor?.below))) return false;
+      const day = new Date().toISOString().slice(0, 10);
+      if ((state.cuTradesByDay?.[day] || 0) >= cfg.cuMaxTradesPerDay) return false;
+      const lags = lagsPct(mids, kMid);
+      if (Math.max(...Object.values(lags)) < cfg.fastSellLagPct) return false;
+      const inventory = botEtnInventory(state);
+      const walletEtn = wallet ? Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn : null;
+      const canSpendEtn = (etn) => inventory >= etn && (walletEtn == null || walletEtn >= etn);
+      const sell = decideCatchupSell(state.cu, lags, mids, catchupSellCfg(cfg), Date.now(), canSpendEtn);
+      if (!sell) return false;
+      state.cuTradesByDay = { [day]: (state.cuTradesByDay?.[day] || 0) + 1 };
+      notify(`⚡ Fast path: ElectroSwap ${sell.lagPct.toFixed(1)}% above KuCoin (${sell.stable}) — catch-up sell of ${fmtEtn(sell.etn)} ETN`);
+      await execute(state, { kind: "cuSellFirst", side: "sellEtn", stable: sell.stable, amountIn: sell.etn, expectedOut: await quoteSellEtn(sell.stable, sell.etn), lagPct: sell.lagPct });
+      await saveWithRetry(state);
+      return true;
+    } catch (err) {
+      console.error("⚠️  ETN bot fast sell failed:", err.shortMessage || err.message);
+      return false;
+    } finally {
+      running = false;
+      pauseOnFailures();
     }
   }
 
@@ -1725,6 +1787,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
   return {
     tick,
+    fastSell,
     stop,
     kucoinPrice,
     lastTick: () => lastTick,
@@ -1755,6 +1818,18 @@ export function startFastWatcher(bot, provider, cfg) {
       if (cfg.cuEnabled && Date.now() - kAt >= cfg.fastKucoinMs) {
         kMid = await bot.kucoinPrice();
         kAt = Date.now();
+      }
+      // Fast path: a pool well above KuCoin sells at once (bot.fastSell), on a fresh KuCoin price.
+      if (cfg.cuSellEnabled && cfg.fastSellLagPct > 0 && kMid && Math.max(...Object.values(lagsPct(mids, kMid))) >= cfg.fastSellLagPct) {
+        const fresh = await bot.kucoinPrice();
+        if (fresh) {
+          kMid = fresh;
+          kAt = Date.now();
+          if (await bot.fastSell(mids, kMid)) {
+            lastWake = Date.now();
+            return;
+          }
+        }
       }
       const hit = fastTriggerReason({ mids, kMid: cfg.cuEnabled ? kMid : null, last: bot.lastTick() }, triggerCfg);
       if (!hit || (!hit.urgent && Date.now() - lastWake < cfg.fastMinSpacingMs)) return;
@@ -1800,7 +1875,7 @@ export async function startEtnAccumulatorBot() {
     (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
     (cfg.profitFloorEtn > 0 ? `; profit floor ${fmtEtn(cfg.profitFloorEtn)} ETN` : "") +
     (cfg.cexRefill ? `; refills ON (HTX ETN < ${fmtEtn(cfg.refill.htxEtnLow)} -> ${fmtEtn(cfg.refill.htxEtnTarget)}, KuCoin USDT < $${cfg.refill.kucoinUsdtLow} -> $${cfg.refill.kucoinUsdtTarget})` : "") +
-    (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN` : "off"})` : "; KuCoin catch-up off");
+    (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN${cfg.cuSellTiers ? `, clips ${cfg.cuSellTiers.map((t) => `$${t.usd} at ${t.lag}%`).join(" / ")}` : ""}${cfg.cuSellReentry ? `, waits ${cfg.cuSellReentry.map((t) => `${t.min}m at ${t.lag}%`).join(" / ")}` : ""}${cfg.fastSellLagPct > 0 ? `, fast path at ${cfg.fastSellLagPct}%+` : ""}` : "off"})` : "; KuCoin catch-up off");
   console.log(`🤖 ETN accumulator bot started — ${cfg.mode.toUpperCase()}, wallet ${wallet?.address ?? "(none, paper)"}, budget ${fmtEtn(cfg.budgetEtn)} ETN, clip ${fmtEtn(cfg.clipEtn)}, band +${cfg.sellBandPct}%, min gain ${cfg.minGainPct}%${gapText}, every ${cfg.intervalMs / 1000}s`);
   const bot = createEtnAccumulatorBot({ provider, wallet, cfg });
   bot.tick();
