@@ -134,6 +134,13 @@ export async function innerTransfer({ currency, from, to, amount, clientOid }) {
 }
 
 /** Withdraws from the MAIN account to an external address on a chain. Returns KuCoin's withdrawal id. */
+/** Completed withdrawals of a currency since `startAt` (ms; KuCoin allows up to 7 days back per query):
+ * [{ id, address, amount, fee, createdAt }]. */
+export async function getWithdrawals(currency, startAt) {
+  const data = await request("GET", `/api/v1/withdrawals?currency=${currency}&status=SUCCESS&startAt=${Math.floor(startAt)}&pageSize=100`);
+  return (data?.items || []).map((w) => ({ id: String(w.id), address: String(w.address || ""), amount: Number(w.amount), fee: Number(w.fee || 0), createdAt: Number(w.createdAt) }));
+}
+
 export async function withdraw({ currency, address, amount, chain }) {
   const v3 = await request("POST", "/api/v3/withdrawals", { currency, toAddress: address, amount: String(amount), withdrawType: "ADDRESS", chain, isInner: false }).catch((err) => err);
   if (!(v3 instanceof Error)) return v3?.withdrawalId || v3;

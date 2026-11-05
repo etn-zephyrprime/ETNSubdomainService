@@ -39,7 +39,7 @@ import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, et
 import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
 import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw, getBalances as htxBalances, getDepositAddress as htxDepositAddress, getTransfers as htxTransfers } from "./htxClient.js";
-import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn } from "./kucoinClient.js";
+import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn, getWithdrawals } from "./kucoinClient.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn } from "../services/etnCatchupStrategy.js";
 import { TRIANGLE_DEFAULTS, TRIANGLE_ROUTES, TRIANGLE_POOLS, TRIANGLE_FEE, prescreenEdgePct, routeEdges, decideTriangle, triangleMinOut, freshTriangleBook, applyTriangleTrade } from "../services/etnTriangleStrategy.js";
 
@@ -670,7 +670,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           const moved = Math.ceil(amount + rules.fee);
           await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: moved, clientOid: `etnbot-sw-${Date.now()}` });
           try {
-            await withdraw({ currency: "ETN", address: wallet.address, amount, chain: "etnevm" });
+            noteBotWithdrawal(state, await withdraw({ currency: "ETN", address: wallet.address, amount, chain: "etnevm" }));
           } catch (err) {
             // Never leave it stranded in Main (where trading can't reach it): straight back to Trade.
             await innerTransfer({ currency: "ETN", from: "main", to: "trade", amount: moved, clientOid: `etnbot-sw-back-${Date.now()}` }).catch((e) =>
@@ -838,6 +838,46 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     return false;
   }
 
+  /** Remembers a KuCoin withdrawal the bot made itself, so bookManualWithdrawals doesn't count it again. */
+  function noteBotWithdrawal(state, id) {
+    if (!id) return;
+    state.kcBotWithdrawals = [...(state.kcBotWithdrawals || []), String(id)].slice(-100);
+  }
+
+  /** Books ETN withdrawn from KuCoin to the bot wallet BY HAND (e.g. after a withdraw alert): its fee is a
+   * cost of the CEX arbitrage (cexArb.costsEtn), and the ETN coming home first settles what live hedging
+   * still had out on KuCoin (hedgeLive.walletEtnNet, which caps hedge sizes) — as the automatic sweep would.
+   * Each withdrawal is booked once (by KuCoin's id); the bot's own are skipped. Returns true if state changed. */
+  async function bookManualWithdrawals(state) {
+    if (!wallet || !kucoinConfigured()) return false;
+    const ab = state.cexArb || (state.cexArb = freshArbBook());
+    const m = (ab.manual = ab.manual || { count: 0, etn: 0, feesEtn: 0, seen: [] });
+    const since = Math.min(Date.parse(ab.since), Date.parse(state.hedgeLive?.since || ab.since));
+    const rows = await getWithdrawals("ETN", Math.max(since, Date.now() - 7 * 86400000 + 3600000));
+    const own = new Set(state.kcBotWithdrawals || []);
+    let changed = false;
+    for (const w of rows.sort((a, b) => a.createdAt - b.createdAt)) {
+      if (w.createdAt < since || w.address.toLowerCase() !== wallet.address.toLowerCase() || own.has(w.id) || m.seen.includes(w.id)) continue;
+      m.seen = [...m.seen, w.id].slice(-100);
+      m.count += 1;
+      m.etn += w.amount;
+      m.feesEtn += w.fee;
+      const hb = state.hedgeLive;
+      const hedgeShare = hb ? Math.min(w.amount, Math.max(0, -hb.walletEtnNet)) : 0;
+      // The fee is split by whose ETN came home: the hedges' share to them, the rest to the arbitrage.
+      const hedgeFee = w.amount > 0 ? (w.fee * hedgeShare) / w.amount : 0;
+      ab.costsEtn = (ab.costsEtn || 0) + w.fee - hedgeFee;
+      if (hedgeShare > 0) {
+        hb.walletEtnNet += hedgeShare;
+        hb.kucoinEtnNet -= hedgeShare;
+        hb.costsEtn = (hb.costsEtn || 0) + hedgeFee;
+      }
+      notify(`🧾 Booked a manual KuCoin withdrawal: ${fmtEtn(w.amount)} ETN to the bot wallet, fee ${fmtEtn(w.fee)} ETN (${fmtEtn(w.fee - hedgeFee)} to the CEX arbitrage${hedgeShare > 0 ? `, ${fmtEtn(hedgeFee)} to live hedging, whose ${fmtEtn(hedgeShare)} ETN on KuCoin it brings home` : ""})`);
+      changed = true;
+    }
+    return changed;
+  }
+
   let lastWithdrawAlertCheckAt = 0;
   /** When the bot can't sweep KuCoin itself (its key has no Withdraw permission, or the sweep is off),
    * Telegram-DMs the ETN Bot viewers (botViewers, via the Core Tier Notis bot) how much ETN to withdraw
@@ -933,7 +973,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         const rules = await getWithdrawRules("ETN", "etnevm");
         if (!rules.enabled) throw new Error("KuCoin ETN withdrawals are suspended");
         await innerTransfer({ currency: "ETN", from: "trade", to: "main", amount: Math.ceil(a.amount + rules.fee), clientOid: oid("t") });
-        await withdraw({ currency: "ETN", address: wallet.address, amount: a.amount, chain: "etnevm" });
+        noteBotWithdrawal(state, await withdraw({ currency: "ETN", address: wallet.address, amount: a.amount, chain: "etnevm" }));
         hb.kucoinEtnNet -= a.amount + rules.fee;
         hb.walletEtnNet += a.amount;
         hb.costsEtn += rules.fee;
@@ -1399,11 +1439,15 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       }
       if (cfg.mode === "live" && Date.now() - lastWithdrawAlertCheckAt >= cfg.cexSweepEveryMs) {
         lastWithdrawAlertCheckAt = Date.now();
+        const booked = await bookManualWithdrawals(state).catch((err) => {
+          console.error("⚠️  ETN bot: booking manual KuCoin withdrawals failed:", err.message);
+          return false;
+        });
         const changed = await kucoinWithdrawAlert(state).catch((err) => {
           console.error("⚠️  ETN bot: KuCoin withdraw alert check failed:", err.message);
           return false;
         });
-        if (changed) await saveWithRetry(state);
+        if (booked || changed) await saveWithRetry(state);
       }
       // The round trip, at most every hedgeRebalanceEveryMs and never mid-hedge.
       if (cfg.hedgeRebalance && state.hedgeLive && !state.hedgeLeg && !state.hedgeLive.pausedReason && Date.now() - lastRebalanceAt >= cfg.hedgeRebalanceEveryMs) {
