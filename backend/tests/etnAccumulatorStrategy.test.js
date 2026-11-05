@@ -1,7 +1,7 @@
 // Pure decision tests for services/etnAccumulatorStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory, profitNowEtn } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
 
 const cfg = { ...DEFAULT_CONFIG, clipEtn: 10000, warmupSamples: 1 };
 const fresh = (over = {}) => ({ budgetEtn: 100000, realizedGainEtn: 0, lots: [], ema: 0.002, samples: 5, ...over });
@@ -91,4 +91,28 @@ test("profit now: locked-in gains net of fees, plus open lots at today's quotes"
   const q = profitNowEtn(state, { ladderBack: { 13: 9500 }, cuBack: {}, cuNeed: { 22: 28700 } });
   assert.equal(q.openEtn, -500 - 5286);
   assert.equal(q.allQuoted, false);
+});
+
+test("profit floor: blocks only the losing side", () => {
+  const floor = 25000;
+  // above the floor: nothing blocked
+  assert.deepEqual(profitFloorBlocks({ profitEtn: 30000, buyOpenEtn: -5000, sellOpenEtn: 0 }, floor), { below: false, buys: false, sells: false });
+  // ETN fell: buy-first lots under water -> new buys blocked, sells (which a fall pays) still open
+  assert.deepEqual(profitFloorBlocks({ profitEtn: 23911, buyOpenEtn: -13312, sellOpenEtn: 0 }, floor), { below: true, buys: true, sells: false });
+  // ETN rallied: sell-side lots under water -> new sells blocked, buys still open
+  assert.deepEqual(profitFloorBlocks({ profitEtn: 20000, buyOpenEtn: 800, sellOpenEtn: -9000 }, floor), { below: true, buys: false, sells: true });
+  // both sides losing -> both blocked
+  assert.deepEqual(profitFloorBlocks({ profitEtn: 20000, buyOpenEtn: -100, sellOpenEtn: -9000 }, floor), { below: true, buys: true, sells: true });
+  // under the floor with nothing open losing (locked profit itself is under it) -> both blocked
+  assert.deepEqual(profitFloorBlocks({ profitEtn: 24000, buyOpenEtn: 0, sellOpenEtn: 0 }, floor), { below: true, buys: true, sells: true });
+  // floor off
+  assert.deepEqual(profitFloorBlocks({ profitEtn: -1e6, buyOpenEtn: -1e6 }, 0), { below: false, buys: false, sells: false });
+});
+
+test("profit now: splits open lots into the sell side and the buy side", () => {
+  const state = { lots: [{ id: 1, status: "open", etnSold: 10000 }], cu: { gainEtn: 0, lots: [{ id: 2, kind: "sellFirst", usd: 45, etn: 25000 }, { id: 3, usd: 45, etn: 23414 }] } };
+  const p = profitNowEtn(state, { ladderBack: { 1: 10500 }, cuBack: { 2: 26000 }, cuNeed: { 3: 30000 } });
+  assert.equal(p.sellOpenEtn, 500 + 1000);
+  assert.equal(p.buyOpenEtn, 23414 - 30000);
+  assert.equal(p.openEtn, p.sellOpenEtn + p.buyOpenEtn);
 });
