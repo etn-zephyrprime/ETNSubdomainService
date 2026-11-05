@@ -110,6 +110,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
   if (state.cexArb?.paused) issues.push(`CEX arbitrage paused: ${state.cexArb.paused}`);
   if (state.hedgeLeg) issues.push(`Unfinished hedge leg: ${fmt(state.hedgeLeg.esEtn)} ETN on ElectroSwap, ${state.hedgeLeg.venue || "kucoin"} leg pending`);
   if (state.arbLeg) issues.push(`Unfinished CEX arbitrage leg (${state.arbLeg.stage || "second"} leg)`);
+  if (state.profitFloor?.below) issues.push(`Profit floor hit: ${fmt(state.profitFloor.profitEtn)} ETN counting open lots, under the ${fmt(state.profitFloor.floorEtn)} ETN floor — no new lots`);
   if (rf.etn?.pending) issues.push(`Refill in flight: ${fmt(rf.etn.pending.etn)} ETN wallet -> HTX since ${rf.etn.pending.at.slice(5, 16)}`);
   if (rf.usdt?.pending) issues.push(`Refill in flight: ${rf.usdt.pending.usd.toFixed(2)} USDT HTX -> KuCoin since ${rf.usdt.pending.at.slice(5, 16)}`);
   if (state.pending) issues.push(`On-chain trade in flight: ${state.pending.kind} ${state.pending.txHash}`);
@@ -147,6 +148,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
     arb: state.cexArb ? { trades: state.cexArb.trades, gainEtn: state.cexArb.gainEtn, gainUsd: state.cexArb.gainUsd, costsEtn: state.cexArb.costsEtn || 0, today: state.cexArb.today, paper: state.cexArb.paper || null } : null,
     sweeps: state.cexSweep || {},
     refills: state.cexRefill || {},
+    profitFloor: state.profitFloor || null,
     issues,
     activity: activity.slice(0, 40),
     generatedAt: new Date().toISOString(),

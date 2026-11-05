@@ -1,7 +1,7 @@
 // Pure decision tests for services/etnAccumulatorStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory, profitNowEtn } from "../services/etnAccumulatorStrategy.js";
 
 const cfg = { ...DEFAULT_CONFIG, clipEtn: 10000, warmupSamples: 1 };
 const fresh = (over = {}) => ({ budgetEtn: 100000, realizedGainEtn: 0, lots: [], ema: 0.002, samples: 5, ...over });
@@ -70,4 +70,25 @@ test("inventory below a clip holds", () => {
   const s = fresh({ budgetEtn: 5000 });
   assert.equal(decide(s, { sell: [{ stable: "USDT", stableOut: 30 }] }, cfg).action, "hold");
   assert.equal(decide(fresh(), { sell: [{ stable: "USDT", stableOut: 30 }], walletEtn: 5000 }, cfg).action, "hold");
+});
+
+test("profit now: locked-in gains net of fees, plus open lots at today's quotes", () => {
+  const state = {
+    realizedGainEtn: 7347,
+    gap: { gainEtn: 7671 },
+    tri: { gainEtn: 0 },
+    cu: { gainEtn: 17748, lots: [{ id: 22, stable: "USDT", usd: 45, etn: 23414 }, { id: 26, kind: "sellFirst", stable: "USDC", usd: 44.6, etn: 25000 }] },
+    hedgeLive: { gainEtn: 161, costsEtn: 371 },
+    cexArb: { gainEtn: 1940, costsEtn: 617 },
+    lots: [{ id: 13, status: "open", etnSold: 10000 }, { id: 3, status: "closed", etnSold: 10000 }],
+  };
+  const p = profitNowEtn(state, { ladderBack: { 13: 9500 }, cuBack: { 26: 24000 }, cuNeed: { 22: 28700 } });
+  assert.equal(p.lockedEtn, 7347 + 7671 + 17748 + 161 - 371 + 1940 - 617);
+  assert.equal(p.openEtn, -500 - 1000 - 5286); // ladder lot, sell-first lot, buy-first lot #22
+  assert.equal(p.profitEtn, p.lockedEtn + p.openEtn);
+  assert.equal(p.allQuoted, true);
+  // an unquotable lot is left out — and flagged
+  const q = profitNowEtn(state, { ladderBack: { 13: 9500 }, cuBack: {}, cuNeed: { 22: 28700 } });
+  assert.equal(q.openEtn, -500 - 5286);
+  assert.equal(q.allQuoted, false);
 });
