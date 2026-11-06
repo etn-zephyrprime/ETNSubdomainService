@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -118,4 +118,13 @@ test("refilling KuCoin's USDT from HTX: below the low mark, keeping some on HTX"
   assert.equal(decideUsdtRefill({ kucoinUsdt: 41.43, htxUsdt: 500, fee: 0.01 }, cfg), 158.57); // up to $200
   assert.equal(decideUsdtRefill({ kucoinUsdt: 10, htxUsdt: 70 }, cfg), 0); // $20 spare: under the $30 batch
   assert.equal(decideUsdtRefill({ kucoinUsdt: 10, htxUsdt: 500, pending: true }, cfg), 0);
+});
+
+test("an affordable hedge size fills the gap below the fixed sizes", () => {
+  assert.equal(affordableHedgeUsd(43.69, 180), 43.69); // 6 Nov: $1.31 short of $45
+  assert.equal(affordableHedgeUsd(250, 180), null); // capped at $180, which is already a fixed size
+  assert.equal(affordableHedgeUsd(130.555, 180), 130.55);
+  assert.equal(affordableHedgeUsd(12, 180), null); // under the $20 minimum
+  assert.equal(affordableHedgeUsd(45, 180), null); // already a fixed size
+  assert.equal(affordableHedgeUsd(50, 180, 60), null);
 });

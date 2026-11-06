@@ -35,7 +35,7 @@ import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
-import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill } from "../services/etnHedgeStrategy.js";
+import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
 import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
 import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw, getBalances as htxBalances, getDepositAddress as htxDepositAddress, getTransfers as htxTransfers } from "./htxClient.js";
@@ -132,6 +132,7 @@ export function readConfig() {
     // LIVE hedging: only with ETN_BOT_HEDGE_LIVE=true, live mode, and the KuCoin key set (kucoinClient.js).
     hedgeLive: process.env.ETN_BOT_HEDGE_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured(),
     hedgeMaxUsd: num("ETN_BOT_HEDGE_MAX_USD", 180), // largest hedge
+    hedgeMinUsd: num("ETN_BOT_HEDGE_MIN_USD", 20), // smallest "what the balances allow" hedge (affordableHedgeUsd)
     hedgeMaxEtnOut: num("ETN_BOT_HEDGE_MAX_ETN_OUT", 60000), // most of the bot's ETN that may sit on KuCoin at once
     hedgeMaxTradesPerDay: num("ETN_BOT_HEDGE_MAX_TRADES_PER_DAY", 48),
     // The round trip (rebalanceHedge): moving ETN and dollars back between KuCoin and the wallet. Needs the
@@ -1149,7 +1150,27 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       if (!st?.trading || nowMs() - books[v].ts > ARB_DEFAULTS.maxBookAgeMs) continue;
       usable[v] = await VENUES[v].balances().catch(() => null);
     }
-    const affordable = candidates.filter((c) => {
+    // Plus, per venue, the largest hedge the balances allow (the fixed sizes are often just out of reach):
+    // a sell on ElectroSwap is limited by the venue's USDT (it buys the ETN back there), a buy by the
+    // hedge book's dollars in the wallet.
+    const extra = [];
+    for (const [v, bal] of Object.entries(usable)) {
+      if (!bal) continue;
+      const sellUsd = sellSide ? affordableHedgeUsd(bal.USDT / 1.02 - 0.01, cfg.hedgeMaxUsd, cfg.hedgeMinUsd) : null;
+      if (sellUsd) {
+        const etn = sellUsd / mids[dear];
+        const esUsd = await quoteSellEtn(dear, etn).catch(() => 0);
+        const kc = kucoinFill(books[v].asks, etn, "buy");
+        if (esUsd > 0 && kc) extra.push({ venue: v, dir: "sellOnEs", stable: dear, etn, esUsd, kcUsd: kc.usd, lagPct: lags[dear] });
+      }
+      const buyUsd = buySide ? affordableHedgeUsd(hb.stables[cheap] || 0, cfg.hedgeMaxUsd, cfg.hedgeMinUsd) : null;
+      if (buyUsd) {
+        const etn = await quoteBuyEtn(cheap, buyUsd).catch(() => 0);
+        const kc = etn > 0 ? kucoinFill(books[v].bids, etn, "sell") : null;
+        if (kc) extra.push({ venue: v, dir: "buyOnEs", stable: cheap, usd: buyUsd, etn, kcUsd: kc.usd, lagPct: lags[cheap] });
+      }
+    }
+    const affordable = [...candidates, ...extra].filter((c) => {
       const bal = usable[c.venue];
       if (!bal) return false;
       return c.dir === "sellOnEs"

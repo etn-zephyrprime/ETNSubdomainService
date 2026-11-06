@@ -252,3 +252,11 @@ export function decideUsdtRefill({ kucoinUsdt, htxUsdt, pending = false, fee = 0
   const amount = Math.floor(Math.min(cfg.kucoinUsdtTarget - kucoinUsdt, spare) * 100 + 1e-6) / 100; // 1e-6: float dust (149.07 - 50 = 99.0699…)
   return amount >= Math.max(cfg.minUsdt, withdrawMin) ? amount : 0;
 }
+
+/** The largest hedge the balances allow when it isn't already one of the fixed sizes (those are often
+ * just out of reach — on 6 Nov the hedge book held $43.69 against the $45 minimum through 10+ 1-2%
+ * chances): `available` dollars (after any buffer), capped at maxUsd, to the cent; null below minUsd. */
+export function affordableHedgeUsd(available, maxUsd, minUsd = 20, sizes = HEDGE_DEFAULTS.sizesUsd) {
+  const usd = Math.floor(Math.min(available, maxUsd) * 100 + 1e-6) / 100;
+  return usd >= minUsd && !sizes.includes(usd) ? usd : null;
+}
