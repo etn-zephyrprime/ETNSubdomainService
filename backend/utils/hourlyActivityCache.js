@@ -45,6 +45,9 @@ const DAYS_TO_KEEP = 8; // 7 real days shown + 1 day buffer, same reasoning as d
 const TOP_TX_LIMIT = 50; // well above what the UI shows by default (10) or reasonably expands to
 const TOP_TX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const CACHE_SCHEMA_VERSION = 1;
+// The first block number whose hex has an odd digit count (0x1000000): with the old ethers.toBeHex
+// request (padded to whole bytes, so "0x01000000") the RPC rejected it and every block after it.
+const HEX_BREAK_BLOCK = 0x1000000;
 const CACHE_INTERVAL_MS = process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS
   ? parseInt(process.env.HOURLY_ACTIVITY_CACHE_INTERVAL_MS, 10)
   : 300000;
@@ -68,7 +71,9 @@ function hourKeyFromTimestamp(timestampSec) {
 
 async function fetchBlockWithRetry(provider, blockNumber, attempt = 0) {
   try {
-    const raw = await provider.send("eth_getBlockByNumber", [ethers.toBeHex(blockNumber), true]);
+    // toQuantity, not toBeHex: JSON-RPC wants minimal hex, and toBeHex pads to whole bytes — which broke
+    // every block from 16,777,216 (0x1000000) on with "hex number with leading zero digits".
+    const raw = await provider.send("eth_getBlockByNumber", [ethers.toQuantity(blockNumber), true]);
     if (!raw) return null;
     const timestamp = parseInt(raw.timestamp, 16);
     const timestampMs = timestamp * 1000;
@@ -188,6 +193,9 @@ async function scanAndPublish(provider) {
 
     let highScannedBlock = cached?.highScannedBlock ?? null;
     let lowScannedBlock = cached?.lowScannedBlock ?? null;
+    const highScannedBlockAtStart = highScannedBlock;
+    // A cache started from scratch (no earlier scan) was built with the fixed request — nothing to repair.
+    let hexRepair = cached ? cached.hexRepair ?? null : { done: true };
 
     if (highScannedBlock == null) {
       const fromBlock = Math.max(floorBlock, latestBlock - MAX_BLOCKS_PER_CYCLE + 1);
@@ -205,6 +213,19 @@ async function scanAndPublish(provider) {
         const fromBlock = Math.max(floorBlock, toBlock - MAX_BLOCKS_PER_CYCLE + 1);
         topTransactions = applyResults(hours, await scanBlockRange(provider, fromBlock, toBlock, CONCURRENCY), topTransactions);
         lowScannedBlock = fromBlock;
+      }
+      // One-off repair: every block from 16,777,216 (0x1000000) on failed with the old toBeHex request
+      // and was recorded as empty, yet the cursor moved past it. Those blocks added nothing, so rescanning
+      // exactly that range (as of the first run with the fix) fills the hole without double-counting —
+      // a batch per cycle, like the backfill. Remembered in the cache so it runs once.
+      if (!hexRepair && highScannedBlockAtStart >= HEX_BREAK_BLOCK) hexRepair = { next: Math.max(HEX_BREAK_BLOCK, floorBlock), end: highScannedBlockAtStart };
+      const repair = hexRepair;
+      if (repair && !repair.done) {
+        const toBlock = Math.min(repair.end, repair.next + MAX_BLOCKS_PER_CYCLE - 1);
+        topTransactions = applyResults(hours, await scanBlockRange(provider, repair.next, toBlock, CONCURRENCY), topTransactions);
+        repair.next = toBlock + 1;
+        if (repair.next > repair.end) repair.done = true;
+        console.log(`⏱️  Hourly activity: re-scanned blocks up to ${toBlock} that the old hex request couldn't fetch${repair.done ? " — repair complete" : ` (${repair.end - toBlock} to go)`}`);
       }
       // The floor sliding forward means lowScannedBlock can end up *behind* the new floor after
       // enough cycles (yesterday's "oldest scanned" is now older than the window needs) — clamp
@@ -231,6 +252,7 @@ async function scanAndPublish(provider) {
       floorBlock,
       topTransactions,
       topTransactionsSinceMs,
+      hexRepair,
       schemaVersion: CACHE_SCHEMA_VERSION,
     });
 

@@ -148,22 +148,12 @@ async function main() {
     console.log(`
   CEX arbitrage (KuCoin <-> HTX, LIVE): ${signed(ab.gainEtn)} ETN${Math.abs(ab.gainUsd) >= 0.01 ? ` ${ab.gainUsd >= 0 ? "+" : "−"}${usd(ab.gainUsd)}` : ""} over ${ab.trades} trade(s), ${usd(ab.notionalUsd)} traded${ab.paused ? ` — PAUSED: ${ab.paused}` : ""}`);
     if (ab.costsEtn) console.log(`    withdrawal fees: ${etn(ab.costsEtn)} ETN (${ab.manual?.count || 0} manual KuCoin withdrawal(s), ${etn(ab.manual?.etn || 0)} ETN brought home) — net ${signed(ab.gainEtn - ab.costsEtn)} ETN`);
-    if (ab.paper?.trades) console.log(`    paper (every opportunity that passed the public checks): +${usd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
     if (state.arbLeg) console.log(`    ⚠️ unfinished: ${state.arbLeg.stage === "first" ? `first leg on ${state.arbLeg.firstOrder.venue} not yet confirmed (${state.arbLeg.firstOrder.clientOid})` : `second leg on ${state.arbLeg.cex.venue} — ${state.arbLeg.cex.attempts} attempt(s)`}`);
     if (htxConfigured()) {
       const hb = await htxBalances().catch((err) => ({ error: err.message }));
       console.log(hb.error ? `    HTX balances unavailable: ${hb.error}` : `    HTX spot account now: ${etn(hb.ETN)} ETN + ${usd(hb.USDT)} USDT`);
     }
     for (const r of (ab.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  buy ${r.buyVenue} / sell ${r.sellVenue}  ${etn(r.etn).padStart(8)} ETN  ${usd(r.usd).padStart(8)}  ${signed(r.gainEtn)} ETN`);
-  }
-
-  if (state.hedge) {
-    const h = state.hedge;
-    const usd = (n) => `$${Math.abs(n).toFixed(2)}`;
-    const days = Math.max(1 / 24, (Date.now() - Date.parse(h.since)) / 86400000);
-    console.log(`\n  Hedged catch-up (PAPER — nothing traded): +${usd(h.profitUsd)} (≈ ${signed(h.profitEtn)} ETN) over ${h.trades} hedge(s), ${usd(h.notionalUsd)} traded, since ${h.since.slice(0, 10)} (~${usd(h.profitUsd / days)}/day)`);
-    console.log(`    rebalancing it would need: ${h.drift.etnToWallet >= 0 ? `move ${etn(h.drift.etnToWallet)} ETN KuCoin -> wallet` : `move ${etn(-h.drift.etnToWallet)} ETN wallet -> KuCoin`}, and ${h.drift.usdToKucoin >= 0 ? `${usd(h.drift.usdToKucoin)} wallet -> KuCoin` : `${usd(h.drift.usdToKucoin)} KuCoin -> wallet`}`);
-    for (const r of (h.recent || []).slice(-10)) console.log(`    ${(r.at || "").slice(5, 16)}  ${r.dir === "sellOnEs" ? "sell ES / buy KuCoin" : "buy ES / sell KuCoin"}  ${etn(r.etn).padStart(8)} ETN  ${usd(r.notional).padStart(8)}  +${usd(r.profitUsd)} (${r.profitPct.toFixed(2)}%)`);
   }
 
   if (state.tri?.recent?.length) {
