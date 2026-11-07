@@ -1004,7 +1004,12 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     main.USDT = Math.max(0, main.USDT - (state.cexRefill?.usdt?.pending?.usd || 0));
     const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn - 1000;
     const room = Math.max(0, Math.min(cfg.hedgeMaxEtnOut + hb.walletEtnNet, walletEtn));
-    const a = decideRebalance({ trade, main }, hb, room, cfg.cexSweep ? { ...cfg.rebalance, etnHigh: Infinity } : cfg.rebalance);
+    // KuCoin's ETN is held at its float by the sweep, or by the withdraw alert while the sweep can't run —
+    // so the round trip never tops it up past that float: a 100k target against a 50k float sent ETN up
+    // only for the alert to ask for it back (6-7 Nov: two needless withdrawals, 616 ETN in fees).
+    const rcfg = { ...cfg.rebalance, etnTarget: Math.min(cfg.rebalance.etnTarget, cfg.sweep.kucoin.float) };
+    rcfg.etnLow = Math.min(rcfg.etnLow, rcfg.etnTarget);
+    const a = decideRebalance({ trade, main }, hb, room, cfg.cexSweep ? { ...rcfg, etnHigh: Infinity } : rcfg);
     if (!a) return false;
     const oid = (tag) => `etnbot-rb-${tag}-${Date.now()}`;
     const at = new Date().toISOString();

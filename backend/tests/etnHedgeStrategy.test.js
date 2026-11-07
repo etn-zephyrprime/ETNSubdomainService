@@ -1,7 +1,7 @@
 // Pure tests for services/etnHedgeStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
+import { kucoinFill, decideHedge, freshHedgeBook, applyHedge, HEDGE_DEFAULTS, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, decideRebalance, settleArrival, sweepAmount, SWEEP_DEFAULTS, REBALANCE_DEFAULTS, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -127,4 +127,13 @@ test("an affordable hedge size fills the gap below the fixed sizes", () => {
   assert.equal(affordableHedgeUsd(12, 180), null); // under the $20 minimum
   assert.equal(affordableHedgeUsd(45, 180), null); // already a fixed size
   assert.equal(affordableHedgeUsd(50, 180, 60), null);
+});
+
+test("round trip held to the KuCoin float: tops ETN up to 50k, not 100k (no deposit the alert asks back)", () => {
+  const z = { ETN: 0, USDT: 0, USDC: 0 };
+  const held = { ...REBALANCE_DEFAULTS, etnTarget: Math.min(REBALANCE_DEFAULTS.etnTarget, SWEEP_DEFAULTS.kucoin.float), etnHigh: Infinity };
+  // 7 Nov: a hedge sold 32k ETN on KuCoin, leaving ~17.4k
+  assert.deepEqual(decideRebalance({ trade: { ...z, ETN: 17416, USDT: 500 }, main: z }, { stables: {}, inventory: [], inTransit: [] }, 1e9, held), { type: "depositEtn", amount: 32584 });
+  // the unheld target would have sent 82,584 — half of it straight back via the withdraw alert
+  assert.equal(decideRebalance({ trade: { ...z, ETN: 17416, USDT: 500 }, main: z }, { stables: {}, inTransit: [] }, 1e9, { ...REBALANCE_DEFAULTS, etnHigh: Infinity }).amount, 82584);
 });
