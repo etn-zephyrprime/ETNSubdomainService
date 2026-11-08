@@ -145,6 +145,10 @@ const POSITIONS_CACHE_TTL_MS = process.env.DEFI_POSITIONS_CACHE_TTL_MS
 // Portfolio and PnL tabs both loading around the same time) should share ONE background recompute,
 // not each kick off their own redundant one.
 const inFlightRefresh = new Map(); // walletAddress (lowercase) -> Promise
+// After a background recompute lands, its result counts as current for this long even if the wallet
+// has moved again since — see getOpenDefiPositionsUsd's stale branch.
+const REFRESH_SETTLE_MS = Number(process.env.POSITIONS_REFRESH_SETTLE_MS) || 5 * 60 * 1000;
+const lastRefreshDoneAt = new Map(); // walletAddress (lowercase) -> ms the last background recompute finished
 
 let sharedProvider = null;
 function getProvider() {
@@ -639,10 +643,16 @@ export async function getOpenDefiPositionsUsd(trackedWallet) {
     // close (only the QUANTITIES could be wrong, and only for whatever specifically changed) — serve
     // immediately, and kick exactly one background recompute per wallet (inFlightRefresh dedupes
     // concurrent callers) so the next read gets the fresh figure.
-    if (!inFlightRefresh.has(cacheKey)) {
-      const promise = recomputeAndPersistDefiPositions(trackedWallet, ingestionUpdatedAtMs).finally(() => inFlightRefresh.delete(cacheKey));
-      inFlightRefresh.set(cacheKey, promise);
-    }
+    // Settled: a recompute finished moments ago, so this row is as current as it gets — a busy wallet
+    // (e.g. a trading bot's) changes again before every recompute lands, and without this every read
+    // re-flagged it `refreshing`, so an open Portfolio tab polled every 3s forever (Nov 2026 egress).
+    if (inFlightRefresh.has(cacheKey)) return { ...persisted.payload, refreshing: true };
+    if (Date.now() - (lastRefreshDoneAt.get(cacheKey) || 0) < REFRESH_SETTLE_MS) return persisted.payload;
+    const promise = recomputeAndPersistDefiPositions(trackedWallet, ingestionUpdatedAtMs).finally(() => {
+      inFlightRefresh.delete(cacheKey);
+      lastRefreshDoneAt.set(cacheKey, Date.now());
+    });
+    inFlightRefresh.set(cacheKey, promise);
     return { ...persisted.payload, refreshing: true };
   }
 
