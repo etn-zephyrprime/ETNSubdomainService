@@ -10,6 +10,7 @@ import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatChartDate, formatEtnAmount } from "../../utils/format.js";
 import { green, muted, mutedLight, error as errorColor, border, panel2, monoFont } from "../../theme.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
+import { useBoundedPoll } from "../../hooks/useBoundedPoll.js";
 import TokenLogo from "../../components/TokenLogo.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -158,6 +159,8 @@ function pickTokenFigures(snap, tokenFilter) {
 // INGEST_PROGRESS_CALLBACK_INTERVAL_MS write cadence (2s default), so a poll is never racing a
 // write that hasn't landed yet.
 const INGEST_POLL_INTERVAL_MS = 3000;
+const REFRESH_POLL_MAX = 40; // ~2 min of 3s polls for a background refresh, then the shown figures stand
+const INGEST_POLL_MAX = 200; // ~10 min for a genuine first-time ingest (nothing to show until it's done)
 
 /** Shown in place of the normal PnL figures while a reconnect's sync is still running past its
  * initial grace period (see pnlSnapshotRouter.js's own `ingesting`/`jobs` response fields) — every
@@ -307,11 +310,13 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // done. Stops itself (clears the interval) the moment a poll comes back with ingesting:false —
   // at that point `snapshot` already holds the real, freshly-computed figures from that same
   // response, no extra fetch needed.
-  useEffect(() => {
-    if (!snapshot?.ingesting && !snapshot?.refreshing) return;
-    const id = setInterval(() => loadSnapshot(undefined, { silent: true }), INGEST_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [snapshot?.ingesting, snapshot?.refreshing, loadSnapshot]);
+  // Bounded (useBoundedPoll): paused while the tab is hidden, and each burst capped.
+  useBoundedPoll(
+    Boolean(snapshot?.ingesting || snapshot?.refreshing),
+    () => loadSnapshot(undefined, { silent: true }),
+    INGEST_POLL_INTERVAL_MS,
+    snapshot?.ingesting ? INGEST_POLL_MAX : REFRESH_POLL_MAX
+  );
 
   const toggleTokenSelection = (walletAddress, tokenAddress) => {
     setPickerSelections((prev) => {

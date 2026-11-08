@@ -25,10 +25,13 @@ import { computePortfolioChange } from "../../utils/portfolioChange.js";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
 import { IngestProgressBanner } from "./CoreTierPnl.jsx";
+import { useBoundedPoll } from "../../hooks/useBoundedPoll.js";
 
 // Same poll cadence as CoreTierPnl.jsx's own identical constant — see that file's own comment for
 // why (separate from, and a bit slower than, the backend's own progress-write interval).
 const INGEST_POLL_INTERVAL_MS = 3000;
+const REFRESH_POLL_MAX = 40; // ~2 min of 3s polls for a background refresh, then the shown figures stand
+const INGEST_POLL_MAX = 200; // ~10 min for a genuine first-time ingest (nothing to show until it's done)
 
 const NFT_TOKEN_TYPES = new Set(["ERC-721", "ERC-1155"]);
 // How many fungible tokens get a price fetched at all, independent of HOLDINGS_PAGE_SIZE below
@@ -356,11 +359,13 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // are a real-but-known-stale cache hit that's refreshing in the background (defiPositions.refreshing
   // — see defiPositionValuation.js's own getOpenDefiPositionsUsd comment on that distinction). Same
   // shape as CoreTierPnl.jsx's own identical polling effect.
-  useEffect(() => {
-    if (!defiPositions?.ingesting && !defiPositions?.refreshing) return;
-    const id = setInterval(() => loadDefiPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [defiPositions?.ingesting, defiPositions?.refreshing, loadDefiPositions]);
+  // Bounded (useBoundedPoll): paused while the tab is hidden, and each burst capped.
+  useBoundedPoll(
+    Boolean(defiPositions?.ingesting || defiPositions?.refreshing),
+    () => loadDefiPositions({ silent: true }),
+    INGEST_POLL_INTERVAL_MS,
+    defiPositions?.ingesting ? INGEST_POLL_MAX : REFRESH_POLL_MAX
+  );
 
   // Closed farm-position history — fetched once, the first time the user actually expands "Show
   // closed positions" (see the showClosedPositions toggle below), not on mount and not polled —
@@ -477,11 +482,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
   // lpPositionValuation.js's own getLiquidityPositionsUsd comment) and a background recompute is
   // already running server-side. No `ingesting`-equivalent case here (unlike DeFi, LP has no
   // discovery-ingestion step that can leave genuinely nothing to show).
-  useEffect(() => {
-    if (!lpPositions?.refreshing) return;
-    const id = setInterval(() => loadLpPositions({ silent: true }), INGEST_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [lpPositions?.refreshing, loadLpPositions]);
+  useBoundedPoll(Boolean(lpPositions?.refreshing), () => loadLpPositions({ silent: true }), INGEST_POLL_INTERVAL_MS, REFRESH_POLL_MAX);
 
   // USD price per merged token — one batched request for the whole holdings list (see
   // useBatchTokenPrices's own header comment for why: firing one small independent request per

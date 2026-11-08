@@ -89,6 +89,10 @@ const POSITIONS_CACHE_TTL_MS = process.env.LP_POSITIONS_CACHE_TTL_MS
 // Dedupes concurrent/rapid-fire background refreshes for the same wallet — same reasoning as
 // defiPositionValuation.js's own inFlightRefresh.
 const inFlightRefresh = new Map(); // walletAddress (lowercase) -> Promise
+// After a background recompute lands, its result counts as current for this long (same setting as
+// defiPositionValuation.js's) — see getLiquidityPositionsUsd's stale branch.
+const REFRESH_SETTLE_MS = Number(process.env.POSITIONS_REFRESH_SETTLE_MS) || 5 * 60 * 1000;
+const lastRefreshDoneAt = new Map(); // walletAddress (lowercase) -> ms the last background recompute finished
 
 // "lp2:" prefix versions the fingerprint: it invalidates every wallet_position_cache 'lp' row written
 // before locked-liquidity support existed (those rows only ever counted LP tokens held directly, so
@@ -801,12 +805,16 @@ export async function getLiquidityPositionsUsd(walletAddress, heldFungibleTokens
     // wallet (inFlightRefresh dedupes concurrent callers) using the CURRENT candidate list so the
     // next read gets the fresh figure.
     const walletKey = walletAddress.toLowerCase();
-    if (!inFlightRefresh.has(walletKey)) {
-      const promise = recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens, fingerprint).finally(() =>
-        inFlightRefresh.delete(walletKey)
-      );
-      inFlightRefresh.set(walletKey, promise);
-    }
+    // Settled: a recompute finished moments ago and wrote this row, so it's as current as it gets — a
+    // wallet whose balances change every few minutes (e.g. a trading bot's) otherwise stayed
+    // `refreshing` forever and an open Portfolio tab polled every 3s non-stop (Nov 2026 egress).
+    if (inFlightRefresh.has(walletKey)) return { ...persisted.payload, refreshing: true };
+    if (Date.now() - (lastRefreshDoneAt.get(walletKey) || 0) < REFRESH_SETTLE_MS) return persisted.payload;
+    const promise = recomputeAndPersistLpPositions(walletAddress, heldFungibleTokens, fingerprint).finally(() => {
+      inFlightRefresh.delete(walletKey);
+      lastRefreshDoneAt.set(walletKey, Date.now());
+    });
+    inFlightRefresh.set(walletKey, promise);
     return { ...persisted.payload, refreshing: true };
   }
 

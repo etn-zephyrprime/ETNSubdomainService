@@ -431,6 +431,9 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
 }
 
 const inFlightSnapshotRefresh = new Map(); // cacheKey -> Promise, so a burst of polls starts ONE recompute
+// After a background recompute lands, its result counts as current for this long (see getSnapshotFast).
+const SNAPSHOT_REFRESH_SETTLE_MS = Number(process.env.POSITIONS_REFRESH_SETTLE_MS) || 5 * 60 * 1000;
+const lastSnapshotRefreshDoneAt = new Map(); // cacheKey -> ms the last background recompute finished
 // In-memory copy of the saved (Supabase) snapshot, so the frontend's 3s poll while `refreshing` doesn't
 // re-read a tens-of-KB JSONB row from Postgres on every tick (Supabase egress has been a real concern
 // here — see the snapshot cache header above). Filled on the first DB read and on every fresh
@@ -468,10 +471,20 @@ export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
   }
   if (!persisted) return null;
 
+  // Settled: a recompute (a full ledger replay — the biggest Postgres read there is) finished moments
+  // ago and its result is in the in-memory cache. A busy wallet (e.g. a trading bot's) has new ingested
+  // data before every recompute lands, so without this every poll kicked another replay and stayed
+  // `refreshing` — an open PnL tab re-read whole ledgers non-stop (Nov 2026 egress).
+  if (!inFlightSnapshotRefresh.has(cacheKey) && cached && Date.now() - (lastSnapshotRefreshDoneAt.get(cacheKey) || 0) < SNAPSHOT_REFRESH_SETTLE_MS) {
+    return { snapshot: cached.snapshot, refreshing: false };
+  }
   if (!inFlightSnapshotRefresh.has(cacheKey)) {
     const promise = computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses, null)
       .catch((err) => console.error(`⚠️  PnL snapshot: background refresh failed for ${trackedWallet}:`, err.message))
-      .finally(() => inFlightSnapshotRefresh.delete(cacheKey));
+      .finally(() => {
+        inFlightSnapshotRefresh.delete(cacheKey);
+        lastSnapshotRefreshDoneAt.set(cacheKey, Date.now());
+      });
     inFlightSnapshotRefresh.set(cacheKey, promise);
   }
   return { snapshot: persisted.payload, refreshing: true, computedAt: persisted.computedAt };
