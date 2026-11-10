@@ -18,8 +18,10 @@
 import express from "express";
 import { ethers } from "ethers";
 import crypto from "crypto";
+import { createRateLimiter } from "./rateLimit.js";
 
 const LINK_CODE_TTL_MS = 15 * 60 * 1000;
+const chatFlood = createRateLimiter({ max: 10, windowMs: 60 * 1000 });
 const MAX_SIGNATURE_AGE_MS = 5 * 60 * 1000;
 const MAX_CLOCK_SKEW_MS = 30 * 1000;
 
@@ -165,6 +167,10 @@ export function createTelegramLinkRouter(config) {
       const message = req.body?.message;
       const text = message?.text;
       const chatId = message?.chat?.id;
+      // Flood guard for every bot on this router: past 10 messages a minute from one chat, the rest are
+      // dropped silently (no reply, no R2 read) — e.g. /start with made-up codes, which would otherwise get
+      // an "expired" reply each time. Per-command limits (e.g. the Notis bot's /check) sit on top.
+      if (chatId != null && !chatFlood(`${routeBase}:${chatId}`).ok) return res.sendStatus(200);
       const match = typeof text === "string" ? text.match(/^\/start\s+([0-9a-f]{12})\b/i) : null;
 
       if (match && chatId != null) {
@@ -189,7 +195,8 @@ export function createTelegramLinkRouter(config) {
           await setState(state);
           await sendDirectMessage(chatId, "Unlinked — you won't get any more alerts here.");
         }
-      } else if (onCommand && typeof text === "string" && chatId != null) {
+      } else if (onCommand && typeof text === "string" && text.startsWith("/") && chatId != null) {
+        // commands only: plain chatter (e.g. in a group the bot sits in) costs nothing — not even the R2 read below
         const state = await getState();
         const linkedAddress = Object.entries(state.subscriptions).find(([, v]) => v.chatId === chatId)?.[0] || null;
         // Not awaited: a command can take a while (e.g. analysing a contract), and Telegram re-sends any update

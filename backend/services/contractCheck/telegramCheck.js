@@ -5,6 +5,12 @@
 //
 // Core Tier only, like the rest of Contract Check: the chat must be linked to a wallet (the dashboard's
 // Telegram link) that has Core access. Private chats only — in a group it stays quiet.
+//
+// Spam: every command counts against per-chat limits (6 a minute, 40 an hour); /check also against 30 an
+// hour and 100 a day per chat, and 300 per 10 minutes across all chats (explorer / RPC load). Going over
+// gets ONE "slow down" reply per window and then silence, so flooding the bot gets one answer, not one per
+// message. Unlinked or non-member chats get the "link your wallet" reply at most every 10 minutes.
+// /check never spends a Claude call: it shows a summary only if one is already cached.
 import { ethers } from "ethers";
 import { analyseContract } from "./analyseContract.js";
 import { contractCheckProvider } from "./fetchContractData.js";
@@ -18,9 +24,38 @@ import { getAlertState, setAlertState } from "../../db/contractAlerts.js";
 
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 export const cardLink = (address) => `${DASHBOARD_URL}/premium?contract=${address}`;
-const checksByChat = createRateLimiter({ max: 20, windowMs: 10 * 60 * 1000 });
+
+const MIN = 60 * 1000;
+const commandsPerMinute = createRateLimiter({ max: 6, windowMs: MIN });
+const commandsPerHour = createRateLimiter({ max: 40, windowMs: 60 * MIN });
+const checksPerHour = createRateLimiter({ max: 30, windowMs: 60 * MIN });
+const checksPerDay = createRateLimiter({ max: 100, windowMs: 24 * 60 * MIN });
+const checksAllChats = createRateLimiter({ max: 300, windowMs: 10 * MIN });
 
 export const alertsMutedKey = (owner) => `muted:${owner.toLowerCase()}`;
+
+// chat|kind -> time until which that notice isn't repeated
+const noticeUntil = new Map();
+/** Sends `text` unless the same kind of notice already went to this chat in the last `forMs`. */
+async function noticeOnce(chatId, kind, forMs, text, send) {
+  const k = `${chatId}|${kind}`;
+  const now = Date.now();
+  if ((noticeUntil.get(k) || 0) > now) return;
+  if (noticeUntil.size > 5000) for (const [key, until] of noticeUntil) if (until <= now) noticeUntil.delete(key);
+  noticeUntil.set(k, now + forMs);
+  await send(chatId, text);
+}
+
+/** The first limit `chatId` is over, as { retryAfterSec, kind }, or null. Every call counts against each. */
+function overLimit(limiters, chatId) {
+  for (const [kind, limiter] of limiters) {
+    const r = limiter(`${kind}:${chatId}`);
+    if (!r.ok) return { retryAfterSec: r.retryAfterSec, kind };
+  }
+  return null;
+}
+
+const inWords = (sec) => (sec >= 120 ? `${Math.ceil(sec / 60)} minutes` : `${sec}s`);
 
 /** `{ address, alternatives }` for what someone typed after /check, or null. */
 async function resolveTarget(q) {
@@ -42,12 +77,18 @@ export async function handleNotisCommand({ text, chatId, chatType, linkedAddress
   if (!check && !alerts) return false;
   if (chatType && chatType !== "private") return true; // groups: stay quiet
 
+  const flood = overLimit([["cmdMin", commandsPerMinute], ["cmdHour", commandsPerHour]], chatId);
+  if (flood) {
+    await noticeOnce(chatId, flood.kind, flood.retryAfterSec * 1000, `⏳ Slow down — try again in ${inWords(flood.retryAfterSec)}.`, sendDirectMessage);
+    return true;
+  }
+
   if (!linkedAddress) {
-    await sendDirectMessage(chatId, `Contract Check is part of Core Tier. Link this chat to your Core Tier wallet first: on the dashboard, Core Tier → Telegram Alerts → link Telegram.\n${DASHBOARD_URL}/premium`);
+    await noticeOnce(chatId, "link", 10 * MIN, `Contract Check is part of Core Tier. Link this chat to your Core Tier wallet first: on the dashboard, Core Tier → Telegram Alerts → link Telegram.\n${DASHBOARD_URL}/premium`, sendDirectMessage);
     return true;
   }
   if (!(await hasCoreAccess(linkedAddress))) {
-    await sendDirectMessage(chatId, `Contract Check is part of Core Tier, and the wallet linked here doesn't have an active membership.\n${DASHBOARD_URL}/premium`);
+    await noticeOnce(chatId, "member", 10 * MIN, `Contract Check is part of Core Tier, and the wallet linked here doesn't have an active membership.\n${DASHBOARD_URL}/premium`, sendDirectMessage);
     return true;
   }
 
@@ -69,11 +110,17 @@ export async function handleNotisCommand({ text, chatId, chatType, linkedAddress
     await sendDirectMessage(chatId, "Send `/check` followed by a token symbol, a name.etn or a contract address — e.g. `/check CORE`.");
     return true;
   }
-  const r = checksByChat(`check:${chatId}`);
-  if (!r.ok) {
-    await sendDirectMessage(chatId, `That's a lot of checks — try again in ${r.retryAfterSec}s.`);
+  const limited = overLimit([["checkHour", checksPerHour], ["checkDay", checksPerDay]], chatId);
+  if (limited) {
+    const daily = limited.kind === "checkDay";
+    await noticeOnce(chatId, limited.kind, limited.retryAfterSec * 1000, `That's the limit for /check (${daily ? "100 a day" : "30 an hour"}) — more ${daily ? "tomorrow" : `in ${inWords(limited.retryAfterSec)}`}. The dashboard has no limit on looking contracts up.`, sendDirectMessage);
     return true;
   }
+  if (!checksAllChats("all").ok) {
+    await noticeOnce(chatId, "busy", 2 * MIN, "Contract Check is busy right now — try again in a couple of minutes.", sendDirectMessage);
+    return true;
+  }
+
   const target = await resolveTarget(q);
   if (!target) {
     await sendDirectMessage(chatId, `Couldn't find a contract for "${md(q)}". Try its symbol, a name.etn or the contract address.`);
@@ -84,8 +131,8 @@ export async function handleNotisCommand({ text, chatId, chatType, linkedAddress
     await sendDirectMessage(chatId, "Couldn't check that contract right now — try again shortly.");
     return true;
   }
-  // The shared, cached summary (the same one the dashboard shows); skipped if it can't be had.
-  const oneLiner = facts.identity?.isContract === false ? null : (await explainContract(facts).catch(() => null))?.summary?.oneLiner || null;
+  // The shared summary, only if it's already cached (the dashboard writes it) — /check never spends a Claude call.
+  const oneLiner = facts.identity?.isContract === false ? null : (await explainContract(facts, { cachedOnly: true }).catch(() => null))?.summary?.oneLiner || null;
   await sendDirectMessage(chatId, formatCheckCard({ facts, oneLiner, link: cardLink(facts.address), alternatives: target.alternatives }));
   return true;
 }
