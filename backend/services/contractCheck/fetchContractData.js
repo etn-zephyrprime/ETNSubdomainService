@@ -9,6 +9,7 @@ import { fetchBlockscoutJsonOrNull } from "../../utils/blockscoutClient.js";
 import { createRpcProvider } from "../../utils/rpcProvider.js";
 import { createPrimaryNameResolver, shortAddress } from "../../utils/primaryNameResolver.js";
 import { lookupKnownContract } from "./knownContracts.js";
+import { findPrivilegedPowers } from "./privilegedPowers.js";
 
 export const EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 export const EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
@@ -175,6 +176,22 @@ export async function fetchContractData(addressInput, { provider = contractCheck
     raw.ownership = { failed: true };
   }
 
+  // Custom roles (e.g. CORE's taxWallet): the current holder of each state variable the source gates powers
+  // on, when the ABI has a no-argument address getter for it. A zero address means nobody can use them.
+  raw.roleHolders = {};
+  const target = raw.implementation ? raw.implementation.contract : raw.contract;
+  for (const name of findPrivilegedPowers(target?.abi, target).customControllers) {
+    const getter = (target.abi || []).find((f) => f.type === "function" && f.name === name && !(f.inputs || []).length && f.outputs?.length === 1 && f.outputs[0].type === "address");
+    if (!getter) continue;
+    try {
+      const iface = new ethers.Interface([`function ${name}() view returns (address)`]);
+      const data = await provider.call({ to: address, data: iface.encodeFunctionData(name) });
+      raw.roleHolders[name] = data && data !== "0x" ? String(iface.decodeFunctionResult(name, data)[0]) : null;
+    } catch {
+      miss("rpc:roles");
+    }
+  }
+
   // Token, age and activity.
   if (raw.addressInfo?.token) {
     raw.token = await bs(`/tokens/${address}`, "explorer:token");
@@ -205,7 +222,7 @@ export async function fetchContractData(addressInput, { provider = contractCheck
   // .etn names (the shared resolver; its short-address fallback means "no name").
   const resolve = createPrimaryNameResolver(provider, REVERSE_REGISTRAR_ADDRESS);
   raw.names = {};
-  const who = [address, raw.addressInfo?.creator_address_hash, raw.ownership?.owner, raw.slots?.admin, raw.admin?.owner].filter((a) => a && a !== ethers.ZeroAddress);
+  const who = [address, raw.addressInfo?.creator_address_hash, raw.ownership?.owner, raw.slots?.admin, raw.admin?.owner, ...Object.values(raw.roleHolders)].filter((a) => a && a !== ethers.ZeroAddress);
   for (const a of [...new Set(who.map((x) => x.toLowerCase()))]) {
     const n = await resolve(ethers.getAddress(a)).catch(() => null);
     raw.names[a] = n && n !== shortAddress(ethers.getAddress(a)) ? n : null;

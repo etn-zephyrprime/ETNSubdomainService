@@ -25,5 +25,7 @@ export const RISK_RULES = {
   owner_can_sweep_tokens: { enabled: true, severity: "high" }, // owner can withdraw arbitrary tokens
   young_contract: { enabled: true, severity: "caution" },
   concentrated_holders: { enabled: true, severity: "caution" },
+  balance_overwrite: { enabled: true, severity: "high" }, // a function sets a holder's balance outright (e.g. CORE's transferTaxWallet)
+  custom_role_control: { enabled: true, severity: "info" }, // powers gated to a role of the contract's own (survives a renounced owner)
   owner_renounced: { enabled: true, severity: "info" },
 };

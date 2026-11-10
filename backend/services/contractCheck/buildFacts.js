@@ -6,7 +6,7 @@ import { findPrivilegedPowers } from "./privilegedPowers.js";
 import { computeRiskFlags, overallFromFlags } from "./riskFlags.js";
 import { RISK_THRESHOLDS } from "./riskRules.config.js";
 
-export const FACTS_SCHEMA_VERSION = 1;
+export const FACTS_SCHEMA_VERSION = 2; // 2: custom roles (gate/controller on powers, ownership.customRoles), balanceOverwrite
 const ZERO = "0x0000000000000000000000000000000000000000";
 const BURN = new Set([ZERO, "0x000000000000000000000000000000000000dead"]);
 const lc = (a) => (a ? String(a).toLowerCase() : null);
@@ -123,6 +123,12 @@ export function buildFacts(raw) {
     ownerContract: own.ownerIsContract ? { name: own.ownerContract?.name || null, verified: Boolean(own.ownerContract), kind: contractKind(own.ownerContract) } : null,
     adminRoleHolders: own.accessControl?.adminHolders ? own.accessControl.adminHolders.map(lc) : null,
     deployerHasAdminRole: own.accessControl?.deployerIsAdmin ?? null,
+    // Roles of the contract's own that gate powers (e.g. CORE's taxWallet) — they outlive a renounced owner.
+    // holder null = couldn't read it (no getter, or the call failed): treated as live.
+    customRoles: powers.customControllers.map((name) => {
+      const holder = raw.roleHolders && name in raw.roleHolders ? lc(raw.roleHolders[name]) : null;
+      return { name, holder, status: holder === null ? "unknown" : holder === ZERO ? "renounced" : "active", holderEtnName: nameOf(holder) };
+    }),
   };
 
   // Who can upgrade a proxy: the admin slot (Transparent: an EOA, or a ProxyAdmin contract whose owner

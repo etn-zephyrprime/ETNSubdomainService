@@ -1,7 +1,7 @@
 // Contract Check, Phase 1: deterministic facts. Offline — fixtures are raw explorer/chain data.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildFacts } from "../services/contractCheck/buildFacts.js";
+import { buildFacts, FACTS_SCHEMA_VERSION } from "../services/contractCheck/buildFacts.js";
 import { findPrivilegedPowers, gatingFromSource } from "../services/contractCheck/privilegedPowers.js";
 import { computeRiskFlags, overallFromFlags } from "../services/contractCheck/riskFlags.js";
 import * as fx from "./fixtures/contractCheck/fixtures.js";
@@ -124,7 +124,8 @@ test("badges: cached overall used, stale/missing re-analysed (capped), incomplet
   const { buildBadges } = await import("../services/contractCheck/badges.js");
   const now = Date.parse("2026-11-10T12:00:00Z");
   const summaries = async () => ({
-    "0xaa": { overall: "green", analysedAt: "2026-11-10T06:00:00Z" }, // fresh
+    "0xaa": { overall: "green", schemaVersion: FACTS_SCHEMA_VERSION, analysedAt: "2026-11-10T06:00:00Z" }, // fresh
+    "0xab": { overall: "green", schemaVersion: 1, analysedAt: "2026-11-10T06:00:00Z" }, // fresh, but older rules -> re-analysed
     "0xbb": { overall: "green", analysedAt: "2026-11-08T00:00:00Z" }, // stale -> re-analysed
   });
   const analysed = [];
@@ -132,7 +133,35 @@ test("badges: cached overall used, stale/missing re-analysed (capped), incomplet
     analysed.push(a);
     return { "0xbb": { overall: "red" }, "0xcc": { overall: "amber", incomplete: true }, "0xdd": { overall: "amber" } }[a];
   };
-  const badges = await buildBadges(["0xAA", "0xbb", "0xcc", "0xdd", "0xee"], { summaries, analyse, now, max: 3 });
-  assert.deepEqual(analysed, ["0xbb", "0xcc", "0xdd"]); // 0xee waits for the next run
-  assert.deepEqual(badges, { "0xaa": "green", "0xbb": "red", "0xdd": "amber" });
+  const badges = await buildBadges(["0xAA", "0xab", "0xbb", "0xcc", "0xdd", "0xee"], { summaries, analyse, now, max: 4 });
+  assert.deepEqual(analysed, ["0xab", "0xbb", "0xcc", "0xdd"]); // 0xee waits for the next run
+  assert.deepEqual(badges, { "0xaa": "green", "0xab": "green", "0xbb": "red", "0xdd": "amber" }); // 0xab's analysis failed -> its cached badge stays
+});
+
+test("custom role (CORE-style onlyTaxWallet): survives a renounced owner -> fee toggle + balance overwrite flagged", () => {
+  const f = buildFacts(fx.customRoleToken);
+  const byCat = f.powers.byCategory;
+  assert.equal(f.ownership.ownerStatus, "renounced");
+  assert.deepEqual(byCat.fees.map((p) => [p.name, p.gate, p.controller]), [["toggleTaxesPaused", "custom", "taxWallet"]]);
+  assert.deepEqual(byCat.pause.map((p) => [p.name, p.gate]), [["enableTrading", "owner"]]);
+  assert.deepEqual(byCat.balanceOverwrite.map((p) => [p.name, p.param]), [["transferTaxWallet", "_newTaxWallet"]]); // burn's -= isn't an overwrite
+  assert.deepEqual(f.ownership.customRoles, [{ name: "taxWallet", holder: fx.TAX_WALLET, status: "active", holderEtnName: null }]);
+  assert.ok(!ids(f).includes("pause_power")); // enableTrading is owner-only and the owner is renounced
+  for (const id of ["balance_overwrite", "owner_adjustable_fees", "custom_role_control", "owner_renounced"]) assert.ok(ids(f).includes(id), id);
+  assert.match(f.riskFlags.find((x) => x.id === "custom_role_control").fact, new RegExp(fx.TAX_WALLET));
+  assert.match(f.riskFlags.find((x) => x.id === "owner_adjustable_fees").fact, /toggleTaxesPaused — taxWallet role/);
+  assert.equal(f.overall, "red");
+});
+
+test("custom role set to the zero address: its powers are dead like a renounced owner's", () => {
+  const f = buildFacts(fx.customRoleRenounced);
+  assert.equal(f.ownership.customRoles[0].status, "renounced");
+  assert.deepEqual(ids(f), ["owner_renounced"]);
+  assert.equal(f.overall, "green");
+});
+
+test("custom role whose holder couldn't be read counts as live", () => {
+  const f = buildFacts({ ...fx.customRoleToken, roleHolders: {} });
+  assert.equal(f.ownership.customRoles[0].status, "unknown");
+  assert.ok(ids(f).includes("balance_overwrite"));
 });
