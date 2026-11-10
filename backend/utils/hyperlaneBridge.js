@@ -26,7 +26,12 @@
 // (its native balance), which should equal total sent minus total received. Amounts are in ETN, not USD:
 // tokens carry a `unit` ("USD" | "ETN") so nothing adds them to the stablecoins.
 //
-// SOURCE. The explorer's etherscan-style getLogs endpoint (topic-filtered, 1,000 results/page, timestamps
+// SOURCE. The explorer indexes a little behind the chain, so each cycle reads only up to CONFIRM_LAG_BLOCKS
+// below the chain head — reading right up to the head moved the cursor past blocks the explorer hadn't
+// indexed yet, and their transfers were skipped for good (Nov 2026: 21 USDT + 25 USDC transfers missing,
+// net short of supply by ~$2.4k / ~$3.9k). And if the events ever stop adding up to the supply, the whole
+// history is re-read (a few hundred events) and, if THAT matches, replaces what's stored — at most every
+// REBUILD_EVERY_MS. The explorer's etherscan-style getLogs endpoint (topic-filtered, 1,000 results/page, timestamps
 // included), so no RPC scanning and no per-block timestamp lookups. The first run reads the whole history (a
 // few hundred events); after that each cycle only reads blocks after the stored cursor. Events are kept as
 // compact rows [timestampSec, tokenIndex, domain, direction (0 = in, 1 = out), amount, block].
@@ -40,7 +45,9 @@ const PAGE_SIZE = 1000;
 const MAX_PAGES = 200;
 // Events older than this are dropped from the published file (the tab only shows a rolling 12 months); the
 // cursor, not the stored events, decides what still needs fetching.
-const KEEP_DAYS = 1100; // ~3 years: a few hundred rows a year, and it keeps the supply reconciliation below meaningful
+const KEEP_DAYS = 1100;
+const CONFIRM_LAG_BLOCKS = 60; // ~5 min of Electroneum blocks: the explorer has always indexed these
+const REBUILD_EVERY_MS = 6 * 3600 * 1000; // ~3 years: a few hundred rows a year, and it keeps the supply reconciliation below meaningful
 
 // Order matters: an event row stores the token's INDEX here, so new tokens are only ever appended.
 export const HYPERLANE_TOKENS = [
@@ -86,6 +93,19 @@ export function mergeEvents(existing, incoming, cursorsByTokenIndex, now = Date.
   return [...existing, ...fresh].filter((e) => e[0] >= cutoffSec).sort((a, b) => a[0] - b[0] || a[5] - b[5]);
 }
 
+/** Symbols whose events don't add up to what the contract says (supply; for native ETN, what's locked —
+ * sent minus received). `current` = { [symbol]: { supply } }. Pure. */
+export function driftedTokens(events, current, tokens = HYPERLANE_TOKENS) {
+  return tokens
+    .filter((t, i) => {
+      const supply = current?.[t.symbol]?.supply;
+      if (supply == null) return false;
+      const net = t.native ? -netFromEvents(events, i) : netFromEvents(events, i);
+      return Math.abs(net - supply) > 1;
+    })
+    .map((t) => t.symbol);
+}
+
 /** Total received minus total sent for one token, from stored events (NOT windowed — use before pruning
  * matters, i.e. for the reconciliation log). Pure. */
 export function netFromEvents(events, tokenIndex) {
@@ -116,6 +136,20 @@ async function fetchLogs({ address, topic0, fromBlock, toBlock, fetchImpl = fetc
 }
 
 let isRunning = false;
+let lastRebuildAt = 0;
+
+/** One token's transfer events in [fromBlock, toBlock], both directions, as rows. */
+async function readTokenEvents(i, fromBlock, toBlock, fetchImpl) {
+  const token = HYPERLANE_TOKENS[i];
+  const [sent, received] = await Promise.all([
+    fetchLogs({ address: token.address, topic0: SENT_TOPIC, fromBlock, toBlock, fetchImpl }),
+    fetchLogs({ address: token.address, topic0: RECEIVED_TOPIC, fromBlock, toBlock, fetchImpl }),
+  ]);
+  const rows = [];
+  for (const r of sent) { const e = parseLogRow(r, i, DIR_OUT, token.decimals); if (e) rows.push(e); }
+  for (const r of received) { const e = parseLogRow(r, i, DIR_IN, token.decimals); if (e) rows.push(e); }
+  return rows;
+}
 
 /** One refresh cycle: read new events for every token up to a fixed block, merge, refresh supply/domains,
  * publish. Never throws. Dependencies injectable for tests. */
@@ -129,7 +163,8 @@ export async function refreshHyperlaneBridge({ provider, getData = getHyperlaneB
       return;
     }
 
-    const latestBlock = await provider.getBlockNumber();
+    // a little below the head: the explorer may not have indexed the newest blocks yet (see the header)
+    const latestBlock = Math.max(0, (await provider.getBlockNumber()) - CONFIRM_LAG_BLOCKS);
     const cursors = { ...stored.cursors };
     const cursorByIndex = {};
     HYPERLANE_TOKENS.forEach((t, i) => { cursorByIndex[i] = cursors[t.symbol] ?? -1; });
@@ -141,16 +176,11 @@ export async function refreshHyperlaneBridge({ provider, getData = getHyperlaneB
       const token = HYPERLANE_TOKENS[i];
       const fromBlock = (cursors[token.symbol] ?? -1) + 1;
       if (fromBlock > latestBlock) continue;
-      const [sent, received] = await Promise.all([
-        fetchLogs({ address: token.address, topic0: SENT_TOPIC, fromBlock, toBlock: latestBlock, fetchImpl }),
-        fetchLogs({ address: token.address, topic0: RECEIVED_TOPIC, fromBlock, toBlock: latestBlock, fetchImpl }),
-      ]);
-      for (const r of sent) { const e = parseLogRow(r, i, DIR_OUT, token.decimals); if (e) incoming.push(e); }
-      for (const r of received) { const e = parseLogRow(r, i, DIR_IN, token.decimals); if (e) incoming.push(e); }
+      incoming.push(...(await readTokenEvents(i, fromBlock, latestBlock, fetchImpl)));
       cursors[token.symbol] = latestBlock;
     }
 
-    const events = mergeEvents(stored.events, incoming, cursorByIndex, now);
+    let events = mergeEvents(stored.events, incoming, cursorByIndex, now);
 
     // Current supply + enrolled chains, straight from the contracts. A failed read keeps the previous value.
     const current = { ...stored.current };
@@ -158,11 +188,29 @@ export async function refreshHyperlaneBridge({ provider, getData = getHyperlaneB
       const token = HYPERLANE_TOKENS[i];
       try {
         const contract = new ethers.Contract(token.address, ABI, provider);
-        // native ETN: the ETN locked in the route contract (bridged off Electroneum), not a token supply
-        const [supply, domains] = await Promise.all([token.native ? provider.getBalance(token.address) : contract.totalSupply(), contract.domains()]);
+        // native ETN: the ETN locked in the route contract (bridged off Electroneum), not a token supply. Read at
+        // latestBlock — the block the events stop at — so a transfer in the last few minutes isn't "drift".
+        const [supply, domains] = await Promise.all([token.native ? provider.getBalance(token.address, latestBlock) : contract.totalSupply({ blockTag: latestBlock }), contract.domains()]);
         current[token.symbol] = { supply: Number(ethers.formatUnits(supply, token.decimals)), domains: domains.map(Number), block: latestBlock, ...(token.native ? { locked: true } : {}) };
       } catch (err) {
         console.warn(`⚠️  Hyperlane bridge: couldn't read ${token.symbol} supply/domains: ${err.message}`);
+      }
+    }
+
+    // Self-heal: events that don't add up to the supply mean some were missed — re-read everything, and keep
+    // the re-read only if it does add up (supply can also move between reads; then try again later).
+    let healNote = "";
+    if (driftedTokens(events, current).length && now - lastRebuildAt >= REBUILD_EVERY_MS) {
+      lastRebuildAt = now;
+      const full = [];
+      for (let i = 0; i < HYPERLANE_TOKENS.length; i++) full.push(...(await readTokenEvents(i, 0, latestBlock, fetchImpl)));
+      const rebuilt = mergeEvents([], full, {}, now);
+      if (driftedTokens(rebuilt, current).length === 0) {
+        healNote = ` · rebuilt from the full history (${rebuilt.length - events.length} missed event(s) recovered)`;
+        events = rebuilt;
+        for (const t of HYPERLANE_TOKENS) cursors[t.symbol] = latestBlock;
+      } else {
+        healNote = " · a full re-read didn't add up either (supply may have moved meanwhile) — trying again in 6h";
       }
     }
 
@@ -180,7 +228,7 @@ export async function refreshHyperlaneBridge({ provider, getData = getHyperlaneB
       const drift = supply != null && Math.abs(net - supply) > 1 ? ` ⚠️ events net ${net.toFixed(2)} vs ${t.native ? "locked" : "supply"} ${supply.toFixed(2)}` : "";
       return `${t.symbol} net ${net.toFixed(2)}${drift}`;
     }).join(", ");
-    console.log(`🌐 Hyperlane bridge updated — ${events.length} event(s) (+${incoming.length} new); ${summary}`);
+    console.log(`🌐 Hyperlane bridge updated — ${events.length} event(s) (+${incoming.length} new); ${summary}${healNote}`);
   } catch (err) {
     console.error("⚠️  Hyperlane bridge refresh failed:", err.message);
   } finally {
