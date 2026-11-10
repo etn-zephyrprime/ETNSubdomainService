@@ -22,8 +22,9 @@ const CHIPS = [
 const ContractCardContext = createContext(null);
 
 /** Wraps the Core Tier section; `open(address, hint?)` shows the card for a contract. */
-export function ContractCardProvider({ wallet, getAuthParams, hasAccess, children }) {
-  const [target, setTarget] = useState(null); // { address, hint }
+export function ContractCardProvider({ wallet, getAuthParams, hasAccess, initialAddress = null, children }) {
+  // initialAddress: a card to open straight away (the ?contract= link in Telegram alerts and /check)
+  const [target, setTarget] = useState(initialAddress ? { address: initialAddress, hint: null } : null); // { address, hint }
   const open = useCallback((address, hint) => address && setTarget({ address, hint }), []);
   const value = useMemo(() => ({ open }), [open]);
   return (

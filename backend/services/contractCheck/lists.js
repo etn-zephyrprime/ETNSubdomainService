@@ -10,6 +10,7 @@ import { resolveEtnName } from "../../utils/primaryNameResolver.js";
 import { analyseContract } from "./analyseContract.js";
 import { contractCheckProvider } from "./fetchContractData.js";
 import { KNOWN_CONTRACTS_SEED } from "./knownContracts.js";
+import { approvalFromTx } from "./telegramCards.js";
 
 const MAX_UINT = ethers.MaxUint256;
 const UNLIMITED_AT = 2n ** 255n; // anything this large is an "unlimited" approval in practice
@@ -38,7 +39,7 @@ export function queueAnalysis(addresses, max = 5) {
 }
 
 const seedByAddress = new Map(KNOWN_CONTRACTS_SEED.map((k) => [k.address.toLowerCase(), k]));
-async function labelsFor(addresses) {
+export async function labelsFor(addresses) {
   const db = await getKnownContracts(addresses).catch(() => ({}));
   return Object.fromEntries(addresses.map((a) => [a, db[a] || (seedByAddress.get(a) ? { label: seedByAddress.get(a).label, project: seedByAddress.get(a).project, category: seedByAddress.get(a).category, verifiedByUs: seedByAddress.get(a).verifiedByUs } : null)]));
 }
@@ -98,7 +99,7 @@ async function view(to, fn, args) {
 
 // Token name/symbol/decimals rarely change — fetched once per token per process.
 const tokenMetaMemo = new Map();
-async function tokenMeta(token) {
+export async function tokenMeta(token) {
   if (tokenMetaMemo.has(token)) return tokenMetaMemo.get(token);
   const tk = await fetchBlockscoutJsonOrNull(`/tokens/${token}`).catch(() => undefined);
   if (tk === undefined) return null; // explorer hiccup: don't remember it
@@ -130,17 +131,12 @@ export async function activeApprovals(walletInput, { force = false } = {}) {
     const page = await fetchBlockscoutJson(`/addresses/${wallet}/transactions${params ? `?${params}` : ""}`);
     for (const t of page.items || []) {
       scannedTxs++;
-      if (t.status !== "ok" || t.from?.hash?.toLowerCase() !== key || !t.to?.hash) continue;
-      const method = t.decoded_input?.method_call || "";
-      const p = Object.fromEntries((t.decoded_input?.parameters || []).map((x) => [x.name, x.value]));
-      const token = t.to.hash.toLowerCase();
-      if (/^(approve|increaseAllowance)\(/.test(method)) {
-        const spender = String(p.spender || p.to || p.operator || Object.values(p)[0] || "").toLowerCase();
-        if (ethers.isAddress(spender)) granted.set(`${token}|${spender}|amount`, { token, spender, kind: "amount", tokenId: p.tokenId ?? p.amount ?? p.value ?? null });
-      } else if (/^setApprovalForAll\(/.test(method)) {
-        const operator = String(p.operator || Object.values(p)[0] || "").toLowerCase();
-        if (ethers.isAddress(operator) && !granted.has(`${token}|${operator}|all`)) granted.set(`${token}|${operator}|all`, { token, spender: operator, kind: "all" });
-      }
+      // revokes included too: the live check below drops anything no longer approved
+      const a = approvalFromTx(t, key);
+      if (!a) continue;
+      const k = `${a.token}|${a.spender}|${a.kind}`;
+      if (a.kind === "amount") granted.set(k, { token: a.token, spender: a.spender, kind: "amount", tokenId: a.tokenId });
+      else if (!granted.has(k)) granted.set(k, { token: a.token, spender: a.spender, kind: "all" });
     }
     pages++;
     if (!page.next_page_params) break;
