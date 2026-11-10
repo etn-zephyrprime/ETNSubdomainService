@@ -10,6 +10,8 @@ import { createRpcProvider } from "../../utils/rpcProvider.js";
 import { createPrimaryNameResolver, shortAddress } from "../../utils/primaryNameResolver.js";
 import { lookupKnownContract } from "./knownContracts.js";
 import { findPrivilegedPowers } from "./privilegedPowers.js";
+import { getTokenLiquidityCache } from "../../state/tokenLiquidityState.js";
+import { getTokenLocksCache } from "../../state/tokenLocksState.js";
 
 export const EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 export const EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
@@ -47,6 +49,16 @@ async function viewCall(provider, to, fn, args = []) {
     if (err?.code === "CALL_EXCEPTION" || err?.code === "BAD_DATA") return undefined;
     throw err;
   }
+}
+
+// The liquidity + lock caches, read from R2 at most every 10 minutes (they refresh hourly anyway).
+let liquidityMemo = null;
+async function liquidityCaches() {
+  if (liquidityMemo && Date.now() - liquidityMemo.at < 10 * 60 * 1000) return liquidityMemo.value;
+  const [liquidity, locks] = await Promise.all([getTokenLiquidityCache().catch(() => null), getTokenLocksCache().catch(() => null)]);
+  const value = liquidity?.liquidityUsd && locks?.locksByAddress ? { liquidity, locks } : null;
+  liquidityMemo = { at: Date.now(), value };
+  return value;
 }
 
 /** The address's code hash (keccak256 of its runtime bytecode), or null for no code. */
@@ -174,6 +186,18 @@ export async function fetchContractData(addressInput, { provider = contractCheck
   } catch {
     miss("rpc:ownership");
     raw.ownership = { failed: true };
+  }
+
+  // ElectroSwap liquidity and LP locks for a token — the shared R2 caches the Tokens tab uses
+  // (tokenLiquidityCache.js / tokenLocksCache.js). null = not listed; undefined = caches unreadable.
+  if (raw.addressInfo?.token) {
+    const caches = await liquidityCaches();
+    if (!caches) miss("cache:liquidity");
+    else {
+      const a = address.toLowerCase();
+      const usd = caches.liquidity.liquidityUsd?.[a];
+      raw.liquidity = usd == null ? null : { usd, poolCount: caches.liquidity.poolCounts?.[a] ?? null, locks: caches.locks?.locksByAddress?.[a] ?? null };
+    }
   }
 
   // Custom roles (e.g. CORE's taxWallet): the current holder of each state variable the source gates powers

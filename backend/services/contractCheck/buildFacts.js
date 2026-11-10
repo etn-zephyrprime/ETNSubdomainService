@@ -6,7 +6,7 @@ import { findPrivilegedPowers } from "./privilegedPowers.js";
 import { computeRiskFlags, overallFromFlags } from "./riskFlags.js";
 import { RISK_THRESHOLDS } from "./riskRules.config.js";
 
-export const FACTS_SCHEMA_VERSION = 2; // 2: custom roles (gate/controller on powers, ownership.customRoles), balanceOverwrite
+export const FACTS_SCHEMA_VERSION = 3; // 2: custom roles (gate/controller on powers, ownership.customRoles), balanceOverwrite; 3: liquidity + LP locks, severity caps
 const ZERO = "0x0000000000000000000000000000000000000000";
 const BURN = new Set([ZERO, "0x000000000000000000000000000000000000dead"]);
 const lc = (a) => (a ? String(a).toLowerCase() : null);
@@ -196,6 +196,20 @@ export function buildFacts(raw) {
       txCount: raw.counters?.transactions_count != null ? Number(raw.counters.transactions_count) : null,
       lastActivityAt: raw.lastActivityAt || null,
     },
+    // ElectroSwap liquidity and LP locks (tokens only): null = not listed on ElectroSwap, unknown = caches unreadable.
+    liquidity:
+      raw.liquidity === undefined
+        ? { status: "unknown" }
+        : raw.liquidity === null
+          ? { status: "notListed" }
+          : {
+              status: "listed",
+              usd: Math.round(raw.liquidity.usd),
+              poolCount: raw.liquidity.poolCount,
+              lockCount: raw.liquidity.locks?.count ?? null,
+              permanentLockCount: raw.liquidity.locks?.permanentCount ?? null,
+              latestUnlockAt: raw.liquidity.locks?.latestUnlockAt ?? null,
+            },
     codeHash: raw.codeHash || null,
     implementationCodeHash: impl?.codeHash || null,
   };

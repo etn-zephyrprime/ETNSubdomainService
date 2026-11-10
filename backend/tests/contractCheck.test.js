@@ -165,3 +165,30 @@ test("custom role whose holder couldn't be read counts as live", () => {
   assert.equal(f.ownership.customRoles[0].status, "unknown");
   assert.ok(ids(f).includes("balance_overwrite"));
 });
+
+test("liquidity_unlocked: listed with no locked LP -> high; locked, unknown, dust or stablecoin -> no flag", () => {
+  const withLiq = (liquidity, address) => buildFacts({ ...fx.plainErc20, ...(address ? { address } : {}), liquidity });
+  const unlocked = withLiq({ usd: 2853.9, poolCount: 1, locks: { count: 0, permanentCount: 0, latestUnlockAt: null } });
+  assert.deepEqual(unlocked.liquidity, { status: "listed", usd: 2854, poolCount: 1, lockCount: 0, permanentLockCount: 0, latestUnlockAt: null });
+  assert.equal(unlocked.riskFlags.find((x) => x.id === "liquidity_unlocked")?.severity, "high");
+  assert.match(unlocked.riskFlags.find((x) => x.id === "liquidity_unlocked").fact, /\$2,854\)/);
+  assert.equal(unlocked.overall, "red");
+
+  assert.ok(!ids(withLiq({ usd: 9000, poolCount: 2, locks: { count: 1, permanentCount: 1, latestUnlockAt: null } })).includes("liquidity_unlocked"));
+  assert.ok(!ids(withLiq({ usd: 20, poolCount: 1, locks: { count: 0 } })).includes("liquidity_unlocked")); // dust pool
+  assert.ok(!ids(withLiq(null)).includes("liquidity_unlocked")); // not listed
+  assert.equal(withLiq(null).liquidity.status, "notListed");
+  assert.equal(buildFacts(fx.plainErc20).liquidity.status, "unknown"); // caches unreadable -> no flag either
+  assert.ok(!ids(withLiq({ usd: 12700, poolCount: 3, locks: { count: 0 } }, "0x48e722f1458b253c2fb0e573f939318d7dbd54e7")).includes("liquidity_unlocked")); // USDT
+});
+
+test("severity cap: CORE is never red — a high flag shows as caution and records what it was", () => {
+  const CORE = "0x309b916b3a90cb3e071697ea9680e9217a30066f";
+  const f = buildFacts({ ...fx.customRoleToken, address: CORE, liquidity: { usd: 6620, poolCount: 2, locks: { count: 0 } } });
+  const bo = f.riskFlags.find((x) => x.id === "balance_overwrite");
+  assert.deepEqual([bo.severity, bo.cappedFrom], ["caution", "high"]);
+  assert.equal(f.riskFlags.find((x) => x.id === "liquidity_unlocked").severity, "caution");
+  assert.ok(f.riskFlags.every((x) => x.severity !== "high"));
+  assert.equal(f.overall, "amber");
+  assert.equal(buildFacts(fx.customRoleToken).overall, "red"); // the same contract anywhere else is still red
+});

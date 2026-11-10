@@ -15,7 +15,7 @@ import { FACTS_SCHEMA_VERSION } from "./buildFacts.js";
 const CACHE_KEY = "contract-badges.json";
 const INTERVAL_MS = Number(process.env.CONTRACT_BADGES_INTERVAL_MS) || 6 * 3600 * 1000;
 const STALE_MS = 24 * 3600 * 1000;
-const MAX_ANALYSES_PER_RUN = 60; // bounds explorer + RPC work; the rest are picked up next run
+const MAX_ANALYSES_PER_RUN = 100; // bounds explorer + RPC work (~4s each); the rest are picked up next run
 
 let r2 = null;
 function r2Client() {
@@ -47,7 +47,8 @@ async function refreshAndPublish() {
   running = true;
   try {
     const liquidity = await getTokenLiquidityCache();
-    const tokens = Object.keys(liquidity?.liquidityUsd || {});
+    // deepest liquidity first, so the tokens people look at are never the ones left for the next run
+    const tokens = Object.entries(liquidity?.liquidityUsd || {}).sort((a, b) => b[1] - a[1]).map(([a]) => a);
     if (!tokens.length) return console.warn("⚠️  Contract badges: no ElectroSwap token list yet — skipping");
     const badges = await buildBadges(tokens);
     await r2Client().send(

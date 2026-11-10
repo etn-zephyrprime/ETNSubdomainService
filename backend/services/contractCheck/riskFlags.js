@@ -1,7 +1,7 @@
 // Rule-based risk flags from ContractFacts (thresholds and severities: riskRules.config.js). Pure, and
 // facts-only: each flag carries the fact that triggered it. Deliberately never reads facts.identity.known
 // — a known/registry contract is labelled, not excused.
-import { RISK_RULES, RISK_THRESHOLDS } from "./riskRules.config.js";
+import { RISK_RULES, RISK_THRESHOLDS, LIQUIDITY_LOCK_NOT_APPLICABLE, SEVERITY_CAPS } from "./riskRules.config.js";
 
 const SEVERITY_RANK = { info: 0, caution: 1, high: 2 };
 
@@ -84,16 +84,24 @@ const RULES = {
     const fns = (r) => [...new Set(Object.values(f.powers.byCategory).flat().filter((p) => p.gate === "custom" && p.controller === r.name).map((p) => p.name))].join(", ");
     return live.map((r) => `Functions restricted to ${r.name} (${r.holder || "holder not readable"}), a role separate from the owner: ${fns(r)}`).join("; ");
   },
+  liquidity_unlocked: (f) => {
+    const l = f.liquidity;
+    if (l?.status !== "listed" || l.lockCount !== 0 || LIQUIDITY_LOCK_NOT_APPLICABLE[f.address] || !(l.usd >= RISK_THRESHOLDS.minLiquidityUsdForLockCheck)) return null;
+    return `None of its ElectroSwap liquidity ($${l.usd.toLocaleString("en-US")}${l.poolCount > 1 ? ` across ${l.poolCount} pools` : ""}) is locked, so the liquidity providers can withdraw it at any time`;
+  },
   owner_renounced: (f) => (f.ownership.ownerStatus === "renounced" ? "Ownership has been renounced (owner is the zero address)" : null),
 };
 
 /** `[{ id, severity, fact }]`, highest severity first. */
-export function computeRiskFlags(facts, rules = RISK_RULES) {
+export function computeRiskFlags(facts, rules = RISK_RULES, caps = SEVERITY_CAPS) {
   const flags = [];
+  const cap = caps[facts.address];
   for (const [id, rule] of Object.entries(rules)) {
     if (!rule?.enabled || !RULES[id]) continue;
     const fact = RULES[id](facts);
-    if (fact) flags.push({ id, severity: rule.severity, fact });
+    if (!fact) continue;
+    if (cap && SEVERITY_RANK[rule.severity] > SEVERITY_RANK[cap]) flags.push({ id, severity: cap, fact, cappedFrom: rule.severity });
+    else flags.push({ id, severity: rule.severity, fact });
   }
   return flags.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
 }
