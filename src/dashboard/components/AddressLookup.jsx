@@ -21,6 +21,7 @@ import TeamWalletTag from "./TeamWalletTag.jsx";
 import CexTag from "./CexTag.jsx";
 import TokenLogo from "./TokenLogo.jsx";
 import { Lock } from "lucide-react";
+import ContractCheckFree from "./ContractCheckFree.jsx";
 
 const inputStyle = {
   width: "100%",
@@ -497,6 +498,8 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
               <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>Contract{addressInfo.is_verified ? " · Verified" : ""}</div>
             )}
           </div>
+
+          {addressInfo.is_contract && <ContractCheckFree address={resolvedAddress} />}
 
           {ownedNames && ownedNames.length > 0 && (
             <div style={{ marginBottom: 20 }}>

@@ -10,6 +10,7 @@ import { formatUsdPrice, shortHash, timeAgo } from "../../utils/format.js";
 import TokenLogo, { TokenPairLogo } from "../../components/TokenLogo.jsx";
 import { EXPLORER_BASE_URL } from "../../config.js";
 import { green, error as errorColor, muted, mutedLight, border, panel2, monoFont } from "../../theme.js";
+import { AskButton } from "./ContractCard.jsx";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const NATIVE_SENTINEL = "NATIVE";
@@ -107,6 +108,15 @@ function describeItem(item, resolveTokenName, resolveWalletName) {
   return `${item.isSelfTransfer ? "Moved" : verb} ${fmtAmt(item.amount)} ${symbol} ${item.isSelfTransfer ? (item.direction === "in" ? "from" : "to") : prep} ${counterparty}`;
 }
 
+/** The contract an "Ask" on this row opens: the DeFi contract, the token involved, or a labelled contract counterparty. */
+function askTarget(item) {
+  if (item.kind === "defi") return item.contractAddress;
+  if (item.kind === "swap") return item.boughtTokenAddress || item.soldTokenAddress;
+  if (item.kind === "liquidity") return item.tokenAddresses?.[0];
+  if (item.category !== "native" && item.tokenAddress) return item.tokenAddress;
+  return item.counterpartyLabel ? item.counterpartyAddress : null; // a native transfer to a known contract
+}
+
 function ActivityRow({ item, resolveTokenName, resolveWalletName }) {
   const color = directionColor(item.direction, item.isSelfTransfer);
   return (
@@ -121,7 +131,10 @@ function ActivityRow({ item, resolveTokenName, resolveWalletName }) {
         <div style={{ fontSize: 12, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {describeItem(item, resolveTokenName, resolveWalletName)}
         </div>
-        <div style={{ fontSize: 10, color: muted, fontFamily: monoFont }}>{shortHash(item.txHash)}</div>
+        <div style={{ fontSize: 10, color: muted, fontFamily: monoFont, display: "flex", alignItems: "center", gap: 6 }}>
+          {shortHash(item.txHash)}
+          <AskButton address={askTarget(item)} />
+        </div>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
         {item.usdValue != null && <div style={{ fontSize: 12, color, fontWeight: 700 }}>{formatUsdPrice(item.usdValue)}</div>}

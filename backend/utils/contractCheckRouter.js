@@ -19,6 +19,7 @@ import { resolveEtnName } from "./primaryNameResolver.js";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { createRateLimiter, clientIp } from "./rateLimit.js";
+import { usedContracts, activeApprovals, searchContracts } from "../services/contractCheck/lists.js";
 
 const router = express.Router();
 const AUTH_PURPOSE = "Premium Dashboard"; // same signed message as the other Core tier routes
@@ -42,6 +43,64 @@ async function resolveTarget(target) {
   if (t.toLowerCase().endsWith(".etn")) return resolveEtnName(contractCheckProvider(), t);
   return null;
 }
+
+const searchByIp = createRateLimiter({ max: 120, windowMs: 10 * 60 * 1000 });
+const listsByWallet = createRateLimiter({ max: 30, windowMs: 10 * 60 * 1000 });
+
+/** Wallet signature + Core tier for the GET list routes (query params). Sends the error and returns false on failure. */
+async function requireCore(req, res) {
+  const { wallet, signature, timestamp } = req.query;
+  try {
+    verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+    return false;
+  }
+  const r = listsByWallet(`lists:${String(wallet).toLowerCase()}`);
+  if (!r.ok) {
+    limited(res, r);
+    return false;
+  }
+  if (!(await hasCoreAccess(wallet))) {
+    res.status(403).json({ error: "Core tier membership required" });
+    return false;
+  }
+  return true;
+}
+
+// Search suggestions (public, like the facts): symbol / project / name.etn / address.
+router.get("/contract-check/search", async (req, res) => {
+  const r = searchByIp(`search:${clientIp(req)}`);
+  if (!r.ok) return limited(res, r);
+  try {
+    res.json({ results: await searchContracts(req.query.q) });
+  } catch (err) {
+    console.error("⚠️  Contract Check: search failed:", err.message);
+    res.status(502).json({ error: "Search isn't available right now" });
+  }
+});
+
+// "Contracts you've used" — across the member's own and tracked wallets.
+router.get("/contract-check/used", async (req, res) => {
+  if (!(await requireCore(req, res))) return;
+  try {
+    res.json({ contracts: await usedContracts(req.query.wallet) });
+  } catch (err) {
+    console.error("⚠️  Contract Check: used-contracts failed:", err.message);
+    res.status(502).json({ error: "Couldn't load your contracts right now — try again shortly" });
+  }
+});
+
+// The connected wallet's live approvals (only it can revoke them, so only its own).
+router.get("/contract-check/approvals", async (req, res) => {
+  if (!(await requireCore(req, res))) return;
+  try {
+    res.json(await activeApprovals(req.query.wallet, { force: req.query.refresh === "1" }));
+  } catch (err) {
+    console.error("⚠️  Contract Check: approvals failed:", err.message);
+    res.status(502).json({ error: "Couldn't load your approvals right now — try again shortly" });
+  }
+});
 
 router.get("/contract-check/:target", async (req, res) => {
   const r = factsByIp(`facts:${clientIp(req)}`);
