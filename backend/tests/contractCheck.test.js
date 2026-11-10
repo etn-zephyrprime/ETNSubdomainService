@@ -166,25 +166,60 @@ test("custom role whose holder couldn't be read counts as live", () => {
   assert.ok(ids(f).includes("balance_overwrite"));
 });
 
-test("liquidity_unlocked: listed with no locked LP -> high; locked, unknown, dust or stablecoin -> no flag", () => {
-  const withLiq = (liquidity, address) => buildFacts({ ...fx.plainErc20, ...(address ? { address } : {}), liquidity });
-  const unlocked = withLiq({ usd: 2853.9, poolCount: 1, locks: { count: 0, permanentCount: 0, latestUnlockAt: null } });
-  assert.deepEqual(unlocked.liquidity, { status: "listed", usd: 2854, poolCount: 1, lockCount: 0, permanentLockCount: 0, latestUnlockAt: null });
-  assert.equal(unlocked.riskFlags.find((x) => x.id === "liquidity_unlocked")?.severity, "high");
-  assert.match(unlocked.riskFlags.find((x) => x.id === "liquidity_unlocked").fact, /\$2,854\)/);
-  assert.equal(unlocked.overall, "red");
+// Pools as poolLocks.js returns them: tokenAmount = how many of the token the pool holds; shares are 0..1.
+const pool = (address, tokenAmount, lockedShare, extra = {}) => ({ address, version: 2, tokenAmount: String(tokenAmount), lockedShare, expiredShare: 0, locks: lockedShare ? [{ share: lockedShare, unlockAt: "2027-09-20T00:00:00.000Z" }] : [], ...extra });
+const listed = (pools, usd = 5000) => ({ usd, poolCount: pools.length, pools });
+const withLiq = (liquidity, address) => buildFacts({ ...fx.plainErc20, ...(address ? { address } : {}), liquidity });
 
-  assert.ok(!ids(withLiq({ usd: 9000, poolCount: 2, locks: { count: 1, permanentCount: 1, latestUnlockAt: null } })).includes("liquidity_unlocked"));
-  assert.ok(!ids(withLiq({ usd: 20, poolCount: 1, locks: { count: 0 } })).includes("liquidity_unlocked")); // dust pool
-  assert.ok(!ids(withLiq(null)).includes("liquidity_unlocked")); // not listed
+test("lock rules: measured per pool — the main pool must be locked, not just a side pool", () => {
+  // PDY-style: main pool's lock expired (LP still in the locker), a tiny side pool fully locked
+  const pdy = withLiq(listed([pool("0xp1", 99, 0, { expiredShare: 0.971 }), pool("0xp2", 1, 1)]));
+  assert.deepEqual([pdy.liquidity.mainPool.lockedPct, pdy.liquidity.mainPool.expiredPct, pdy.liquidity.mainPool.sharePct], [0, 97.1, 99]);
+  const flag = pdy.riskFlags.find((x) => x.id === "liquidity_unlocked");
+  assert.equal(flag.severity, "high");
+  assert.match(flag.fact, /^None of the liquidity in its main ElectroSwap pool \(0xp1, holding 99% of its pooled tokens\) is locked; a lock on 97\.1% of it has expired/);
+  assert.equal(pdy.overall, "red");
+
+  // BOLT-style: one small lock elsewhere no longer makes it "locked"
+  assert.ok(ids(withLiq(listed([pool("0xm", 65, 0), pool("0xs", 35, 0.77)]))).includes("liquidity_unlocked"));
+
+  // CORE-style: main pool 88% locked -> fine
+  const core = withLiq(listed([pool("0xc", 100, 0.88)]));
+  assert.ok(!ids(core).some((i) => i.startsWith("liquidity_")));
+
+  // CLUB-style: main 99% locked, side pool 4% -> overall 71% -> fine; but if overall drops under 50% -> caution
+  assert.ok(!ids(withLiq(listed([pool("0xa", 70, 0.99), pool("0xb", 30, 0.04)]))).some((i) => i.startsWith("liquidity_")));
+  const partly = withLiq(listed([pool("0xa", 40, 0.99), pool("0xb", 60, 0.04)]));
+  assert.equal(partly.riskFlags.find((x) => x.id === "liquidity_partly_locked")?.severity, "caution");
+});
+
+test("lock rules: a lock ending within 30 days that takes the main pool under 50% -> caution", () => {
+  const soon = new Date(Date.parse("2026-11-10T12:00:00Z") + 10 * 86400000).toISOString();
+  const f = withLiq(listed([pool("0xe", 100, 0.9, { locks: [{ share: 0.85, unlockAt: soon }, { share: 0.05, unlockAt: null }] })]));
+  const flag = f.riskFlags.find((x) => x.id === "liquidity_lock_expiring");
+  assert.equal(flag.severity, "caution");
+  assert.match(flag.fact, /after that only 5% of that pool would stay locked/);
+});
+
+test("lock rules don't apply: not listed, locks unreadable, dust, or WETN/USDT/USDC", () => {
+  const unlocked = [pool("0xp", 100, 0)];
   assert.equal(withLiq(null).liquidity.status, "notListed");
-  assert.equal(buildFacts(fx.plainErc20).liquidity.status, "unknown"); // caches unreadable -> no flag either
-  assert.ok(!ids(withLiq({ usd: 12700, poolCount: 3, locks: { count: 0 } }, "0x48e722f1458b253c2fb0e573f939318d7dbd54e7")).includes("liquidity_unlocked")); // USDT
+  assert.equal(buildFacts(fx.plainErc20).liquidity.status, "unknown");
+  assert.ok(!ids(withLiq({ usd: 5000, poolCount: 1 })).includes("liquidity_unlocked")); // locks couldn't be read
+  assert.ok(!ids(withLiq(listed(unlocked, 20))).includes("liquidity_unlocked")); // dust
+  for (const a of ["0x48e722f1458b253c2fb0e573f939318d7dbd54e7", "0x3187dead7a2bd6770f5fe81495d1b715926aae6e", "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77"]) assert.ok(!ids(withLiq(listed(unlocked), a)).includes("liquidity_unlocked"), a);
+});
+
+test("poolsFromHolders: ElectroSwap V2/V3 pools only, deepest first", async () => {
+  const { poolsFromHolders } = await import("../services/contractCheck/poolLocks.js");
+  const h = (hash, name, value, is_contract = true) => ({ address: { hash, name, is_contract }, value: String(value) });
+  const pools = poolsFromHolders([h("0x1", "ElectroSwap LP", 5), h("0x2", "ElectroSwapV3Pool", 50), h("0x3", "YieldFarm", 900), h("0x4", null, 70, false), h("0x5", "ElectroSwap LP", 20)]);
+  assert.deepEqual(pools.map((p) => [p.address, p.version]), [["0x2", 3], ["0x5", 2], ["0x1", 2]]);
 });
 
 test("severity cap: CORE is never red — a high flag shows as caution and records what it was", () => {
   const CORE = "0x309b916b3a90cb3e071697ea9680e9217a30066f";
-  const f = buildFacts({ ...fx.customRoleToken, address: CORE, liquidity: { usd: 6620, poolCount: 2, locks: { count: 0 } } });
+  const f = buildFacts({ ...fx.customRoleToken, address: CORE, liquidity: listed([pool("0xc", 100, 0)]) });
   const bo = f.riskFlags.find((x) => x.id === "balance_overwrite");
   assert.deepEqual([bo.severity, bo.cappedFrom], ["caution", "high"]);
   assert.equal(f.riskFlags.find((x) => x.id === "liquidity_unlocked").severity, "caution");

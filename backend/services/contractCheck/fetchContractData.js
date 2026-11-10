@@ -11,7 +11,7 @@ import { createPrimaryNameResolver, shortAddress } from "../../utils/primaryName
 import { lookupKnownContract } from "./knownContracts.js";
 import { findPrivilegedPowers } from "./privilegedPowers.js";
 import { getTokenLiquidityCache } from "../../state/tokenLiquidityState.js";
-import { getTokenLocksCache } from "../../state/tokenLocksState.js";
+import { readPoolLocks } from "./poolLocks.js";
 
 export const EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 export const EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
@@ -51,12 +51,12 @@ async function viewCall(provider, to, fn, args = []) {
   }
 }
 
-// The liquidity + lock caches, read from R2 at most every 10 minutes (they refresh hourly anyway).
+// The liquidity cache, read from R2 at most every 10 minutes (it refreshes hourly anyway).
 let liquidityMemo = null;
-async function liquidityCaches() {
+async function liquidityCache() {
   if (liquidityMemo && Date.now() - liquidityMemo.at < 10 * 60 * 1000) return liquidityMemo.value;
-  const [liquidity, locks] = await Promise.all([getTokenLiquidityCache().catch(() => null), getTokenLocksCache().catch(() => null)]);
-  const value = liquidity?.liquidityUsd && locks?.locksByAddress ? { liquidity, locks } : null;
+  const liquidity = await getTokenLiquidityCache().catch(() => null);
+  const value = liquidity?.liquidityUsd ? liquidity : null;
   liquidityMemo = { at: Date.now(), value };
   return value;
 }
@@ -188,15 +188,14 @@ export async function fetchContractData(addressInput, { provider = contractCheck
     raw.ownership = { failed: true };
   }
 
-  // ElectroSwap liquidity and LP locks for a token — the shared R2 caches the Tokens tab uses
-  // (tokenLiquidityCache.js / tokenLocksCache.js). null = not listed; undefined = caches unreadable.
+  // ElectroSwap liquidity for a token — the shared R2 cache the Tokens tab uses (tokenLiquidityCache.js).
+  // null = not listed; undefined = cache unreadable. Its locks are read per pool below, once the holders are in.
   if (raw.addressInfo?.token) {
-    const caches = await liquidityCaches();
-    if (!caches) miss("cache:liquidity");
+    const cache = await liquidityCache();
+    if (!cache) miss("cache:liquidity");
     else {
-      const a = address.toLowerCase();
-      const usd = caches.liquidity.liquidityUsd?.[a];
-      raw.liquidity = usd == null ? null : { usd, poolCount: caches.liquidity.poolCounts?.[a] ?? null, locks: caches.locks?.locksByAddress?.[a] ?? null };
+      const usd = cache.liquidityUsd?.[address.toLowerCase()];
+      raw.liquidity = usd == null ? null : { usd, poolCount: cache.poolCounts?.[address.toLowerCase()] ?? null };
     }
   }
 
@@ -221,6 +220,13 @@ export async function fetchContractData(addressInput, { provider = contractCheck
     raw.token = await bs(`/tokens/${address}`, "explorer:token");
     const h = await bs(`/tokens/${address}/holders`, "explorer:holders");
     raw.holders = h ? h.items || [] : h;
+    if (raw.liquidity && raw.holders) {
+      try {
+        raw.liquidity.pools = await readPoolLocks(provider, address, raw.holders);
+      } catch {
+        miss("rpc:locks");
+      }
+    }
   }
   raw.counters = await bs(`/addresses/${address}/counters`, "explorer:counters");
   if (raw.addressInfo?.creation_transaction_hash) {

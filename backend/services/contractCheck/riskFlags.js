@@ -16,6 +16,14 @@ function controllerActive(f, p) {
   return !(o.pattern === "ownable" && o.ownerStatus === "renounced");
 }
 
+/** The main pool's lock facts when the lock rules apply: a listed, non-dust token whose locks were read,
+ * and not one where locking doesn't apply (LIQUIDITY_LOCK_NOT_APPLICABLE). Otherwise null (no flag). */
+function lockCheck(f) {
+  const l = f.liquidity;
+  if (l?.status !== "listed" || !l.mainPool || LIQUIDITY_LOCK_NOT_APPLICABLE[f.address] || !(l.usd >= RISK_THRESHOLDS.minLiquidityUsdForLockCheck)) return null;
+  return l.mainPool;
+}
+
 /** Powers in a category that someone can still use: gated (or gating not visible) to a live controller —
  * never ones anyone can call (those aren't a power over holders, except balanceOverwrite below). */
 const gatedPowers = (f, category) => (f.powers.byCategory[category] || []).filter((p) => p.gated !== false && controllerActive(f, p));
@@ -85,9 +93,20 @@ const RULES = {
     return live.map((r) => `Functions restricted to ${r.name} (${r.holder || "holder not readable"}), a role separate from the owner: ${fns(r)}`).join("; ");
   },
   liquidity_unlocked: (f) => {
-    const l = f.liquidity;
-    if (l?.status !== "listed" || l.lockCount !== 0 || LIQUIDITY_LOCK_NOT_APPLICABLE[f.address] || !(l.usd >= RISK_THRESHOLDS.minLiquidityUsdForLockCheck)) return null;
-    return `None of its ElectroSwap liquidity ($${l.usd.toLocaleString("en-US")}${l.poolCount > 1 ? ` across ${l.poolCount} pools` : ""}) is locked, so the liquidity providers can withdraw it at any time`;
+    const m = lockCheck(f);
+    if (!m || m.lockedPct >= RISK_THRESHOLDS.mainPoolMinLockedPct) return null;
+    const expired = m.expiredPct > 0 ? `; a lock on ${m.expiredPct}% of it has expired, so its owner can withdraw that at any time` : "";
+    return `${m.lockedPct === 0 ? "None" : `Only ${m.lockedPct}%`} of the liquidity in its main ElectroSwap pool (${m.address}, holding ${m.sharePct}% of its pooled tokens) is locked${expired}`;
+  },
+  liquidity_partly_locked: (f) => {
+    const m = lockCheck(f);
+    if (!m || m.lockedPct < RISK_THRESHOLDS.mainPoolMinLockedPct || f.liquidity.lockedPctOverall >= RISK_THRESHOLDS.overallMinLockedPct) return null;
+    return `Its main ElectroSwap pool is ${m.lockedPct}% locked, but across all its pools only ${f.liquidity.lockedPctOverall}% of the pooled tokens are in locked liquidity`;
+  },
+  liquidity_lock_expiring: (f) => {
+    const m = lockCheck(f);
+    if (!m || m.lockedPct < RISK_THRESHOLDS.mainPoolMinLockedPct || m.lockedPctIn30Days >= RISK_THRESHOLDS.mainPoolMinLockedPct) return null;
+    return `A lock on its main ElectroSwap pool ends on ${m.nextUnlockAt.slice(0, 10)}; after that only ${m.lockedPctIn30Days}% of that pool would stay locked`;
   },
   owner_renounced: (f) => (f.ownership.ownerStatus === "renounced" ? "Ownership has been renounced (owner is the zero address)" : null),
 };
