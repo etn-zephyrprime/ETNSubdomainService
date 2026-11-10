@@ -133,8 +133,9 @@ function finish(facts, body) {
 
 const summaryMemo = new Map(); // address -> { hash, value }
 
-/** The cached summary for a contract (facts from analyseContract). */
-export async function explainContract(facts, { api = getClient(), sourceFiles = null } = {}) {
+/** The cached summary for a contract (facts from analyseContract). `cachedOnly`: return null instead of
+ * writing one when none is cached (Telegram /check never spends a Claude call). */
+export async function explainContract(facts, { api = getClient(), sourceFiles = null, cachedOnly = false } = {}) {
   const hash = summaryFactsHash(facts);
   const m = summaryMemo.get(facts.address);
   if (m?.hash === hash) return m.value;
@@ -142,6 +143,8 @@ export async function explainContract(facts, { api = getClient(), sourceFiles = 
   let value;
   if (stored && stored.factsHash === hash && stored.promptVersion === PROMPT_VERSION) {
     value = finish(facts, { summary: stored.summary, source: stored.source, model: stored.model });
+  } else if (cachedOnly) {
+    return null;
   } else {
     const g = await generate({ api, kind: "summary", model: SUMMARY_MODEL, schema: SUMMARY_SCHEMA, facts, task: SUMMARY_TASK, template: () => templateSummary(facts), sourceFiles });
     const model = g.source === "claude" ? SUMMARY_MODEL : null;

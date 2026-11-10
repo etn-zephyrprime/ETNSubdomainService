@@ -83,3 +83,47 @@ test("/check guards: not our command, groups, unlinked chats, non-members", asyn
   await handleNotisCommand({ text: "/check CORE", chatId: 1, chatType: "private", linkedAddress: W, sendDirectMessage: send }); // no DB -> no membership
   assert.match(sent.pop(), /doesn't have an active membership/);
 });
+
+test("spam: a flood of commands from one chat gets at most one reply per kind, not one per message", async () => {
+  const { handleNotisCommand } = await import("../services/contractCheck/telegramCheck.js");
+  const sent = [];
+  const send = async (_c, t) => sent.push(t);
+  for (let i = 0; i < 20; i++) await handleNotisCommand({ text: "/check CORE", chatId: 99, chatType: "private", linkedAddress: null, sendDirectMessage: send });
+  assert.equal(sent.length, 2); // the "link your wallet" notice once, then "slow down" once — 18 messages ignored
+  assert.match(sent[0], /Link this chat/);
+  assert.match(sent[1], /Slow down — try again in \d+s/);
+  for (let i = 0; i < 10; i++) await handleNotisCommand({ text: "/contractalerts off", chatId: 99, chatType: "private", linkedAddress: null, sendDirectMessage: send });
+  assert.equal(sent.length, 2); // still silent while the window lasts
+  await handleNotisCommand({ text: "/check CORE", chatId: 100, chatType: "private", linkedAddress: null, sendDirectMessage: send });
+  assert.equal(sent.length, 3); // another chat isn't affected
+});
+
+test("/check never spends a Claude call: cachedOnly returns null when nothing is cached", async () => {
+  const { explainContract } = await import("../services/contractCheck/explain.js");
+  const facts = { address: "0x0000000000000000000000000000000000000abc", overall: "green", riskFlags: [], identity: {}, verification: {}, proxy: {}, ownership: {}, powers: { byCategory: {} } };
+  const api = { messages: { create: () => { throw new Error("Claude must not be called"); } }, beta: { messages: { create: () => { throw new Error("Claude must not be called"); } } } };
+  assert.equal(await explainContract(facts, { api, cachedOnly: true }), null);
+});
+
+test("link router: past 10 messages a minute from one chat, the rest are dropped without a reply", async () => {
+  const express = (await import("express")).default;
+  const { createTelegramLinkRouter } = await import("../utils/createTelegramLinkRouter.js");
+  // No bot token, so nothing is sent; each handled /start reads the link state once — count those.
+  let reads = 0;
+  const state = { pendingLinks: {}, subscriptions: {} };
+  const inst = createTelegramLinkRouter({ botToken: null, getState: async () => (reads++, state), setState: async () => {}, purpose: "t", routeBase: "spamtest", onLinked: async () => {} });
+  const app = express();
+  app.use(express.json());
+  app.use("/api", inst.router);
+  const server = app.listen(0);
+  const url = `http://127.0.0.1:${server.address().port}/api/spamtest/webhook`;
+  try {
+    for (let i = 0; i < 25; i++) {
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: { chat: { id: 7, type: "private" }, text: "/start 0123456789ab" } }) });
+      assert.equal(r.status, 200); // always 200 to Telegram
+    }
+    assert.equal(reads, 10); // only the first 10 were handled; the other 15 dropped without a reply
+  } finally {
+    server.close();
+  }
+});
