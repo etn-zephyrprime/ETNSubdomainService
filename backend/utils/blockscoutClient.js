@@ -19,6 +19,24 @@ const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplore
 const BLOCKSCOUT_API_BASE = `${EXPLORER_BASE_URL}/api/v2`;
 const FETCH_TIMEOUT_MS = 20000;
 
+/** Like fetchBlockscoutJson, but a 404 is an answer ("no such record" — e.g. no verified source for
+ * an address) and returns null; anything else that fails (5xx, timeout) still throws after retries,
+ * so a caller can tell "not there" from "couldn't ask". */
+export async function fetchBlockscoutJsonOrNull(path, attempt = 0) {
+  try {
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+    return await res.json();
+  } catch (err) {
+    if (attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      return fetchBlockscoutJsonOrNull(path, attempt + 1);
+    }
+    throw err;
+  }
+}
+
 export async function fetchBlockscoutJson(path, attempt = 0) {
   try {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
