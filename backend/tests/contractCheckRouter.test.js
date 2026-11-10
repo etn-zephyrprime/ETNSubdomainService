@@ -20,10 +20,12 @@ async function withServer(fn) {
   }
 }
 
-test("facts: a target that's neither an address nor a .etn name is a 400", async () => {
+test("facts + search are Core tier: no valid wallet signature -> 401 before anything is analysed", async () => {
   await withServer(async (base) => {
-    const r = await fetch(`${base}/contract-check/not-an-address`);
-    assert.equal(r.status, 400);
+    const core = "0x309B916b3A90cb3E071697Ea9680e9217A30066f";
+    assert.equal((await fetch(`${base}/contract-check/${core}`)).status, 401);
+    assert.equal((await fetch(`${base}/contract-check/${core}?wallet=0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099&signature=0xdead&timestamp=${Date.now()}`)).status, 401);
+    assert.equal((await fetch(`${base}/contract-check/search?q=core`)).status, 401);
   });
 });
 

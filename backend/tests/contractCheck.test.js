@@ -119,3 +119,20 @@ test("verified twin (e.g. an ElectroSwap V2 pair): source analysed from the twin
   assert.equal(f.identity.deployerKnown.label, "ElectroSwap V2 Factory");
   assert.equal(f.overall, "green");
 });
+
+test("badges: cached overall used, stale/missing re-analysed (capped), incomplete analyses left out", async () => {
+  const { buildBadges } = await import("../services/contractCheck/badges.js");
+  const now = Date.parse("2026-11-10T12:00:00Z");
+  const summaries = async () => ({
+    "0xaa": { overall: "green", analysedAt: "2026-11-10T06:00:00Z" }, // fresh
+    "0xbb": { overall: "green", analysedAt: "2026-11-08T00:00:00Z" }, // stale -> re-analysed
+  });
+  const analysed = [];
+  const analyse = async (a) => {
+    analysed.push(a);
+    return { "0xbb": { overall: "red" }, "0xcc": { overall: "amber", incomplete: true }, "0xdd": { overall: "amber" } }[a];
+  };
+  const badges = await buildBadges(["0xAA", "0xbb", "0xcc", "0xdd", "0xee"], { summaries, analyse, now, max: 3 });
+  assert.deepEqual(analysed, ["0xbb", "0xcc", "0xdd"]); // 0xee waits for the next run
+  assert.deepEqual(badges, { "0xaa": "green", "0xbb": "red", "0xdd": "amber" });
+});

@@ -27,8 +27,10 @@ const ago = (iso) => {
 };
 const rowName = (r) => r.known?.label || (r.symbol && r.name ? `${r.name} (${r.symbol})` : r.name) || shortAddr(r.address);
 
-function SearchBox() {
+function SearchBox({ getAuthParams }) {
   const { search } = useContractCheck();
+  const authRef = useRef(getAuthParams);
+  authRef.current = getAuthParams;
   const card = useContractCard();
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
@@ -45,7 +47,7 @@ function SearchBox() {
     const t = setTimeout(async () => {
       setLoading(true);
       try {
-        const r = await search(term);
+        const r = await search(await authRef.current(AUTH_PURPOSE), term);
         if (seq.current === mine) setResults(r);
       } catch {
         if (seq.current === mine) setResults([]);
@@ -260,7 +262,7 @@ export default function CoreTierContracts({ wallet, getAuthParams, coreTierAcces
         <div style={{ fontSize: 13, color: mutedLight, marginBottom: 12, lineHeight: 1.5 }}>
           Argus reads a contract's code and on-chain settings and tells you what its owner can do — no copying from an explorer. Tap any contract for the details.
         </div>
-        <SearchBox />
+        <SearchBox getAuthParams={getAuthParams} />
         {sectionTitle(FileSearch, "Contracts you've used")}
         <UsedContracts wallet={wallet} getAuthParams={getAuthParams} />
         {sectionTitle(KeyRound, "Your approvals")}

@@ -75,18 +75,24 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
   const authRef = useRef(getAuthParams);
   authRef.current = getAuthParams; // latest, without re-running effects for it (it changes every render)
 
-  // Facts (public) — then, for a member, the cached summary.
+  // Facts — then the cached summary. Both are Core tier only.
   useEffect(() => {
+    if (!hasAccess) return undefined;
     let cancelled = false;
     setFacts(null);
     setFactsError(null);
-    getFacts(address)
-      .then((d) => !cancelled && setFacts(d.facts))
-      .catch((e) => !cancelled && setFactsError(e.message));
+    (async () => {
+      try {
+        const d = await getFacts(await authRef.current(AUTH_PURPOSE), address);
+        if (!cancelled) setFacts(d.facts);
+      } catch (e) {
+        if (!cancelled) setFactsError(e.message);
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [address, getFacts]);
+  }, [address, hasAccess, getFacts]);
 
   useEffect(() => {
     if (!facts || !hasAccess || facts.identity?.isContract === false) return undefined;
@@ -168,8 +174,14 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
           </button>
         </div>
 
+        {!hasAccess && (
+          <div style={{ marginTop: 16, background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 12, fontSize: 13, color: mutedLight }}>
+            <Sparkles size={14} color={gold} style={{ verticalAlign: -2, marginRight: 6 }} />
+            Contract Check is part of Core Tier: risk flags, what the owner can do, a plain-English explanation and your own questions.
+          </div>
+        )}
         {factsError && <div style={{ color: errorColor, fontSize: 13, marginTop: 12 }}>{factsError}</div>}
-        {!facts && !factsError && (
+        {hasAccess && !facts && !factsError && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, color: mutedLight, fontSize: 13, marginTop: 16 }}>
             <Loader2 size={16} className="spin" /> Reading the contract…
           </div>
@@ -186,13 +198,6 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
 
             <div style={sectionLabel}>Risk flags</div>
             <RiskFlagList flags={facts.riskFlags} />
-
-            {!hasAccess && (
-              <div style={{ marginTop: 16, background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 12, fontSize: 13, color: mutedLight }}>
-                <Sparkles size={14} color={gold} style={{ verticalAlign: -2, marginRight: 6 }} />
-                Core Tier explains this contract in plain English and answers your questions about it.
-              </div>
-            )}
 
             {hasAccess && facts.identity?.isContract !== false && (
               <>

@@ -1,7 +1,8 @@
 // Argus "Contract Check" API (services/contractCheck/).
 //
-//   GET  /api/contract-check/:target     facts for an address or name.etn — public: free users see the risk
-//                                        flags and badge too (a high-severity warning is never paywalled)
+//   GET  /api/contract-check/:target     facts for an address or name.etn — Core tier, wallet-signed (query
+//                                        params). Free users only get the overall badge, for ElectroSwap-listed
+//                                        tokens, from the static contract-badges.json (services/contractCheck/badges.js)
 //   POST /api/contract-check/explain     Core tier, wallet-signed: { wallet, signature, timestamp, address,
 //                                        question? } -> the cached summary, or an answer to `question`
 //                                        (CONTRACT_QA_DAILY_LIMIT per member per UTC day)
@@ -46,9 +47,11 @@ async function resolveTarget(target) {
 
 const searchByIp = createRateLimiter({ max: 120, windowMs: 10 * 60 * 1000 });
 const listsByWallet = createRateLimiter({ max: 30, windowMs: 10 * 60 * 1000 });
+const searchByWallet = createRateLimiter({ max: 120, windowMs: 10 * 60 * 1000 });
+const factsByWallet = createRateLimiter({ max: 60, windowMs: 10 * 60 * 1000 });
 
-/** Wallet signature + Core tier for the GET list routes (query params). Sends the error and returns false on failure. */
-async function requireCore(req, res) {
+/** Wallet signature + Core tier for the GET routes (query params). Sends the error and returns false on failure. */
+async function requireCore(req, res, limiter = listsByWallet) {
   const { wallet, signature, timestamp } = req.query;
   try {
     verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
@@ -56,7 +59,7 @@ async function requireCore(req, res) {
     res.status(401).json({ error: err.message });
     return false;
   }
-  const r = listsByWallet(`lists:${String(wallet).toLowerCase()}`);
+  const r = limiter(`core:${String(wallet).toLowerCase()}`);
   if (!r.ok) {
     limited(res, r);
     return false;
@@ -68,10 +71,11 @@ async function requireCore(req, res) {
   return true;
 }
 
-// Search suggestions (public, like the facts): symbol / project / name.etn / address.
+// Search suggestions: symbol / project / name.etn / address.
 router.get("/contract-check/search", async (req, res) => {
   const r = searchByIp(`search:${clientIp(req)}`);
   if (!r.ok) return limited(res, r);
+  if (!(await requireCore(req, res, searchByWallet))) return;
   try {
     res.json({ results: await searchContracts(req.query.q) });
   } catch (err) {
@@ -105,6 +109,7 @@ router.get("/contract-check/approvals", async (req, res) => {
 router.get("/contract-check/:target", async (req, res) => {
   const r = factsByIp(`facts:${clientIp(req)}`);
   if (!r.ok) return limited(res, r);
+  if (!(await requireCore(req, res, factsByWallet))) return;
   const address = await resolveTarget(req.params.target);
   if (!address) return res.status(400).json({ error: "Give a contract address or a name.etn that resolves to one" });
   try {

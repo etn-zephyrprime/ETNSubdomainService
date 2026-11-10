@@ -2,9 +2,8 @@ import React from "react";
 import { ShieldCheck, ShieldAlert, ShieldX, BadgeCheck, Info, AlertTriangle, OctagonAlert } from "lucide-react";
 import { green, gold, error as errorColor, mutedLight, muted, border, panel2, monoFont, blue } from "../theme.js";
 
-// Shared, wallet-free pieces of Contract Check (no wallet code, so the free Address Lookup tab can use
-// them too): the overall badge, the "Known contract" badge, and the risk-flag list. A high-severity
-// flag is never hidden behind the Core Tier gate.
+// Shared, wallet-free pieces of Contract Check (no wallet code, so the free Tokens tab can use the overall
+// badge): the overall badge, the "Known contract" badge, and the risk-flag list.
 
 export const OVERALL = {
   green: { label: "No caution flags", color: green, Icon: ShieldCheck },
