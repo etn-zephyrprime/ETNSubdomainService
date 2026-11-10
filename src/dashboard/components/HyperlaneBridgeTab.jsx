@@ -3,9 +3,9 @@ import { green, error as red, blue, muted, mutedLight, panel2, border, monoFont 
 import TokenLogo from "./TokenLogo.jsx";
 import StatCard from "./StatCard.jsx";
 import CornerBrackets from "./CornerBrackets.jsx";
-import HyperlaneChart, { signedUsd } from "./HyperlaneChart.jsx";
+import HyperlaneChart, { formatAmount, signedAmount } from "./HyperlaneChart.jsx";
 import { useHyperlaneBridge } from "../hooks/useHyperlaneBridge.js";
-import { formatInt, formatUsdCompact, timeAgo } from "../utils/format.js";
+import { formatInt, timeAgo } from "../utils/format.js";
 import { EXPLORER_BASE_URL } from "../config.js";
 import { WINDOW_DAYS, chainName, chainOptions, chainSummary, dailyFlows, netAllTime, totals } from "../utils/hyperlaneSeries.js";
 
@@ -56,8 +56,9 @@ function LegendSwatch({ color, label }) {
   );
 }
 
-// Free-tier tab for USD stablecoin flows over Hyperlane: net USDT + USDC bridged into (+) or out of (−)
-// Electroneum per day over a rolling 12 months, filterable by token and by the other chain. Backed entirely by
+// Free-tier tab for flows over Hyperlane: net USDT + USDC bridged into (+) or out of (−) Electroneum per day
+// over a rolling 12 months, filterable by token and by the other chain — plus the ETN route (BNB Chain,
+// Ethereum, Solana), shown on its own in ETN since its amounts aren't dollars. "All USD" = the USD tokens only. Backed entirely by
 // backend/utils/hyperlaneBridge.js's R2-published events (useHyperlaneBridge.js) — nothing here talks to the
 // chain directly.
 export default function HyperlaneBridgeTab() {
@@ -78,14 +79,21 @@ export default function HyperlaneBridgeTab() {
 
   const tokens = data?.tokens ?? [];
   const events = data?.events ?? [];
+  // "All USD" is every USD token (a token with no unit predates the ETN route, so it's a stablecoin) — never ETN.
+  const usdIndexes = useMemo(() => tokens.map((t, i) => ((t.unit || "USD") === "USD" ? i : null)).filter((i) => i !== null), [tokens]);
   const tokenIndex = tokenFilter === null ? null : tokens.findIndex((t) => t.symbol === tokenFilter);
-  const selectedTokenIndex = tokenIndex === -1 ? null : tokenIndex;
+  const selectedTokenIndex = tokenIndex === null || tokenIndex === -1 ? usdIndexes : tokenIndex;
+  const selectedToken = typeof selectedTokenIndex === "number" ? tokens[selectedTokenIndex] : null;
+  const unit = selectedToken?.unit || "USD";
+  const money = (v) => formatAmount(v, unit);
+  const signed = (v) => signedAmount(v, unit);
+  const scopeName = tokenFilter ?? "USDT + USDC";
   const nowMs = useMemo(() => Date.now(), [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const enrolled = useMemo(() => {
     const set = new Set();
     for (const t of tokens) {
-      if (tokenFilter !== null && t.symbol !== tokenFilter) continue;
+      if (tokenFilter !== null ? t.symbol !== tokenFilter : (t.unit || "USD") !== "USD") continue;
       for (const d of data?.current?.[t.symbol]?.domains ?? []) set.add(d);
     }
     return [...set];
@@ -95,7 +103,7 @@ export default function HyperlaneBridgeTab() {
   // whether or not it moved anything recently. (USDT is routed to Ethereum only; USDC to Ethereum, Base and
   // Avalanche.) Read from the contracts' own enrolled-domain lists, so a new route appears by itself.
   const allChains = useMemo(() => {
-    const forToken = selectedTokenIndex === null ? events : events.filter((e) => e[1] === selectedTokenIndex);
+    const forToken = events.filter((e) => (Array.isArray(selectedTokenIndex) ? selectedTokenIndex.includes(e[1]) : e[1] === selectedTokenIndex));
     return chainOptions(forToken, enrolled);
   }, [events, selectedTokenIndex, enrolled]);
   // A chain picked for one token may not be a route for another: fall back to "all chains" rather than show nothing.
@@ -121,7 +129,7 @@ export default function HyperlaneBridgeTab() {
     [allChains, events, selectedTokenIndex, nowMs, range.days]
   );
 
-  const scopeLabel = `${tokenFilter ?? "USDT + USDC"}${activeChain === null ? "" : ` via ${chainName(activeChain)}`}`;
+  const scopeLabel = `${scopeName}${activeChain === null ? "" : ` via ${chainName(activeChain)}`}`;
   const hasData = data && events.length > 0;
   const chainNote = activeChain === null ? "across all chains" : `via ${chainName(activeChain)}`;
 
@@ -131,7 +139,8 @@ export default function HyperlaneBridgeTab() {
         USDT and USDC on Electroneum are{" "}
         <a href="https://hyperlane.xyz" target="_blank" rel="noreferrer" style={{ color: blue }}>Hyperlane</a>{" "}
         warp-route tokens: bridging in mints them here, bridging out burns them. Every transfer records which chain it came from or went to, so
-        this shows the net USD moving onto (+) or off (−) Electroneum each day, and which chain it moved through.
+        this shows the net USD moving onto (+) or off (−) Electroneum each day, and which chain it moved through. ETN has its own route to
+        BNB Chain, Ethereum and Solana — bridging out locks ETN here and mints it there — shown in ETN under its own filter.
       </div>
 
       {data === null && <div style={{ fontSize: 12, color: mutedLight, marginBottom: 16 }}>Couldn't load Hyperlane data — try again shortly.</div>}
@@ -145,9 +154,14 @@ export default function HyperlaneBridgeTab() {
               <div style={{ ...sectionLabel, marginBottom: 6 }}>Token</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 <Pill active={tokenFilter === null} onClick={() => setTokenFilter(null)}>All USD</Pill>
-                {tokens.map((t) => (
+                {tokens.filter((t) => (t.unit || "USD") === "USD").map((t) => (
                   <Pill key={t.symbol} active={tokenFilter === t.symbol} onClick={() => setTokenFilter(t.symbol)}>
                     <TokenLogo address={t.address} label={t.symbol} size={14} spacing={5} />{t.symbol}
+                  </Pill>
+                ))}
+                {tokens.filter((t) => t.unit === "ETN").map((t) => (
+                  <Pill key={t.symbol} active={tokenFilter === t.symbol} onClick={() => setTokenFilter(t.symbol)}>
+                    <TokenLogo address="native" label={t.symbol} size={14} spacing={5} />{t.symbol} (in ETN)
                   </Pill>
                 ))}
               </div>
@@ -174,22 +188,27 @@ export default function HyperlaneBridgeTab() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 16 }}>
             <StatCard
               label={`Net Flow · ${range.long}`}
-              value={<span style={{ color: netColor(sum.net) }}>{signedUsd(sum.net)}</span>}
+              value={<span style={{ color: netColor(sum.net) }}>{signed(sum.net)}</span>}
               sub={`${sum.net >= 0 ? "More came in than left" : "More left than came in"} ${chainNote} · ${formatInt(sum.count)} transfers`}
             />
-            <StatCard label={`Inflow · ${range.long}`} value={<span style={{ color: green }}>{formatUsdCompact(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
-            <StatCard label={`Outflow · ${range.long}`} value={<span style={{ color: red }}>{formatUsdCompact(sum.outflow)}</span>} sub="Bridged off Electroneum" />
-            <StatCard
-              label={activeChain === null ? "Bridged Supply" : "All-Time Net"}
-              value={<span style={{ color: netColor(allTimeNet) }}>{signedUsd(allTimeNet)}</span>}
-              sub={activeChain === null ? `${tokenFilter ?? "USDT + USDC"} currently on Electroneum` : `Since launch, ${scopeLabel}`}
-            />
+            <StatCard label={`Inflow · ${range.long}`} value={<span style={{ color: green }}>{money(sum.inflow)}</span>} sub="Bridged onto Electroneum" />
+            <StatCard label={`Outflow · ${range.long}`} value={<span style={{ color: red }}>{money(sum.outflow)}</span>} sub="Bridged off Electroneum" />
+            {unit === "ETN" && activeChain === null ? (
+              // ETN is locked here while it's on other chains: what's out there is what went out minus what came back
+              <StatCard label="Bridged Out" value={<span style={{ color: "#fff" }}>{money(-allTimeNet)}</span>} sub="ETN currently on other chains (locked here)" />
+            ) : (
+              <StatCard
+                label={activeChain === null ? "Bridged Supply" : "All-Time Net"}
+                value={<span style={{ color: netColor(allTimeNet) }}>{signed(allTimeNet)}</span>}
+                sub={activeChain === null ? `${scopeName} currently on Electroneum` : `Since launch, ${scopeLabel}`}
+              />
+            )}
           </div>
 
           <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
             <CornerBrackets color={green} />
             <div style={{ ...sectionLabel, marginBottom: 14 }}>Net Flow per Day — {scopeLabel} — {range.days === WINDOW_DAYS ? "Rolling 12 Months" : `Last ${range.long}`}</div>
-            {rows.length > 0 && <HyperlaneChart rows={rows} />}
+            {rows.length > 0 && <HyperlaneChart rows={rows} unit={unit} />}
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 12, fontSize: 11, color: mutedLight }}>
               <LegendSwatch color={green} label="Net inflow (more bridged in)" />
               <LegendSwatch color={red} label="Net outflow (more bridged out)" />
@@ -198,7 +217,7 @@ export default function HyperlaneBridgeTab() {
 
           <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
             <CornerBrackets color={green} />
-            <div style={{ ...sectionLabel, marginBottom: 4 }}>Net Flow per Day, by Chain — {tokenFilter ?? "USDT + USDC"}</div>
+            <div style={{ ...sectionLabel, marginBottom: 4 }}>Net Flow per Day, by Chain — {scopeName}</div>
             <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
               Every chain {tokenFilter ?? "USDT and USDC"} can be bridged through on Hyperlane, including any with no activity. Each chart has its own scale. Click a chain to focus it above.
             </div>
@@ -212,19 +231,19 @@ export default function HyperlaneBridgeTab() {
                   <span style={{ fontSize: 11, color: mutedLight }}>
                     {c.sum.count === 0 ? `No activity in the last ${range.long.toLowerCase()}` : (
                       <>
-                        Net <span style={{ color: netColor(c.sum.net), fontWeight: 800 }}>{signedUsd(c.sum.net)}</span> · In {formatUsdCompact(c.sum.inflow)} · Out {formatUsdCompact(c.sum.outflow)} · {formatInt(c.sum.count)} transfers
+                        Net <span style={{ color: netColor(c.sum.net), fontWeight: 800 }}>{signed(c.sum.net)}</span> · In {money(c.sum.inflow)} · Out {money(c.sum.outflow)} · {formatInt(c.sum.count)} transfers
                       </>
                     )}
                   </span>
                 </button>
-                <HyperlaneChart rows={c.rows} height={80} compact showXAxis={i === panels.length - 1} />
+                <HyperlaneChart rows={c.rows} height={80} compact showXAxis={i === panels.length - 1} unit={unit} />
               </div>
             ))}
           </div>
 
           <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
             <CornerBrackets color={green} />
-            <div style={{ ...sectionLabel, marginBottom: 10 }}>By Chain — {tokenFilter ?? "USDT + USDC"} — Last {range.long}</div>
+            <div style={{ ...sectionLabel, marginBottom: 10 }}>By Chain — {scopeName} — Last {range.long}</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 380 }}>
                 <thead>
@@ -243,9 +262,9 @@ export default function HyperlaneBridgeTab() {
                       style={{ borderTop: `1px solid ${border}`, cursor: "pointer", textAlign: "right", background: activeChain === c.domain ? "rgba(24,187,26,0.08)" : undefined }}
                     >
                       <td style={{ textAlign: "left", padding: "9px 0", color: "#fff", fontWeight: 700 }}>{c.name}</td>
-                      <td style={{ color: mutedLight }}>{formatUsdCompact(c.inflow)}</td>
-                      <td style={{ color: mutedLight }}>{formatUsdCompact(c.outflow)}</td>
-                      <td style={{ color: netColor(c.net), fontWeight: 800 }}>{signedUsd(c.net)}</td>
+                      <td style={{ color: mutedLight }}>{money(c.inflow)}</td>
+                      <td style={{ color: mutedLight }}>{money(c.outflow)}</td>
+                      <td style={{ color: netColor(c.net), fontWeight: 800 }}>{signed(c.net)}</td>
                     </tr>
                   ))}
                 </tbody>
