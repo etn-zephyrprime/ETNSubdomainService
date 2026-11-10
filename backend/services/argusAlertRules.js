@@ -300,15 +300,16 @@ export function bridgeDailyAlert(bridge, state = {}, nowMs = Date.now(), { hourU
 
 // ---- 6. Hyperlane weekly ------------------------------------------------------------------------
 
-const CHAIN_NAMES = { 1: "Ethereum", 10: "Optimism", 56: "BNB Chain", 137: "Polygon", 8453: "Base", 42161: "Arbitrum", 43114: "Avalanche" }; // as hyperlaneSeries.js
+const CHAIN_NAMES = { 1: "Ethereum", 10: "Optimism", 56: "BNB Chain", 137: "Polygon", 8453: "Base", 42161: "Arbitrum", 43114: "Avalanche", 1399811149: "Solana" }; // as hyperlaneSeries.js
 const chainName = (d) => CHAIN_NAMES[d] || `Chain ${d}`;
 
-/** In / out / net per chain over events newer than sinceSec: { [domain]: { in, out } }. */
-export function hyperlaneFlows(events, sinceSec) {
+/** In / out / net per chain over events newer than sinceSec: { [domain]: { in, out } }. `tokenIndexes` (a
+ * Set) limits it to those tokens — the weekly alert passes the USD ones, so ETN amounts never land in dollars. */
+export function hyperlaneFlows(events, sinceSec, tokenIndexes = null) {
   const by = {};
   for (const e of events || []) {
-    const [ts, , domain, dir, amount] = e;
-    if (ts < sinceSec || !Number.isFinite(amount)) continue;
+    const [ts, tokenIndex, domain, dir, amount] = e;
+    if (ts < sinceSec || !Number.isFinite(amount) || (tokenIndexes && !tokenIndexes.has(tokenIndex))) continue;
     const r = (by[domain] = by[domain] || { in: 0, out: 0 });
     if (dir === 0) r.in += amount;
     else r.out += amount;
@@ -326,8 +327,11 @@ export function hyperlaneWeeklyAlert(hyperlane, state = {}, nowMs = Date.now(), 
   if (now.getUTCDay() !== weekday || now.getUTCHours() < hourUtc || state.hyperLastWeek === weekKey) return { messages: [], state };
   const events = hyperlane?.events || [];
   const nowSec = Math.floor(nowMs / 1000);
-  const week = hyperlaneFlows(events, nowSec - 7 * 86400);
-  const year = hyperlaneFlows(events, nowSec - 365 * 86400);
+  // USD tokens only (a token without a unit predates the ETN route, so it's a stablecoin)
+  const usdTokens = new Set((hyperlane?.tokens || []).map((t, i) => ((t.unit || "USD") === "USD" ? i : null)).filter((i) => i !== null));
+  const only = hyperlane?.tokens?.length ? usdTokens : null;
+  const week = hyperlaneFlows(events, nowSec - 7 * 86400, only);
+  const year = hyperlaneFlows(events, nowSec - 365 * 86400, only);
   const sum = (by) => Object.values(by).reduce((s, r) => ({ in: s.in + r.in, out: s.out + r.out }), { in: 0, out: 0 });
   const domains = [...new Set([...Object.keys(year), ...Object.keys(week)])].sort((a, b) => (year[b]?.in || 0) + (year[b]?.out || 0) - ((year[a]?.in || 0) + (year[a]?.out || 0)));
   const w = sum(week), y = sum(year);

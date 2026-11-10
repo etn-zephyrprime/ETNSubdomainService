@@ -1,8 +1,10 @@
 // Pure maths for the Hyperlane Bridge tab — no React or Vite imports, so it can be unit-tested with plain node.
 //
 // The published file (backend/utils/hyperlaneBridge.js) holds compact transfer events:
-//   [timestampSec, tokenIndex, domain, direction (0 = in to Electroneum, 1 = out), amountUsd, block]
-// `domain` is Hyperlane's id for the OTHER chain (for the big EVM chains that is the chain id).
+//   [timestampSec, tokenIndex, domain, direction (0 = in to Electroneum, 1 = out), amount, block]
+// `domain` is Hyperlane's id for the OTHER chain (for the big EVM chains that is the chain id). `amount` is in
+// the token's own unit (tokens[i].unit: USD for USDT/USDC, ETN for the ETN route), so only same-unit tokens
+// may be summed together — pass a list of token indexes as `tokenIndex` for that.
 
 const DAY_SEC = 86400;
 const DAY_MS = DAY_SEC * 1000;
@@ -26,6 +28,7 @@ const CHAIN_NAMES = {
   59144: "Linea",
   81457: "Blast",
   534352: "Scroll",
+  1399811149: "Solana",
 };
 
 export const chainName = (domain) => CHAIN_NAMES[domain] || `Chain ${domain}`;
@@ -38,9 +41,10 @@ export function windowStartMs(nowMs, days = WINDOW_DAYS) {
   return dayStartMs(nowMs) - (days - 1) * DAY_MS;
 }
 
-/** `tokenIndex` null = every token; `domain` null = every chain. */
+/** `tokenIndex` null = every token, a number = that token, an array = any of those; `domain` null = every chain. */
 function matches(e, tokenIndex, domain) {
-  return (tokenIndex === null || e[1] === tokenIndex) && (domain === null || e[2] === domain);
+  const tokenOk = tokenIndex === null || (Array.isArray(tokenIndex) ? tokenIndex.includes(e[1]) : e[1] === tokenIndex);
+  return tokenOk && (domain === null || e[2] === domain);
 }
 
 /** One row per UTC day of the window (zeros filled in, so quiet days still take their place on the axis):

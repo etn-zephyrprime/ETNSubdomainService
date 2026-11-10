@@ -71,7 +71,7 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState(null);
   const [asking, setAsking] = useState(false);
-  const [remaining, setRemaining] = useState(null);
+  const [quota, setQuota] = useState(null); // questions left: 5 a day, 20 a week, 50 a month (backend questionQuota.js)
   const authRef = useRef(getAuthParams);
   authRef.current = getAuthParams; // latest, without re-running effects for it (it changes every render)
 
@@ -103,7 +103,10 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
       try {
         const auth = await authRef.current(AUTH_PURPOSE);
         const d = await explain(auth, facts.address);
-        if (!cancelled) setExplanation(d);
+        if (!cancelled) {
+          setExplanation(d);
+          if (d.questions) setQuota(d.questions);
+        }
       } catch (e) {
         if (!cancelled) setExplainError(e.message);
       } finally {
@@ -136,10 +139,10 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
       const auth = await authRef.current(AUTH_PURPOSE);
       const d = await explain(auth, facts.address, q);
       setAnswer(d);
-      setRemaining(d.remaining);
+      if (d.questions) setQuota(d.questions);
     } catch (e) {
       setAnswer({ error: e.message });
-      if (e.remaining != null) setRemaining(e.remaining);
+      if (e.questions) setQuota(e.questions);
     } finally {
       setAsking(false);
     }
@@ -255,11 +258,17 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
                     aria-label="Your question about this contract"
                     style={{ flex: 1, minWidth: 0, background: panel2, border: `1px solid ${border}`, borderRadius: 6, color: "#fff", padding: "10px 12px", fontSize: 14 }}
                   />
-                  <button type="submit" disabled={asking || !question.trim()} style={{ background: green, color: "#000", border: "none", borderRadius: 6, padding: "0 14px", fontFamily: monoFont, fontWeight: 800, fontSize: 12, cursor: asking ? "wait" : "pointer", opacity: asking || !question.trim() ? 0.55 : 1 }}>
+                  <button type="submit" disabled={asking || !question.trim() || quota?.remaining === 0} style={{ background: green, color: "#000", border: "none", borderRadius: 6, padding: "0 14px", fontFamily: monoFont, fontWeight: 800, fontSize: 12, cursor: asking ? "wait" : "pointer", opacity: asking || !question.trim() || quota?.remaining === 0 ? 0.55 : 1 }}>
                     {asking ? "…" : "Ask"}
                   </button>
                 </form>
-                {remaining != null && <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>{remaining} question{remaining === 1 ? "" : "s"} left today</div>}
+                {quota && (
+                  <div style={{ fontSize: 11, color: quota.remaining === 0 ? gold : muted, marginTop: 4 }}>
+                    {quota.remaining === 0
+                      ? quota.message
+                      : `Questions left: ${quota.remainingBy.day} today · ${quota.remainingBy.week} this week · ${quota.remainingBy.month} this month`}
+                  </div>
+                )}
                 {answer && (
                   <div style={{ marginTop: 10, background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 12, fontSize: 13, lineHeight: 1.5, color: answer.error ? errorColor : undefined }}>
                     {answer.error || answer.answer}

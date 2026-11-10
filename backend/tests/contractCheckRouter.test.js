@@ -48,3 +48,11 @@ test("rate limiter: max per window per key, then a retry-after", () => {
   assert.ok(third.retryAfterSec > 0 && third.retryAfterSec <= 60);
   assert.equal(hit("b").ok, true); // per key
 });
+
+test("approvals for a tracked wallet still need the member's signature (owner= can't bypass it)", async () => {
+  await withServer(async (base) => {
+    const owner = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099";
+    assert.equal((await fetch(`${base}/contract-check/approvals?owner=${owner}`)).status, 401);
+    assert.equal((await fetch(`${base}/contract-check/approvals?wallet=${owner}&signature=0xdead&timestamp=${Date.now()}&owner=${owner}`)).status, 401);
+  });
+});

@@ -1,7 +1,9 @@
 // backend/utils/hyperlaneBridge.js
 //
-// Tracks USD-stablecoin flows in and out of Electroneum over Hyperlane, for the free dashboard's "Hyperlane
-// Bridge" tab (net inflow/outflow per day, filterable by the chain the money came from / went to).
+// Tracks flows in and out of Electroneum over Hyperlane, for the free dashboard's "Hyperlane Bridge" tab (net
+// inflow/outflow per day, filterable by the chain the money came from / went to): the USDT and USDC stablecoin
+// routes, and the ETN route (native ETN locked here, synthetic ETN on BNB Chain, Ethereum and Solana — per the
+// Hyperlane registry's deployments/warp_routes/ETN/electroneum-config.yaml).
 //
 // THE CONTRACTS. USDT and USDC on Electroneum are Hyperlane "warp route" synthetic tokens (HypERC20) behind
 // TransparentUpgradeableProxy contracts — the proxies below hold the state and emit the events. (The
@@ -17,6 +19,12 @@
 //     uint256 amount) — minted here after being locked on `origin`.
 // So inflow/outflow per chain is exact, straight from the events. Sanity check: for each token, total received
 // minus total sent equals its totalSupply() (verified live; logged if it ever drifts).
+//
+// ETN is the other way round: on Electroneum it's the COLLATERAL side (HypNative). Bridging out locks native
+// ETN in the route contract and emits SentTransferRemote; bridging in releases it and emits
+// ReceivedTransferRemote — the same events, so the same rows. Its "supply" is the ETN locked in the contract
+// (its native balance), which should equal total sent minus total received. Amounts are in ETN, not USD:
+// tokens carry a `unit` ("USD" | "ETN") so nothing adds them to the stablecoins.
 //
 // SOURCE. The explorer's etherscan-style getLogs endpoint (topic-filtered, 1,000 results/page, timestamps
 // included), so no RPC scanning and no per-block timestamp lookups. The first run reads the whole history (a
@@ -34,9 +42,11 @@ const MAX_PAGES = 200;
 // cursor, not the stored events, decides what still needs fetching.
 const KEEP_DAYS = 1100; // ~3 years: a few hundred rows a year, and it keeps the supply reconciliation below meaningful
 
+// Order matters: an event row stores the token's INDEX here, so new tokens are only ever appended.
 export const HYPERLANE_TOKENS = [
-  { symbol: "USDT", name: "Tether USD", address: "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7", decimals: 6 },
-  { symbol: "USDC", name: "USD Coin", address: "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e", decimals: 6 },
+  { symbol: "USDT", name: "Tether USD", address: "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7", decimals: 6, unit: "USD" },
+  { symbol: "USDC", name: "USD Coin", address: "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e", decimals: 6, unit: "USD" },
+  { symbol: "ETN", name: "Electroneum", address: "0x3003b36eea03A55d2cAF6048d45420A60Bf40aC5", decimals: 18, unit: "ETN", native: true },
 ];
 
 const ABI = [
@@ -148,24 +158,26 @@ export async function refreshHyperlaneBridge({ provider, getData = getHyperlaneB
       const token = HYPERLANE_TOKENS[i];
       try {
         const contract = new ethers.Contract(token.address, ABI, provider);
-        const [supply, domains] = await Promise.all([contract.totalSupply(), contract.domains()]);
-        current[token.symbol] = { supply: Number(ethers.formatUnits(supply, token.decimals)), domains: domains.map(Number), block: latestBlock };
+        // native ETN: the ETN locked in the route contract (bridged off Electroneum), not a token supply
+        const [supply, domains] = await Promise.all([token.native ? provider.getBalance(token.address) : contract.totalSupply(), contract.domains()]);
+        current[token.symbol] = { supply: Number(ethers.formatUnits(supply, token.decimals)), domains: domains.map(Number), block: latestBlock, ...(token.native ? { locked: true } : {}) };
       } catch (err) {
         console.warn(`⚠️  Hyperlane bridge: couldn't read ${token.symbol} supply/domains: ${err.message}`);
       }
     }
 
     await setData({
-      tokens: HYPERLANE_TOKENS.map(({ symbol, name, address, decimals }) => ({ symbol, name, address, decimals })),
+      tokens: HYPERLANE_TOKENS.map(({ symbol, name, address, decimals, unit, native }) => ({ symbol, name, address, decimals, unit, ...(native ? { native: true } : {}) })),
       events,
       cursors,
       current,
     });
 
     const summary = HYPERLANE_TOKENS.map((t, i) => {
-      const net = netFromEvents(events, i);
+      // native ETN: what's locked here is what went out minus what came back, so compare the negated net
+      const net = t.native ? -netFromEvents(events, i) : netFromEvents(events, i);
       const supply = current[t.symbol]?.supply;
-      const drift = supply != null && Math.abs(net - supply) > 1 ? ` ⚠️ events net ${net.toFixed(2)} vs supply ${supply.toFixed(2)}` : "";
+      const drift = supply != null && Math.abs(net - supply) > 1 ? ` ⚠️ events net ${net.toFixed(2)} vs ${t.native ? "locked" : "supply"} ${supply.toFixed(2)}` : "";
       return `${t.symbol} net ${net.toFixed(2)}${drift}`;
     }).join(", ");
     console.log(`🌐 Hyperlane bridge updated — ${events.length} event(s) (+${incoming.length} new); ${summary}`);

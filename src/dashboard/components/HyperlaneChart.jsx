@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from "react";
 import { green, error as red, muted, mutedLight, border } from "../theme.js";
-import { formatUsdCompact } from "../utils/format.js";
+import { formatCompact, formatUsdCompact } from "../utils/format.js";
 import { barRange, niceTicks } from "../utils/hyperlaneSeries.js";
 import { monthTicks } from "../utils/bridgeSeries.js";
 
@@ -11,7 +11,9 @@ const PAD = 6; // % kept clear above the tallest bar / below the lowest
 const Y_AXIS_WIDTH = 50;
 
 export const signedUsd = (v) => (v < 0 ? "−" : v > 0 ? "+" : "") + formatUsdCompact(Math.abs(v));
-const usdFull = (v) => formatUsdCompact(v);
+/** The amount in a token's unit: dollars, or ETN for the ETN route. */
+export const formatAmount = (v, unit = "USD") => (unit === "ETN" ? `${formatCompact(v)} ETN` : formatUsdCompact(v));
+export const signedAmount = (v, unit = "USD") => (v < 0 ? "−" : v > 0 ? "+" : "") + formatAmount(Math.abs(v), unit);
 const dayLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const monthLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", year: "2-digit", timeZone: "UTC" });
 const shortDayLabel = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
@@ -31,7 +33,7 @@ function axisTicks(rows, startMs, endMs) {
 
 // `height` is the plot height in px; `compact` = a small per-chain panel (fewer y ticks); `showXAxis` = month labels
 // under the plot (only the bottom panel of a stack needs them).
-export default function HyperlaneChart({ rows, height = 240, compact = false, showXAxis = true }) {
+export default function HyperlaneChart({ rows, height = 240, compact = false, showXAxis = true, unit = "USD" }) {
   const HEIGHT = height;
   const wrapRef = useRef(null);
   const [hoverIndex, setHoverIndex] = useState(null);
@@ -62,7 +64,7 @@ export default function HyperlaneChart({ rows, height = 240, compact = false, sh
       <div style={{ position: "absolute", left: 0, top: 0, width: Y_AXIS_WIDTH - 6, height: HEIGHT }}>
         {yTickValues.map((v) => (
           <div key={v} style={{ position: "absolute", right: 0, top: `${y(v)}%`, transform: "translateY(-50%)", fontSize: 10, color: v === 0 ? mutedLight : muted, fontWeight: v === 0 ? 700 : 400, whiteSpace: "nowrap" }}>
-            {v === 0 ? "0" : signedUsd(v)}
+            {v === 0 ? "0" : signedAmount(v, unit)}
           </div>
         ))}
       </div>
@@ -110,8 +112,8 @@ export default function HyperlaneChart({ rows, height = 240, compact = false, sh
             }}
           >
             <div style={{ color: mutedLight, marginBottom: 3 }}>{dayLabel(hover.t)}</div>
-            <div>Net <span style={{ color: hover.net > 0 ? green : hover.net < 0 ? red : "#fff", fontWeight: 800 }}>{signedUsd(hover.net)}</span></div>
-            <div style={{ color: mutedLight }}>In {usdFull(hover.inflow)} · Out {usdFull(hover.outflow)}</div>
+            <div>Net <span style={{ color: hover.net > 0 ? green : hover.net < 0 ? red : "#fff", fontWeight: 800 }}>{signedAmount(hover.net, unit)}</span></div>
+            <div style={{ color: mutedLight }}>In {formatAmount(hover.inflow, unit)} · Out {formatAmount(hover.outflow, unit)}</div>
             {hover.count > 0 && <div style={{ color: muted }}>{hover.count} transfer{hover.count === 1 ? "" : "s"}</div>}
           </div>
         )}

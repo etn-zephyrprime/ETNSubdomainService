@@ -26,6 +26,19 @@ export async function getQuestionCount(wallet, day) {
   return Number(res?.rows?.[0]?.count || 0);
 }
 
+/** Questions asked since each period start (questionQuota.js periodStarts): { day, week, month }. One query. */
+export async function getQuestionUsage(wallet, starts) {
+  const res = await query(
+    `SELECT COALESCE(SUM(count) FILTER (WHERE day >= $2), 0) AS day,
+            COALESCE(SUM(count) FILTER (WHERE day >= $3), 0) AS week,
+            COALESCE(SUM(count) FILTER (WHERE day >= $4), 0) AS month
+     FROM contract_qa_usage WHERE wallet = $1 AND day >= LEAST($3::date, $4::date)`,
+    [wallet.toLowerCase(), starts.day, starts.week, starts.month]
+  );
+  const r = res?.rows?.[0] || {};
+  return { day: Number(r.day || 0), week: Number(r.week || 0), month: Number(r.month || 0) };
+}
+
 /** Counts one question for today and returns the new total (null when the database isn't configured). */
 export async function incrementQuestionCount(wallet, day) {
   const res = await query(
