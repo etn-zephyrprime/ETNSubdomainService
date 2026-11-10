@@ -33,7 +33,7 @@ import os from "os";
 import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
-import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit } from "../services/etnGapStrategy.js";
+import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit, GAP_REBALANCE_DEFAULTS, gapRebalanceNeed, decideGapRebalance, applyGapRebalance } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
 import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
@@ -99,6 +99,10 @@ export function readConfig() {
     gapClipEtn: num("ETN_BOT_GAP_CLIP_ETN", GAP_DEFAULTS.clipEtn),
     gapMinGainPct: num("ETN_BOT_GAP_MIN_GAIN_PCT", GAP_DEFAULTS.minGainPct),
     gapMaxTradesPerDay: num("ETN_BOT_GAP_MAX_TRADES_PER_DAY", 48),
+    // Topping a one-sided gap book back up to 50/50 through WETN, only when that route is cheap (etnGapStrategy.js).
+    gapRebalance: process.env.ETN_BOT_GAP_REBALANCE !== "false",
+    gapRebalanceMaxCostPct: num("ETN_BOT_GAP_REBALANCE_MAX_COST_PCT", GAP_REBALANCE_DEFAULTS.maxCostPct),
+    gapRebalanceMinSidePct: num("ETN_BOT_GAP_REBALANCE_MIN_SIDE_PCT", GAP_REBALANCE_DEFAULTS.minSideSharePct),
     triEnabled: process.env.ETN_BOT_TRI_ENABLED === "true",
     triMinGainEtn: num("ETN_BOT_TRI_MIN_GAIN_ETN", TRIANGLE_DEFAULTS.minGainEtn),
     triMaxEtn: num("ETN_BOT_TRI_MAX_ETN", 30000),
@@ -206,6 +210,7 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
 const poolIface = new ethers.Interface(POOL_ABI);
+const TRANSFER_IFACE = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 value)"]);
 // Triangles: QuoterV2 multi-hop quotes, and WETN's Withdrawal event (the router unwrapping the loop's
 // final WETN to native ETN for us) is how a filled loop's ETN out is read from its receipt.
 const QUOTER_PATH_ABI = ["function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut, uint160[] sqrtPriceX96AfterList, uint32[] initializedTicksCrossedList, uint256 gasEstimate)"];
@@ -598,6 +603,89 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
    * ETN value, so the ETN-vs-holding figure isn't flattered by it. A shortfall (stablecoin moved out of
    * the wallet by hand) shrinks the book to match, so the bot never plans a trade it can't pay for.
    * Only runs between trades: the caller has already settled anything pending. */
+  // ---- gap book rebalance (USDT <-> USDC through WETN; see etnGapStrategy.js) ----
+  const stablePath = (from, to) => ethers.solidityPacked(["address", "uint24", "address", "uint24", "address"], [POOLS[from].token, POOLS[from].fee, WETN, POOLS[to].fee, POOLS[to].token]);
+
+  /** Real quote for converting `usd` of `from` into `to` through WETN (both pools' fees and impact). */
+  async function quoteStableRoute(from, to, usd) {
+    const quoter = new ethers.Contract(QUOTER, QUOTER_PATH_ABI, provider);
+    const r = await quoter.quoteExactInput.staticCall(stablePath(from, to), ethers.parseUnits(floorTo(usd, POOLS[from].decimals), POOLS[from].decimals));
+    return Number(ethers.formatUnits(r.amountOut, POOLS[to].decimals));
+  }
+
+  /** `to` received by the wallet in a rebalance receipt (its Transfer to us). */
+  function stableReceived(receipt, to) {
+    let raw = 0n;
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== POOLS[to].token.toLowerCase()) continue;
+      try {
+        const ev = TRANSFER_IFACE.parseLog(log);
+        if (ev?.name === "Transfer" && ev.args.to.toLowerCase() === wallet.address.toLowerCase()) raw += ev.args.value;
+      } catch {
+        // not a Transfer
+      }
+    }
+    return Number(ethers.formatUnits(raw, POOLS[to].decimals));
+  }
+
+  /** Books a mined rebalance from its receipt and clears the pending marker. */
+  function settleRebalance(state, pending, receipt, etnPriceUsd) {
+    delete state.gapRebalancePending;
+    if (!receipt || receipt.status !== 1) {
+      notify(`⚠️ Gap book rebalance failed on-chain — nothing converted (tx ${pending.txHash})`);
+      return;
+    }
+    const usdOut = stableReceived(receipt, pending.to);
+    applyGapRebalance(state.gap, { from: pending.from, to: pending.to, usdIn: pending.usdIn, usdOut, etnPriceUsd, at: new Date().toISOString(), txHash: pending.txHash });
+    notify(`⚖️ Gap book rebalanced: ${fmtUsd(pending.usdIn)} ${pending.from} -> ${fmtUsd(usdOut)} ${pending.to} through WETN (cost ${fmtUsd(pending.usdIn - usdOut)}); book now ${fmtUsd(state.gap.stables.USDT)} USDT / ${fmtUsd(state.gap.stables.USDC)} USDC — tx ${pending.txHash}`);
+  }
+
+  /** A rebalance sent on an earlier tick (or before a restart): settle it once its receipt is in. */
+  async function settlePendingRebalance(state, etnPriceUsd) {
+    const pending = state.gapRebalancePending;
+    if (!pending) return false;
+    const receipt = await provider.getTransactionReceipt(pending.txHash).catch(() => null);
+    if (receipt) {
+      settleRebalance(state, pending, receipt, etnPriceUsd);
+      return true;
+    }
+    if (Date.now() - Date.parse(pending.at) > 30 * 60000) {
+      // never mined (dropped): nothing moved, the wallet reconcile would show otherwise
+      delete state.gapRebalancePending;
+      notify(`⚠️ Gap book rebalance tx ${pending.txHash} was never mined — dropped`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Converts `d.amountUsd` of `d.from` into `d.to` through WETN in one transaction. Live: approve the exact
+   * amount, simulate, send, record as pending, wait, settle. Paper: book at the quote. The minimum out is
+   * the quote less the slippage, and never below the cost cap — so it fills cheaply or reverts. */
+  async function rebalanceGapBook(state, d, etnPriceUsd) {
+    actedThisTick = true;
+    if (cfg.mode === "paper") {
+      applyGapRebalance(state.gap, { from: d.from, to: d.to, usdIn: d.amountUsd, usdOut: d.amountOut, etnPriceUsd, at: new Date().toISOString() });
+      return;
+    }
+    const pf = POOLS[d.from], pt = POOLS[d.to];
+    const inRaw = ethers.parseUnits(floorTo(d.amountUsd, pf.decimals), pf.decimals);
+    const slipOut = d.amountOut * (1 - cfg.slippageBps / 10000);
+    const capOut = d.amountUsd * (1 - cfg.gapRebalanceMaxCostPct / 100);
+    const minOut = ethers.parseUnits(floorTo(Math.max(slipOut, capOut), pt.decimals), pt.decimals);
+    const token = new ethers.Contract(pf.token, ERC20_ABI, wallet);
+    if ((await token.balanceOf(wallet.address)) < inRaw) throw new Error(`wallet holds less than ${fmtUsd(d.amountUsd)} ${d.from}`);
+    if ((await token.allowance(wallet.address, SWAP_ROUTER)) < inRaw) await (await token.approve(SWAP_ROUTER, inRaw)).wait(); // exact amount, never unlimited
+    const router = new ethers.Contract(SWAP_ROUTER, ROUTER_ABI, wallet);
+    const params = { path: stablePath(d.from, d.to), recipient: wallet.address, amountIn: inRaw, amountOutMinimum: minOut };
+    await simulated(router.exactInput.staticCall(params));
+    const tx = await router.exactInput(params);
+    state.gapRebalancePending = { txHash: tx.hash, from: d.from, to: d.to, usdIn: Number(ethers.formatUnits(inRaw, pf.decimals)), at: new Date().toISOString() };
+    await saveWithRetry(state); // record the in-flight tx before waiting on it
+    const receipt = await tx.wait().catch(() => null);
+    if (receipt) settleRebalance(state, state.gapRebalancePending, receipt, etnPriceUsd);
+    await saveWithRetry(state);
+  }
+
   async function reconcileGapStables(state, mids) {
     // The wallet's USDT/USDC should be exactly: open sell/buyback lots + the gap book + the catch-up pot's
     // cash. A surplus is a deposit: it fills the catch-up pot up to its target first (that's how the pot
@@ -1587,8 +1675,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       state.emaAt = new Date(now).toISOString();
       state.samples = (state.samples || 0) + 1;
 
-      // USDT/USDC you send to the wallet joins the gap book (live only; see reconcileGapStables).
-      if ((cfg.gapEnabled || cfg.cuEnabled) && cfg.mode === "live" && wallet) await reconcileGapStables(state, mids);
+      // USDT/USDC you send to the wallet joins the gap book (live only; see reconcileGapStables). Not while a
+      // book rebalance is in flight: its USDC would look like a top-up and then be booked twice.
+      if ((cfg.gapEnabled || cfg.cuEnabled) && cfg.mode === "live" && wallet && !state.gapRebalancePending) await reconcileGapStables(state, mids);
 
       const quotes = await gatherQuotes(provider, state, cfg.clipEtn);
       if (wallet) {
@@ -1677,6 +1766,11 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       let gapNote = "";
       if (cfg.gapEnabled) {
         const gap = state.gap;
+        // A rebalance from an earlier tick still settling: nothing else touches the book until it's booked.
+        if (state.gapRebalancePending) {
+          if (await settlePendingRebalance(state, mid)) await saveWithRetry(state);
+          if (state.gapRebalancePending) return;
+        }
         // 2. Seed the gap book (once per side): half the seed ETN sold into each pool.
         const unseeded = Object.keys(POOLS).find((k) => !gap.seeded[k]);
         if (unseeded) {
@@ -1704,6 +1798,25 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
             return;
           }
           gapNote = ` · pool gap ${gapPct.toFixed(2)}% (book ${fmtUsd(gap.stables.USDT)} USDT / ${fmtUsd(gap.stables.USDC)} USDC, +${fmtEtn(gap.gainEtn)} ETN over ${gap.trades})`;
+
+          // 3b. No gap trade: if the book is one-sided, top the short side back up — only when the WETN route
+          // is cheap (it costs the open gap otherwise), once a day.
+          const need = cfg.gapRebalance && gap.rebalanceDay !== day ? gapRebalanceNeed(gap, { ...GAP_REBALANCE_DEFAULTS, minSideSharePct: cfg.gapRebalanceMinSidePct }) : null;
+          if (need) {
+            const out = await quoteStableRoute(need.from, need.to, need.amountUsd).catch(() => 0);
+            const r = decideGapRebalance(need, out, { ...GAP_REBALANCE_DEFAULTS, maxCostPct: cfg.gapRebalanceMaxCostPct });
+            if (r) {
+              gap.rebalanceDay = day;
+              try {
+                await rebalanceGapBook(state, r, mid);
+              } catch (err) {
+                notify(`⚠️ Gap book rebalance (${fmtUsd(r.amountUsd)} ${r.from} -> ${r.to}) not sent: ${err.shortMessage || err.message}`);
+              }
+              await saveWithRetry(state);
+              return;
+            }
+            gapNote += ` · book one-sided; rebalance waits for a cheap route (now ${out > 0 ? `${(((need.amountUsd - out) / need.amountUsd) * 100).toFixed(1)}%` : "no quote"}, max ${cfg.gapRebalanceMaxCostPct}%)`;
+          }
         } else {
           gapNote = ` · gap daily cap (${cfg.gapMaxTradesPerDay}) reached`;
         }
@@ -1895,7 +2008,7 @@ export async function startEtnAccumulatorBot() {
     if (bal < needed) console.warn(`⚠️  ETN bot: wallet holds ${fmtEtn(bal)} ETN, below the ${fmtEtn(needed)} it may need at once (lots + gap seed + gas reserve) — trades will stop when the balance runs short`);
   }
   const gapText =
-    (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%)` : "; gap mode off") +
+    (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%${cfg.gapRebalance ? `, rebalance below ${cfg.gapRebalanceMinSidePct}% a side at <= ${cfg.gapRebalanceMaxCostPct}% cost` : ""})` : "; gap mode off") +
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
     (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
     (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
