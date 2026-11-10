@@ -75,7 +75,7 @@ async function main() {
 
   console.log(`\nETN accumulator bot — ${mode.toUpperCase()} (since ${state.startedAt.slice(0, 16)}Z, updated ${state.updatedAt.slice(0, 16)}Z)`);
   console.log(`\n  ETN ACCUMULATED:     ${signed(accumulated)} ETN   (${((accumulated / s.budgetEtn) * 100).toFixed(2)}% of the ${etn(s.budgetEtn)} ETN budget, ~${signed(accumulated / days)} ETN/day)`);
-  if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)`);
+  if (state.gap) console.log(`    from gap trades:   ${signed(s.gapGainEtn)} ETN over ${s.gapTrades} trade(s)${state.gap.rebalances ? `, net of ${state.gap.rebalances} book rebalance(s) costing $${state.gap.rebalanceCostUsd.toFixed(2)} (${etn(state.gap.rebalanceCostEtn)} ETN)` : ""}${state.gapRebalancePending ? ` · rebalance in flight: ${state.gapRebalancePending.txHash}` : ""}`);
   if (state.tri) console.log(`    from triangles:    ${signed(s.triGainEtn)} ETN over ${s.triTrades} trade(s)`);
   if (state.cu) console.log(`    from KuCoin catch-up: ${signed(s.cuGainEtn)} ETN over ${s.cuClosed} closed lot(s)`);
   if (state.hedgeLive) console.log(`    from hedged trades:   ${signed(hedgeGainEtn)} ETN over ${state.hedgeLive.trades} hedge(s), net of round-trip fees`);

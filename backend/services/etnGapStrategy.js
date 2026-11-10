@@ -99,3 +99,55 @@ export function applyGapTrade(book, trade) {
   applyGapSellLeg(book, trade);
   return applyGapBuyLeg(book, trade);
 }
+
+// ---- rebalancing the book between USDT and USDC ---------------------------------------------------
+//
+// Gap trades leave the book's dollars on whichever side ETN was dear, so after a run of gaps in one
+// direction it can end up one-sided (Nov 2026: $141 USDT / $0.04 USDC while the USDC pool sat 2.8%
+// cheap for ~10 hours, untradeable). ElectroSwap has no usable USDT/USDC pool (both exist but are
+// empty), so the only on-chain conversion is through WETN — USDT -> WETN -> USDC — which costs the two
+// pool fees (~0.6%) PLUS the gap between the pools: converting while that gap is wide gives it all
+// back (quoted live at 4-8%). So the book is only topped back up towards 50/50 when the route is cheap
+// (quiet pools, or a gap leaning the helpful way), never to chase the gap that's open. The cost (or
+// gain) is booked against the gap's ETN gain, at that moment's price.
+export const GAP_REBALANCE_DEFAULTS = {
+  minSideSharePct: 25, // rebalance when the smaller side is below this share of the book
+  minTotalUsd: 20, // ...and the book is worth bothering with
+  maxCostPct: 1, // the route's real quote may cost at most this much of the amount converted
+  maxPerDay: 1,
+};
+
+/** What a lopsided book needs: { from, to, amountUsd } that brings it back to an even split, or null. */
+export function gapRebalanceNeed(book, cfg = GAP_REBALANCE_DEFAULTS) {
+  const usdt = book.stables.USDT || 0;
+  const usdc = book.stables.USDC || 0;
+  const total = usdt + usdc;
+  if (!(total >= cfg.minTotalUsd)) return null;
+  const [from, to] = usdt >= usdc ? ["USDT", "USDC"] : ["USDC", "USDT"];
+  const low = Math.min(usdt, usdc);
+  if ((low / total) * 100 >= cfg.minSideSharePct) return null;
+  return { from, to, amountUsd: Math.floor((total / 2 - low) * 100 + 1e-6) / 100 }; // to the cent (epsilon: 70.4999… is 70.50)
+}
+
+/** Whether a quoted conversion (`amountOut` of `to` for `amountIn` of `from`) is cheap enough:
+ * { ...need, amountOut, costPct } or null. A negative cost (the gap leaning our way) is fine. */
+export function decideGapRebalance(need, amountOut, cfg = GAP_REBALANCE_DEFAULTS) {
+  if (!need || !(amountOut > 0)) return null;
+  const costPct = ((need.amountUsd - amountOut) / need.amountUsd) * 100;
+  return costPct <= cfg.maxCostPct ? { ...need, amountOut, costPct } : null;
+}
+
+/** Books a filled conversion: `usdIn` of `from` became `usdOut` of `to`; the dollar difference, in ETN
+ * at `etnPriceUsd`, comes off (or, if positive, adds to) the gap's ETN gain. Mutates and returns it. */
+export function applyGapRebalance(book, { from, to, usdIn, usdOut, etnPriceUsd, at = null, txHash = null }) {
+  book.stables[from] = (book.stables[from] || 0) - usdIn;
+  book.stables[to] = (book.stables[to] || 0) + usdOut;
+  const costUsd = usdIn - usdOut;
+  const costEtn = etnPriceUsd > 0 ? costUsd / etnPriceUsd : 0;
+  book.gainEtn -= costEtn;
+  book.rebalances = (book.rebalances || 0) + 1;
+  book.rebalanceCostUsd = (book.rebalanceCostUsd || 0) + costUsd;
+  book.rebalanceCostEtn = (book.rebalanceCostEtn || 0) + costEtn;
+  book.recentRebalances = [...(book.recentRebalances || []), { at, from, to, usdIn, usdOut, costEtn, txHash }].slice(-20);
+  return book;
+}
