@@ -5,7 +5,8 @@
 //                                        tokens, from the static contract-badges.json (services/contractCheck/badges.js)
 //   POST /api/contract-check/explain     Core tier, wallet-signed: { wallet, signature, timestamp, address,
 //                                        question? } -> the cached summary, or an answer to `question`
-//                                        (CONTRACT_QA_DAILY_LIMIT per member per UTC day)
+//                                        (5 a day, 20 a week, 50 a month per member: questionQuota.js); both
+//                                        carry `questions` = what's left
 //
 // Rate limits per IP (and per wallet on explain). Analysing an uncached contract costs explorer + RPC calls,
 // and a question costs a Claude call, so both are bounded.
@@ -15,16 +16,17 @@ import { analyseContract } from "../services/contractCheck/analyseContract.js";
 import { contractCheckProvider } from "../services/contractCheck/fetchContractData.js";
 import { explainContract, answerQuestion } from "../services/contractCheck/explain.js";
 import { DISCLAIMER } from "../services/contractCheck/prompts.js";
-import { getQuestionCount, incrementQuestionCount } from "../db/contractCheckAi.js";
+import { getQuestionUsage, incrementQuestionCount } from "../db/contractCheckAi.js";
+import { periodStarts, quotaStatus } from "../services/contractCheck/questionQuota.js";
 import { resolveEtnName } from "./primaryNameResolver.js";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { createRateLimiter, clientIp } from "./rateLimit.js";
 import { usedContracts, activeApprovals, searchContracts } from "../services/contractCheck/lists.js";
+import { getCoveredWallets } from "../db/trackedWallets.js";
 
 const router = express.Router();
 const AUTH_PURPOSE = "Premium Dashboard"; // same signed message as the other Core tier routes
-const QA_DAILY_LIMIT = Number(process.env.CONTRACT_QA_DAILY_LIMIT) || 20;
 
 const factsByIp = createRateLimiter({ max: Number(process.env.CONTRACT_CHECK_FACTS_PER_10MIN) || 30, windowMs: 10 * 60 * 1000 });
 const explainByIp = createRateLimiter({ max: 60, windowMs: 10 * 60 * 1000 });
@@ -96,10 +98,19 @@ router.get("/contract-check/used", async (req, res) => {
 });
 
 // The connected wallet's live approvals (only it can revoke them, so only its own).
+// `owner` (optional) = one of the member's covered wallets (their own or a tracked one); default their own.
+// Revoking still needs that wallet's own signature — the frontend hands it off (CoreTierContracts.jsx).
 router.get("/contract-check/approvals", async (req, res) => {
   if (!(await requireCore(req, res))) return;
+  let owner = req.query.wallet;
+  if (req.query.owner) {
+    if (!ethers.isAddress(req.query.owner)) return res.status(400).json({ error: "Invalid wallet" });
+    const covered = (await getCoveredWallets(req.query.wallet)).map((w) => w.address.toLowerCase());
+    if (!covered.includes(req.query.owner.toLowerCase())) return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
+    owner = req.query.owner;
+  }
   try {
-    res.json(await activeApprovals(req.query.wallet, { force: req.query.refresh === "1" }));
+    res.json(await activeApprovals(owner, { force: req.query.refresh === "1" }));
   } catch (err) {
     console.error("⚠️  Contract Check: approvals failed:", err.message);
     res.status(502).json({ error: "Couldn't load your approvals right now — try again shortly" });
@@ -138,14 +149,16 @@ router.post("/contract-check/explain", express.json({ limit: "8kb" }), async (re
   if (!address) return res.status(400).json({ error: "Give a contract address or a name.etn that resolves to one" });
   try {
     const facts = await analyseContract(address);
-    if (!question) return res.json(await explainContract(facts));
+    const used = await getQuestionUsage(wallet, periodStarts());
+    if (!question) return res.json({ ...(await explainContract(facts)), questions: quotaStatus(used) });
 
     if (typeof question !== "string" || !question.trim()) return res.status(400).json({ error: "Question must be text" });
-    const used = await getQuestionCount(wallet, today());
-    if (used >= QA_DAILY_LIMIT) return res.status(429).json({ error: `You've used today's ${QA_DAILY_LIMIT} questions — they reset at 00:00 UTC`, remaining: 0 });
+    const before = quotaStatus(used);
+    if (before.remaining === 0) return res.status(429).json({ error: before.message, remaining: 0, questions: before });
     const answer = await answerQuestion(facts, question, { wallet });
-    const count = await incrementQuestionCount(wallet, today());
-    res.json({ ...answer, remaining: Math.max(0, QA_DAILY_LIMIT - (count ?? used + 1)) });
+    await incrementQuestionCount(wallet, today());
+    const after = quotaStatus({ day: used.day + 1, week: used.week + 1, month: used.month + 1 });
+    res.json({ ...answer, remaining: after.remaining, questions: after });
   } catch (err) {
     console.error(`⚠️  Contract Check: explain failed for ${address}:`, err.message);
     res.status(502).json({ error: "Couldn't explain that contract right now — try again shortly" });

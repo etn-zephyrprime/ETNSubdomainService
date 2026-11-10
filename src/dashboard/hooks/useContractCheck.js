@@ -9,6 +9,7 @@ async function asJson(res) {
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.status = res.status;
     err.remaining = data.remaining;
+    err.questions = data.questions;
     throw err;
   }
   return data;
@@ -36,7 +37,11 @@ export function useContractCheck() {
   /** Suggestions for the search box. */
   const search = useCallback(async (auth, q) => (await asJson(await fetch(`${base}/search?q=${encodeURIComponent(q)}&${authQuery(auth)}`))).results || [], []);
   const getUsedContracts = useCallback(async (auth) => (await asJson(await fetch(`${base}/used?${authQuery(auth)}`))).contracts || [], []);
-  const getApprovals = useCallback(async (auth, refresh = false) => asJson(await fetch(`${base}/approvals?${authQuery(auth)}${refresh ? "&refresh=1" : ""}`)), []);
+  /** Live approvals of `owner` — the member's own wallet (default) or one of their tracked wallets. */
+  const getApprovals = useCallback(
+    async (auth, refresh = false, owner = null) => asJson(await fetch(`${base}/approvals?${authQuery(auth)}${refresh ? "&refresh=1" : ""}${owner ? `&owner=${owner}` : ""}`)),
+    []
+  );
 
   return { getFacts, search, explain, getUsedContracts, getApprovals };
 }

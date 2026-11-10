@@ -153,3 +153,29 @@ test("quoting a contract's own name isn't a verdict, but calling it safe still i
   assert.deepEqual(validateExplanation({ answer: `"${f.identity.contractName}" is an ERC-20 token.` }, f), []);
   assert.match(validateExplanation({ answer: `"${f.identity.contractName}" is an ERC-20 token and it is safe.` }, f).join(), /says "safe"/);
 });
+
+test("question quota: 5/day, 20/week, 50/month — whichever runs out first; UTC calendar periods", async () => {
+  const { periodStarts, quotaStatus } = await import("../services/contractCheck/questionQuota.js");
+  const L = { day: 5, week: 20, month: 50 };
+  const wed = Date.parse("2026-11-11T15:00:00Z"); // a Wednesday
+  assert.deepEqual(periodStarts(wed), { day: "2026-11-11", week: "2026-11-09", month: "2026-11-01" });
+  assert.deepEqual(periodStarts(Date.parse("2026-11-01T00:30:00Z")), { day: "2026-11-01", week: "2026-10-26", month: "2026-11-01" }); // a Sunday
+
+  const ok = quotaStatus({ day: 2, week: 10, month: 30 }, L, wed);
+  assert.deepEqual([ok.remaining, ok.blockedBy], [3, null]);
+  assert.deepEqual(ok.remainingBy, { day: 3, week: 10, month: 20 });
+
+  const day = quotaStatus({ day: 5, week: 9, month: 9 }, L, wed);
+  assert.deepEqual([day.remaining, day.blockedBy, day.resetsAt], [0, "day", "2026-11-12T00:00:00.000Z"]);
+  assert.match(day.message, /today's 5 questions — more at 00:00 UTC/);
+
+  const week = quotaStatus({ day: 1, week: 20, month: 25 }, L, wed);
+  assert.deepEqual([week.remaining, week.blockedBy, week.resetsAt], [0, "week", "2026-11-16T00:00:00.000Z"]);
+
+  const month = quotaStatus({ day: 5, week: 20, month: 50 }, L, wed); // all out -> the one that resets last
+  assert.deepEqual([month.blockedBy, month.resetsAt], ["month", "2026-12-01T00:00:00.000Z"]);
+  assert.match(month.message, /this month's 50 questions — more on the 1st/);
+
+  // 4 left today but only 1 left this week -> 1
+  assert.equal(quotaStatus({ day: 1, week: 19, month: 19 }, L, wed).remaining, 1);
+});
