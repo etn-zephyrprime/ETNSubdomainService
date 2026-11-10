@@ -498,6 +498,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
             )}
           </div>
 
+
           {ownedNames && ownedNames.length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: muted, marginBottom: 8 }}>

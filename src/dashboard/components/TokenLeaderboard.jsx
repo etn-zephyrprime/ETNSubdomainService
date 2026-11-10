@@ -5,6 +5,8 @@ import TokenLogo from "./TokenLogo.jsx";
 import { useBlockscout } from "../hooks/useBlockscout.js";
 import { useTokenLiquidity } from "../hooks/useTokenLiquidity.js";
 import { useTokenLocks } from "../hooks/useTokenLocks.js";
+import { useContractBadges } from "../hooks/useContractBadges.js";
+import { OverallBadge } from "./ContractCheckBits.jsx";
 import { lockBadgeText } from "../utils/lockStatus.js";
 import { formatCompact, formatUsdPrice, shortHash, isSpamTokenName } from "../utils/format.js";
 import { ElectroSwap } from "../../../backend/assets/media.js";
@@ -21,6 +23,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
   const { getTokens } = useBlockscout();
   const liquidityByAddress = useTokenLiquidity();
   const locksByAddress = useTokenLocks();
+  const badgesByAddress = useContractBadges();
 
   const [category, setCategory] = useState("tokens");
   const [tokens, setTokens] = useState([]);
@@ -87,6 +90,7 @@ export default function TokenLeaderboard({ onSelectToken }) {
         // the common case of a token with exactly one real pool there's nothing to disambiguate.
         liquidityPoolCount: liquidity?.poolCount ?? null,
         lockInfo: category === "tokens" ? locksByAddress.get(t.address?.toLowerCase()) ?? null : null,
+        contractBadge: category === "tokens" ? badgesByAddress.get(t.address?.toLowerCase()) ?? null : null,
       };
     })
     .sort((a, b) => {
@@ -180,6 +184,11 @@ export default function TokenLeaderboard({ onSelectToken }) {
                 {token.name || "Unnamed"} <span style={{ color: mutedLight, fontWeight: 500 }}>{token.symbol}</span>
               </div>
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(token.address)}</div>
+              {token.contractBadge && (
+                <div style={{ marginTop: 3 }} title="Contract Check — the full check is part of Core Tier">
+                  <OverallBadge overall={token.contractBadge} small />
+                </div>
+              )}
               {category === "tokens" && lockBadgeText(token.lockInfo) && (
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: green, marginTop: 2 }}>
                   <Lock size={10} />

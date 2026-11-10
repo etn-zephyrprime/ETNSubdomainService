@@ -26,6 +26,10 @@ import InfoTooltip from "../../components/InfoTooltip.jsx";
 import ImpermanentLossLine, { FarmMultiplierLine } from "./ImpermanentLossLine.jsx";
 import { IngestProgressBanner } from "./CoreTierPnl.jsx";
 import { useBoundedPoll } from "../../hooks/useBoundedPoll.js";
+import { AskButton } from "./ContractCard.jsx";
+
+// V3 positions are NFTs held by ElectroSwap's Position Manager — the contract an "Ask" on one opens.
+const V3_POSITION_MANAGER = "0x3a7f64c57433555b23dac4409a0ac7e84275398d";
 
 // Same poll cadence as CoreTierPnl.jsx's own identical constant — see that file's own comment for
 // why (separate from, and a bit slower than, the backend's own progress-write interval).
@@ -1392,6 +1396,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                 <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
                                   <TokenPairLogo legs={p.legs} />
                                   {p.label}
+                                  <AskButton address={p.contractAddress} hint={p.label} />
                                   {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
                                 </span>
                                 <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
@@ -1576,6 +1581,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                 <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
                                   <TokenPairLogo legs={p.legs} />
                                   {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} LP
+                                  <AskButton address={p.tokenAddress} hint={`${p.legs[0]?.symbol || "?"}/${p.legs[1]?.symbol || "?"} LP`} />
                                   {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
                                 </span>
                                 <span style={{ fontSize: 12, color: green, fontWeight: 700 }}>
@@ -1644,6 +1650,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                                 <span style={{ fontSize: 12, color: "#fff", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
                                   <TokenPairLogo legs={p.legs} />
                                   {(p.legs[0]?.symbol || "?")}/{(p.legs[1]?.symbol || "?")} V3 #{p.tokenId}
+                                  <AskButton address={V3_POSITION_MANAGER} hint="ElectroSwap V3 Position Manager" />
                                   {!p.inRange && <span style={{ color: orange, fontWeight: 700 }}> · out of range</span>}
                                   {canExpand && (isExpanded ? <ChevronUp size={12} color={mutedLight} /> : <ChevronDown size={12} color={mutedLight} />)}
                                 </span>
@@ -1777,6 +1784,7 @@ export default function CoreTierPortfolio({ wallet, getAuthParams, onSelectToken
                               ) : (
                                 <>{t.token?.name || "Unknown"} <span style={{ color: mutedLight }}>{t.token?.symbol}</span></>
                               )}
+                              {t.token?.address && t.token.address !== "NATIVE" && <AskButton address={t.token.address} hint={t.token?.symbol || t.token?.name} style={{ marginLeft: 6, verticalAlign: "middle" }} />}
                               {t.heldBy.length > 1 && (
                                 <span style={{ display: "block", fontSize: 10, color: muted }}>
                                   Held in {t.heldBy.length} of {active.length} wallets

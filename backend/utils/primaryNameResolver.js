@@ -55,16 +55,41 @@ export function shortAddress(address) {
  */
 export async function verifyPrimaryName(provider, name, addr) {
   try {
-    const node = ethers.namehash(name);
-    const registry = new ethers.Contract(ENS_REGISTRY_ADDRESS, REGISTRY_ABI, provider);
-    const resolverAddr = await registry.resolver(node);
-    if (resolverAddr === ethers.ZeroAddress) return false;
-    const resolver = new ethers.Contract(resolverAddr, FORWARD_RESOLVER_ABI, provider);
-    const forwardAddr = await resolver.addr(node);
-    return String(forwardAddr).toLowerCase() === String(addr).toLowerCase();
+    const forwardAddr = await forwardResolve(provider, name);
+    return forwardAddr != null && forwardAddr.toLowerCase() === String(addr).toLowerCase();
   } catch (err) {
     console.warn(`⚠️  Failed to verify primary name "${name}" for ${addr}:`, err.message);
     return false;
+  }
+}
+
+/** Registry.resolver(node) -> that resolver's addr(node): the address a name points to, or null when
+ * it has no resolver or no address set. Throws on a failed call (callers decide what that means). */
+async function forwardResolve(provider, name) {
+  const node = ethers.namehash(name);
+  const registry = new ethers.Contract(ENS_REGISTRY_ADDRESS, REGISTRY_ABI, provider);
+  const resolverAddr = await registry.resolver(node);
+  if (resolverAddr === ethers.ZeroAddress) return null;
+  const resolver = new ethers.Contract(resolverAddr, FORWARD_RESOLVER_ABI, provider);
+  const forwardAddr = await resolver.addr(node);
+  return forwardAddr === ethers.ZeroAddress ? null : forwardAddr;
+}
+
+/**
+ * Forward resolution — "name.etn" -> the address it currently points to (checksummed), or null when
+ * the name doesn't resolve (unregistered, no resolver, no address) or the lookup fails. The same
+ * Registry -> resolver path verifyPrimaryName checks against; never cached, for the same reason
+ * (a name's target can change at any moment).
+ */
+export async function resolveEtnName(provider, name) {
+  const clean = String(name || "").trim().toLowerCase();
+  if (!clean.endsWith(".etn")) return null;
+  try {
+    const addr = await forwardResolve(provider, clean);
+    return addr ? ethers.getAddress(addr) : null;
+  } catch (err) {
+    console.warn(`⚠️  Failed to resolve "${clean}":`, err.message);
+    return null;
   }
 }
 

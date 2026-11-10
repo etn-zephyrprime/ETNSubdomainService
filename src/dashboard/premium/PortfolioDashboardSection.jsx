@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -17,6 +17,8 @@ import CoreTierHeadlineCards from "./components/CoreTierHeadlineCards.jsx";
 import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
 import CoreTierYieldFarms from "./components/CoreTierYieldFarms.jsx";
 import CoreTierEtnBot from "./components/CoreTierEtnBot.jsx";
+import CoreTierContracts from "./components/CoreTierContracts.jsx";
+import { ContractCardProvider } from "./components/ContractCard.jsx";
 import { ETN_BOT_VIEWERS } from "../hooks/useEtnBot.js";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
@@ -39,6 +41,7 @@ const PANELS = [
   { id: "farms", label: "Yield Farms", icon: Sprout },
   { id: "scenarios", label: "Scenarios", icon: FlaskConical },
   { id: "activity", label: "Recent Activity", icon: Activity },
+  { id: "contracts", label: "Contract Check", icon: FileSearch },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
 ];
 // Owner-only: shown just for the ETN_BOT_VIEWERS wallets (the backend enforces it too — see useEtnBot.js).
@@ -158,6 +161,8 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   const showMembershipAtTop = !hasAccess || isEndingSoon;
 
   return (
+    // Contract cards can be opened from any panel below (the "Ask" buttons) — see ContractCard.jsx.
+    <ContractCardProvider wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess}>
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
         <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted, marginBottom: 10 }}>
@@ -282,6 +287,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         {activePanel === "activity" && (
           <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
+        {activePanel === "contracts" && <CoreTierContracts wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} />}
         {activePanel === "alerts" && (
           <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         )}
@@ -293,5 +299,6 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
       {hasAccess && !showMembershipAtTop && membershipPanel}
       <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
     </div>
+    </ContractCardProvider>
   );
 }

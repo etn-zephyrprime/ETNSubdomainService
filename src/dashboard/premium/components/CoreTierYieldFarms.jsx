@@ -8,6 +8,10 @@ import { useYieldFarms } from "../../hooks/useYieldFarms.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { EXPLORER_BASE_URL } from "../../../config.js";
 import { green, gold, blue, orange, muted, mutedLight, border, panel2, monoFont, error as errorColor } from "../../theme.js";
+import { AskButton } from "./ContractCard.jsx";
+
+// Every ElectroSwap farm lives in this one contract (each farm is an id inside it).
+const YIELD_FARM_CONTRACT = "0xe653ac16b732876f58a1722d24801230fa96bc82";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const ROWS_COLLAPSED = 10;
@@ -148,6 +152,9 @@ export default function CoreTierYieldFarms({ wallet, getAuthParams, coreTierAcce
                   </button>
                 );
               })}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: mutedLight, margin: "8px 0" }}>
+              Farm contract <AskButton address={YIELD_FARM_CONTRACT} hint="ElectroSwap Yield Farms" />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
