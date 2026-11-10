@@ -35,9 +35,12 @@ const MAX_CLOCK_SKEW_MS = 30 * 1000;
  *     completes; each bot's own wording, since what they're confirming differs
  *   - extraConfigured() — optional additional "is this deployment fully configured" check (e.g. R2
  *     credentials), ANDed with `botToken` being set
+ *   - onCommand({ text, chatId, chatType, linkedAddress, sendDirectMessage, getState, setState }) — optional:
+ *     any other message (e.g. the Notis bot's /check). `linkedAddress` is the wallet this chat is linked to,
+ *     or null. Run in the background (the webhook answers Telegram at once); errors are logged.
  */
 export function createTelegramLinkRouter(config) {
-  const { botToken, webhookSecret, backendPublicUrl, getState, setState, purpose, routeBase, onLinked, extraConfigured } = config;
+  const { botToken, webhookSecret, backendPublicUrl, getState, setState, purpose, routeBase, onLinked, extraConfigured, onCommand } = config;
 
   function buildMessage(address, timestamp) {
     return `Link ${purpose} for wallet ${address.toLowerCase()} at ${timestamp}`;
@@ -186,6 +189,14 @@ export function createTelegramLinkRouter(config) {
           await setState(state);
           await sendDirectMessage(chatId, "Unlinked — you won't get any more alerts here.");
         }
+      } else if (onCommand && typeof text === "string" && chatId != null) {
+        const state = await getState();
+        const linkedAddress = Object.entries(state.subscriptions).find(([, v]) => v.chatId === chatId)?.[0] || null;
+        // Not awaited: a command can take a while (e.g. analysing a contract), and Telegram re-sends any update
+        // whose webhook doesn't answer quickly — that would run it twice.
+        Promise.resolve()
+          .then(() => onCommand({ text, chatId, chatType: message?.chat?.type || null, linkedAddress, sendDirectMessage, getState, setState }))
+          .catch((err) => console.error(`⚠️  Telegram command failed (${routeBase}):`, err.message));
       }
     } catch (err) {
       console.error(`⚠️  Telegram webhook handling failed (${routeBase}):`, err.message);

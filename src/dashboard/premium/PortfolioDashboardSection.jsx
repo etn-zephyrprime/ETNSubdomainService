@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
@@ -91,7 +91,16 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   const wallet = useReownWallet();
   // Which of the panels below is showing — see PANELS' own comment on why this replaced the old
   // stacked/collapsible layout.
-  const [activePanel, setActivePanel] = useState("portfolio");
+  // A ?contract=0x… link (from the Telegram /check card and contract alerts) opens Contract Check on that card.
+  const linkedContract = useMemo(() => {
+    try {
+      const c = new URLSearchParams(window.location.search).get("contract");
+      return c && /^0x[0-9a-fA-F]{40}$/.test(c) ? c : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const [activePanel, setActivePanel] = useState(linkedContract ? "contracts" : "portfolio");
   const isBotViewer = Boolean(wallet.isConnected && wallet.account && ETN_BOT_VIEWERS.has(wallet.account.toLowerCase()));
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
@@ -162,7 +171,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
 
   return (
     // Contract cards can be opened from any panel below (the "Ask" buttons) — see ContractCard.jsx.
-    <ContractCardProvider wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess}>
+    <ContractCardProvider wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} initialAddress={linkedContract}>
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
         <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted, marginBottom: 10 }}>

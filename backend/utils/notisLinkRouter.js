@@ -21,6 +21,7 @@
 // can be linked to neither, either, or both bots independently.
 import { createTelegramLinkRouter } from "./createTelegramLinkRouter.js";
 import { getNotisLinkState, setNotisLinkState } from "../state/notisLinkState.js";
+import { handleNotisCommand } from "../services/contractCheck/telegramCheck.js";
 
 const instance = createTelegramLinkRouter({
   botToken: process.env.COREBOT_ZEPHYROS_BOT_TOKEN,
@@ -40,9 +41,11 @@ const instance = createTelegramLinkRouter({
   onLinked: async (address, chatId, sendDirectMessage) => {
     await sendDirectMessage(
       chatId,
-      `✅ *Linked!*\n\nYou'll get Core tier alerts here — wallet balance/activity and token price moves you've configured on the dashboard.\n\nSend /unlink any time, or use the toggle on the site, to stop.`
+      `✅ *Linked!*\n\nYou'll get Core tier alerts here — wallet balance/activity and token price moves you've configured on the dashboard, plus Contract Check alerts (new approvals to unknown or flagged contracts, changes to tokens you hold).\n\nSend /check with a token symbol, name.etn or address to check a contract. /contractalerts off stops the contract alerts; /unlink stops everything.`
     );
   },
+  // Contract Check (phase 4): /check and /contractalerts — see services/contractCheck/telegramCheck.js.
+  onCommand: handleNotisCommand,
 });
 
 export const notisConfigured = instance.isConfigured;
