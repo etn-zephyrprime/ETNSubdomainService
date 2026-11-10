@@ -99,6 +99,8 @@ export function readConfig() {
     gapClipEtn: num("ETN_BOT_GAP_CLIP_ETN", GAP_DEFAULTS.clipEtn),
     gapMinGainPct: num("ETN_BOT_GAP_MIN_GAIN_PCT", GAP_DEFAULTS.minGainPct),
     gapMaxTradesPerDay: num("ETN_BOT_GAP_MAX_TRADES_PER_DAY", 48),
+    // An exchange withdrawal the key or address book refused (sweep / refill) is retried after this long.
+    cexRetryHours: num("ETN_BOT_CEX_RETRY_HOURS", 3),
     // Topping a one-sided gap book back up to 50/50 through WETN, only when that route is cheap (etnGapStrategy.js).
     gapRebalance: process.env.ETN_BOT_GAP_REBALANCE !== "false",
     gapRebalanceMaxCostPct: num("ETN_BOT_GAP_REBALANCE_MAX_COST_PCT", GAP_REBALANCE_DEFAULTS.maxCostPct),
@@ -756,8 +758,26 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
   let hedgePauseCheckedSinceStart = false;
   let lastRebalanceAt = 0;
   let lastSweepAt = 0;
-  // A venue whose key can't withdraw (e.g. KuCoin drops Withdraw from a key without an IP restriction):
-  // its sweep stops until the next restart instead of failing every run. venue -> reason
+  // Exchange withdrawals the exchange refused for a reason only you can fix (no Withdraw on the key, an
+  // address not in the withdrawal address book): switched off for cfg.cexRetryHours instead of failing every
+  // run, then tried again by themselves — so fixing it on the exchange is enough, no restart needed. Each
+  // switch map is key -> { reason, until }.
+  const retryMs = () => cfg.cexRetryHours * 3600000;
+  const retryNote = () => `for ${cfg.cexRetryHours}h, then it tries again by itself`;
+  function switchOff(map, key, reason) {
+    map.set(key, { reason, until: Date.now() + retryMs() });
+  }
+  /** Whether a switch is off right now; an expired one is cleared (with a log line) so this run retries. */
+  function isOff(map, key, what) {
+    const o = map.get(key);
+    if (!o) return false;
+    if (Date.now() < o.until) return true;
+    map.delete(key);
+    notify(`🔁 Retrying ${what} (off since it failed: ${o.reason})`);
+    return false;
+  }
+  // A venue whose key can't withdraw (e.g. KuCoin drops Withdraw from a key without an IP restriction, HTX
+  // refuses an address that isn't saved for API withdrawals). venue -> { reason, until }
   const sweepOff = new Map();
 
   /** Brings each exchange's ETN above its float back to the bot wallet (SWEEP_DEFAULTS / ETN_BOT_*_ETN_FLOAT)
@@ -769,7 +789,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     state.cexSweep = state.cexSweep || {};
     for (const venue of ["htx", "kucoin"]) {
       const v = VENUES[venue];
-      if (!v.configured() || sweepOff.has(venue)) continue;
+      if (!v.configured() || isOff(sweepOff, venue, `the ${v.name} sweep`)) continue;
       const have = (await v.balances().catch(() => null))?.ETN;
       if (!(have > 0)) continue;
       const rules = venue === "kucoin" ? await getWithdrawRules("ETN", "etnevm") : await htxWithdrawRules("ETN", "etn1");
@@ -795,8 +815,8 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         }
       } catch (err) {
         if (/400007|permission|withdraw.*(not|disabled)|api-not-support|forbidden/i.test(err.message)) {
-          sweepOff.set(venue, err.message);
-          notify(`⏸️ Sweep off for ${v.name} until the next restart — its key can't withdraw (${err.message}). Give the key Withdraw permission (${venue === "kucoin" ? "KuCoin only allows that with an IP restriction" : "with its IP binding"}), or withdraw by hand.`);
+          switchOff(sweepOff, venue, err.message);
+          notify(`⏸️ Sweep off for ${v.name} ${retryNote()} — it refused the withdrawal (${err.message}). ${venue === "kucoin" ? "Give the key Withdraw permission (KuCoin only allows that with an IP restriction)" : "Give the key Withdraw permission (with its IP binding) and save the bot wallet in HTX's withdrawal address book with API withdrawals allowed"}, or withdraw by hand.`);
           continue;
         }
         throw err;
@@ -825,7 +845,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
   let lastRefillAt = 0;
   // A refill whose HTX side can't be done (no Withdraw on the key, KuCoin's address not in HTX's address
-  // book): off until the next restart instead of failing every run. kind ("etn"/"usdt") -> reason
+  // book): off for cfg.cexRetryHours, then retried (switchOff / isOff above). kind ("etn"/"usdt") -> { reason, until }
   const refillOff = new Map();
   const REFILL_STUCK_MS = 6 * 3600000; // a transfer not seen arriving by then is dropped (with a warning)
   const sameTx = (a, b) => String(a || "").toLowerCase().replace(/^0x/, "") === String(b || "").toLowerCase().replace(/^0x/, "");
@@ -885,7 +905,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     const htx = await htxBalances();
 
     // ETN wallet -> HTX
-    if (!er.pending && !refillOff.has("etn")) {
+    if (!er.pending && !isOff(refillOff, "etn", "the HTX ETN refill")) {
       const rules = await htxWithdrawRules("ETN", "etn1");
       const walletEtn = Number(ethers.formatEther(await provider.getBalance(wallet.address))) - cfg.gasReserveEtn;
       const lotEtn = (state.cu?.lots || []).filter((l) => l.kind !== "sellFirst").reduce((s, l) => s + l.etn, 0);
@@ -893,8 +913,8 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       if (amount) {
         const dep = await htxDepositAddress("ETN", "etn1");
         if (!dep?.address || dep.tag || !ethers.isAddress(dep.address)) {
-          refillOff.set("etn", "no usable HTX ETN deposit address");
-          notify(`⏸️ Refill of HTX's ETN off until the next restart — HTX gave no plain ETN (etn1) deposit address${dep?.tag ? " (it wants a memo/tag)" : ""}`);
+          switchOff(refillOff, "etn", "no usable HTX ETN deposit address");
+          notify(`⏸️ Refill of HTX's ETN off ${retryNote()} — HTX gave no plain ETN (etn1) deposit address${dep?.tag ? " (it wants a memo/tag)" : ""}`);
         } else {
           const tx = await wallet.sendTransaction({ to: dep.address, value: ethers.parseEther(String(amount)) });
           // Recorded as soon as it's broadcast: if the wait below fails, the deposit check still finds it.
@@ -914,7 +934,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     }
 
     // USDT HTX -> KuCoin
-    if (!ur.pending && !refillOff.has("usdt") && kucoinConfigured()) {
+    if (!ur.pending && !isOff(refillOff, "usdt", "the KuCoin USDT refill") && kucoinConfigured()) {
       const chain = cfg.refill.usdtHtxChain;
       const rules = await htxWithdrawRules("USDT", chain);
       const [trade, main] = await Promise.all([getBalances("trade"), getBalances("main")]);
@@ -922,8 +942,8 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       if (amount) {
         const dep = await getDepositAddress("USDT", cfg.refill.usdtKucoinChain);
         if (!dep?.address || dep.memo) {
-          refillOff.set("usdt", "no KuCoin USDT deposit address");
-          notify(`⏸️ Refill of KuCoin's USDT off until the next restart — ${dep?.memo ? "KuCoin's USDT deposit address needs a memo" : `create a USDT deposit address on ${cfg.refill.usdtKucoinChain.toUpperCase()} on KuCoin's Deposit page first`}`);
+          switchOff(refillOff, "usdt", "no KuCoin USDT deposit address");
+          notify(`⏸️ Refill of KuCoin's USDT off ${retryNote()} — ${dep?.memo ? "KuCoin's USDT deposit address needs a memo" : `create a USDT deposit address on ${cfg.refill.usdtKucoinChain.toUpperCase()} on KuCoin's Deposit page first`}`);
           return false;
         }
         let id;
@@ -931,8 +951,8 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           id = await htxWithdraw({ currency: "USDT", address: dep.address, amount, chain, fee: rules.fee });
         } catch (err) {
           if (/permission|address|api-not-support|forbidden|white/i.test(err.message)) {
-            refillOff.set("usdt", err.message);
-            notify(`⏸️ Refill of KuCoin's USDT off until the next restart — HTX refused the withdrawal (${err.message}). Add KuCoin's USDT ${cfg.refill.usdtKucoinChain.toUpperCase()} deposit address ${dep.address} to HTX's withdrawal address book (network ${chain}), then restart.`);
+            switchOff(refillOff, "usdt", err.message);
+            notify(`⏸️ Refill of KuCoin's USDT off ${retryNote()} — HTX refused the withdrawal (${err.message}). Add KuCoin's USDT ${cfg.refill.usdtKucoinChain.toUpperCase()} deposit address ${dep.address} to HTX's withdrawal address book (network ${chain}) with API withdrawals allowed.`);
             return false;
           }
           throw err;
@@ -1038,7 +1058,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
    * when it grows by half or after a day; it resets when the excess is gone. Returns true if state changed. */
   async function kucoinWithdrawAlert(state) {
     if (!wallet || !kucoinConfigured()) return false;
-    if (cfg.cexSweep && !sweepOff.has("kucoin")) return false; // the sweep handles it
+    if (cfg.cexSweep && !(sweepOff.get("kucoin")?.until > Date.now())) return false; // the sweep handles it
     const prev = state.kucoinWithdrawAlert || null;
     const [trade, main, rules] = await Promise.all([getTradeBalances(), getBalances("main"), getWithdrawRules("ETN", "etnevm")]);
     const have = (trade.ETN || 0) + (main.ETN || 0);
@@ -1057,7 +1077,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       `Withdraw *${fmtEtn(amount)} ETN* to the bot wallet:\n\`${wallet.address}\`\n` +
       `Network: Electroneum (ETN-EVM) · fee ${rules.fee} ETN` +
       (fromTrade > 0 ? `\n\nMove ${fmtEtn(Math.ceil(fromTrade))} ETN from Trading to Main in the KuCoin app first.` : "") +
-      `\n\n_The bot can't withdraw it itself: ${sweepOff.has("kucoin") ? "the KuCoin key has no Withdraw permission" : "the sweep (ETN_BOT_CEX_SWEEP) is off"}._`;
+      `\n\n_The bot can't withdraw it itself: ${sweepOff.get("kucoin")?.until > Date.now() ? "the KuCoin key has no Withdraw permission (it retries every few hours)" : "the sweep (ETN_BOT_CEX_SWEEP) is off"}._`;
     let sent = 0;
     for (const viewer of alert.viewers()) {
       const chatId = await alert.chatIdFor(viewer).catch(() => null);
