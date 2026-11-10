@@ -6,13 +6,37 @@ import { findPrivilegedPowers } from "./privilegedPowers.js";
 import { computeRiskFlags, overallFromFlags } from "./riskFlags.js";
 import { RISK_THRESHOLDS } from "./riskRules.config.js";
 
-export const FACTS_SCHEMA_VERSION = 1;
+export const FACTS_SCHEMA_VERSION = 3; // 2: custom roles (gate/controller on powers, ownership.customRoles), balanceOverwrite; 3: liquidity + LP locks, severity caps
 const ZERO = "0x0000000000000000000000000000000000000000";
 const BURN = new Set([ZERO, "0x000000000000000000000000000000000000dead"]);
 const lc = (a) => (a ? String(a).toLowerCase() : null);
 const POOL_LOCKERS = new Set(["0x16ca736c8b181772009e598f37f137e9cd36afae"]); // ElectroSwap Liquidity Locker
 /** A holder that's a liquidity pool / locker — by the explorer's own contract label, never a guess. */
 const isPool = (h) => h.isContract && (POOL_LOCKERS.has(h.address) || /\b(LP|Pair|Pool)\b|-LP\b|LP Token/i.test(h.name || ""));
+
+const pct1 = (x) => Math.round(x * 1000) / 10; // 0..1 -> percent, 1 decimal
+
+/** ElectroSwap liquidity and how much of it is locked (tokens only). status: "listed" | "notListed" |
+ * "unknown" (cache unreadable). pools = poolLocks.js's per-pool reads (absent if they failed): each pool's
+ * sharePct of the token's pooled supply, lockedPct / expiredPct of that pool's liquidity, its locks, and
+ * farmedPct (staked in an ElectroSwap YieldFarm) with farmerCount and largestFarmerPct (of the pool). */
+function liquidityFacts(l, now) {
+  if (l === undefined) return { status: "unknown" };
+  if (l === null) return { status: "notListed" };
+  const out = { status: "listed", usd: Math.round(l.usd), poolCount: l.poolCount, locksRead: Array.isArray(l.pools) };
+  if (!Array.isArray(l.pools) || !l.pools.length) return out;
+  const total = l.pools.reduce((s, p) => s + BigInt(p.tokenAmount), 0n);
+  const shareOf = (p) => (total > 0n ? Number((BigInt(p.tokenAmount) * 1000000n) / total) / 1000000 : 0);
+  const soon = now + 30 * 86400000;
+  out.pools = l.pools.map((p) => {
+    const endingSoon = p.locks.filter((k) => k.unlockAt && Date.parse(k.unlockAt) <= soon).reduce((s, k) => s + k.share, 0);
+    const nextUnlockAt = p.locks.map((k) => k.unlockAt).filter(Boolean).sort()[0] || null;
+    return { address: p.address, version: p.version, sharePct: pct1(shareOf(p)), lockedPct: pct1(p.lockedShare), expiredPct: pct1(p.expiredShare), lockedPctIn30Days: pct1(Math.max(0, p.lockedShare - endingSoon)), nextUnlockAt, permanent: p.locks.some((k) => !k.unlockAt), farmedPct: pct1(p.farmedShare || 0), farmerCount: p.farmerCount || 0, largestFarmerPct: pct1(p.largestFarmerShare || 0) };
+  });
+  out.mainPool = out.pools[0];
+  out.lockedPctOverall = pct1(l.pools.reduce((s, p) => s + shareOf(p) * p.lockedShare, 0));
+  return out;
+}
 
 /** "verified" | "verifiedTwin" (unverified here, but identical bytecode to a verified contract — Blockscout's
  * verified twin) | "unverified" | "notContract" | "unknown" (the explorer couldn't be asked). */
@@ -123,6 +147,12 @@ export function buildFacts(raw) {
     ownerContract: own.ownerIsContract ? { name: own.ownerContract?.name || null, verified: Boolean(own.ownerContract), kind: contractKind(own.ownerContract) } : null,
     adminRoleHolders: own.accessControl?.adminHolders ? own.accessControl.adminHolders.map(lc) : null,
     deployerHasAdminRole: own.accessControl?.deployerIsAdmin ?? null,
+    // Roles of the contract's own that gate powers (e.g. CORE's taxWallet) — they outlive a renounced owner.
+    // holder null = couldn't read it (no getter, or the call failed): treated as live.
+    customRoles: powers.customControllers.map((name) => {
+      const holder = raw.roleHolders && name in raw.roleHolders ? lc(raw.roleHolders[name]) : null;
+      return { name, holder, status: holder === null ? "unknown" : holder === ZERO ? "renounced" : "active", holderEtnName: nameOf(holder) };
+    }),
   };
 
   // Who can upgrade a proxy: the admin slot (Transparent: an EOA, or a ProxyAdmin contract whose owner
@@ -190,6 +220,7 @@ export function buildFacts(raw) {
       txCount: raw.counters?.transactions_count != null ? Number(raw.counters.transactions_count) : null,
       lastActivityAt: raw.lastActivityAt || null,
     },
+    liquidity: liquidityFacts(raw.liquidity, raw.now ?? Date.now()),
     codeHash: raw.codeHash || null,
     implementationCodeHash: impl?.codeHash || null,
   };

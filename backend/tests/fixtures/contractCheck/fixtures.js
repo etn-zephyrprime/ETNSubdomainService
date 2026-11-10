@@ -116,3 +116,34 @@ export const twinPair = base({
   contract: { is_verified: false, verified_twin_address_hash: "0xe6E00C247Aa3F79B93bC35423DF6755460260aDd", name: "UniswapV2Pair", abi: [...ERC20_ABI, fn("skim", [["address", "to"]]), fn("sync")], source_code: "contract UniswapV2Pair { function skim(address to) external lock { } function sync() external lock { } }" },
   deployerKnown: { label: "ElectroSwap V2 Factory", category: "dex-factory" },
 });
+
+// 9. CORE-style: owner renounced, but a custom onlyTaxWallet role can toggle the tax and hand the role on —
+// and handing it on overwrites the new address's balance. roleHolders = taxWallet() read live.
+const TAX_WALLET = "0x4eb4b9ce208711a0ea1beff57c83bd66bc563378";
+const customRoleSource = `contract CoreLike is IERC20, Ownable {
+    address public taxWallet = 0x4Eb4b9Ce208711A0EA1BefF57C83BD66BC563378;
+    modifier onlyTaxWallet() {
+        require(msg.sender == taxWallet, "Not tax wallet");
+        _;
+    }
+    function enableTrading() external onlyOwner { tradingOpen = true; }
+    function toggleTaxesPaused() external onlyTaxWallet { taxesPaused = !taxesPaused; }
+    function transferTaxWallet(address _newTaxWallet) external onlyTaxWallet {
+        _balances[_newTaxWallet] = _balances[taxWallet];
+        _balances[taxWallet] = 0;
+        taxWallet = _newTaxWallet;
+    }
+    function burn(uint256 amount) external { _balances[msg.sender] -= amount; }
+}`;
+const customRoleBase = (roleHolders) =>
+  base({
+    address: "0xa000000000000000000000000000000000000009",
+    contract: { name: "CoreLike", abi: [...ERC20_ABI, fn("enableTrading"), fn("toggleTaxesPaused"), fn("transferTaxWallet", [["address", "_newTaxWallet"]]), fn("burn", [["uint256", "amount"]]), view("owner"), view("taxWallet")], source_code: customRoleSource },
+    ownership: { owner: ZERO, source: "owner()" },
+    roleHolders,
+    token: { name: "CoreLike", symbol: "CRL", type: "ERC-20", decimals: "18", holders: "900", total_supply: "1000" },
+    holders: holders("1000", [["0xb0000000000000000000000000000000000000b1", 10]]),
+  });
+export const customRoleToken = customRoleBase({ taxWallet: TAX_WALLET });
+export const customRoleRenounced = customRoleBase({ taxWallet: ZERO });
+export { TAX_WALLET };

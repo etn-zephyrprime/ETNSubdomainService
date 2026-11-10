@@ -34,7 +34,7 @@ function controller(f) {
 
 /** `{ oneLiner, ownerPowers, chipAnswers, overall, overallSummary }` from the facts alone. */
 export function templateSummary(f) {
-  const powers = f.riskFlags.filter((x) => ["owner_can_mint", "blacklist_power", "owner_adjustable_fees", "pause_power", "router_pair_changeable", "owner_can_sweep_tokens", "upgradeable_eoa_admin", "upgradeable_proxy"].includes(x.id)).map((x) => x.fact);
+  const powers = f.riskFlags.filter((x) => ["owner_can_mint", "blacklist_power", "owner_adjustable_fees", "pause_power", "router_pair_changeable", "owner_can_sweep_tokens", "upgradeable_eoa_admin", "upgradeable_proxy", "balance_overwrite", "custom_role_control"].includes(x.id)).map((x) => x.fact);
   const none = sourceUnavailable(f) ? LIMITED_SIGNALS_NOTICE : "No owner or admin powers over holders were found in the published source.";
   const upgrade = f.proxy.isProxy
     ? flag(f, "upgradeable_eoa_admin") || flag(f, "upgradeable_proxy") || "Yes — it's an upgradeable proxy, so its code can be replaced."

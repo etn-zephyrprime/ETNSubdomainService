@@ -2,6 +2,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getTokenLiquidityCache } from "../../state/tokenLiquidityState.js";
 import { getFactsSummaries } from "../../db/contractCheckLists.js";
 import { analyseContract } from "./analyseContract.js";
+import { FACTS_SCHEMA_VERSION } from "./buildFacts.js";
 
 // The free tier's only view of Contract Check: the overall badge (no flags, no explanation) for each
 // ElectroSwap-listed token on the Tokens tab. Published to R2 as contract-badges.json so the free
@@ -9,11 +10,12 @@ import { analyseContract } from "./analyseContract.js";
 //
 // The token list is the liquidity cache's keys (tokenLiquidityCache.js — every token in an ElectroSwap
 // pool that could be valued). Facts come from contract_facts via one lean query; only tokens with no
-// facts, or facts older than STALE_MS, are re-analysed, one at a time.
+// facts, facts older than STALE_MS, or facts from an older FACTS_SCHEMA_VERSION (new rules) are
+// re-analysed, one at a time.
 const CACHE_KEY = "contract-badges.json";
 const INTERVAL_MS = Number(process.env.CONTRACT_BADGES_INTERVAL_MS) || 6 * 3600 * 1000;
 const STALE_MS = 24 * 3600 * 1000;
-const MAX_ANALYSES_PER_RUN = 60; // bounds explorer + RPC work; the rest are picked up next run
+const MAX_ANALYSES_PER_RUN = 100; // bounds explorer + RPC work (~4s each); the rest are picked up next run
 
 let r2 = null;
 function r2Client() {
@@ -25,7 +27,7 @@ function r2Client() {
 export async function buildBadges(addresses, { analyse = analyseContract, summaries = getFactsSummaries, max = MAX_ANALYSES_PER_RUN, now = Date.now() } = {}) {
   const list = [...new Set(addresses.map((a) => a.toLowerCase()))];
   const have = await summaries(list);
-  const stale = list.filter((a) => !have[a]?.overall || now - new Date(have[a].analysedAt).getTime() > STALE_MS);
+  const stale = list.filter((a) => !have[a]?.overall || have[a].schemaVersion !== FACTS_SCHEMA_VERSION || now - new Date(have[a].analysedAt).getTime() > STALE_MS);
   const fresh = {};
   for (const a of stale.slice(0, max)) {
     const facts = await analyse(a).catch(() => null);
@@ -45,7 +47,8 @@ async function refreshAndPublish() {
   running = true;
   try {
     const liquidity = await getTokenLiquidityCache();
-    const tokens = Object.keys(liquidity?.liquidityUsd || {});
+    // deepest liquidity first, so the tokens people look at are never the ones left for the next run
+    const tokens = Object.entries(liquidity?.liquidityUsd || {}).sort((a, b) => b[1] - a[1]).map(([a]) => a);
     if (!tokens.length) return console.warn("⚠️  Contract badges: no ElectroSwap token list yet — skipping");
     const badges = await buildBadges(tokens);
     await r2Client().send(

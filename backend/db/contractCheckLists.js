@@ -27,11 +27,11 @@ export async function getTouchedAddresses(wallets, limit = 200) {
 export async function getFactsSummaries(addresses) {
   if (!addresses.length) return {};
   const res = await query(
-    `SELECT address, facts->>'overall' AS overall, facts->'identity'->>'contractName' AS name, facts->'token'->>'symbol' AS symbol, analysed_at
+    `SELECT address, facts->>'overall' AS overall, facts->'identity'->>'contractName' AS name, facts->'token'->>'symbol' AS symbol, (facts->>'schemaVersion')::int AS schema_version, analysed_at
      FROM contract_facts WHERE address = ANY($1)`,
     [addresses.map((a) => a.toLowerCase())]
   );
-  return Object.fromEntries((res?.rows || []).map((r) => [r.address, { overall: r.overall, name: r.name, symbol: r.symbol, analysedAt: r.analysed_at }]));
+  return Object.fromEntries((res?.rows || []).map((r) => [r.address, { overall: r.overall, name: r.name, symbol: r.symbol, schemaVersion: r.schema_version, analysedAt: r.analysed_at }]));
 }
 
 /** Registry labels for many addresses at once: `{ [address]: { label, project, category, verifiedByUs } }`. */
