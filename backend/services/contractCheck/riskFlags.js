@@ -24,6 +24,10 @@ function lockCheck(f) {
   return l.mainPool;
 }
 
+/** Whether a main pool that isn't 50% locked is instead mostly farmed by many farmers — locked + farmed reach
+ * the threshold and no single farmer holds more than maxSingleFarmerPct of the pool. */
+const farmedEnough = (m) => m.farmedPct > 0 && m.lockedPct + m.farmedPct >= RISK_THRESHOLDS.mainPoolMinLockedPct && m.largestFarmerPct <= RISK_THRESHOLDS.maxSingleFarmerPct;
+
 /** Powers in a category that someone can still use: gated (or gating not visible) to a live controller —
  * never ones anyone can call (those aren't a power over holders, except balanceOverwrite below). */
 const gatedPowers = (f, category) => (f.powers.byCategory[category] || []).filter((p) => p.gated !== false && controllerActive(f, p));
@@ -94,9 +98,14 @@ const RULES = {
   },
   liquidity_unlocked: (f) => {
     const m = lockCheck(f);
-    if (!m || m.lockedPct >= RISK_THRESHOLDS.mainPoolMinLockedPct) return null;
+    if (!m || m.lockedPct >= RISK_THRESHOLDS.mainPoolMinLockedPct || farmedEnough(m)) return null;
     const expired = m.expiredPct > 0 ? `; a lock on ${m.expiredPct}% of it has expired, so its owner can withdraw that at any time` : "";
     return `${m.lockedPct === 0 ? "None" : `Only ${m.lockedPct}%`} of the liquidity in its main ElectroSwap pool (${m.address}, holding ${m.sharePct}% of its pooled tokens) is locked${expired}`;
+  },
+  liquidity_farmed: (f) => {
+    const m = lockCheck(f);
+    if (!m || m.lockedPct >= RISK_THRESHOLDS.mainPoolMinLockedPct || !farmedEnough(m)) return null;
+    return `${m.farmedPct}% of the liquidity in its main ElectroSwap pool (${m.address}, holding ${m.sharePct}% of its pooled tokens) is staked in the ElectroSwap yield farm by ${m.farmerCount} farmers; it isn't locked, and each can withdraw their own share at any time (the largest holds ${m.largestFarmerPct}% of the pool)${m.lockedPct > 0 ? `; ${m.lockedPct}% is locked` : ""}`;
   },
   liquidity_partly_locked: (f) => {
     const m = lockCheck(f);

@@ -227,3 +227,26 @@ test("severity cap: CORE is never red — a high flag shows as caution and recor
   assert.equal(f.overall, "amber");
   assert.equal(buildFacts(fx.customRoleToken).overall, "red"); // the same contract anywhere else is still red
 });
+
+test("farmed liquidity: mostly staked in the yield farm by many farmers -> caution, not high", () => {
+  // BOLT-style: main pool 0% locked, 100% farmed by 33 farmers, largest 17.7% of the pool
+  const bolt = withLiq(listed([pool("0xf", 65, 0, { farmedShare: 1, farmerCount: 33, largestFarmerShare: 0.177 }), pool("0xs", 35, 0.77)]));
+  assert.ok(!ids(bolt).includes("liquidity_unlocked"));
+  const flag = bolt.riskFlags.find((x) => x.id === "liquidity_farmed");
+  assert.equal(flag.severity, "caution");
+  assert.match(flag.fact, /100% of the liquidity in its main ElectroSwap pool \(0xf, holding 65% of its pooled tokens\) is staked in the ElectroSwap yield farm by 33 farmers; .* \(the largest holds 17\.7% of the pool\)$/);
+  assert.equal(bolt.overall, "amber");
+
+  // one farmer with most of the farm -> still high (they can pull it)
+  const whale = withLiq(listed([pool("0xf", 100, 0, { farmedShare: 0.9, farmerCount: 3, largestFarmerShare: 0.6 })]));
+  assert.ok(ids(whale).includes("liquidity_unlocked"));
+  assert.ok(!ids(whale).includes("liquidity_farmed"));
+
+  // farmed + locked together reach 50%
+  const mixed = withLiq(listed([pool("0xf", 100, 0.3, { farmedShare: 0.25, farmerCount: 20, largestFarmerShare: 0.05 })]));
+  assert.ok(ids(mixed).includes("liquidity_farmed"));
+  assert.match(mixed.riskFlags.find((x) => x.id === "liquidity_farmed").fact, /; 30% is locked$/);
+
+  // too little farmed to matter -> high
+  assert.ok(ids(withLiq(listed([pool("0xf", 100, 0.1, { farmedShare: 0.2, farmerCount: 20, largestFarmerShare: 0.02 })]))).includes("liquidity_unlocked"));
+});

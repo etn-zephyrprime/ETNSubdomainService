@@ -18,7 +18,8 @@ const pct1 = (x) => Math.round(x * 1000) / 10; // 0..1 -> percent, 1 decimal
 
 /** ElectroSwap liquidity and how much of it is locked (tokens only). status: "listed" | "notListed" |
  * "unknown" (cache unreadable). pools = poolLocks.js's per-pool reads (absent if they failed): each pool's
- * sharePct of the token's pooled supply, lockedPct / expiredPct of that pool's liquidity, and its locks. */
+ * sharePct of the token's pooled supply, lockedPct / expiredPct of that pool's liquidity, its locks, and
+ * farmedPct (staked in an ElectroSwap YieldFarm) with farmerCount and largestFarmerPct (of the pool). */
 function liquidityFacts(l, now) {
   if (l === undefined) return { status: "unknown" };
   if (l === null) return { status: "notListed" };
@@ -30,7 +31,7 @@ function liquidityFacts(l, now) {
   out.pools = l.pools.map((p) => {
     const endingSoon = p.locks.filter((k) => k.unlockAt && Date.parse(k.unlockAt) <= soon).reduce((s, k) => s + k.share, 0);
     const nextUnlockAt = p.locks.map((k) => k.unlockAt).filter(Boolean).sort()[0] || null;
-    return { address: p.address, version: p.version, sharePct: pct1(shareOf(p)), lockedPct: pct1(p.lockedShare), expiredPct: pct1(p.expiredShare), lockedPctIn30Days: pct1(Math.max(0, p.lockedShare - endingSoon)), nextUnlockAt, permanent: p.locks.some((k) => !k.unlockAt) };
+    return { address: p.address, version: p.version, sharePct: pct1(shareOf(p)), lockedPct: pct1(p.lockedShare), expiredPct: pct1(p.expiredShare), lockedPctIn30Days: pct1(Math.max(0, p.lockedShare - endingSoon)), nextUnlockAt, permanent: p.locks.some((k) => !k.unlockAt), farmedPct: pct1(p.farmedShare || 0), farmerCount: p.farmerCount || 0, largestFarmerPct: pct1(p.largestFarmerShare || 0) };
   });
   out.mainPool = out.pools[0];
   out.lockedPctOverall = pct1(l.pools.reduce((s, p) => s + shareOf(p) * p.lockedShare, 0));
