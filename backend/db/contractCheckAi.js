@@ -58,3 +58,20 @@ export async function logLlmUsage({ kind, model, contractAddress = null, wallet 
     [kind, model, contractAddress?.toLowerCase() || null, wallet?.toLowerCase() || null, attempt, usage?.input_tokens ?? null, usage?.output_tokens ?? null, usage?.cache_read_input_tokens ?? null, usage?.cache_creation_input_tokens ?? null, outcome]
   );
 }
+
+/** Claude usage in [from, to): one row per kind + model with summed tokens. */
+export async function llmUsageBetween(from, to) {
+  const res = await query(
+    `SELECT kind, model, COUNT(*)::int AS calls, COALESCE(SUM(input_tokens), 0)::bigint AS input, COALESCE(SUM(output_tokens), 0)::bigint AS output,
+            COALESCE(SUM(cache_read_tokens), 0)::bigint AS cache_read, COALESCE(SUM(cache_write_tokens), 0)::bigint AS cache_write
+     FROM llm_usage_log WHERE created_at >= $1 AND created_at < $2 GROUP BY kind, model ORDER BY kind, model`,
+    [from, to]
+  );
+  return (res?.rows || []).map((r) => ({ kind: r.kind, model: r.model, calls: r.calls, inputTokens: Number(r.input), outputTokens: Number(r.output), cacheReadTokens: Number(r.cache_read), cacheWriteTokens: Number(r.cache_write) }));
+}
+
+/** Core Tier subscription revenue swept from the contract in [from, to), in ETN. */
+export async function revenueSweptBetween(from, to) {
+  const res = await query(`SELECT COALESCE(SUM(amount_swept_wei), 0)::text AS wei FROM subscription_revenue_sweeps WHERE executed_at >= $1 AND executed_at < $2`, [from, to]);
+  return Number(BigInt(res?.rows?.[0]?.wei || "0") / 10n ** 14n) / 1e4;
+}

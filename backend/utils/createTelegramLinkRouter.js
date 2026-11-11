@@ -40,9 +40,11 @@ const MAX_CLOCK_SKEW_MS = 30 * 1000;
  *   - onCommand({ text, chatId, chatType, linkedAddress, sendDirectMessage, getState, setState }) — optional:
  *     any other message (e.g. the Notis bot's /check). `linkedAddress` is the wallet this chat is linked to,
  *     or null. Run in the background (the webhook answers Telegram at once); errors are logged.
+ *   - onCallback({ data, chatId, linkedAddress, answer }) — optional: a tap on an inline button (e.g. "Was this
+ *     right?"). `answer(text)` shows Telegram's small confirmation; also run in the background.
  */
 export function createTelegramLinkRouter(config) {
-  const { botToken, webhookSecret, backendPublicUrl, getState, setState, purpose, routeBase, onLinked, extraConfigured, onCommand } = config;
+  const { botToken, webhookSecret, backendPublicUrl, getState, setState, purpose, routeBase, onLinked, extraConfigured, onCommand, onCallback } = config;
 
   function buildMessage(address, timestamp) {
     return `Link ${purpose} for wallet ${address.toLowerCase()} at ${timestamp}`;
@@ -87,7 +89,8 @@ export function createTelegramLinkRouter(config) {
     return cachedBotUsername;
   }
 
-  async function sendDirectMessage(chatId, text) {
+  /** `extra`: more sendMessage fields, e.g. { reply_markup: { inline_keyboard: [...] } } for buttons. */
+  async function sendDirectMessage(chatId, text, extra = {}) {
     if (!botToken) {
       console.warn(`ℹ️  Telegram (${routeBase}) not configured — skipping direct message`);
       return null;
@@ -96,7 +99,7 @@ export function createTelegramLinkRouter(config) {
       const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true }),
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true, ...extra }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) throw new Error(`Telegram API error: ${data?.description || res.statusText}`);
@@ -163,6 +166,23 @@ export function createTelegramLinkRouter(config) {
       }
     }
 
+    // An inline-button tap: acknowledged to Telegram straight away, handled in the background.
+    const cb = req.body?.callback_query;
+    if (cb && onCallback) {
+      const chatId = cb.message?.chat?.id ?? cb.from?.id;
+      if (chatId != null && chatFlood(`${routeBase}:${chatId}`).ok) {
+        const answer = (text) => answerCallback(cb.id, text);
+        Promise.resolve()
+          .then(async () => {
+            const state = await getState();
+            const linkedAddress = Object.entries(state.subscriptions).find(([, v]) => v.chatId === chatId)?.[0] || null;
+            await onCallback({ data: String(cb.data || ""), chatId, linkedAddress, answer });
+          })
+          .catch((err) => console.error(`⚠️  Telegram button failed (${routeBase}):`, err.message));
+      }
+      return res.sendStatus(200);
+    }
+
     try {
       const message = req.body?.message;
       const text = message?.text;
@@ -211,6 +231,16 @@ export function createTelegramLinkRouter(config) {
 
     res.sendStatus(200);
   });
+
+  /** Telegram's small "toast" after a button tap; never throws. */
+  async function answerCallback(callbackQueryId, text) {
+    if (!botToken) return;
+    await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: String(text || "").slice(0, 190) }),
+    }).catch(() => {});
+  }
 
   /**
    * Registers this backend's webhook URL with Telegram — no-op if not configured or

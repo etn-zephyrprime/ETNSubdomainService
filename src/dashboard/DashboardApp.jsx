@@ -9,6 +9,7 @@ import MainSectionNav from "./components/MainSectionNav.jsx";
 import EtnPriceChart from "./components/EtnPriceChart.jsx";
 import CoreTierBurnedCard from "./components/CoreTierBurnedCard.jsx";
 import DashboardFooter from "./components/DashboardFooter.jsx";
+import AboutArgus from "./components/AboutArgus.jsx";
 import Overview from "./components/Overview.jsx";
 import TokenLeaderboard from "./components/TokenLeaderboard.jsx";
 import TokenDetail from "./components/TokenDetail.jsx";
@@ -149,6 +150,7 @@ export default function DashboardApp() {
     const path = window.location.pathname;
     if (/^\/(statement\/[^/]+|pnl)\/?$/i.test(path)) return "premium";
     if (/^\/premium\/?$/i.test(path)) return "portfolio";
+    if (/^\/about\/?$/i.test(path)) return "about"; // How Argus works / Verify us (AboutArgus.jsx)
     return null;
   });
   const [selectedToken, setSelectedToken] = useState(null);
@@ -208,7 +210,7 @@ export default function DashboardApp() {
   // Derived, not its own state — which of the 2 top-level sections `tab`'s current value belongs
   // to, or null on the landing screen (neither picked yet). See MainSectionNav.jsx/
   // CORE_TIER_GROUP_TABS's own comment.
-  const activeSection = tab == null ? null : CORE_TIER_GROUP_TABS.includes(tab) ? "coretier" : "electroneum";
+  const activeSection = tab == null || tab === "about" ? null : CORE_TIER_GROUP_TABS.includes(tab) ? "coretier" : "electroneum";
 
   // Switching top-level section jumps to that section's own default sub-tab — but ONLY when
   // actually leaving the current section; clicking the already-active section's own button is a
@@ -361,7 +363,16 @@ export default function DashboardApp() {
           )}
         </div>
 
-        {tab != null && (
+        {tab === "about" && (
+          <AboutArgus
+            onBack={() => {
+              window.history.pushState({}, "", "/");
+              setTab(null);
+            }}
+          />
+        )}
+
+        {tab != null && tab !== "about" && (
           <>
             {activeSection === "coretier" ? (
               <CoreTierSubTabBar tab={tab} onChange={handleTabChange} />

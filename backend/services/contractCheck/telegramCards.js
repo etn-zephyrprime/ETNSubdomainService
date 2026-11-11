@@ -94,17 +94,49 @@ export function formatApprovalAlert({ walletName, tokenLabel, spenderName, spend
   return lines.join("\n");
 }
 
+const hours = (sec) => (sec >= 86400 ? `${Math.round(sec / 86400)} day${Math.round(sec / 86400) === 1 ? "" : "s"}` : `${Math.max(1, Math.round(sec / 3600))}h`);
+/** One owner-action line: a direct call, or one routed through a multisig / timelock (scheduled = early warning). */
+function actionLine(c) {
+  const who = `${md(short(c.by))} (${c.role === "owner" ? "the owner" : "a role that controls it"}${c.via ? `, a ${c.via}` : ""})`;
+  const tx = `[tx](https://blockexplorer.electroneum.com/tx/${c.txHash})`;
+  if (c.via === "timelock" && c.stage === "scheduled") return `• ⏳ ${who} *scheduled* *${md(c.fn)}*${c.delaySec ? ` — it can run in about ${hours(c.delaySec)}` : ""} — ${tx}`;
+  return `• ${who} ${c.via ? "executed" : "called"} *${md(c.fn)}*${c.args ? ` (${md(c.args)})` : ""} — ${tx}`;
+}
+
 const FIELD = { owner: "Owner", implementation: "Implementation (its code was upgraded)", codeHash: "Code" };
 
 /** A watchlist change on a token the member holds. */
 export function formatChangeAlert({ label, address, changes, link }) {
   const lines = [`🔔 *${md(label || short(address))} changed*`, `\`${address}\``, "", "Something changed on a token you hold:"];
   for (const c of changes) {
-    if (c.field === "action") lines.push(`• ${md(short(c.by))} (${c.role === "owner" ? "the owner" : "a role that controls it"}) called *${md(c.fn)}*${c.args ? ` (${md(c.args)})` : ""} — [tx](https://blockexplorer.electroneum.com/tx/${c.txHash})`);
+    if (c.field === "action") lines.push(actionLine(c));
     else if (c.field === "owner" && c.to === ZERO) lines.push(`• Ownership renounced (was ${md(short(c.from))})`);
     else if (c.field === "codeHash") lines.push(`• ${FIELD.codeHash} changed`);
     else lines.push(`• ${FIELD[c.field] || md(c.field)}: ${md(short(c.from) || "none")} → ${md(short(c.to) || "none")}`);
   }
   lines.push("", `[Open its card](${link})`, "", "_Send /contractalerts off to stop these._");
   return lines.join("\n");
+}
+
+// ---- "Was this right?" buttons ------------------------------------------------------------------------
+// Telegram allows 64 bytes of button data: "fb:<kind letter>:<r|w>:<ref>" — ref is a contract address
+// without its 0x (40), a contract_changes id, or a digest date.
+export const FEEDBACK_KINDS = { a: "approval", c: "change", d: "digest", k: "card" };
+const KIND_LETTER = Object.fromEntries(Object.entries(FEEDBACK_KINDS).map(([l, k]) => [k, l]));
+
+/** sendMessage extra fields adding 👍 / 👎 under an alert. */
+export function feedbackButtons(kind, ref) {
+  const r = String(ref).toLowerCase().replace(/^0x/, "");
+  const data = (v) => `fb:${KIND_LETTER[kind]}:${v}:${r}`;
+  return { reply_markup: { inline_keyboard: [[{ text: "👍 Right", callback_data: data("r") }, { text: "👎 Wrong", callback_data: data("w") }]] } };
+}
+
+/** { kind, verdict, ref } from a button's data, or null. Contract refs get their 0x back. */
+export function parseFeedback(data) {
+  const m = /^fb:([acdk]):([rw]):([0-9a-z-]{1,48})$/.exec(String(data || ""));
+  if (!m) return null;
+  const kind = FEEDBACK_KINDS[m[1]];
+  const ref = kind === "approval" || kind === "card" ? `0x${m[3]}` : m[3];
+  if ((kind === "approval" || kind === "card") && !/^0x[0-9a-f]{40}$/.test(ref)) return null;
+  return { kind, verdict: m[2] === "r" ? "right" : "wrong", ref };
 }
