@@ -67,6 +67,7 @@ import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
 import coreTierDemoRouter from "./utils/coreTierDemoRouter.js";
 import contractCheckRouter from "./utils/contractCheckRouter.js";
+import appCheckRouter from "./utils/appCheckRouter.js";
 
 dotenv.config();
 
@@ -111,6 +112,7 @@ app.use("/api", pnlSnapshotRouter);
 app.use("/api", adminSplitRouter);
 app.use("/api", coreTierDemoRouter);
 app.use("/api", contractCheckRouter);
+app.use("/api", appCheckRouter);
 
 const PORT = process.env.PORT || 3001;
 
