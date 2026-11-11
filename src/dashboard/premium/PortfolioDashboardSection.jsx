@@ -91,11 +91,19 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   const wallet = useReownWallet();
   // Which of the panels below is showing — see PANELS' own comment on why this replaced the old
   // stacked/collapsible layout.
-  // A ?contract=0x… link (from the Telegram /check card and contract alerts) opens Contract Check on that card.
+  // A ?contract=0x… link (Telegram /check cards and alerts, the Tokens tab badges) opens Contract Check on that
+  // card; an optional &name= (the badge's token symbol) titles the card before its facts load. Plain text, capped.
   const linkedContract = useMemo(() => {
     try {
       const c = new URLSearchParams(window.location.search).get("contract");
       return c && /^0x[0-9a-fA-F]{40}$/.test(c) ? c : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const linkedName = useMemo(() => {
+    try {
+      return (new URLSearchParams(window.location.search).get("name") || "").slice(0, 40) || null;
     } catch {
       return null;
     }
@@ -171,7 +179,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
 
   return (
     // Contract cards can be opened from any panel below (the "Ask" buttons) — see ContractCard.jsx.
-    <ContractCardProvider wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} initialAddress={linkedContract}>
+    <ContractCardProvider wallet={wallet} getAuthParams={getAuthParams} hasAccess={hasAccess} initialAddress={linkedContract} initialHint={linkedName}>
     <div style={{ width: "100%", maxWidth: 700, margin: "0 auto" }}>
       <div style={{ marginBottom: 24, textAlign: "center" }}>
         <div style={{ fontFamily: monoFont, fontSize: 11, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: muted, marginBottom: 10 }}>

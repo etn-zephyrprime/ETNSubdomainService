@@ -185,9 +185,17 @@ export default function TokenLeaderboard({ onSelectToken }) {
               </div>
               <div style={{ fontSize: 11, color: mutedLight, fontFamily: monoFont }}>{shortHash(token.address)}</div>
               {token.contractBadge && (
-                <div style={{ marginTop: 3 }} title="Contract Check — the full check is part of Core Tier">
+                // Opens Core Tier → Contract Check on this token's card (/premium?contract=…, read by
+                // PortfolioDashboardSection) — members get the full check, everyone else the Core Tier pitch.
+                // stopPropagation: the row itself opens the token's detail page.
+                <a
+                  href={`/premium?contract=${token.address}${token.symbol ? `&name=${encodeURIComponent(token.symbol)}` : ""}`}
+                  onClick={(e) => e.stopPropagation()}
+                  title="Contract Check — tap for the full check (Core Tier)"
+                  style={{ display: "inline-block", marginTop: 3, textDecoration: "none" }}
+                >
                   <OverallBadge overall={token.contractBadge} small />
-                </div>
+                </a>
               )}
               {category === "tokens" && lockBadgeText(token.lockInfo) && (
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: monoFont, fontSize: 10, fontWeight: 700, color: green, marginTop: 2 }}>
