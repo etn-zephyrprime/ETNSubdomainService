@@ -35,6 +35,12 @@ export const KNOWN_CONTRACTS_SEED = [
   { address: "0xba3CAfCc197E71b9d114E515E75c037dA09A6312", label: "ElectroSwap V3 Quoter", category: "dex-quoter", ...ES },
   { address: "0x16ca736c8B181772009e598F37f137e9cD36AFAE", label: "ElectroSwap Liquidity Locker", category: "locker", ...ES },
   { address: "0xe653ac16b732876f58a1722d24801230fa96bc82", label: "ElectroSwap Yield Farms", category: "farm", ...ES },
+  { address: "0x98F19ba7fD60B4FfcbBE01eac336e7C0B73a93b8", label: "ElectroSwap Yield Farms (2)", category: "farm", ...ES },
+  { address: "0xfdB0d62Fc929fD53D266B969Bfe4250b205D0899", label: "ElectroSwap Liquidity Locker V3", category: "locker", ...ES },
+  // the Universal Router's approval contract — deployed by the same address as the V2 Router (0xD6Cf…9D0)
+  { address: "0x012ff228aa9fec4dbee6cd704072749af077b617", label: "ElectroSwap Permit2", category: "dex-approvals", ...ES },
+  // NFT marketplaces (Seaport) move approved NFTs through this conduit
+  { address: "0x2941cba4dd14b2c67b0802107f23144c70ed680f", label: "Seaport Conduit (NFT marketplace)", category: "nft-marketplace", project: "Seaport", verifiedByUs: false },
   // Listed tokens (src/config.js's token list)
   { address: "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77", label: "WETN (Wrapped ETN)", category: "token", ...ES },
   { address: "0x043fAa1b5C5FC9a7dc35171f290c29ECDE0cCff1", label: "BOLT", category: "token", project: null, verifiedByUs: false },

@@ -98,9 +98,10 @@ const FIELD = { owner: "Owner", implementation: "Implementation (its code was up
 
 /** A watchlist change on a token the member holds. */
 export function formatChangeAlert({ label, address, changes, link }) {
-  const lines = [`🔔 *${md(label || short(address))} changed*`, `\`${address}\``, "", "A token you hold was changed on-chain:"];
+  const lines = [`🔔 *${md(label || short(address))} changed*`, `\`${address}\``, "", "Something changed on a token you hold:"];
   for (const c of changes) {
-    if (c.field === "owner" && c.to === ZERO) lines.push(`• Ownership renounced (was ${md(short(c.from))})`);
+    if (c.field === "action") lines.push(`• ${md(short(c.by))} (${c.role === "owner" ? "the owner" : "a role that controls it"}) called *${md(c.fn)}*${c.args ? ` (${md(c.args)})` : ""} — [tx](https://blockexplorer.electroneum.com/tx/${c.txHash})`);
+    else if (c.field === "owner" && c.to === ZERO) lines.push(`• Ownership renounced (was ${md(short(c.from))})`);
     else if (c.field === "codeHash") lines.push(`• ${FIELD.codeHash} changed`);
     else lines.push(`• ${FIELD[c.field] || md(c.field)}: ${md(short(c.from) || "none")} → ${md(short(c.to) || "none")}`);
   }
