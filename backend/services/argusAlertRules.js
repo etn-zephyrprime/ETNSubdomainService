@@ -344,5 +344,27 @@ export function hyperlaneWeeklyAlert(hyperlane, state = {}, nowMs = Date.now(), 
     `*Last 12 months:* net ${signedUsd(y.in - y.out)} (in ${usd(y.in)} / out ${usd(y.out)})`,
     ...domains.map((d) => `  ${md(chainName(d))}: in ${usd(year[d]?.in || 0)} / out ${usd(year[d]?.out || 0)} / net ${signedUsd((year[d]?.in || 0) - (year[d]?.out || 0))}`),
   ];
+
+  // The ETN route (BNB Chain, Ethereum, Solana) — its own section, in ETN, never added to the dollars above.
+  const etnIndex = (hyperlane?.tokens || []).findIndex((t) => t.unit === "ETN");
+  if (etnIndex >= 0) {
+    const etnOnly = new Set([etnIndex]);
+    const ew = hyperlaneFlows(events, nowSec - 7 * 86400, etnOnly);
+    const ey = hyperlaneFlows(events, nowSec - 365 * 86400, etnOnly);
+    const enrolled = (hyperlane?.current?.ETN?.domains || []).map(String);
+    const etnDomains = [...new Set([...enrolled, ...Object.keys(ey), ...Object.keys(ew)])].sort((a, b) => (ey[b]?.in || 0) + (ey[b]?.out || 0) - ((ey[a]?.in || 0) + (ey[a]?.out || 0)));
+    const sw = sum(ew), sy = sum(ey);
+    const etnNet = (r) => signed((r?.in || 0) - (r?.out || 0));
+    const locked = hyperlane?.current?.ETN?.supply;
+    lines.push(
+      ``,
+      `🔷 *ETN route* (in ETN)`,
+      `*Last 7 days — net flow:* ${signed(sw.in - sw.out)} ETN (in ${fmtEtn(sw.in)} / out ${fmtEtn(sw.out)})`,
+      ...etnDomains.map((d) => `  ${md(chainName(d))}: ${etnNet(ew[d])} ETN`),
+      `*Last 12 months:* net ${signed(sy.in - sy.out)} ETN (in ${fmtEtn(sy.in)} / out ${fmtEtn(sy.out)})`,
+      ...etnDomains.map((d) => `  ${md(chainName(d))}: in ${fmtEtn(ey[d]?.in || 0)} / out ${fmtEtn(ey[d]?.out || 0)} / net ${etnNet(ey[d])}`),
+      ...(Number.isFinite(locked) ? [`ETN on other chains now: *${fmtEtn(locked)} ETN* (locked on Electroneum)`] : [])
+    );
+  }
   return { messages: [lines.join("\n")], state: { ...state, hyperLastWeek: weekKey } };
 }
