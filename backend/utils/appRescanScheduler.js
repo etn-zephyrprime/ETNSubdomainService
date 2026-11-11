@@ -69,7 +69,8 @@ async function rescan(origin, now) {
     const r = await runHeavy("appRescan", () => getAppResult(origin.origin, { core: true, scan: true, force: true }));
     console.log(`🔎 App Check rescan: ${origin.origin} — ${r.scan?.status || "no scan"} (${r.overall})`);
   } catch (err) {
-    if (!(err instanceof ScanUnavailable)) console.warn(`⚠️  App Check rescan of ${origin.origin} failed:`, err.message);
+    if (err instanceof ScanUnavailable) console.log(`ℹ️  App Check rescan of ${origin.origin} skipped (${err.code}) — next run`);
+    else console.warn(`⚠️  App Check rescan of ${origin.origin} failed:`, err.message);
   }
 }
 

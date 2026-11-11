@@ -445,3 +445,13 @@ test("a known app's badge is its own contracts; other apps' contracts in its cod
   assert.equal(other.foundIn, FOUND_IN_CODE);
   assert.equal(r.contracts.find((c) => c.address === ROUTER).foundInScan, true);
 });
+
+test("the cooldown is per host: sibling sites on one domain can be scanned back to back", async () => {
+  const opts = (u) => ({ fetchText: fixtureSite({ [u]: { body: `<script>const x="${OTHER}"</script>` } }).fetchText, getCode: codeOf(), analyse: analyseStub() });
+  const a = site("https://dashboard.planetzephyros.xyz/");
+  const b = site("https://nameservice.planetzephyros.xyz/");
+  await runScan(a.n, a.match, APPS, opts("https://dashboard.planetzephyros.xyz/"));
+  const scan = await runScan(b.n, b.match, APPS, opts("https://nameservice.planetzephyros.xyz/"));
+  assert.equal(scan.status, "ok");
+  await assert.rejects(runScan(a.n, a.match, APPS, opts("https://dashboard.planetzephyros.xyz/")), (e) => e.code === "cooldown");
+});

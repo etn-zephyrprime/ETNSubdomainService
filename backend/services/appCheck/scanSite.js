@@ -33,7 +33,7 @@ export class ScanUnavailable extends Error {
 }
 
 let running = 0;
-const lastScanAt = new Map(); // registrable domain -> ms
+const lastScanAt = new Map(); // host -> ms
 
 /** Tests only. */
 export function _resetScanGate() {
@@ -191,10 +191,12 @@ export async function scanSite(n, match, apps, { fetchText = safeFetchText, anal
   return finish(partial ? "partial" : "ok");
 }
 
-/** scanSite behind the server-wide gate: at most SCAN.maxConcurrentScans at once, one per domain per cooldown. */
+/** scanSite behind the server-wide gate: at most SCAN.maxConcurrentScans at once, one per host per cooldown. */
 export async function runScan(n, match, apps, opts = {}) {
   const now = opts.now ?? Date.now();
-  const key = n.registrableDomain;
+  // per host: sibling sites on one domain (dashboard. / nameservice. / staking.planetzephyros.xyz) are
+  // separate sites, and the rescan job scans them one after another
+  const key = n.host;
   const last = lastScanAt.get(key);
   if (last && now - last < SCAN.perDomainCooldownMs) throw new ScanUnavailable("cooldown", Math.ceil((SCAN.perDomainCooldownMs - (now - last)) / 1000));
   if (running >= SCAN.maxConcurrentScans) throw new ScanUnavailable("busy");
