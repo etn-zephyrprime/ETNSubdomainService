@@ -75,3 +75,31 @@ export async function revenueSweptBetween(from, to) {
   const res = await query(`SELECT COALESCE(SUM(amount_swept_wei), 0)::text AS wei FROM subscription_revenue_sweeps WHERE executed_at >= $1 AND executed_at < $2`, [from, to]);
   return Number(BigInt(res?.rows?.[0]?.wei || "0") / 10n ** 14n) / 1e4;
 }
+
+/** Keeps one member question (no wallet) for the most-asked report. */
+export async function logContractQuestion({ contractAddress, question, normalized, themes, answerable, source }) {
+  await query(`INSERT INTO contract_questions (contract_address, question, normalized, themes, answerable, source) VALUES ($1, $2, $3, $4, $5, $6)`, [
+    contractAddress.toLowerCase(),
+    String(question).slice(0, 500),
+    normalized.slice(0, 500),
+    themes,
+    answerable ?? null,
+    source || null,
+  ]);
+}
+
+/** Most-asked since `since`: by exact (normalized) wording, and by theme. */
+export async function topQuestions(since, limit = 20) {
+  const exact = await query(
+    `SELECT normalized, COUNT(*)::int AS n, COUNT(DISTINCT contract_address)::int AS contracts, MIN(question) AS example,
+            AVG(CASE WHEN answerable THEN 1 ELSE 0 END)::float AS answerable_rate
+     FROM contract_questions WHERE created_at >= $1 GROUP BY normalized ORDER BY n DESC, normalized LIMIT $2`,
+    [since, limit]
+  );
+  const themes = await query(
+    `SELECT t AS theme, COUNT(*)::int AS n FROM contract_questions, UNNEST(themes) AS t WHERE created_at >= $1 GROUP BY t ORDER BY n DESC`,
+    [since]
+  );
+  const total = await query(`SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE cardinality(themes) = 0)::int AS untagged FROM contract_questions WHERE created_at >= $1`, [since]);
+  return { exact: exact?.rows || [], themes: themes?.rows || [], total: total?.rows?.[0]?.n || 0, untagged: total?.rows?.[0]?.untagged || 0 };
+}
