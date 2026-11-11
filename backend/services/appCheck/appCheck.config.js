@@ -95,7 +95,7 @@ export const SCAN = {
   // rest are still listed as contracts (the set stays complete), just not analysed — so this cap alone
   // doesn't make a scan partial; the fetch caps and the address cap do.
   maxConcurrentScans: 2, // across the server
-  perDomainCooldownMs: 60 * 1000, // one scan of a registrable domain per minute, whoever asks
+  perDomainCooldownMs: 60 * 1000, // one scan of a host per minute, whoever asks
   scansPerMemberPerDay: Number(process.env.APP_CHECK_SCANS_PER_DAY) || 10,
   // registry contracts any app may reasonably use; finding them on an unknown site isn't a "uses X's
   // contracts" signal (WETN, CORE)
