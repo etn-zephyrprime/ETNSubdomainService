@@ -4,10 +4,11 @@
 //
 // RDAP: the IANA bootstrap file (cached 24h) names each TLD's registry RDAP server; the registry's answer
 // carries a "registration" event. Requests go only to https servers named in that IANA file — never to the
-// domain being checked — with a 5s timeout, no redirects followed and a size cap. Any failure, or a TLD with
+// domain being checked — through the App Check fetcher (safeFetch.js: SSRF checks, 5s connect timeout, size cap). Any failure, or a TLD with
 // no RDAP server, is "age unknown": never a flag. A domain on a shared hosting platform (x.vercel.app) has
 // no registration of its own, so its age is unknown too.
 import { DOMAIN_RULES, MAX_DOMAIN_AGE_SEVERITY, RDAP } from "./appCheck.config.js";
+import { safeFetchJsonResponse } from "./safeFetch.js";
 
 const SEVERITY_RANK = { info: 0, caution: 1, high: 2 };
 const DAY_MS = 24 * 3600 * 1000;
@@ -51,7 +52,7 @@ export function registrationDate(rdap) {
 }
 
 /** `{ registeredAt: ISO | null, known: boolean }` for a registrable domain. Never throws. */
-export async function domainRegistration(domain, { fetchImpl = fetch, now = Date.now() } = {}) {
+export async function domainRegistration(domain, { fetchImpl = safeFetchJsonResponse, now = Date.now() } = {}) {
   const cached = ageCache.get(domain);
   if (cached && now - cached.at < (cached.ok ? RDAP.domainTtlMs : RDAP.failureTtlMs)) return { registeredAt: cached.registeredAt, known: cached.ok };
   if (inFlight.has(domain)) return inFlight.get(domain);
@@ -108,7 +109,7 @@ export function domainFlags(facts, match, ageDays, rules = DOMAIN_RULES) {
 }
 
 /** `{ ageDays: number | "unknown", registeredAt, https, punycode, mixedScript, flags }`. Never throws. */
-export async function getDomainSignals(facts, match, { fetchImpl = fetch, now = Date.now() } = {}) {
+export async function getDomainSignals(facts, match, { fetchImpl = safeFetchJsonResponse, now = Date.now() } = {}) {
   let ageDays = "unknown";
   let registeredAt = null;
   if (!facts.sharedHosting) {

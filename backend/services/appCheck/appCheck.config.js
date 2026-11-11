@@ -67,3 +67,50 @@ export const LIMITS = {
   maxInputLength: 2048,
   maxNameMatches: 5,
 };
+
+// ── The fetcher (safeFetch.js) — the only code that requests user-supplied hosts ─────────────────────────
+export const FETCH = {
+  userAgent: "ArgusAppCheck/1.0 (+https://dashboard.planetzephyros.xyz/about)",
+  connectTimeoutMs: 5000,
+  totalTimeoutMs: 10000, // per request, redirects included
+  maxRedirects: 3,
+  maxResponseBytes: (Number(process.env.APP_CHECK_MAX_RESPONSE_MB) || 2) * 1024 * 1024, // per response (decompressed); default 2 MB
+  ports: [80, 443],
+  // content types a response may have (anything else is aborted before its body is read)
+  contentTypes: {
+    html: ["text/html", "application/xhtml+xml"],
+    script: ["application/javascript", "text/javascript", "application/x-javascript", "application/ecmascript", "text/ecmascript", "text/plain"],
+    json: ["application/json", "text/plain"], // and any */*+json (application/rdap+json)
+  },
+};
+
+// ── The frontend scan (scanSite.js) — Core only ─────────────────────────────────────────────────────────
+export const SCAN = {
+  maxBytes: 15 * 1024 * 1024, // per scan, all responses together
+  maxRequests: 40, // per scan, redirects included
+  maxChunkDepth: 2, // scripts referenced from scripts, at most 2 levels below the page's own scripts
+  maxAddressesToCheck: 80, // eth_getCode reads per scan (sequential, small groups)
+  codeReadGroupSize: 5,
+  maxContracts: 25, // analysed with Contract Check per scan (registry contracts first, then by occurrences)
+  maxConcurrentScans: 2, // across the server
+  perDomainCooldownMs: 60 * 1000, // one scan of a registrable domain per minute, whoever asks
+  scansPerMemberPerDay: Number(process.env.APP_CHECK_SCANS_PER_DAY) || 10,
+  // registry contracts any app may reasonably use; finding them on an unknown site isn't a "uses X's
+  // contracts" signal (WETN, CORE)
+  crossCheckIgnore: ["0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77", "0x309b916b3a90cb3e071697ea9680e9217a30066f"],
+  // never real contracts: zero, burn and placeholder addresses
+  ignoreAddresses: [
+    "0x0000000000000000000000000000000000000000",
+    "0x000000000000000000000000000000000000dead",
+    "0xdead000000000000000042069420694206942069",
+    "0xdead000000000000000000000000000000000000",
+    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // "native coin" placeholder
+    "0xffffffffffffffffffffffffffffffffffffffff",
+  ],
+};
+
+// a hard-coded plain wallet in an app's code (often a fee recipient) — info, never a warning
+export const SCAN_RULES = {
+  uses_known_app_contracts: { enabled: true, severity: "caution" },
+  hardcoded_wallet: { enabled: true, severity: "info" },
+};
