@@ -108,7 +108,16 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
       return null;
     }
   }, []);
-  const [activePanel, setActivePanel] = useState(linkedContract ? "contracts" : "portfolio");
+  // A ?app=<origin> link (Telegram /checkapp cards and App Check alerts) opens "Check an app" on that site.
+  const linkedApp = useMemo(() => {
+    try {
+      const a = new URLSearchParams(window.location.search).get("app");
+      return a && /^https?:\/\/[^\s]{3,250}$/i.test(a) ? a : null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const [activePanel, setActivePanel] = useState(linkedContract || linkedApp ? "contracts" : "portfolio");
   const isBotViewer = Boolean(wallet.isConnected && wallet.account && ETN_BOT_VIEWERS.has(wallet.account.toLowerCase()));
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
@@ -304,7 +313,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         {activePanel === "activity" && (
           <CoreTierRecentActivity wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
-        {activePanel === "contracts" && <CoreTierContracts wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} />}
+        {activePanel === "contracts" && <CoreTierContracts wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} linkedApp={linkedApp} />}
         {activePanel === "alerts" && (
           <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         )}

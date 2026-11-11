@@ -21,6 +21,7 @@ import { startTokenPriceCache } from "./utils/tokenPriceCache.js";
 import { startTokenLiquidityCache } from "./utils/tokenLiquidityCache.js";
 import { startContractBadges } from "./services/contractCheck/badges.js";
 import { startContractAlerts } from "./utils/contractAlertScheduler.js";
+import { startAppRescans } from "./utils/appRescanScheduler.js";
 import { startTokenLocksCache } from "./utils/tokenLocksCache.js";
 import { startCoreTaxScheduleRefresh } from "./services/coreTaxScheduleService.js";
 import { startTvlHistory } from "./utils/tvlHistory.js";
@@ -143,6 +144,7 @@ app.listen(PORT, () => {
   startTokenLiquidityCache();
   startContractBadges();
   startContractAlerts();
+  startAppRescans();
   startTokenLocksCache();
   startCoreTaxScheduleRefresh();
   startTvlHistory();

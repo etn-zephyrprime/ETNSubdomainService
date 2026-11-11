@@ -5,9 +5,9 @@
 //     internal address refuses the host), and the connection pinned to the checked address (the original
 //     Host header and TLS SNI kept) — so DNS rebinding can't swap the address between check and connect;
 //   - is re-checked on every redirect (at most 3);
-//   - has a 5s connect timeout and a 10s total, a 2 MB cap per (decompressed) response, an allow-list of
+//   - has a 5s connect timeout and a 10s total, a 4 MB cap per (decompressed) response, an allow-list of
 //     content types (aborted before the body is read otherwise), and counts against the scan's budget
-//     (15 MB and 40 requests);
+//     (15 MB and 60 requests);
 //   - sends no cookies, no auth, nothing about the user: only a generic User-Agent, Accept and Accept-Encoding
 //     (and If-None-Match / If-Modified-Since when revalidating).
 // Nothing fetched is ever executed: callers get text and a SHA-256.

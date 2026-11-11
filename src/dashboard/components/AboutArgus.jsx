@@ -80,6 +80,24 @@ export default function AboutArgus({ onBack }) {
       </Panel>
 
       <Panel>
+        <div style={h2}>How App Check works</div>
+        <p style={p}>
+          App Check starts from a website instead of a contract. Facts come from code; there's no AI in it. Argus first checks the address against our registry of known apps: a listed site, a site
+          that resembles a listed one (look-alike letters, an extra word like "claim", a different domain ending, a free hosting page using the app's name), or a site we don't know.
+        </p>
+        <p style={p}>
+          Core Tier also checks the domain (how long ago it was registered, whether it uses HTTPS) and can scan the site: it reads the page and its scripts as text (never running them), picks out
+          the contract addresses written in them, and runs Contract Check on each. Results are cached, re-checked cheaply when you look again, and watched apps are rescanned so you hear when their
+          contracts change.
+        </p>
+        <ul style={{ margin: "0 0 4px", paddingLeft: 18 }}>
+          <li style={li}>It can't see what a site will ask you to sign. A fake front end can ask you to approve a real token with the attacker as the spender — your approvals list and Revoke are the safety net.</li>
+          <li style={li}>A scan finds addresses written in the site's code. It misses addresses a site loads later, and can't prove which contract a given button will call.</li>
+          <li style={li}>A site that isn't in our registry never gets a green badge. A clean result means "no red flags in the contracts we could see", never "safe" — sites and contracts change, and each check is a snapshot.</li>
+          <li style={li}>Look-alike detection is a heuristic: some honest sites with similar names will be flagged, and some fakes will be missed.</li>
+        </ul>
+      </Panel>
+      <Panel>
         <div style={h2}>What it can't do</div>
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li style={li}>It warns; it can't block anything, and it only sees what has already reached the chain.</li>

@@ -345,7 +345,7 @@ test("registry contracts on an unknown site are a caution; WETN/CORE alone aren'
   assert.deepEqual(scan2.flags, []);
 });
 
-test("eth_getCode and Contract Check run one at a time; registry contracts first; the contract cap truncates", async () => {
+test("eth_getCode and Contract Check run one at a time; registry contracts first; the contract cap truncates the analysis", async () => {
   const { n, match } = site();
   let active = 0, peak = 0;
   const getCode = async (a) => {
@@ -360,7 +360,7 @@ test("eth_getCode and Contract Check run one at a time; registry contracts first
   assert.deepEqual(analysed.slice(0, 2).sort(), [ROUTER, WETN].sort()); // the registry's first
   assert.equal(analysed.length, 2);
   assert.equal(scan.truncated.contracts, 3);
-  assert.equal(scan.status, "partial");
+  assert.equal(scan.status, "ok"); // the set is complete; only the badges are capped
   assert.equal(scan.contracts.filter((c) => c.note === "not analysed (contract cap reached)").length, 3);
 });
 

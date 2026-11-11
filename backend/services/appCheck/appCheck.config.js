@@ -74,7 +74,7 @@ export const FETCH = {
   connectTimeoutMs: 5000,
   totalTimeoutMs: 10000, // per request, redirects included
   maxRedirects: 3,
-  maxResponseBytes: (Number(process.env.APP_CHECK_MAX_RESPONSE_MB) || 2) * 1024 * 1024, // per response (decompressed); default 2 MB
+  maxResponseBytes: (Number(process.env.APP_CHECK_MAX_RESPONSE_MB) || 4) * 1024 * 1024, // per response (decompressed); default 4 MB (the official .etn app's main bundle is 2.7 MB)
   ports: [80, 443],
   // content types a response may have (anything else is aborted before its body is read)
   contentTypes: {
@@ -87,11 +87,13 @@ export const FETCH = {
 // ── The frontend scan (scanSite.js) — Core only ─────────────────────────────────────────────────────────
 export const SCAN = {
   maxBytes: 15 * 1024 * 1024, // per scan, all responses together
-  maxRequests: 40, // per scan, redirects included
+  maxRequests: Number(process.env.APP_CHECK_MAX_REQUESTS) || 60, // per scan, redirects included (big apps load ~40 scripts)
   maxChunkDepth: 2, // scripts referenced from scripts, at most 2 levels below the page's own scripts
-  maxAddressesToCheck: 80, // eth_getCode reads per scan (sequential, small groups)
+  maxAddressesToCheck: 150, // eth_getCode reads per scan (sequential, small groups); more found -> partial
   codeReadGroupSize: 5,
-  maxContracts: 25, // analysed with Contract Check per scan (registry contracts first, then by occurrences)
+  maxContracts: 25, // analysed with Contract Check per scan (registry contracts first, then by occurrences). The
+  // rest are still listed as contracts (the set stays complete), just not analysed — so this cap alone
+  // doesn't make a scan partial; the fetch caps and the address cap do.
   maxConcurrentScans: 2, // across the server
   perDomainCooldownMs: 60 * 1000, // one scan of a registrable domain per minute, whoever asks
   scansPerMemberPerDay: Number(process.env.APP_CHECK_SCANS_PER_DAY) || 10,
@@ -114,3 +116,24 @@ export const SCAN_RULES = {
   uses_known_app_contracts: { enabled: true, severity: "caution" },
   hardcoded_wallet: { enabled: true, severity: "info" },
 };
+
+// ── Cache, change detection, following (appCheckService.js, changeEvents.js, appRescanScheduler.js) ───────
+export const CACHE = {
+  knownAppTtlMs: 6 * 3600 * 1000, // a registry app's cached result
+  otherTtlMs: 24 * 3600 * 1000, // any other site's
+  frontendRecheckMs: 3600 * 1000, // a cached scan older than this gets one conditional request for its HTML
+  changesShown: 10, // recent change events on a card
+};
+export const RESCAN = {
+  tickMs: 30 * 60 * 1000,
+  registryEveryMs: Number(process.env.APP_RESCAN_REGISTRY_HOURS || 6) * 3600 * 1000,
+  followedEveryMs: Number(process.env.APP_RESCAN_FOLLOWED_HOURS || 24) * 3600 * 1000,
+  retryFailedMs: 3600 * 1000, // after a failed / partial attempt, wait this long before trying again
+  claimMs: 30 * 60 * 1000, // a scan claimed by one server isn't started by another for this long
+};
+export const FOLLOW = {
+  maxPerMember: Number(process.env.APP_FOLLOWS_PER_MEMBER) || 20,
+};
+// alerted to followers (frontend_redeployed never is); contract_added only from this severity up
+export const ALERT_TYPES = ["contract_added", "contract_changed", "contract_removed", "domain_changed"];
+export const ADDED_ALERT_MIN_SEVERITY = "caution";

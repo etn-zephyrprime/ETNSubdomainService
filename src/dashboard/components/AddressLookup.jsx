@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import { green, mutedLight, muted, panel2, border, error as errorColor, monoFont } from "../theme.js";
 import { useBlockscout } from "../hooks/useBlockscout.js";
+import AppCheckFree from "./AppCheckFree.jsx";
 import { useTokenChart } from "../hooks/useTokenChart.js";
 import { useDisplayNames } from "../hooks/useDisplayNames.js";
 import { useCexAddresses } from "../hooks/useCexAddresses.js";
@@ -453,6 +454,7 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
   return (
     <div>
       <style>{`.dash-addr-row{transition:border-color .15s ease;} .dash-addr-row:hover:not(:disabled),.dash-addr-row:focus-visible{border-bottom-color:${green};}`}</style>
+      <AppCheckFree />
 
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         <input

@@ -1,5 +1,5 @@
 import React from "react";
-import { ShieldCheck, ShieldAlert, ShieldX, BadgeCheck, Info, AlertTriangle, OctagonAlert } from "lucide-react";
+import { ShieldCheck, ShieldAlert, ShieldX, Shield, BadgeCheck, Info, AlertTriangle, OctagonAlert } from "lucide-react";
 import { green, gold, error as errorColor, mutedLight, muted, border, panel2, monoFont, blue } from "../theme.js";
 
 // Shared, wallet-free pieces of Contract Check (no wallet code, so the free Tokens tab can use the overall
@@ -9,6 +9,8 @@ export const OVERALL = {
   green: { label: "No caution flags", color: green, Icon: ShieldCheck },
   amber: { label: "Caution", color: gold, Icon: ShieldAlert },
   red: { label: "High risk flags", color: errorColor, Icon: ShieldX },
+  // App Check only: a site we can't vouch for (not in the registry) with nothing flagged — never green
+  unassessed: { label: "Unassessed", color: mutedLight, Icon: Shield },
 };
 const SEVERITY = {
   info: { color: blue, Icon: Info, label: "Info" },

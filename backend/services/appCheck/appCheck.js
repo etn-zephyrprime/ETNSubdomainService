@@ -28,7 +28,7 @@ const normalisedView = (n) => ({
 });
 
 /** One contract's App Check row from its Contract Check facts (analysed one at a time — no RPC bursts). */
-async function contractRow(c, analyse) {
+export async function contractRow(c, analyse) {
   const base = { address: c.address, role: c.role || null, source: c.source || "registry" };
   try {
     const facts = await analyse(c.address);
@@ -49,7 +49,7 @@ async function contractRow(c, analyse) {
 }
 
 /** What the result carries about a scan (the full record, with hashes, is for storage — Phase 3). */
-const scanSummary = (s) => ({
+export const scanSummary = (s) => ({
   status: s.status,
   scannedAt: s.scannedAt,
   addressCount: Object.keys(s.addresses).length,
@@ -75,9 +75,10 @@ const fingerprintOf = (r) =>
  * @param opts.core Core tier (full result) or free (lookalike check only)
  * @param opts.analyse Contract Check's analyseContract (injectable for tests)
  * @param opts.scan also scan the site (Core only; rate-limited by the caller)
+ * @param opts.onScan called with the full scan record (for storage)
  * @param opts.fetchImpl / fetchText / getCode / analyse injectable for tests
  */
-export async function checkApp(input, { core = false, scan: doScan = false, analyse = analyseContract, fetchImpl = undefined, fetchText = undefined, getCode = undefined, apps = null, now = Date.now() } = {}) {
+export async function checkApp(input, { core = false, scan: doScan = false, analyse = analyseContract, fetchImpl = undefined, fetchText = undefined, getCode = undefined, apps = null, now = Date.now(), onScan = null } = {}) {
   const checkedAt = new Date(now).toISOString();
   const n = normaliseInput(input);
   if (!n.ok) return { input: n.input, status: "invalid", error: { detail: n.detail, message: n.message }, overall: null, overallReason: n.message, checkedAt };
@@ -126,31 +127,45 @@ export async function checkApp(input, { core = false, scan: doScan = false, anal
   const contracts = [];
   if (match.status === "known") {
     const seen = new Set();
-    for (const c of match.app.contracts) {
+    // the registry's own list; contracts found by scans come from the scan itself
+    for (const c of match.app.contracts.filter((x) => x.source === "registry")) {
       if (seen.has(c.address)) continue;
       seen.add(c.address);
       contracts.push(await contractRow(c, analyse)); // sequential on purpose (RPC limits)
     }
   }
 
-  // the site scan (opt-in: "Scan this site"): its contracts join the list; a registry contract it also found
-  // is marked, not duplicated
+  // the site scan ("Scan this site", or the rescan job): its contracts join the list
   let scan = null;
   if (doScan) {
     scan = await runScan(n, match, registry, { fetchText, analyse, getCode, now });
-    const byAddress = new Map(contracts.map((c) => [c.address, c]));
-    for (const c of scan.contracts) {
-      if (byAddress.has(c.address)) byAddress.get(c.address).foundInScan = true;
-      else contracts.push(c);
-    }
+    onScan?.(scan);
   }
+  return assembleResult({ base, match, domain, contracts, scan });
+}
+
+/** Merges a scan's contracts into the list (a registry contract it also found is marked, not duplicated). */
+export function mergeScanContracts(contracts, scan) {
+  const out = contracts.map((c) => ({ ...c }));
+  const byAddress = new Map(out.map((c) => [c.address, c]));
+  for (const c of scan?.contracts || []) {
+    if (byAddress.has(c.address)) byAddress.get(c.address).foundInScan = true;
+    else out.push(c);
+  }
+  return out;
+}
+
+/**
+ * The Core result from its parts (also used when a cached result is revalidated).
+ * A known app's badge is its registry contracts'. Other contracts its code mentions are listed with their
+ * own badges, never hidden — but don't decide the app's badge. For an unknown site every scanned contract counts.
+ */
+export function assembleResult({ base, match, domain, contracts, scan }) {
+  const all = scan ? mergeScanContracts(contracts.filter((c) => c.source !== "scan"), scan) : contracts;
   const flags = [...domain.flags, ...(scan?.flags || [])];
-  // A known app's badge is its own contracts' (its registry contracts, plus scanned ones the registry lists
-  // for that app). Other contracts its code mentions are listed with their own badges, never hidden — but
-  // don't decide the app's badge. For an unknown site every scanned contract counts.
-  const badgeContracts = match.status === "known" ? contracts.filter((c) => c.source !== "scan" || c.apps?.some((a) => a.slug === match.app.slug)) : contracts;
+  const badgeContracts = match.status === "known" ? all.filter((c) => c.source === "registry") : all;
   const { overall, overallReason } = computeOverall({ status: match.status, app: match.app, resembles: match.resembles, contracts: badgeContracts, domainFlags: flags, scan });
-  const result = { ...base, tier: "core", domain, contracts, flags, scan: scan && scanSummary(scan), overall, overallReason, cache: { hit: false, ageSeconds: 0, revalidated: false } };
+  const result = { ...base, tier: "core", domain, contracts: all, flags, scan: scan ? (scan.scriptHashes ? scanSummary(scan) : scan) : null, overall, overallReason, cache: { hit: false, ageSeconds: 0, revalidated: false } };
   result.fingerprint = fingerprintOf(result);
   return result;
 }

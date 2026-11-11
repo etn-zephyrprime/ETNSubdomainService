@@ -13,8 +13,9 @@
 //      other-chain address (listed apart, never part of the badge; a hard-coded wallet is info only)
 //   6. registry cross-check: an unknown site using a known app's contracts -> caution
 //
-// Status: "ok" only when every page script loaded and no cap was hit; "partial" otherwise; "failed" if the
-// page itself couldn't be fetched. A partial or failed scan never yields a green or a "no contracts" answer.
+// Status: "ok" only when every page script loaded, every address was checked and no fetch cap was hit;
+// "partial" otherwise; "failed" if the page itself couldn't be fetched. (The Contract Check cap only limits
+// which contracts get a badge: the contract set is still complete, so it doesn't make a scan partial.) A partial or failed scan never yields a green or a "no contracts" answer.
 import { safeFetchText, createScanBudget } from "./safeFetch.js";
 import { extractAddresses, pageScripts, chunkRefs } from "./extractAddresses.js";
 import { analyseContract } from "../contractCheck/analyseContract.js";
@@ -185,7 +186,8 @@ export async function scanSite(n, match, apps, { fetchText = safeFetchText, anal
     scan.flags.push({ id: "hardcoded_wallet", severity: SCAN_RULES.hardcoded_wallet.severity, fact: `${scan.wallets.length} plain wallet (or other-chain) address${scan.wallets.length === 1 ? " is" : "es are"} written in this site's code — often a fee recipient; not a warning on its own` });
   }
 
-  const partial = scan.errors.length || scan.unchecked.length || Object.keys(scan.truncated).length;
+  // the analysis cap (truncated.contracts) leaves the contract SET complete, so it alone isn't partial
+  const partial = scan.errors.length || scan.unchecked.length || Object.keys(scan.truncated).some((k) => k !== "contracts");
   return finish(partial ? "partial" : "ok");
 }
 

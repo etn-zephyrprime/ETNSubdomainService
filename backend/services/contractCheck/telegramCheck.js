@@ -1,7 +1,9 @@
 // Contract Check on Telegram (phase 4): the Planet Zephyros Notis bot's commands (notisLinkRouter.js).
 //
 //   /check <symbol | name.etn | address>   a compact contract card, from the same backend as the dashboard
-//   /contractalerts on | off               the approval and watchlist alerts (contractAlertScheduler.js)
+//   /contractalerts on | off               the approval and watchlist alerts (contractAlertScheduler.js) — and
+//                                          App Check's watched-app alerts (appRescanScheduler.js)
+//   /checkapp, /watchapp, /unwatchapp      App Check (services/appCheck/telegramApp.js); /checkapp is open to all
 //
 // Core Tier only, like the rest of Contract Check: the chat must be linked to a wallet (the dashboard's
 // Telegram link) that has Core access. Private chats only — in a group it stays quiet.
@@ -22,6 +24,7 @@ import { resolveEtnName } from "../../utils/primaryNameResolver.js";
 import { hasCoreAccess } from "../../utils/premiumAccess.js";
 import { createRateLimiter } from "../../utils/rateLimit.js";
 import { getAlertState, setAlertState } from "../../db/contractAlerts.js";
+import { handleAppCommand } from "../appCheck/telegramApp.js";
 
 const DASHBOARD_URL = process.env.DASHBOARD_URL || "https://dashboard.planetzephyros.xyz";
 export const cardLink = (address) => `${DASHBOARD_URL}/premium?contract=${address}`;
@@ -75,13 +78,25 @@ async function resolveTarget(q) {
 export async function handleNotisCommand({ text, chatId, chatType, linkedAddress, sendDirectMessage }) {
   const check = text.match(/^\/check(?:@\w+)?(?:\s+([\s\S]+))?$/i);
   const alerts = text.match(/^\/contractalerts(?:@\w+)?(?:\s+(on|off))?\s*$/i);
-  if (!check && !alerts) return false;
+  const app = /^\/(checkapp|watchapp|unwatchapp)(?:@\w+)?(?:\s|$)/i.test(text);
+  if (!check && !alerts && !app) return false;
   if (chatType && chatType !== "private") return true; // groups: stay quiet
 
   const flood = overLimit([["cmdMin", commandsPerMinute], ["cmdHour", commandsPerHour]], chatId);
   if (flood) {
     await noticeOnce(chatId, flood.kind, flood.retryAfterSec * 1000, `⏳ Slow down — try again in ${inWords(flood.retryAfterSec)}.`, sendDirectMessage);
     return true;
+  }
+
+  // App Check: /checkapp is open to everyone (the lookalike check); watching is Core (services/appCheck/telegramApp.js)
+  if (app) {
+    const limitedApp = overLimit([["checkHour", checksPerHour], ["checkDay", checksPerDay]], chatId);
+    if (limitedApp) {
+      await noticeOnce(chatId, limitedApp.kind, limitedApp.retryAfterSec * 1000, `That's the limit for checks right now — try again in ${inWords(limitedApp.retryAfterSec)}.`, sendDirectMessage);
+      return true;
+    }
+    const core = linkedAddress ? await hasCoreAccess(linkedAddress).catch(() => false) : false;
+    return handleAppCommand({ text, chatId, linkedAddress, core, sendDirectMessage });
   }
 
   if (!linkedAddress) {
