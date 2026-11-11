@@ -20,7 +20,12 @@
 // starts at "now" (no alerts about history), and when two instances overlap during a deploy only the one
 // that wins the update sends — no duplicate DMs.
 import { getNotisLinkState } from "../state/notisLinkState.js";
-import { sendNotisDirectMessage, notisConfigured } from "./notisLinkRouter.js";
+import { sendNotisDirectMessage, notisConfigured, getNotisLinkedChatId } from "./notisLinkRouter.js";
+import { botViewers } from "./etnAccumulatorBot.js";
+import { llmUsageBetween, revenueSweptBetween } from "../db/contractCheckAi.js";
+import { getAllActiveMemberWallets } from "../db/premiumMemberships.js";
+import { getEtnPriceCache } from "../state/etnPriceState.js";
+import { formatCostReport, monthRange, previousMonth } from "../services/llmCost.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { getCoveredWallets } from "../db/trackedWallets.js";
 import { getTouchedAddresses } from "../db/contractCheckLists.js";
@@ -32,9 +37,9 @@ import { contractCheckProvider } from "../services/contractCheck/fetchContractDa
 import { labelsFor, tokenMeta, activeApprovals } from "../services/contractCheck/lists.js";
 import { getFactsSummaries } from "../db/contractCheckLists.js";
 import { riskyApprovals, badgeWorsened, poisoning, scamAirdrops, bigTransfersOut, hasFindings, formatDigest, digestSummary } from "../services/walletWatch/walletDigest.js";
-import { approvalFromTx, approvalAlertReasons, formatApprovalAlert, formatChangeAlert } from "../services/contractCheck/telegramCards.js";
+import { approvalFromTx, approvalAlertReasons, formatApprovalAlert, formatChangeAlert, feedbackButtons } from "../services/contractCheck/telegramCards.js";
 import { alertsMutedKey, cardLink } from "../services/contractCheck/telegramCheck.js";
-import { privilegedNames, controllersOf, ownerActionsFromTxs } from "../services/walletWatch/ownerActions.js";
+import { privilegedNames, controllersOf, ownerActionsFromTxs, selectorsOf, routedActionsFromTxs } from "../services/walletWatch/ownerActions.js";
 
 const APPROVALS_EVERY_MS = Number(process.env.CONTRACT_ALERTS_APPROVALS_MS) || 5 * 60 * 1000;
 const WATCH_EVERY_MS = Number(process.env.CONTRACT_ALERTS_WATCH_MS) || 6 * 3600 * 1000;
@@ -102,7 +107,7 @@ async function checkApprovals(member) {
         kind: a.kind,
         link: cardLink(a.spender),
       });
-      await sendNotisDirectMessage(member.chatId, text);
+      await sendNotisDirectMessage(member.chatId, text, feedbackButtons("approval", a.spender));
       console.log(`🔔 Contract alerts: approval alert to ${member.owner} (${reasons.join(", ")}) — ${a.token} -> ${a.spender}`);
     }
   }
@@ -125,12 +130,13 @@ async function heldTokens(member) {
 /** Controllers' calls to their tokens' privileged functions since the last run -> contract_changes rows. One
  * explorer page per controller; each controller's cursor (newest block seen) advances by compare-and-set. */
 async function scanOwnerActions(factsByToken) {
-  const byController = new Map(); // controller -> [{ token, facts, names }]
+  const byController = new Map(); // controller -> [{ token, facts, names, selectors }]
   for (const [token, facts] of factsByToken) {
     if (!facts) continue;
     const names = privilegedNames(facts);
     if (!names.size) continue;
-    for (const c of controllersOf(facts)) byController.set(c, [...(byController.get(c) || []), { token, facts, names }]);
+    const selectors = selectorsOf(facts);
+    for (const c of controllersOf(facts)) byController.set(c, [...(byController.get(c) || []), { token, facts, names, selectors }]);
   }
   for (const [controller, targets] of byController) {
     const items = (await fetchBlockscoutJsonOrNull(`/addresses/${controller}/transactions`).catch(() => null))?.items || [];
@@ -141,12 +147,14 @@ async function scanOwnerActions(factsByToken) {
     if (cursor === undefined || (cursor !== null && newest <= cursor)) continue;
     if (!(await advanceAlertState(key, cursor, newest).catch(() => false))) continue;
     if (cursor === null) continue; // first look at this controller: from now on
-    for (const { token, facts, names } of targets) {
+    for (const { token, facts, names, selectors } of targets) {
       const label = facts.identity?.known?.label || facts.token?.symbol || facts.identity?.contractName || null;
       const role = facts.ownership?.owner === controller ? "owner" : "role";
-      for (const a of ownerActionsFromTxs(items, { token, by: controller, names, afterBlock: cursor })) {
-        await insertContractChange(token, [{ field: "action", fn: a.fn, by: a.by, role, txHash: a.txHash, args: a.args }], label).catch((err) => console.warn(`⚠️  Contract alerts: couldn't record an owner action on ${token}:`, err.message));
-        console.log(`🔎 Contract alerts: ${label || token} — ${role} ${controller} called ${a.fn}`);
+      // direct calls (a wallet owner) and calls routed through a multisig / timelock owner
+      const actions = [...ownerActionsFromTxs(items, { token, by: controller, names, afterBlock: cursor }), ...routedActionsFromTxs(items, { token, controller, selectors, afterBlock: cursor })];
+      for (const a of actions) {
+        await insertContractChange(token, [{ field: "action", fn: a.fn, by: a.by, role, txHash: a.txHash, args: a.args, ...(a.via ? { via: a.via, stage: a.stage, delaySec: a.delaySec } : {}) }], label).catch((err) => console.warn(`⚠️  Contract alerts: couldn't record an owner action on ${token}:`, err.message));
+        console.log(`🔎 Contract alerts: ${label || token} — ${role} ${controller} ${a.via ? `(${a.via}) ${a.stage}` : "called"} ${a.fn}`);
       }
     }
   }
@@ -170,7 +178,7 @@ async function checkWatchlist(list) {
     if (cursor === null) continue; // new member: from now on
     for (const c of await getChangesSince(cursor, held.get(m.owner)).catch(() => [])) {
       if (c.id > latest) continue; // belongs to the next run's range
-      await sendNotisDirectMessage(m.chatId, formatChangeAlert({ label: c.label, address: c.address, changes: c.changes, link: cardLink(c.address) }));
+      await sendNotisDirectMessage(m.chatId, formatChangeAlert({ label: c.label, address: c.address, changes: c.changes, link: cardLink(c.address) }), feedbackButtons("change", c.id));
       console.log(`🔔 Contract alerts: change alert to ${m.owner} — ${c.label || c.address} (${c.changes.map((x) => x.field).join(", ")})`);
     }
   }
@@ -224,8 +232,25 @@ async function digestFor(member, today) {
   await setAlertState(key, { date: today, overall }).catch(() => {});
   if (!hasFindings(findings)) return; // quiet day: no message, no Claude call
   const summary = await digestSummary(findings, { wallet: member.owner });
-  await sendNotisDirectMessage(member.chatId, formatDigest(findings, summary, { dashboardUrl: DASHBOARD_URL, date: today }));
+  await sendNotisDirectMessage(member.chatId, formatDigest(findings, summary, { dashboardUrl: DASHBOARD_URL, date: today }), feedbackButtons("digest", today));
   console.log(`🛡️ Wallet check sent to ${member.owner} (${summary.source})`);
+}
+
+// ---- 4. monthly AI cost note to the admins ----------------------------------------------------------------
+/** On the 1st (from DIGEST_HOUR_UTC), last month's Claude spend vs Core Tier revenue, to the admin wallets (the
+ * ETN Bot viewers) that are linked on the Notis bot. Once per month (compare-and-set). */
+async function costReportTick(now) {
+  if (now.getUTCDate() !== 1) return;
+  const month = previousMonth(now);
+  if (!(await advanceAlertState(`cost:${month}`, null, true).catch(() => false))) return;
+  const { from, to } = monthRange(month);
+  const [rows, revenueEtn, members, etn] = await Promise.all([llmUsageBetween(from, to), revenueSweptBetween(from, to).catch(() => null), getAllActiveMemberWallets().catch(() => []), getEtnPriceCache().catch(() => null)]);
+  const text = formatCostReport({ month, rows, revenueEtn, etnUsd: etn?.usd ?? null, activeMembers: members.length });
+  for (const admin of botViewers()) {
+    const chatId = await getNotisLinkedChatId(admin).catch(() => null);
+    if (chatId != null) await sendNotisDirectMessage(chatId, text);
+  }
+  console.log(`💸 AI cost report for ${month} sent`);
 }
 
 let digestRunning = false;
@@ -236,6 +261,7 @@ async function digestTick() {
   try {
     const today = now.toISOString().slice(0, 10);
     for (const m of await members()) await digestFor(m, today).catch((err) => console.error(`⚠️  Wallet check failed for ${m.owner}:`, err.message));
+    await costReportTick(now).catch((err) => console.error("⚠️  AI cost report failed:", err.message));
   } finally {
     digestRunning = false;
   }

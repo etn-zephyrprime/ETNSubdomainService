@@ -43,5 +43,15 @@ export function useContractCheck() {
     []
   );
 
-  return { getFacts, search, explain, getUsedContracts, getApprovals };
+  /** "Was this right?" on a contract card: verdict "right" | "wrong", optional note. */
+  const sendFeedback = useCallback(async (auth, address, verdict, note = null) => {
+    const res = await fetch(`${base}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: auth.address, signature: auth.signature, timestamp: auth.timestamp, address, verdict, ...(note ? { note } : {}) }),
+    });
+    return asJson(res);
+  }, []);
+
+  return { getFacts, search, explain, getUsedContracts, getApprovals, sendFeedback };
 }

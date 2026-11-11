@@ -21,7 +21,7 @@
 // can be linked to neither, either, or both bots independently.
 import { createTelegramLinkRouter } from "./createTelegramLinkRouter.js";
 import { getNotisLinkState, setNotisLinkState } from "../state/notisLinkState.js";
-import { handleNotisCommand } from "../services/contractCheck/telegramCheck.js";
+import { handleNotisCommand, handleNotisCallback } from "../services/contractCheck/telegramCheck.js";
 
 const instance = createTelegramLinkRouter({
   botToken: process.env.COREBOT_ZEPHYROS_BOT_TOKEN,
@@ -46,6 +46,7 @@ const instance = createTelegramLinkRouter({
   },
   // Contract Check (phase 4): /check and /contractalerts — see services/contractCheck/telegramCheck.js.
   onCommand: handleNotisCommand,
+  onCallback: handleNotisCallback,
 });
 
 export const notisConfigured = instance.isConfigured;

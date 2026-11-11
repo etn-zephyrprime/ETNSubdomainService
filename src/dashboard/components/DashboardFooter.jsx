@@ -100,6 +100,12 @@ export default function DashboardFooter({ isMobile = false }) {
         />
       </div>
 
+      <div style={{ marginTop: 14, textAlign: "center" }}>
+        <a href="/about" style={{ fontSize: 12, color: mutedLight, textDecoration: "underline" }}>
+          How Argus works · Verify us
+        </a>
+      </div>
+
       <div style={{ marginTop: 20, fontSize: 11, color: muted, textAlign: "center", lineHeight: 1.6 }}>
         <div style={{ marginBottom: 8, fontWeight: 600, color: mutedLight }}>
           Terms & Conditions

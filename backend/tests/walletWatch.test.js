@@ -95,3 +95,46 @@ test("digest summary asks Haiku for low effort (thinking is billed as output)", 
   assert.equal(sent.output_config.effort, "low");
   assert.equal(sent.output_config.format.type, "json_schema");
 });
+
+test("feedback buttons: fit Telegram's 64 bytes and round-trip", async () => {
+  const { feedbackButtons, parseFeedback } = await import("../services/contractCheck/telegramCards.js");
+  const btns = feedbackButtons("approval", "0x012FF228AA9FEC4DBEE6CD704072749AF077B617").reply_markup.inline_keyboard[0];
+  for (const b of btns) assert.ok(Buffer.byteLength(b.callback_data) <= 64, b.callback_data);
+  assert.deepEqual(parseFeedback(btns[1].callback_data), { kind: "approval", verdict: "wrong", ref: "0x012ff228aa9fec4dbee6cd704072749af077b617" });
+  assert.deepEqual(parseFeedback(feedbackButtons("change", 42).reply_markup.inline_keyboard[0][0].callback_data), { kind: "change", verdict: "right", ref: "42" });
+  assert.deepEqual(parseFeedback(feedbackButtons("digest", "2026-11-11").reply_markup.inline_keyboard[0][0].callback_data), { kind: "digest", verdict: "right", ref: "2026-11-11" });
+  for (const bad of ["fb:x:r:1", "fb:a:r:nothex", "hello", "fb:k:w:" + "a".repeat(41)]) assert.equal(parseFeedback(bad), null, bad);
+});
+
+test("multisig / timelock owners: routed calls to the token's privileged functions are found", async () => {
+  const { ethers } = await import("ethers");
+  const { selectorsOf, routedActionsFromTxs } = await import("../services/walletWatch/ownerActions.js");
+  const SAFE = "0x5afe5afe5afe5afe5afe5afe5afe5afe5afe5afe";
+  const TL = "0x7111111111111111111111111111111111111111";
+  const facts = { powers: { byCategory: { fees: [{ name: "setFees", signature: "setFees(uint256,uint256)", gated: true }], mint: [{ name: "mint", signature: "mint(address,uint256)", gated: true }] } } };
+  const sel = selectorsOf(facts);
+  const token = new ethers.Interface(["function setFees(uint256,uint256)", "function mint(address,uint256)", "function transfer(address,uint256)"]);
+  const r = new ethers.Interface([
+    "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures)",
+    "function schedule(address target, uint256 value, bytes data, bytes32 predecessor, bytes32 salt, uint256 delay)",
+    "function executeBatch(address[] targets, uint256[] values, bytes[] payloads, bytes32 predecessor, bytes32 salt)",
+  ]);
+  const Z = ethers.ZeroAddress, H = ethers.ZeroHash;
+  const setFees = token.encodeFunctionData("setFees", [5, 5]);
+  const tx = (to, raw, block, extra = {}) => ({ status: "ok", hash: `0x${block}`, block_number: block, to: { hash: to }, raw_input: raw, ...extra });
+  const safeTxs = [
+    tx(SAFE, r.encodeFunctionData("execTransaction", [TOKEN, 0, setFees, 0, 0, 0, 0, Z, Z, "0x"]), 201),
+    tx(SAFE, r.encodeFunctionData("execTransaction", [TOKEN, 0, token.encodeFunctionData("transfer", [Z, 1]), 0, 0, 0, 0, Z, Z, "0x"]), 202), // not a power
+    tx(SAFE, r.encodeFunctionData("execTransaction", ["0x9999999999999999999999999999999999999999", 0, setFees, 0, 0, 0, 0, Z, Z, "0x"]), 203), // other contract
+    tx(SAFE, r.encodeFunctionData("execTransaction", [TOKEN, 0, setFees, 0, 0, 0, 0, Z, Z, "0x"]), 150), // before the cursor
+  ];
+  assert.deepEqual(routedActionsFromTxs(safeTxs, { token: TOKEN, controller: SAFE, selectors: sel, afterBlock: 199 }).map((a) => [a.fn, a.via, a.stage, a.block]), [["setFees", "multisig", "executed", 201]]);
+  const tlTxs = [
+    tx(TL, r.encodeFunctionData("schedule", [TOKEN, 0, token.encodeFunctionData("mint", [Z, 10n ** 24n]), H, H, 172800]), 301),
+    tx(TL, r.encodeFunctionData("executeBatch", [[TOKEN, TOKEN], [0, 0], [setFees, token.encodeFunctionData("transfer", [Z, 1])], H, H]), 302),
+  ];
+  const tl = routedActionsFromTxs(tlTxs, { token: TOKEN, controller: TL, selectors: sel, afterBlock: 0 });
+  assert.deepEqual(tl.map((a) => [a.fn, a.via, a.stage, a.delaySec]), [["mint", "timelock", "scheduled", 172800], ["setFees", "timelock", "executed", null]]);
+  const text = formatChangeAlert({ label: "XYZ", address: TOKEN, changes: [{ field: "action", fn: "mint", by: TL, role: "owner", txHash: "0x1", via: "timelock", stage: "scheduled", delaySec: 172800 }], link: "L" });
+  assert.match(text, /⏳ 0x7111…1111 \(the owner, a timelock\) \*scheduled\* \*mint\* — it can run in about 2 days/);
+});

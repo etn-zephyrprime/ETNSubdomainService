@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { X, ExternalLink, MessageCircleQuestion, Loader2, Sparkles } from "lucide-react";
+import { X, ExternalLink, MessageCircleQuestion, Loader2, Sparkles, ThumbsUp, ThumbsDown } from "lucide-react";
 import { useContractCheck } from "../../hooks/useContractCheck.js";
 import { OverallBadge, KnownBadge, VerificationLine, RiskFlagList, contractLabel, shortAddr } from "../../components/ContractCheckBits.jsx";
 import { EXPLORER_BASE_URL } from "../../../config.js";
@@ -60,6 +60,42 @@ export function AskButton({ address, hint, style = {} }) {
 
 const sectionLabel = { fontFamily: monoFont, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: muted, margin: "16px 0 8px" };
 const explorerLink = (a) => `${EXPLORER_BASE_URL}/address/${a}`;
+
+/** "Was this right?" — a 👍 / 👎 on this card's badge and flags (a 👎 can say why). Kept as labelled data so
+ * false positives show up early (backend db/watchFeedback.js). */
+function WasThisRight({ address, authRef }) {
+  const { sendFeedback } = useContractCheck();
+  const [state, setState] = useState(null); // null | "asking" (👎, waiting for a note) | "sending" | "done" | error text
+  const [note, setNote] = useState("");
+  const send = async (verdict, why = null) => {
+    setState("sending");
+    try {
+      await sendFeedback(await authRef.current(AUTH_PURPOSE), address, verdict, why);
+      setState("done");
+    } catch (e) {
+      setState(e.message || "Couldn't send that");
+    }
+  };
+  const btn = { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: `1px solid ${border}`, color: mutedLight, borderRadius: 999, padding: "6px 12px", fontSize: 12, cursor: "pointer" };
+  if (state === "done") return <div style={{ fontSize: 12, color: green, marginTop: 16 }}>Thanks — noted.</div>;
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 12, color: mutedLight, marginBottom: 6 }}>Was this check right?</div>
+      {state === "asking" ? (
+        <form onSubmit={(e) => { e.preventDefault(); send("wrong", note.trim() || null); }} style={{ display: "flex", gap: 6 }}>
+          <input value={note} onChange={(e) => setNote(e.target.value.slice(0, 500))} placeholder="What's wrong? (optional)" aria-label="What's wrong with this check" style={{ flex: 1, minWidth: 0, background: panel2, border: `1px solid ${border}`, borderRadius: 6, color: "#fff", padding: "8px 10px", fontSize: 13 }} />
+          <button type="submit" style={{ ...btn, color: "#fff" }}>Send</button>
+        </form>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" disabled={state === "sending"} onClick={() => send("right")} style={btn}><ThumbsUp size={14} /> Right</button>
+          <button type="button" disabled={state === "sending"} onClick={() => setState("asking")} style={btn}><ThumbsDown size={14} /> Wrong</button>
+        </div>
+      )}
+      {state && !["asking", "sending", "done"].includes(state) && <div style={{ fontSize: 12, color: errorColor, marginTop: 6 }}>{state}</div>}
+    </div>
+  );
+}
 
 export default function ContractCard({ address, hint, wallet, getAuthParams, hasAccess, onClose }) {
   const { getFacts, explain } = useContractCheck();
@@ -290,6 +326,8 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
                 </a>
               ))}
             </div>
+
+            {hasAccess && facts.identity?.isContract !== false && <WasThisRight address={facts.address} authRef={authRef} />}
 
             <div style={{ fontSize: 11, color: muted, marginTop: 18, borderTop: `1px solid ${border}`, paddingTop: 10 }}>Automated analysis, not financial advice.</div>
           </>

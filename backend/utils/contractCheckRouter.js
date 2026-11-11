@@ -24,6 +24,7 @@ import { hasCoreAccess } from "./premiumAccess.js";
 import { createRateLimiter, clientIp } from "./rateLimit.js";
 import { usedContracts, activeApprovals, searchContracts } from "../services/contractCheck/lists.js";
 import { getCoveredWallets } from "../db/trackedWallets.js";
+import { saveFeedback } from "../db/watchFeedback.js";
 
 const router = express.Router();
 const AUTH_PURPOSE = "Premium Dashboard"; // same signed message as the other Core tier routes
@@ -129,6 +130,31 @@ router.get("/contract-check/:target", async (req, res) => {
   } catch (err) {
     console.error(`⚠️  Contract Check: analysis failed for ${address}:`, err.message);
     res.status(502).json({ error: "Couldn't analyse that contract right now — try again shortly" });
+  }
+});
+
+// "Was this right?" on a contract card (Core tier, wallet-signed): { wallet, signature, timestamp, address,
+// verdict: "right" | "wrong", note? } — kept with the badge and flags as they are now (db/watchFeedback.js).
+router.post("/contract-check/feedback", express.json({ limit: "4kb" }), async (req, res) => {
+  const { wallet, signature, timestamp, address: target, verdict, note } = req.body || {};
+  const ipR = explainByIp(`feedback:${clientIp(req)}`);
+  if (!ipR.ok) return limited(res, ipR);
+  try {
+    verifyWalletOwnership(wallet, signature, timestamp, AUTH_PURPOSE);
+  } catch (err) {
+    return res.status(401).json({ error: err.message });
+  }
+  if (verdict !== "right" && verdict !== "wrong") return res.status(400).json({ error: "verdict must be right or wrong" });
+  if (!ethers.isAddress(target)) return res.status(400).json({ error: "Invalid contract address" });
+  if (!(await hasCoreAccess(wallet))) return res.status(403).json({ error: "Core tier membership required" });
+  try {
+    const facts = await analyseContract(target).catch(() => null);
+    const snapshot = facts ? { overall: facts.overall, flags: (facts.riskFlags || []).map((f) => `${f.id}:${f.severity}`) } : null;
+    await saveFeedback({ source: "dashboard", owner: wallet, kind: "card", ref: target, verdict, note: typeof note === "string" ? note : null, snapshot });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("⚠️  Contract Check: feedback failed:", err.message);
+    res.status(502).json({ error: "Couldn't save that right now — try again shortly" });
   }
 });
 

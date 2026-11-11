@@ -16,7 +16,8 @@ import { analyseContract } from "./analyseContract.js";
 import { contractCheckProvider } from "./fetchContractData.js";
 import { explainContract } from "./explain.js";
 import { searchContracts } from "./lists.js";
-import { formatCheckCard, md } from "./telegramCards.js";
+import { formatCheckCard, md, feedbackButtons, parseFeedback } from "./telegramCards.js";
+import { saveFeedback } from "../../db/watchFeedback.js";
 import { resolveEtnName } from "../../utils/primaryNameResolver.js";
 import { hasCoreAccess } from "../../utils/premiumAccess.js";
 import { createRateLimiter } from "../../utils/rateLimit.js";
@@ -133,6 +134,20 @@ export async function handleNotisCommand({ text, chatId, chatType, linkedAddress
   }
   // The shared summary, only if it's already cached (the dashboard writes it) — /check never spends a Claude call.
   const oneLiner = facts.identity?.isContract === false ? null : (await explainContract(facts, { cachedOnly: true }).catch(() => null))?.summary?.oneLiner || null;
-  await sendDirectMessage(chatId, formatCheckCard({ facts, oneLiner, link: cardLink(facts.address), alternatives: target.alternatives }));
+  await sendDirectMessage(chatId, formatCheckCard({ facts, oneLiner, link: cardLink(facts.address), alternatives: target.alternatives }), facts.identity?.isContract === false ? {} : feedbackButtons("card", facts.address));
   return true;
+}
+
+/** createTelegramLinkRouter's onCallback for the Notis bot: "Was this right?" taps. */
+export async function handleNotisCallback({ data, chatId, linkedAddress, answer }) {
+  const fb = parseFeedback(data);
+  if (!fb) return answer("");
+  // what was judged, for the labelled data: a contract's badge and flags as they are now
+  let snapshot = null;
+  if (fb.kind === "approval" || fb.kind === "card") {
+    const facts = await analyseContract(fb.ref).catch(() => null);
+    if (facts) snapshot = { overall: facts.overall, flags: (facts.riskFlags || []).map((f) => `${f.id}:${f.severity}`) };
+  }
+  await saveFeedback({ source: "telegram", owner: linkedAddress, kind: fb.kind, ref: fb.ref, verdict: fb.verdict, snapshot: { ...(snapshot || {}), chat: String(chatId) } });
+  await answer(fb.verdict === "right" ? "Thanks — noted 👍" : "Thanks — we'll look into it 👀");
 }
