@@ -16,7 +16,8 @@ import { analyseContract } from "../services/contractCheck/analyseContract.js";
 import { contractCheckProvider } from "../services/contractCheck/fetchContractData.js";
 import { explainContract, answerQuestion } from "../services/contractCheck/explain.js";
 import { DISCLAIMER } from "../services/contractCheck/prompts.js";
-import { getQuestionUsage, incrementQuestionCount } from "../db/contractCheckAi.js";
+import { getQuestionUsage, incrementQuestionCount, logContractQuestion } from "../db/contractCheckAi.js";
+import { normalizeQuestion, questionThemes } from "../services/contractCheck/questionThemes.js";
 import { periodStarts, quotaStatus } from "../services/contractCheck/questionQuota.js";
 import { resolveEtnName } from "./primaryNameResolver.js";
 import { verifyWalletOwnership } from "./walletAuth.js";
@@ -183,6 +184,11 @@ router.post("/contract-check/explain", express.json({ limit: "8kb" }), async (re
     if (before.remaining === 0) return res.status(429).json({ error: before.message, remaining: 0, questions: before });
     const answer = await answerQuestion(facts, question, { wallet });
     await incrementQuestionCount(wallet, today());
+    // what members ask (no wallet kept) -> scripts/topQuestions.js; never in the way of the answer
+    const q = question.trim().slice(0, 500);
+    logContractQuestion({ contractAddress: address, question: q, normalized: normalizeQuestion(q), themes: questionThemes(q), answerable: answer.answerable, source: answer.source }).catch((err) =>
+      console.warn("⚠️  Contract Check: couldn't log the question:", err.message)
+    );
     const after = quotaStatus({ day: used.day + 1, week: used.week + 1, month: used.month + 1 });
     res.json({ ...answer, remaining: after.remaining, questions: after });
   } catch (err) {

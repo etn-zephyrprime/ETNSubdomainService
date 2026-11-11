@@ -22,7 +22,8 @@
 import { getNotisLinkState } from "../state/notisLinkState.js";
 import { sendNotisDirectMessage, notisConfigured, getNotisLinkedChatId } from "./notisLinkRouter.js";
 import { botViewers } from "./etnAccumulatorBot.js";
-import { llmUsageBetween, revenueSweptBetween } from "../db/contractCheckAi.js";
+import { llmUsageBetween, revenueSweptBetween, topQuestions } from "../db/contractCheckAi.js";
+import { formatTopQuestions } from "../services/contractCheck/questionThemes.js";
 import { getAllActiveMemberWallets } from "../db/premiumMemberships.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { formatCostReport, monthRange, previousMonth } from "../services/llmCost.js";
@@ -37,7 +38,7 @@ import { contractCheckProvider } from "../services/contractCheck/fetchContractDa
 import { labelsFor, tokenMeta, activeApprovals } from "../services/contractCheck/lists.js";
 import { getFactsSummaries } from "../db/contractCheckLists.js";
 import { riskyApprovals, badgeWorsened, poisoning, scamAirdrops, bigTransfersOut, hasFindings, formatDigest, digestSummary } from "../services/walletWatch/walletDigest.js";
-import { approvalFromTx, approvalAlertReasons, formatApprovalAlert, formatChangeAlert, feedbackButtons } from "../services/contractCheck/telegramCards.js";
+import { approvalFromTx, approvalAlertReasons, formatApprovalAlert, formatChangeAlert, feedbackButtons, md } from "../services/contractCheck/telegramCards.js";
 import { alertsMutedKey, cardLink } from "../services/contractCheck/telegramCheck.js";
 import { privilegedNames, controllersOf, ownerActionsFromTxs, selectorsOf, routedActionsFromTxs } from "../services/walletWatch/ownerActions.js";
 
@@ -245,7 +246,10 @@ async function costReportTick(now) {
   if (!(await advanceAlertState(`cost:${month}`, null, true).catch(() => false))) return;
   const { from, to } = monthRange(month);
   const [rows, revenueEtn, members, etn] = await Promise.all([llmUsageBetween(from, to), revenueSweptBetween(from, to).catch(() => null), getAllActiveMemberWallets().catch(() => []), getEtnPriceCache().catch(() => null)]);
-  const text = formatCostReport({ month, rows, revenueEtn, etnUsd: etn?.usd ?? null, activeMembers: members.length });
+  // plus what members asked that month, to decide on new quick questions
+  const asked = await topQuestions(from, 20).catch(() => null);
+  const askedText = asked ? ["", "", "*Members' own questions*", ...formatTopQuestions(asked, { md })].join("\n") : "";
+  const text = formatCostReport({ month, rows, revenueEtn, etnUsd: etn?.usd ?? null, activeMembers: members.length }) + askedText;
   for (const admin of botViewers()) {
     const chatId = await getNotisLinkedChatId(admin).catch(() => null);
     if (chatId != null) await sendNotisDirectMessage(chatId, text);

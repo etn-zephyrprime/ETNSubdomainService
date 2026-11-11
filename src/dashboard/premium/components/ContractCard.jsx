@@ -264,18 +264,20 @@ export default function ContractCard({ address, hint, wallet, getAuthParams, has
                     )}
 
                     <div style={sectionLabel}>Quick questions</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {/* A dropdown, so the list can grow (backend scripts/topQuestions.js shows what members ask) */}
+                    <select
+                      value={chip || ""}
+                      onChange={(e) => setChip(e.target.value || null)}
+                      aria-label="Choose a quick question"
+                      style={{ width: "100%", background: panel2, color: chip ? "#fff" : mutedLight, border: `1px solid ${chip ? green : border}`, borderRadius: 6, padding: "10px 12px", fontSize: 14, cursor: "pointer" }}
+                    >
+                      <option value="">Choose a question…</option>
                       {CHIPS.map((c) => (
-                        <button
-                          key={c.id}
-                          type="button"
-                          onClick={() => setChip(chip === c.id ? null : c.id)}
-                          style={{ background: chip === c.id ? green : "transparent", color: chip === c.id ? "#000" : mutedLight, border: `1px solid ${chip === c.id ? green : border}`, borderRadius: 999, padding: "6px 10px", fontSize: 12, cursor: "pointer", textAlign: "left" }}
-                        >
+                        <option key={c.id} value={c.id}>
                           {c.question}
-                        </button>
+                        </option>
                       ))}
-                    </div>
+                    </select>
                     {chip && summary.chipAnswers?.[chip] && <div style={{ marginTop: 10, background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 12, fontSize: 13, lineHeight: 1.5 }}>{summary.chipAnswers[chip]}</div>}
                   </>
                 )}
