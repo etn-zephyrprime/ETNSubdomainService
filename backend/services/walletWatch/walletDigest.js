@@ -145,7 +145,9 @@ export async function digestSummary(findings, { api = getClient(), wallet = null
         max_tokens: 1000,
         system: SYSTEM,
         messages: [{ role: "user", content: `<findings>${data}</findings>\n\nWrite today's note.${retryNote}` }],
-        output_config: { format: { type: "json_schema", schema: SCHEMA } },
+        // low effort: wording findings code already worked out needs little thinking, and thinking is billed
+        // as output (Haiku 5.5 defaults to medium)
+        output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
       });
       usage = res.usage;
       if (res.stop_reason === "refusal") outcome = "refusal";

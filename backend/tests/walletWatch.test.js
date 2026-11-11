@@ -87,3 +87,11 @@ test("daily check: no alarms for the member's own contracts or transfers between
   const tx = { status: "ok", hash: "0xh", from: { hash: W }, to: { hash: bot, is_contract: false }, value: (100000n * 10n ** 18n).toString(), timestamp: new Date((now - 60) * 1000).toISOString() };
   assert.equal(bigTransfersOut([tx], { wallet: W, sinceSec: now - 86400, earlierRecipients: [W, bot] }).length, 0); // bot wallet is one of theirs
 });
+
+test("digest summary asks Haiku for low effort (thinking is billed as output)", async () => {
+  let sent = null;
+  const api = { messages: { create: async (p) => ((sent = p), { stop_reason: "end_turn", usage: {}, content: [{ type: "text", text: JSON.stringify({ summary: "Your wallet jb.etn has an open approval to review.", actions: [] }) }] }) } };
+  await digestSummary(findings, { api });
+  assert.equal(sent.output_config.effort, "low");
+  assert.equal(sent.output_config.format.type, "json_schema");
+});
