@@ -1,0 +1,103 @@
+{
+  "_comment": "Argus App Check registry seed (scripts/seedKnownApps.js -> known_apps / known_app_hosts / known_app_contracts). Only facts from this repo or confirmed by the project owner. A registrable-domain host covers its subdomains; an exact host covers only itself. Shared hosting (vercel.app, github.io, ...) must be exact hosts. The most specific match wins: an exact host before a registrable domain.",
+  "apps": [
+    {
+      "slug": "planet-zephyros",
+      "name": "Planet Zephyros",
+      "category": "project",
+      "verifiedByUs": true,
+      "notes": "Our own domain; covers every planetzephyros.xyz subdomain (confirmed by the owner 2026-11-11).",
+      "hosts": [{ "host": "planetzephyros.xyz", "registrableDomain": true, "primary": true }],
+      "contracts": [{ "address": "0x309B916b3A90cb3E071697Ea9680e9217A30066f", "role": "token (CORE)" }]
+    },
+    {
+      "slug": "argus",
+      "name": "Argus (Electroneum Dashboard)",
+      "category": "dashboard",
+      "verifiedByUs": true,
+      "notes": null,
+      "hosts": [{ "host": "dashboard.planetzephyros.xyz", "registrableDomain": false, "primary": true }],
+      "contracts": [{ "address": "0x05Cc5a4Cbf18113f7e9c1675a0Ffc702BA7876E1", "role": "Core Tier subscription / PnL statements" }]
+    },
+    {
+      "slug": "zephyros-name-service",
+      "name": "ETN Subdomain Service",
+      "category": "marketplace",
+      "verifiedByUs": true,
+      "notes": "Subdomain marketplace. V3-V5 marketplaces paused 2026-09-17.",
+      "hosts": [{ "host": "nameservice.planetzephyros.xyz", "registrableDomain": false, "primary": true }],
+      "contracts": [
+        { "address": "0xFD8944132Cf464Fb756F98D1d203Edf74A2B7aD5", "role": "marketplace" },
+        { "address": "0x6F311F2212593165988Dff84977e24C1005dBb85", "role": ".etn registry" },
+        { "address": "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64", "role": ".etn name wrapper" },
+        { "address": "0xDb4A3Abb6703232e20a118a104e7f4EbB3e2738D", "role": ".etn public resolver" }
+      ]
+    },
+    {
+      "slug": "core-ascension-vault",
+      "name": "Core Ascension Vault",
+      "category": "staking",
+      "verifiedByUs": true,
+      "notes": "Host confirmed by the owner 2026-11-11.",
+      "hosts": [{ "host": "staking.planetzephyros.xyz", "registrableDomain": false, "primary": true }],
+      "contracts": [
+        { "address": "0x200a9b5fe78d4cb5232a3a0c52b510f961c51cd6", "role": "staking vault" },
+        { "address": "0x309B916b3A90cb3E071697Ea9680e9217A30066f", "role": "token (CORE)" }
+      ]
+    },
+    {
+      "slug": "etn-name-service",
+      "name": "Electroneum Name Service (.etn)",
+      "category": "name-service",
+      "verifiedByUs": false,
+      "notes": "Official .etn app; host confirmed by the owner 2026-11-11.",
+      "hosts": [{ "host": "ens.electroneum.com", "registrableDomain": false, "primary": true }],
+      "contracts": [
+        { "address": "0x6F311F2212593165988Dff84977e24C1005dBb85", "role": "registry" },
+        { "address": "0x5207496C1248BbD2AeeDd57Bde44dd9d4E9F1b59", "role": "base registrar" },
+        { "address": "0x5cD5CEFDc5925cA6A9A38D2AA810d5aeD360b21C", "role": "registrar controller" },
+        { "address": "0xd8F4B1A91469B05d9E0b15Cac4917Ee47b2A6f64", "role": "name wrapper" },
+        { "address": "0xFBB14eDBD8D3f6E7BB240bFA388f6582df0d8E7A", "role": "reverse registrar" },
+        { "address": "0xDb4A3Abb6703232e20a118a104e7f4EbB3e2738D", "role": "public resolver" }
+      ]
+    },
+    {
+      "slug": "electroneum",
+      "name": "Electroneum",
+      "category": "chain",
+      "verifiedByUs": false,
+      "notes": "Chain website and block explorer (added on the owner's request 2026-11-11: commonly copied by phishing sites).",
+      "hosts": [
+        { "host": "electroneum.com", "registrableDomain": true, "primary": true },
+        { "host": "blockexplorer.electroneum.com", "registrableDomain": false, "primary": false }
+      ],
+      "contracts": []
+    },
+    {
+      "slug": "electroswap",
+      "name": "ElectroSwap",
+      "category": "dex",
+      "verifiedByUs": false,
+      "notes": "Hosts and contracts as used by this repo for pricing, swaps and liquidity locks.",
+      "hosts": [
+        { "host": "electroswap.io", "registrableDomain": true, "primary": false },
+        { "host": "app.electroswap.io", "registrableDomain": false, "primary": true }
+      ],
+      "contracts": [
+        { "address": "0x2c12c8f15637b7a182dec202816148a5e767dcec", "role": "universal router" },
+        { "address": "0x012ff228aa9fec4dbee6cd704072749af077b617", "role": "permit2" },
+        { "address": "0x072D4706f9A383D5608BD14B09b41683cb95fFd7", "role": "V2 router" },
+        { "address": "0x203D550ed6fA9dAB8A4190720CF9F65138abd15B", "role": "V2 factory" },
+        { "address": "0x5A3AB7e9f405250B36e7e0a4654c1052EADC1F07", "role": "V3 swap router" },
+        { "address": "0xbF6Bcbe2be545135391777F3B4698be92E2EB8cA", "role": "V3 factory" },
+        { "address": "0x3a7f64c57433555b23dac4409a0ac7e84275398d", "role": "V3 position manager" },
+        { "address": "0xba3CAfCc197E71b9d114E515E75c037dA09A6312", "role": "V3 quoter" },
+        { "address": "0x16ca736c8B181772009e598F37f137e9cD36AFAE", "role": "liquidity locker" },
+        { "address": "0xfdB0d62Fc929fD53D266B969Bfe4250b205D0899", "role": "liquidity locker V3" },
+        { "address": "0xe653ac16b732876f58a1722d24801230fa96bc82", "role": "yield farms" },
+        { "address": "0x98F19ba7fD60B4FfcbBE01eac336e7C0B73a93b8", "role": "yield farms (2)" },
+        { "address": "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77", "role": "WETN" }
+      ]
+    }
+  ]
+}

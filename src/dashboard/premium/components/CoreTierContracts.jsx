@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
-import { Search, KeyRound, RefreshCw, FileSearch, Loader2 } from "lucide-react";
+import { Search, KeyRound, RefreshCw, FileSearch, Loader2, Globe } from "lucide-react";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
+import CoreTierAppCheck from "./CoreTierAppCheck.jsx";
 import { useContractCard } from "./ContractCard.jsx";
 import { useContractCheck } from "../../hooks/useContractCheck.js";
 import { OverallBadge, KnownBadge, shortAddr } from "../../components/ContractCheckBits.jsx";
@@ -14,6 +15,7 @@ import { addPendingRevoke, getPendingRevokes, isPendingRevoke, removePendingRevo
 // project, name.etn or address), see every contract your wallets have used (last 30 days, older behind "Show more"),
 // and the live approvals of your own and your tracked wallets — with a Revoke signed by the wallet that gave
 // the approval (a tracked wallet's is queued here, then signed after switching to it: pendingRevokes.js). Every row opens the contract card (ContractCard.jsx).
+// "Check an app" (CoreTierAppCheck.jsx) does the same starting from a website: Argus App Check.
 const AUTH_PURPOSE = "Premium Dashboard";
 const LIVE_ABI = ["function allowance(address owner, address spender) view returns (uint256)", "function isApprovedForAll(address owner, address operator) view returns (bool)", "function getApproved(uint256 tokenId) view returns (address)"];
 const REVOKE_ABI = ["function approve(address spender, uint256 amount) returns (bool)", "function setApprovalForAll(address operator, bool approved)"];
@@ -425,7 +427,7 @@ function PendingRevokes({ wallet }) {
   );
 }
 
-export default function CoreTierContracts({ wallet, getAuthParams, coreTierAccess }) {
+export default function CoreTierContracts({ wallet, getAuthParams, coreTierAccess, linkedApp = null }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, checkAccessOnce, active } = coreTierAccess;
   const trackedWallets = (active || []).map((w) => w.address);
   return (
@@ -436,6 +438,8 @@ export default function CoreTierContracts({ wallet, getAuthParams, coreTierAcces
           Argus reads a contract's code and on-chain settings and tells you what its owner can do — no copying from an explorer. Tap any contract for the details.
         </div>
         <SearchBox getAuthParams={getAuthParams} />
+        {sectionTitle(Globe, "Check an app")}
+        <CoreTierAppCheck getAuthParams={getAuthParams} initialInput={linkedApp} />
         {sectionTitle(FileSearch, "Contracts you've used")}
         <UsedContracts wallet={wallet} getAuthParams={getAuthParams} />
         {sectionTitle(KeyRound, "Approvals")}

@@ -36,6 +36,7 @@ import {
 import { computePeriodBoundaries, periodTypeLabel } from "./periodTypes.js";
 import { listCexAddresses } from "../db/cexAddresses.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -868,7 +869,12 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
  * PENDING_GENERATION (see pnlStatementRouter.js's /request endpoint). Idempotent to call again on
  * a GENERATED/FINALIZED request only in the sense that markGenerated's own WHERE clause simply
  * won't apply a second time — callers should not call this on an already-generated request. */
-export async function generateStatement(requestId) {
+/** generateStatement, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function generateStatement(...args) {
+  return runHeavy("generateStatement", () => generateStatementUnlimited(...args));
+}
+
+async function generateStatementUnlimited(requestId) {
   const generationStartedAt = new Date();
   console.log(`📄 Statement generation started for request ${requestId} at ${generationStartedAt.toISOString()}`);
 

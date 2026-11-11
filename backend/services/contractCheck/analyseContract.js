@@ -73,3 +73,9 @@ export async function analyseContract(addressInput, { force = false, persist = t
   inFlight.set(address, job);
   return job;
 }
+
+/** The fingerprint (code hash, implementation, owner) read by the latest analysis of an address in this
+ * process, or null — App Check keeps it with each contract to revalidate cheaply later. */
+export function cachedFingerprint(address) {
+  return memo.get(String(address).toLowerCase())?.fingerprint || null;
+}

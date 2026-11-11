@@ -21,6 +21,7 @@ import { startTokenPriceCache } from "./utils/tokenPriceCache.js";
 import { startTokenLiquidityCache } from "./utils/tokenLiquidityCache.js";
 import { startContractBadges } from "./services/contractCheck/badges.js";
 import { startContractAlerts } from "./utils/contractAlertScheduler.js";
+import { startAppRescans } from "./utils/appRescanScheduler.js";
 import { startTokenLocksCache } from "./utils/tokenLocksCache.js";
 import { startCoreTaxScheduleRefresh } from "./services/coreTaxScheduleService.js";
 import { startTvlHistory } from "./utils/tvlHistory.js";
@@ -67,6 +68,7 @@ import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
 import coreTierDemoRouter from "./utils/coreTierDemoRouter.js";
 import contractCheckRouter from "./utils/contractCheckRouter.js";
+import appCheckRouter from "./utils/appCheckRouter.js";
 
 dotenv.config();
 
@@ -111,6 +113,7 @@ app.use("/api", pnlSnapshotRouter);
 app.use("/api", adminSplitRouter);
 app.use("/api", coreTierDemoRouter);
 app.use("/api", contractCheckRouter);
+app.use("/api", appCheckRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -141,6 +144,7 @@ app.listen(PORT, () => {
   startTokenLiquidityCache();
   startContractBadges();
   startContractAlerts();
+  startAppRescans();
   startTokenLocksCache();
   startCoreTaxScheduleRefresh();
   startTvlHistory();

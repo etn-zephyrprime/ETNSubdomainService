@@ -44,6 +44,7 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { labelKnownAddresses } from "../utils/knownContractLabels.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 const LP_LOG_INDEX_CEILING = -2000;
 
@@ -119,7 +120,12 @@ function summarizeLiquidityGroup(txHash, legs) {
 /** Every recent activity item for ONE wallet, newest first, capped to `limit` (a transport-size
  * safeguard, not a real pagination boundary — the frontend filters/paginates within whatever this
  * returns). Never triggers ingestion — see this file's own header comment. */
-export async function getRecentActivity(trackedWallet, asOf = new Date(), limit = 300) {
+/** getRecentActivity, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function getRecentActivity(...args) {
+  return runHeavy("getRecentActivity", () => getRecentActivityUnlimited(...args));
+}
+
+async function getRecentActivityUnlimited(trackedWallet, asOf = new Date(), limit = 300) {
   const [transfers, swaps, defiActivity] = await Promise.all([
     getAllTransfersBefore(trackedWallet, asOf),
     getAllSwapTradesBefore(trackedWallet, asOf),

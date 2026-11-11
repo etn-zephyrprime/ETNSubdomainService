@@ -44,6 +44,7 @@ import {
   convertRealizedEventsToEtn,
 } from "./pnlEventBuilder.js";
 import { setBounded, registerCache } from "../utils/boundedMap.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 // Short-lived cache for computeLivePnlSnapshot's own result — see this file's own header comment
 // for why. Keyed by (trackedWallet, selfOwnedAddresses) rather than trackedWallet alone: the same
@@ -88,7 +89,12 @@ const NFT_GROUPING_EXCLUSIONS = new Set([POSITION_MANAGER_ADDRESS]);
 // Exported so categoryPnlService.js can build the exact same event list this file replays for the
 // whole-portfolio history, then filter it down to one category's own token keys — same "never a
 // second, divergence-prone reimplementation" reasoning as pnlEventBuilder.js's own extraction.
-export async function buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, asOf) {
+/** buildEventsForWallet, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function buildEventsForWallet(...args) {
+  return runHeavy("buildEventsForWallet", () => buildEventsForWalletUnlimited(...args));
+}
+
+async function buildEventsForWalletUnlimited(trackedWallet, selfOwnedAddresses, priorityAssets, asOf) {
   const [transfers, swaps, defiActivity] = await Promise.all([
     getAllTransfersBefore(trackedWallet, asOf),
     getAllSwapTradesBefore(trackedWallet, asOf),
@@ -196,7 +202,12 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
   return buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, false, key, updatedAtMs);
 }
 
-async function buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, cacheable, key, updatedAtMs) {
+/** buildLedger, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+function buildLedger(...args) {
+  return runHeavy("buildLedger", () => buildLedgerUnlimited(...args));
+}
+
+async function buildLedgerUnlimited(trackedWallet, selfOwnedAddresses, priorityAssets, now, cacheable, key, updatedAtMs) {
   const { events, transfers, incomplete, unresolvedCount } = await buildEventsForWallet(trackedWallet, selfOwnedAddresses, priorityAssets, now);
   if (incomplete) {
     console.warn(`⚠️  Ledger for ${trackedWallet}: ${unresolvedCount} DeFi event(s) couldn't be resolved (RPC?) — result used for this request but NOT cached, so the next one retries.`);
@@ -612,7 +623,12 @@ export function combineLivePnlSnapshots(snapshots) {
  * through, not that it should skip calling it — that function's own missing-days window can still
  * differ, e.g. it also covers "today").
  */
-export async function backfillPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
+/** backfillPnlHistory, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function backfillPnlHistory(...args) {
+  return runHeavy("backfillPnlHistory", () => backfillPnlHistoryUnlimited(...args));
+}
+
+async function backfillPnlHistoryUnlimited(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
   const todayUtc = new Date();
   todayUtc.setUTCHours(0, 0, 0, 0);
 
