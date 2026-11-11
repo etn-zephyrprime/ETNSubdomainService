@@ -134,13 +134,21 @@ test("Markdown to HTML keeps names literal", () => {
   assert.equal(mdToHtml(`*${md("a_b*c")}* [x](https://e.x/y) <&>`), '<b>a_b*c</b> <a href="https://e.x/y">x</a> &lt;&amp;&gt;');
 });
 
-test("Hyperlane weekly: ETN route events never land in the USD totals", () => {
+test("Hyperlane weekly: the ETN route gets its own section, in ETN — never in the USD totals", () => {
   const s = (d) => Math.floor((NOW - d * DAY) / 1000);
   const tokens = [{ symbol: "USDT", unit: "USD" }, { symbol: "USDC", unit: "USD" }, { symbol: "ETN", unit: "ETN", native: true }];
-  const events = [[s(2), 1, 8453, 0, 500, 1], [s(3), 2, 56, 1, 250000, 2]]; // 250k ETN out to BNB Chain
+  const events = [[s(2), 1, 8453, 0, 500, 1], [s(3), 2, 56, 1, 250000, 2], [s(40), 2, 1399811149, 0, 30000, 3]]; // 250k ETN out to BNB Chain; 30k in from Solana
   assert.deepEqual(hyperlaneFlows(events, s(7), new Set([0, 1])), { 8453: { in: 500, out: 0 } });
   const monday = Date.parse("2026-11-02T10:00:00Z");
-  const r = hyperlaneWeeklyAlert({ tokens, events: events.map((e) => [e[0] + 4 * 86400, ...e.slice(1)]) }, {}, monday);
-  assert.match(r.messages[0], /Last 7 days — net flow:\* \+\$500/);
-  assert.ok(!/BNB Chain/.test(r.messages[0]));
+  const current = { ETN: { supply: 801735.06, domains: [56, 1, 1399811149] } };
+  const msg = hyperlaneWeeklyAlert({ tokens, current, events: events.map((e) => [e[0] + 4 * 86400, ...e.slice(1)]) }, {}, monday).messages[0];
+  const [usdPart, etnPart] = msg.split("🔷");
+  assert.match(usdPart, /Last 7 days — net flow:\* \+\$500 \(in \$500 \/ out \$0\)/); // dollars: stablecoins only
+  assert.ok(!/BNB Chain|Solana/.test(usdPart));
+  assert.match(etnPart, /\*ETN route\* \(in ETN\)/);
+  assert.match(etnPart, /Last 7 days — net flow:\* −250(\.0+)?K ETN/);
+  assert.match(etnPart, /BNB Chain: −250(\.0+)?K ETN/);
+  assert.match(etnPart, /Ethereum: \+0 ETN/); // enrolled, quiet — still listed
+  assert.match(etnPart, /Solana: in 30(\.0+)?K \/ out 0/);
+  assert.match(etnPart, /ETN on other chains now: \*801(\.\d+)?K ETN\*/);
 });

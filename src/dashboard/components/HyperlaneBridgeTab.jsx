@@ -129,6 +129,21 @@ export default function HyperlaneBridgeTab() {
     [allChains, events, selectedTokenIndex, nowMs, range.days]
   );
 
+  // The ETN route at a glance on the default (USD) view, so its chains — BNB Chain, Ethereum, Solana — are
+  // visible without switching the token filter: per chain in / out / net for the range, in ETN.
+  const etnToken = tokens.find((t) => t.unit === "ETN") || null;
+  const etnIndex = etnToken ? tokens.indexOf(etnToken) : -1;
+  const etnRoute = useMemo(() => {
+    if (etnIndex < 0) return null;
+    const enrolledEtn = data?.current?.[etnToken.symbol]?.domains ?? [];
+    const rows = chainSummary(events, { tokenIndex: etnIndex, nowMs, days: range.days, enrolledDomains: enrolledEtn });
+    return { rows, total: rows.reduce((s, r) => ({ inflow: s.inflow + r.inflow, outflow: s.outflow + r.outflow }), { inflow: 0, outflow: 0 }), bridgedOut: -netAllTime(events, { tokenIndex: etnIndex }) };
+  }, [events, etnIndex, etnToken, data, nowMs, range.days]);
+  const openEtn = (domain = null) => {
+    setTokenFilter(etnToken.symbol);
+    setChainFilter(domain);
+  };
+
   const scopeLabel = `${scopeName}${activeChain === null ? "" : ` via ${chainName(activeChain)}`}`;
   const hasData = data && events.length > 0;
   const chainNote = activeChain === null ? "across all chains" : `via ${chainName(activeChain)}`;
@@ -204,6 +219,51 @@ export default function HyperlaneBridgeTab() {
               />
             )}
           </div>
+
+          {tokenFilter === null && etnRoute && (
+            <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
+              <CornerBrackets color={green} />
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: "4px 12px", marginBottom: 4 }}>
+                <div style={{ ...sectionLabel, display: "flex", alignItems: "center", gap: 6 }}>
+                  <TokenLogo address="native" label="ETN" size={14} spacing={0} /> ETN Route — Last {range.long}
+                </div>
+                <div style={{ fontSize: 11, color: mutedLight }}>
+                  Bridged out now: <span style={{ color: "#fff", fontWeight: 800 }}>{formatAmount(etnRoute.bridgedOut, "ETN")}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: mutedLight, marginBottom: 10 }}>
+                Native ETN bridged to other chains (locked here, minted there) — in ETN, not counted in the USD figures above. Tap a chain for its chart.
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 320 }}>
+                  <thead>
+                    <tr style={{ color: muted, textAlign: "right", fontFamily: monoFont, textTransform: "uppercase", letterSpacing: 0.6 }}>
+                      <th style={{ textAlign: "left", fontWeight: 700, padding: "4px 0", fontSize: 10 }}>Chain</th>
+                      <th style={{ fontWeight: 700, fontSize: 10 }}>In</th>
+                      <th style={{ fontWeight: 700, fontSize: 10 }}>Out</th>
+                      <th style={{ fontWeight: 700, fontSize: 10 }}>Net</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {etnRoute.rows.map((c) => (
+                      <tr key={c.domain} onClick={() => openEtn(c.domain)} style={{ borderTop: `1px solid ${border}`, cursor: "pointer", textAlign: "right" }}>
+                        <td style={{ textAlign: "left", padding: "9px 0", color: "#fff", fontWeight: 700 }}>{c.name}</td>
+                        <td style={{ color: mutedLight }}>{formatAmount(c.inflow, "ETN")}</td>
+                        <td style={{ color: mutedLight }}>{formatAmount(c.outflow, "ETN")}</td>
+                        <td style={{ color: netColor(c.net), fontWeight: 800 }}>{c.count ? signedAmount(c.net, "ETN") : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                onClick={() => openEtn()}
+                style={{ marginTop: 10, background: "transparent", border: `1px solid ${border}`, color: green, borderRadius: 6, padding: "6px 12px", fontFamily: monoFont, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, cursor: "pointer" }}
+              >
+                View ETN route details →
+              </button>
+            </div>
+          )}
 
           <div style={{ position: "relative", padding: 16, borderRadius: 4, background: panel2, border: `1px solid ${border}`, marginBottom: 16 }}>
             <CornerBrackets color={green} />
