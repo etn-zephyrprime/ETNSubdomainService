@@ -28,6 +28,7 @@ import { valueInventoryAtTimestamp } from "./pnlEventBuilder.js";
 import { buildEventsForWallet } from "./pnlSnapshotService.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { setBounded, registerCache } from "../utils/boundedMap.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 // Short-lived cache, same shape/reasoning as pnlSnapshotService.js's own snapshotCache — a member
 // toggling the token filter (or a component re-rendering) shouldn't repeat this same replay within
@@ -56,7 +57,12 @@ function tokenHistoryCacheKey(trackedWallet, selfOwnedAddresses, tokenKey, windo
  * (nothing stored to just query a floor date from), that's derived from the earliest event this
  * wallet actually has, not an arbitrary large constant.
  */
-export async function computeTokenPnlHistory(trackedWallet, selfOwnedAddresses = [], tokenAddress, windowDays = 365) {
+/** computeTokenPnlHistory, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function computeTokenPnlHistory(...args) {
+  return runHeavy("computeTokenPnlHistory", () => computeTokenPnlHistoryUnlimited(...args));
+}
+
+async function computeTokenPnlHistoryUnlimited(trackedWallet, selfOwnedAddresses = [], tokenAddress, windowDays = 365) {
   const tokenKey = tokenAddress.toLowerCase();
   const key = tokenHistoryCacheKey(trackedWallet, selfOwnedAddresses, tokenKey, windowDays);
   const ingestionState = await getIngestionState(trackedWallet).catch(() => null);

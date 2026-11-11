@@ -32,6 +32,7 @@ import { buildEventsForWallet } from "./pnlSnapshotService.js";
 import { probeV2Pool } from "./lpPositionValuation.js";
 import { POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { upsertPnlCategorySnapshot, getExistingCategorySnapshotDates } from "../db/pnlCategorySnapshots.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 export const CATEGORIES = { LIQUIDITY: "liquidity", FARM_STAKING: "farm_staking" };
 
@@ -98,7 +99,12 @@ async function valueCategoryAtCheckpoint(lots, realizedPnlUsd, tokenKeys, timest
  * backfillPnlHistory's own comment for why this matters (confirmed contributor to an out-of-memory
  * crash generating the Core Tier demo snapshot).
  */
-export async function backfillCategoryPnlHistory(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
+/** backfillCategoryPnlHistory, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function backfillCategoryPnlHistory(...args) {
+  return runHeavy("backfillCategoryPnlHistory", () => backfillCategoryPnlHistoryUnlimited(...args));
+}
+
+async function backfillCategoryPnlHistoryUnlimited(ownerWallet, trackedWallet, selfOwnedAddresses = [], windowDays = 365, precomputed = null) {
   const todayUtc = new Date();
   todayUtc.setUTCHours(0, 0, 0, 0);
 

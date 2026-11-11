@@ -27,6 +27,7 @@ import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
 import { buildNftEvents, convertRealizedEventsToEtn } from "./pnlEventBuilder.js";
 import { registerCache } from "../utils/boundedMap.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 function parseNftKey(compositeKey) {
   const idx = compositeKey.lastIndexOf(":");
@@ -233,7 +234,12 @@ export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresse
   return snapshot;
 }
 
-async function buildLiveNftPnlSnapshot(trackedWallet) {
+/** buildLiveNftPnlSnapshot, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+function buildLiveNftPnlSnapshot(...args) {
+  return runHeavy("buildLiveNftPnlSnapshot", () => buildLiveNftPnlSnapshotUnlimited(...args));
+}
+
+async function buildLiveNftPnlSnapshotUnlimited(trackedWallet) {
   const now = new Date();
   const transfers = await getAllTransfersBefore(trackedWallet, now);
   const { events, unmatchedCount } = buildNftEvents(transfers);

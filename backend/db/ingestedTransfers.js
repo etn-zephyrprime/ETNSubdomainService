@@ -163,7 +163,17 @@ const MEMO_TTL_MS = 20000;
 const MEMO_MAX_ENTRIES = 12; // small — each entry holds a wallet's FULL raw transfer history, not a compact summary
 const transfersMemo = registerCache("transfersMemo", new Map()); // trackedWallet (lowercase) -> { rows, beforeTsMs, fetchedAtMs }
 
+// An entry is only ever served within MEMO_TTL_MS, so once older it's dead weight — and it holds a wallet's
+// FULL history. They used to stay until 12 newer wallets pushed them out, so after the 13:00 snapshot job
+// twelve full histories sat in the heap all day (part of the 2026-11-11 heap OOM; see utils/heavyWork.js).
+// Now expired entries go on every read/write and on a background sweep.
+function sweepTransfersMemo(now = Date.now()) {
+  for (const [wallet, entry] of transfersMemo) if (now - entry.fetchedAtMs >= MEMO_TTL_MS) transfersMemo.delete(wallet);
+}
+setInterval(sweepTransfersMemo, MEMO_TTL_MS).unref?.();
+
 function rememberTransfers(trackedWallet, beforeTsMs, rows) {
+  sweepTransfersMemo();
   transfersMemo.delete(trackedWallet); // re-insert so Map order is recency order
   transfersMemo.set(trackedWallet, { rows, beforeTsMs, fetchedAtMs: Date.now() });
   while (transfersMemo.size > MEMO_MAX_ENTRIES) transfersMemo.delete(transfersMemo.keys().next().value);

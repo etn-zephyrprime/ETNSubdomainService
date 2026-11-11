@@ -34,6 +34,7 @@ import { getPricePointsRange } from "../db/pricePoints.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { registerCache } from "../utils/boundedMap.js";
+import { runHeavy } from "../utils/heavyWork.js";
 
 const WETN = "0x138dafbda0ccb3d8e39c19edb0510fc31b7c1c77";
 const Q96 = 2n ** 96n;
@@ -204,7 +205,12 @@ const compositionCache = registerCache("lpComposition", new Map()); // wallet|in
 const CACHE_MAX = 24;
 
 /** Every LP/farm position the wallet has held in the last year, with its daily token amounts. */
-export async function computeLpCompositionHistory(trackedWallet, selfOwnedAddresses = []) {
+/** computeLpCompositionHistory, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
+export function computeLpCompositionHistory(...args) {
+  return runHeavy("computeLpCompositionHistory", () => computeLpCompositionHistoryUnlimited(...args));
+}
+
+async function computeLpCompositionHistoryUnlimited(trackedWallet, selfOwnedAddresses = []) {
   const state = await getIngestionState(trackedWallet).catch(() => null);
   const today = dayKey(Date.now());
   const cacheKey = `${trackedWallet.toLowerCase()}|${[...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",")}|${state?.updated_at ? new Date(state.updated_at).getTime() : "none"}|${today}`;

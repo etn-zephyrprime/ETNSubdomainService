@@ -7,6 +7,7 @@
 // hours before a crash. Above HIGH_WATER of the heap limit it logs every minute instead.
 import v8 from "v8";
 import { cacheSizes } from "./boundedMap.js";
+import { heavyWorkStats } from "./heavyWork.js";
 
 const INTERVAL_MS = process.env.MEMORY_LOG_INTERVAL_MS ? parseInt(process.env.MEMORY_LOG_INTERVAL_MS, 10) : 10 * 60 * 1000;
 const HIGH_WATER_INTERVAL_MS = 60 * 1000;
@@ -21,10 +22,11 @@ function logMemory() {
   const caches = Object.entries(cacheSizes())
     .map(([name, size]) => `${name}=${size}`)
     .join(" ");
+  const hw = heavyWorkStats(); // the memory-heavy work gate (heavyWork.js): running / waiting now, peak waiting since the last line
   const prefix = ratio >= HIGH_WATER ? "⚠️  [mem] HIGH" : "[mem]";
   console.log(
     `${prefix} uptime=${Math.round(process.uptime() / 60)}m rss=${mb(m.rss)}MB heap=${mb(m.heapUsed)}/${mb(limit)}MB (${Math.round(ratio * 100)}%) ` +
-      `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB | ${caches}`
+      `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB heavy=${hw.running}+${hw.waiting}q(peak ${hw.peakWaiting}) | ${caches}`
   );
   if (ratio >= HIGH_WATER) {
     const spaces = v8
