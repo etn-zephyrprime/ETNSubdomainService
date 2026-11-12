@@ -18,7 +18,7 @@ import crypto from "crypto";
 import { normaliseInput } from "./normaliseInput.js";
 import { matchApp } from "./matchApp.js";
 import { getKnownApps, findAppsByName, primaryHost } from "./registry.js";
-import { checkApp } from "./appCheck.js";
+import { checkApp, badgeContractsOf } from "./appCheck.js";
 import { computeOverall } from "./appResult.js";
 import { pageScripts } from "./extractAddresses.js";
 import { safeFetchText } from "./safeFetch.js";
@@ -35,7 +35,8 @@ const sha = (v) => crypto.createHash("sha256").update(JSON.stringify(v)).digest(
 /** What invalidates a cached result when the registry changes: the matched app's hosts and registry contracts. */
 // Bumped when a fix changes what a stored result would say, so every cached result is rebuilt once.
 // 2: scan-sourced registry rows no longer count as an app's own contracts (false "uses contracts belonging to").
-const RESULT_VERSION = 2;
+// 3: a listed app with no listed contracts is badged from its scan, never a free green.
+const RESULT_VERSION = 3;
 
 export const registryHashOf = (match) =>
   match.app
@@ -52,8 +53,8 @@ function refreshedRow(row, facts) {
 
 /** The badge again, after some contracts changed (same rules as assembleResult). */
 function rebadge(result, match) {
-  const badgeContracts = match.status === "known" ? result.contracts.filter((c) => c.source === "registry") : result.contracts;
-  const { overall, overallReason } = computeOverall({ status: match.status, app: match.app, resembles: match.resembles, contracts: badgeContracts, domainFlags: result.flags || result.domain?.flags || [], scan: result.scan });
+  const { contracts: badgeContracts, fromScan } = badgeContractsOf(match, result.contracts, result.scan);
+  const { overall, overallReason } = computeOverall({ status: match.status, app: match.app, resembles: match.resembles, contracts: badgeContracts, domainFlags: result.flags || result.domain?.flags || [], scan: result.scan, fromScan });
   result.overall = overall;
   result.overallReason = overallReason;
   result.fingerprint = sha([result.status, result.app?.slug || null, result.contracts.map((c) => [c.address, c.overall]), (result.flags || []).map((f) => f.id)]);

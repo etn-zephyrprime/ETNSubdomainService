@@ -228,6 +228,11 @@ test("a known app is its worst contract; being listed never hides a flag", () =>
   assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "green" }, { overall: "red" }] }).overall, "red");
   assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "amber" }] }).overall, "amber");
   assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "green" }], domainFlags: [{ severity: "caution" }] }).overall, "amber");
+  // no listed contracts: badged from the scan, never a free green for being listed
+  assert.equal(computeOverall({ status: "known", app, contracts: [], fromScan: true }).overall, "unassessed");
+  assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "red" }], scan: { status: "ok" }, fromScan: true }).overall, "red");
+  assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "green" }], scan: { status: "partial" }, fromScan: true }).overall, "unassessed");
+  assert.equal(computeOverall({ status: "known", app, contracts: [], scan: { status: "ok" }, fromScan: true }).overall, "green");
   // a contract we couldn't check is missing data: not green, not a flag
   assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "green" }, { overall: "unknown" }] }).overall, "unassessed");
 });

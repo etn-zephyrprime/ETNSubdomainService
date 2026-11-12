@@ -33,7 +33,7 @@ for (const app of apps) {
     continue;
   }
   console.log(`${apply ? "upsert" : "would upsert"}  ${app.slug.padEnd(24)} ${String(app.contracts.length).padStart(2)} contract(s)  ${hosts}`);
-  if (apply) await upsertKnownApp(app);
+  if (apply) await upsertKnownApp({ ...app, source: "seed" });
 }
 console.log(`\n${apps.length} app(s)${apply ? " written" : " — dry run, add --apply to write"}`);
 process.exit(0);

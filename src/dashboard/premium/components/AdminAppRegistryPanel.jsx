@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Database, Plus, Trash2, Pencil, X } from "lucide-react";
+import { Database, Plus, Trash2, Pencil, X, RefreshCw } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import { PNL_BACKEND_URL } from "../../../config.js";
 import { green, orange, muted, mutedLight, border, panel, monoFont, error as errorColor } from "../../theme.js";
@@ -14,7 +14,7 @@ const base = `${PNL_BACKEND_URL}/api/admin/app-registry`;
 const input = { background: "#0b0b0b", border: `1px solid ${border}`, borderRadius: 6, color: "#fff", padding: "8px 10px", fontSize: 13, minWidth: 0, boxSizing: "border-box" };
 const smallBtn = (color = mutedLight) => ({ display: "inline-flex", alignItems: "center", gap: 4, background: "transparent", border: `1px solid ${border}`, color, borderRadius: 6, padding: "6px 10px", fontFamily: monoFont, fontWeight: 800, fontSize: 11, textTransform: "uppercase", cursor: "pointer" });
 const label = { fontFamily: monoFont, fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: mutedLight, margin: "12px 0 6px" };
-const emptyApp = () => ({ name: "", category: "dapp", verifiedByUs: false, notes: "", hosts: [{ host: "", registrableDomain: true, primary: true }], contracts: [] });
+const emptyApp = () => ({ name: "", category: "dapp", verifiedByUs: false, autoRescan: true, notes: "", hosts: [{ host: "", registrableDomain: true, primary: true }], contracts: [] });
 
 function Editor({ initial, categories, onSave, onCancel, busy }) {
   const [app, setApp] = useState(initial);
@@ -36,6 +36,10 @@ function Editor({ initial, categories, onSave, onCancel, busy }) {
       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: mutedLight, marginTop: 8 }}>
         <input type="checkbox" checked={app.verifiedByUs} onChange={(e) => set({ verifiedByUs: e.target.checked })} /> Our own app (verified by us)
       </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: mutedLight, marginTop: 4 }}>
+        <input type="checkbox" checked={app.autoRescan !== false} onChange={(e) => set({ autoRescan: e.target.checked })} /> Rescan its site automatically (every 6h)
+      </label>
+      {app.source === "explorer" && <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>Synced from the block explorer's Apps list. Saving here makes it yours — the daily sync won't change or remove it after that.</div>}
 
       <div style={label}>Websites</div>
       {app.hosts.map((h, i) => (
@@ -150,6 +154,20 @@ export default function AdminAppRegistryPanel({ wallet, getAuthParams }) {
       setBusy(false);
     }
   };
+  const syncExplorer = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await call("POST", "/sync-explorer", {});
+      setApps(data.apps);
+      const parts = [data.added.length && `added ${data.added.join(", ")}`, data.updated.length && `updated ${data.updated.join(", ")}`, data.removed.length && `removed ${data.removed.join(", ")}`].filter(Boolean);
+      setNotice(parts.length ? `Explorer sync: ${parts.join("; ")}.` : "Explorer sync: nothing new.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const remove = async (slug) => {
     setBusy(true);
     setError(null);
@@ -170,7 +188,9 @@ export default function AdminAppRegistryPanel({ wallet, getAuthParams }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: monoFont, fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: orange }}>
         <Database size={15} /> App registry (admin)
       </div>
-      <div style={{ fontSize: 12, color: mutedLight, margin: "6px 0 10px", lineHeight: 1.5 }}>The apps App Check knows: a listed site gets "Listed site for …", and sites that imitate it are flagged as lookalikes. Changes apply immediately.</div>
+      <div style={{ fontSize: 12, color: mutedLight, margin: "6px 0 10px", lineHeight: 1.5 }}>
+        The apps App Check knows: a listed site gets "Listed site for …", and sites that imitate it are flagged as lookalikes. Changes apply immediately. Apps on the Electroneum block explorer's Apps page are added automatically every day ("from explorer").
+      </div>
       {!apps && (
         <button type="button" onClick={load} style={smallBtn(orange)}>
           Load registry
@@ -189,6 +209,8 @@ export default function AdminAppRegistryPanel({ wallet, getAuthParams }) {
                   <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>
                       {a.name} <span style={{ fontFamily: monoFont, fontSize: 10, color: muted }}>{a.category}</span>
+                      {a.source === "explorer" && <span style={{ fontFamily: monoFont, fontSize: 10, color: orange, marginLeft: 6 }}>from explorer</span>}
+                      {a.autoRescan === false && <span style={{ fontFamily: monoFont, fontSize: 10, color: muted, marginLeft: 6 }}>scanned on demand</span>}
                     </div>
                     <div style={{ fontFamily: monoFont, fontSize: 11, color: muted, overflowWrap: "anywhere" }}>
                       {a.hosts.map((h) => `${h.host}${h.registrableDomain ? " (+subdomains)" : ""}`).join(" · ")} · {a.contracts.length} listed contract{a.contracts.length === 1 ? "" : "s"}
@@ -219,9 +241,14 @@ export default function AdminAppRegistryPanel({ wallet, getAuthParams }) {
           {editing === "new" ? (
             <Editor initial={emptyApp()} categories={categories} busy={busy} onSave={(app) => save(app, null)} onCancel={() => setEditing(null)} />
           ) : (
-            <button type="button" onClick={() => (setEditing("new"), setNotice(null))} style={{ ...smallBtn(orange), marginTop: 10 }}>
-              <Plus size={12} /> Add an app
-            </button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+              <button type="button" onClick={() => (setEditing("new"), setNotice(null))} style={smallBtn(orange)}>
+                <Plus size={12} /> Add an app
+              </button>
+              <button type="button" disabled={busy} onClick={syncExplorer} style={smallBtn()} title="Pull the Electroneum block explorer's Apps list now (it also syncs daily)">
+                <RefreshCw size={12} /> {busy ? "Syncing…" : "Sync from explorer"}
+              </button>
+            </div>
           )}
         </>
       )}

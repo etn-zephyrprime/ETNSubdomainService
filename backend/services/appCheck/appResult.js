@@ -4,6 +4,8 @@
 //   known     -> the worst of its contracts' own Contract Check badges (whatever caps those already apply)
 //                and its domain flags. Being listed never hides or lowers a flag. A contract we couldn't
 //                check keeps a clean known app at "unassessed" — missing data is never green and never a flag.
+//                An app with NO listed contracts takes the contracts found by scanning its site instead
+//                ("unassessed" until it's scanned) — being listed alone is never a green.
 //   unknown   -> the worst of the scanned contracts and the domain flags, but NEVER green: a clean result
 //                is "unassessed" (we can't confirm who runs the site).
 //   invalid   -> no badge.
@@ -33,8 +35,9 @@ export function worstColour(contracts, flags) {
  * @param r.contracts [{ overall: "red" | "amber" | "green" | "unknown" }]
  * @param r.domainFlags [{ severity }]
  * @param r.scan null (not scanned) or { status: "ok" | "partial" | "failed" }
+ * @param r.fromScan (known) the app has no listed contracts, so `contracts` are the ones its scan found
  */
-export function computeOverall({ status, app = null, resembles = null, contracts = [], domainFlags = [], scan = null }) {
+export function computeOverall({ status, app = null, resembles = null, contracts = [], domainFlags = [], scan = null, fromScan = false }) {
   if (status === "invalid") return { overall: null, overallReason: "That isn't a website address we can check." };
   if (status === "lookalike") {
     return { overall: "red", overallReason: `This site resembles ${resembles} (${app.name}) but isn't a listed site for it. Don't connect your wallet or sign anything here.` };
@@ -60,7 +63,14 @@ export function computeOverall({ status, app = null, resembles = null, contracts
   if (status === "known") {
     if (worst !== "green") return { overall: worst, overallReason: `Listed site for ${app.name}, but we found ${flagged()}. Being listed doesn't remove a flag — see the details.` };
     if (unchecked) return { overall: "unassessed", overallReason: `Listed site for ${app.name}. We couldn't check ${unchecked} of its ${contracts.length} contracts right now, so we can't give it a badge yet.` };
-    if (!contracts.length) return { overall: "green", overallReason: `Listed site for ${app.name}. It has no contracts in our registry to check.` };
+    if (fromScan) {
+      // no contracts listed for it: the badge is the contracts found in its own site's code — never a free
+      // green for being listed
+      if (!scan) return { overall: "unassessed", overallReason: `Listed site for ${app.name}. We don't list its contracts and haven't scanned the site yet — scan it to check the contracts it uses.` };
+      if (scan.status !== "ok") return { overall: "unassessed", overallReason: `Listed site for ${app.name}. We couldn't scan all of its site, so we can't give it a badge yet.` };
+      if (!contracts.length) return { overall: "green", overallReason: `Listed site for ${app.name}. No contracts found in its site's code (it may load addresses dynamically, or not use contracts).` };
+      return { overall: "green", overallReason: `Listed site for ${app.name}. No red flags in the ${plural(contracts.length, "contract")} found in its site's code.` };
+    }
     return { overall: "green", overallReason: `Listed site for ${app.name}. No red flags in its ${plural(contracts.length, "listed contract")}.` };
   }
 
