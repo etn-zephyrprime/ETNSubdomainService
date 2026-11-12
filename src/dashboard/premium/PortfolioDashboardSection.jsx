@@ -21,6 +21,7 @@ import CoreTierContracts from "./components/CoreTierContracts.jsx";
 import { ContractCardProvider } from "./components/ContractCard.jsx";
 import { ETN_BOT_VIEWERS } from "../hooks/useEtnBot.js";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
+import AdminAppRegistryPanel from "./components/AdminAppRegistryPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
 // The panels below used to all render stacked, each collapsed-by-default behind its own +/-
@@ -324,6 +325,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
           already covers that case above). */}
       {hasAccess && !showMembershipAtTop && membershipPanel}
       <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
+      <AdminAppRegistryPanel wallet={wallet} getAuthParams={getAuthParams} />
     </div>
     </ContractCardProvider>
   );

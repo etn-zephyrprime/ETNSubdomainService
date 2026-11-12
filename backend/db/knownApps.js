@@ -60,3 +60,9 @@ export async function upsertKnownApp({ slug, name, category, verifiedByUs = fals
   }
   return appId;
 }
+
+/** Removes an app and its hosts and contracts (stored scans and change events keep their history). */
+export async function deleteKnownApp(slug) {
+  const res = await query(`DELETE FROM known_apps WHERE slug = $1 RETURNING id`, [slug]);
+  return Boolean(res?.rows?.length);
+}
