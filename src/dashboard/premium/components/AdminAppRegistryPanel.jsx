@@ -76,6 +76,13 @@ function Editor({ initial, categories, onSave, onCancel, busy }) {
       </button>
       <div style={{ fontSize: 11, color: muted, marginTop: 6 }}>A listed app's badge comes from these contracts. With none listed it shows green (no contracts to check), so add them when you know them.</div>
 
+      <div style={label}>Scanning (optional)</div>
+      <input value={app.scanUrl || ""} onChange={(e) => set({ scanUrl: e.target.value })} placeholder="Page to scan, e.g. https://rarible.com/electroneum (default: the main site)" aria-label="Page to scan" style={{ ...input, width: "100%" }} />
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: mutedLight, marginTop: 6 }}>
+        <input type="checkbox" checked={app.scanScripts !== false} onChange={(e) => set({ scanScripts: e.target.checked })} /> Also scan the script files the page loads
+      </label>
+      <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>Untick for a multi-chain app whose code is the same on every chain: only the page itself is read. Only contracts deployed on Electroneum count either way.</div>
+
       <div style={label}>Notes</div>
       <input value={app.notes || ""} onChange={(e) => set({ notes: e.target.value })} placeholder="Where these facts came from" aria-label="Notes" style={{ ...input, width: "100%" }} />
 
@@ -211,6 +218,7 @@ export default function AdminAppRegistryPanel({ wallet, getAuthParams }) {
                       {a.name} <span style={{ fontFamily: monoFont, fontSize: 10, color: muted }}>{a.category}</span>
                       {a.source === "explorer" && <span style={{ fontFamily: monoFont, fontSize: 10, color: orange, marginLeft: 6 }}>from explorer</span>}
                       {a.autoRescan === false && <span style={{ fontFamily: monoFont, fontSize: 10, color: muted, marginLeft: 6 }}>scanned on demand</span>}
+                      {a.scanUrl && <span style={{ fontFamily: monoFont, fontSize: 10, color: muted, marginLeft: 6 }}>scans {a.scanUrl.replace(/^https?:\/\//, "")}{a.scanScripts === false ? " (page only)" : ""}</span>}
                     </div>
                     <div style={{ fontFamily: monoFont, fontSize: 11, color: muted, overflowWrap: "anywhere" }}>
                       {a.hosts.map((h) => `${h.host}${h.registrableDomain ? " (+subdomains)" : ""}`).join(" · ")} · {a.contracts.length} listed contract{a.contracts.length === 1 ? "" : "s"}

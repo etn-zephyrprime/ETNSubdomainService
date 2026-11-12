@@ -52,6 +52,8 @@ export async function contractRow(c, analyse) {
 export const scanSummary = (s) => ({
   status: s.status,
   scannedAt: s.scannedAt,
+  url: s.url,
+  pageOnly: !!s.pageOnly,
   addressCount: Object.keys(s.addresses).length,
   scriptCount: Object.keys(s.scriptHashes).length,
   requests: s.requests,
@@ -138,7 +140,18 @@ export async function checkApp(input, { core = false, scan: doScan = false, anal
   // the site scan ("Scan this site", or the rescan job): its contracts join the list
   let scan = null;
   if (doScan) {
-    scan = await runScan(n, match, registry, { fetchText, analyse, getCode, now });
+    // a registry app can name the page to scan (and whether to fetch its scripts) — used when its site root
+    // is checked; a specific page someone enters is scanned as entered
+    const app = match.status === "known" ? match.app : null;
+    const atRoot = (() => {
+      try {
+        return new URL(n.url).pathname === "/";
+      } catch {
+        return true;
+      }
+    })();
+    const target = app?.scanUrl && atRoot ? { ...n, url: app.scanUrl } : n;
+    scan = await runScan(target, match, registry, { fetchText, analyse, getCode, now, scripts: app ? app.scanScripts !== false : true });
     onScan?.(scan);
   }
   return assembleResult({ base, match, domain, contracts, scan });

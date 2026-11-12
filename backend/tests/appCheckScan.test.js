@@ -468,3 +468,39 @@ test("only listed registry contracts count as an app's own: a scan-found library
   assert.equal(row.label, null);
   assert.deepEqual(row.apps, []);
 });
+
+test("a registry app can scan one page only: its own source, none of the script files it loads", async () => {
+  const PAGE = "https://rarible.com/electroneum";
+  const pages = {
+    [PAGE]: { body: `<html><script src="/assets/bundle.js"></script><script>const etn="${ROUTER}"</script></html>` },
+    "https://rarible.com/assets/bundle.js": { body: `const other="${OTHER}"` },
+    "https://rarible.com/": { body: `<html>home</html>` },
+  };
+  const { fetchText, fetched } = fixtureSite(pages);
+  const apps = APPS.map((a) => (a.slug === "electroswap" ? a : a));
+  const rarible = { id: 77, slug: "rarible", name: "Rarible", category: "nft-marketplace", source: "seed", hosts: [{ host: "rarible.com", registrableDomain: true, primary: true }], contracts: [], scanUrl: PAGE, scanScripts: false };
+  const r = await checkApp("https://rarible.com/", {
+    core: true,
+    scan: true,
+    apps: [...apps, rarible],
+    fetchText,
+    getCode: codeOf(),
+    analyse: analyseStub(),
+    fetchImpl: async () => {
+      throw new Error("offline");
+    },
+  });
+  assert.deepEqual(fetched, [PAGE]); // the Electroneum page only — not the home page, not the bundle
+  assert.equal(r.scan.pageOnly, true);
+  assert.equal(r.scan.url, PAGE);
+  assert.deepEqual(r.contracts.map((c) => c.address), [ROUTER]);
+});
+
+test("the page to scan must be on the app's own websites", async () => {
+  const { validateAppInput } = await import("../services/appCheck/registryAdmin.js");
+  const base = { name: "Rarible", hosts: [{ host: "rarible.com", registrableDomain: true }] };
+  assert.equal(validateAppInput({ ...base, scanUrl: "rarible.com/electroneum", scanScripts: false }).app.scanUrl, "https://rarible.com/electroneum");
+  assert.equal(validateAppInput({ ...base, scanUrl: "https://og.rarible.com/x" }).ok, true); // a subdomain of a "+ subdomains" host
+  assert.match(validateAppInput({ ...base, scanUrl: "https://evil.com/rarible" }).errors.join(), /must be on one of this app's websites/);
+  assert.match(validateAppInput({ ...base, scanUrl: "https://rarible.com:8443/x" }).errors.join(), /must be on one of this app's websites/);
+});

@@ -76,7 +76,7 @@ export async function recordScan(n, match, scan, { store = db } = {}) {
   return events;
 }
 
-const scanMeta = (scan, now) => ({ htmlHash: scan.htmlHash, etag: scan.etag, lastModified: scan.lastModified, scriptUrls: scan.scriptUrls, scannedAt: scan.scannedAt, frontendCheckedAt: new Date(now).toISOString() });
+const scanMeta = (scan, now) => ({ url: scan.url, htmlHash: scan.htmlHash, etag: scan.etag, lastModified: scan.lastModified, scriptUrls: scan.scriptUrls, scannedAt: scan.scannedAt, frontendCheckedAt: new Date(now).toISOString() });
 
 async function withChanges(result, n, match, store) {
   result.changes = await store.recentAppChangeEvents({ origin: n.origin, appId: appIdOf(match), limit: CACHE.changesShown }).catch(() => []);
@@ -109,7 +109,8 @@ async function revalidated(cached, input, n, match, registry, { deps, now }) {
     didCheck = true;
     let changed = false;
     try {
-      const r = await deps.fetchText(n.url, { kind: "html", conditional: { etag: meta.scan.etag, lastModified: meta.scan.lastModified } });
+      // the page the scan read (a registry app may scan a specific page, e.g. Rarible's Electroneum page)
+      const r = await deps.fetchText(meta.scan.url || n.url, { kind: "html", conditional: { etag: meta.scan.etag, lastModified: meta.scan.lastModified } });
       if (r.status === 304) changed = false;
       else if (r.status === 200 && r.body != null) {
         const sameHtml = r.sha256 === meta.scan.htmlHash;

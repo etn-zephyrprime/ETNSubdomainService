@@ -61,9 +61,9 @@ export function registryIndex(apps) {
  * Scans one site. `n` = normaliseInput result; `match` = matchApp result.
  * Injectables for tests: fetchText, analyse, getCode, now.
  */
-export async function scanSite(n, match, apps, { fetchText = safeFetchText, analyse = analyseContract, getCode = (a) => contractCheckProvider().getCode(a), now = Date.now(), limits = SCAN } = {}) {
+export async function scanSite(n, match, apps, { fetchText = safeFetchText, analyse = analyseContract, getCode = (a) => contractCheckProvider().getCode(a), now = Date.now(), limits = SCAN, scripts = true } = {}) {
   const budget = createScanBudget({ maxRequests: limits.maxRequests, maxBytes: limits.maxBytes });
-  const scan = { status: "ok", scannedAt: new Date(now).toISOString(), url: n.url, htmlHash: null, etag: null, lastModified: null, scriptUrls: [], scriptHashes: {}, addresses: {}, requests: 0, bytes: 0, truncated: {}, errors: [], chunkMisses: 0, contracts: [], wallets: [], unchecked: [], flags: [] };
+  const scan = { status: "ok", scannedAt: new Date(now).toISOString(), url: n.url, pageOnly: !scripts, htmlHash: null, etag: null, lastModified: null, scriptUrls: [], scriptHashes: {}, addresses: {}, requests: 0, bytes: 0, truncated: {}, errors: [], chunkMisses: 0, contracts: [], wallets: [], unchecked: [], flags: [] };
   const finish = (status) => {
     scan.status = status;
     scan.requests = budget.requests;
@@ -95,10 +95,12 @@ export async function scanSite(n, match, apps, { fetchText = safeFetchText, anal
   const { scriptUrls, inline } = pageScripts(page.body, page.url);
   page = null; // let the page body go
   scan.scriptUrls = scriptUrls;
-  const queue = scriptUrls.map((url) => ({ url, depth: 0 }));
+  // page-only (a registry app set to scan just one page, e.g. an all-chains app's Electroneum page): its own
+  // source and inline scripts, none of the script files it loads
+  const queue = scripts ? scriptUrls.map((url) => ({ url, depth: 0 })) : [];
   for (const text of inline) {
     extractAddresses(text, found);
-    for (const url of chunkRefs(text, origin + "/", origin)) queue.push({ url, depth: 1 });
+    if (scripts) for (const url of chunkRefs(text, origin + "/", origin)) queue.push({ url, depth: 1 });
   }
   const seen = new Set();
   while (queue.length) {

@@ -6,7 +6,7 @@ import { query } from "./pool.js";
 /** Every app with its hosts and active contracts: [{ id, slug, name, category, verifiedByUs, notes, source, externalId, autoRescan, hosts, contracts }]. */
 export async function listKnownApps() {
   const [apps, hosts, contracts] = [
-    await query(`SELECT id, slug, name, category, verified_by_us, notes, source, external_id, auto_rescan FROM known_apps ORDER BY id`),
+    await query(`SELECT id, slug, name, category, verified_by_us, notes, source, external_id, auto_rescan, scan_url, scan_scripts FROM known_apps ORDER BY id`),
     await query(`SELECT app_id, host, is_registrable_domain, is_primary FROM known_app_hosts`),
     await query(`SELECT app_id, address, role, source FROM known_app_contracts WHERE status = 'active'`),
   ];
@@ -23,6 +23,8 @@ export async function listKnownApps() {
         source: r.source || "admin",
         externalId: r.external_id || null,
         autoRescan: r.auto_rescan !== false,
+        scanUrl: r.scan_url || null,
+        scanScripts: r.scan_scripts !== false,
         hosts: [],
         contracts: [],
       },
@@ -38,14 +40,15 @@ export async function listKnownApps() {
  * registry contracts (upserted; registry rows no longer in the seed are marked removed, never deleted).
  * Scan-sourced rows are left alone.
  */
-export async function upsertKnownApp({ slug, name, category, verifiedByUs = false, notes = null, hosts = [], contracts = [], source = "admin", externalId = null, autoRescan = true }) {
+export async function upsertKnownApp({ slug, name, category, verifiedByUs = false, notes = null, hosts = [], contracts = [], source = "admin", externalId = null, autoRescan = true, scanUrl = null, scanScripts = true }) {
   const res = await query(
-    `INSERT INTO known_apps (slug, name, category, verified_by_us, notes, source, external_id, auto_rescan) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO known_apps (slug, name, category, verified_by_us, notes, source, external_id, auto_rescan, scan_url, scan_scripts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, category = EXCLUDED.category,
        verified_by_us = EXCLUDED.verified_by_us, notes = EXCLUDED.notes, source = EXCLUDED.source,
-       external_id = COALESCE(EXCLUDED.external_id, known_apps.external_id), auto_rescan = EXCLUDED.auto_rescan, updated_at = now()
+       external_id = COALESCE(EXCLUDED.external_id, known_apps.external_id), auto_rescan = EXCLUDED.auto_rescan,
+       scan_url = EXCLUDED.scan_url, scan_scripts = EXCLUDED.scan_scripts, updated_at = now()
      RETURNING id`,
-    [slug, name, category, verifiedByUs, notes, source, externalId, autoRescan]
+    [slug, name, category, verifiedByUs, notes, source, externalId, autoRescan, scanUrl, scanScripts]
   );
   const appId = res.rows[0].id;
 

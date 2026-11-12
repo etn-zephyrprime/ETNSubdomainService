@@ -27,6 +27,8 @@ export function seedApps() {
     source: "seed",
     externalId: null,
     autoRescan: true,
+    scanUrl: a.scanUrl || null,
+    scanScripts: a.scanScripts !== false,
     hosts: a.hosts.map((h) => ({ host: h.host.toLowerCase(), registrableDomain: !!h.registrableDomain, primary: !!h.primary })),
     contracts: a.contracts.map((c) => ({ address: c.address.toLowerCase(), role: c.role || null, source: "registry" })),
   }));
