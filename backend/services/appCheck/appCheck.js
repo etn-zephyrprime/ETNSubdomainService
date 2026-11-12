@@ -11,11 +11,11 @@ import { normaliseInput } from "./normaliseInput.js";
 import { matchApp } from "./matchApp.js";
 import { getKnownApps, findAppsByName, primaryHost } from "./registry.js";
 import { getDomainSignals } from "./domainSignals.js";
-import { computeOverall } from "./appResult.js";
+import { computeOverall, listedAs } from "./appResult.js";
 import { analyseContract } from "../contractCheck/analyseContract.js";
 import { runScan } from "./scanSite.js";
 
-const appSummary = (app) => (app ? { slug: app.slug, name: app.name, category: app.category, primaryHost: primaryHost(app), verifiedByUs: app.verifiedByUs } : null);
+const appSummary = (app) => (app ? { slug: app.slug, name: app.name, category: app.category, primaryHost: primaryHost(app), verifiedByUs: app.verifiedByUs, source: app.source || null } : null);
 
 const normalisedView = (n) => ({
   url: n.url,
@@ -118,7 +118,7 @@ export async function checkApp(input, { core = false, scan: doScan = false, anal
       overallReason:
         overallReason ||
         (match.status === "known"
-          ? `Listed site for ${match.app.name}. Core Tier checks its contracts and domain.`
+          ? `${listedAs(match.app)}. Core Tier checks its contracts and domain.`
           : "Not in our registry, and it doesn't resemble a listed app. Core Tier checks its domain and scans the contracts it uses."),
     };
   }

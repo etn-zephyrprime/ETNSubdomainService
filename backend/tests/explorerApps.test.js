@@ -74,6 +74,16 @@ test("an empty or failed list changes nothing", async () => {
   assert.equal(writes, 0);
 });
 
+test("an explorer-listed app is never a free green, and isn't described as checked by us", async () => {
+  const { computeOverall } = await import("../services/appCheck/appResult.js");
+  const app = { name: "NinJars", source: "explorer" };
+  const unscanned = computeOverall({ status: "known", app, contracts: [], fromScan: true });
+  assert.equal(unscanned.overall, "unassessed");
+  assert.match(unscanned.overallReason, /^On the Electroneum block explorer's app list as NinJars/);
+  assert.equal(computeOverall({ status: "known", app, contracts: [{ overall: "red" }], scan: { status: "ok" }, fromScan: true }).overall, "red");
+  assert.doesNotMatch(unscanned.overallReason, /Listed site/);
+});
+
 test("lookalike targets only come from domains an app owns", () => {
   const radar = { ...explorerToApp(LIST[2]), id: 901 };
   const labels = lookalikeTargets([...SEED, radar]).map((t) => t.label);
