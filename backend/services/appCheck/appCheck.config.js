@@ -10,6 +10,10 @@ export const LOOKALIKE = {
   longMaxDistance: 2,
   // Labels shorter than this are never compared by distance or keywords (too many accidental matches).
   minLabelLength: 4,
+  // Typo (edit-distance) matching only for known labels at least this long: one letter away from a short
+  // name is mostly other real brands (ankr -> anker.com, ankh.com). Short names still get the homoglyph,
+  // mixed-script, other-ending, keyword and subdomain checks.
+  minTypoLabelLength: 6,
   // Words phishing domains bolt onto a real name: electroswap-claim.xyz, claimelectroswap.com, …
   keywords: [
     "claim", "claims", "airdrop", "airdrops", "official", "app", "apps", "dapp", "swap", "swaps", "wallet", "wallets",

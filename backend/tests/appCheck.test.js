@@ -140,6 +140,13 @@ test("ties go to the app owning the registrable domain", () => {
   assert.equal(match("electroneum-support.com").app.slug, "electroneum");
 });
 
+test("short known names don't produce typo lookalikes of other real brands", () => {
+  for (const h of ["anker.com", "ankh.com", "bank.com"]) assert.equal(match(h).status, "unknown", h);
+  assert.equal(match("ankr-airdrop.com").status, "lookalike"); // keyword stuffing still applies
+  assert.equal(match("ankr.io").status, "lookalike"); // and a different ending
+  assert.equal(match("rpc.ankr.com").status, "known");
+});
+
 test("clearly unrelated domains don't match", () => {
   for (const h of ["google.com", "uniswap.org", "electrum.org", "etn.com", "ens.domains", "electronic.com", "github.com", "wikipedia.org", "swap.com"]) {
     assert.equal(match(h).status, "unknown", h);
