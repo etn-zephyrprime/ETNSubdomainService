@@ -203,7 +203,6 @@ export default function AppCheckResult({ r, onOpenContract = null, actions = nul
           {actions}
         </div>
       )}
-      {r.status === "unknown" && <RegistryRequestLink style={{ marginTop: 12 }} />}
       {freeNote}
       <div style={{ fontSize: 11, color: muted, marginTop: 14, lineHeight: 1.5 }}>{APP_CHECK_FOOTER}</div>
     </div>
