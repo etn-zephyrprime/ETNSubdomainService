@@ -259,13 +259,17 @@ test("change severity: a proxy upgraded by a plain wallet is high", () => {
 });
 
 // ── rescan job ─────────────────────────────────────────────────────────────────────────────────────────
-test("due is measured from the last OK scan; a failed attempt waits an hour; a scan is claimed once", async () => {
+test("due: a failed attempt is retried after an hour; a partial one waits the normal interval; a scan is claimed once", async () => {
   const store = memoryStore();
   assert.equal(await isDue(SITE, 6 * HOUR, T0, store), true);
   store.s.scans.push({ id: 1, origin: SITE, scannedAt: new Date(T0 - 7 * HOUR).toISOString(), status: "ok", contracts: [] });
+  assert.equal(await isDue(SITE, 6 * HOUR, T0, store), true); // ok, 7h old
   store.s.scans.push({ id: 2, origin: SITE, scannedAt: new Date(T0 - 10 * 60 * 1000).toISOString(), status: "failed", contracts: [] });
   assert.equal(await isDue(SITE, 6 * HOUR, T0, store), false); // failed 10 min ago
-  assert.equal(await isDue(SITE, 6 * HOUR, T0 + HOUR, store), true); // the OK scan is still 7h+ old
+  assert.equal(await isDue(SITE, 6 * HOUR, T0 + HOUR, store), true); // retried after an hour
+  store.s.scans.push({ id: 3, origin: SITE, scannedAt: new Date(T0).toISOString(), status: "partial", contracts: [] });
+  assert.equal(await isDue(SITE, 6 * HOUR, T0 + 2 * HOUR, store), false); // partial: not hourly
+  assert.equal(await isDue(SITE, 6 * HOUR, T0 + 6 * HOUR, store), true);
   const state = memoryState();
   assert.equal(await claimScan(SITE, T0, state), true);
   assert.equal(await claimScan(SITE, T0 + 1000, state), false); // the other server

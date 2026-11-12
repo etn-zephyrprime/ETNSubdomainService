@@ -89,7 +89,7 @@ export const SCAN = {
   maxBytes: 15 * 1024 * 1024, // per scan, all responses together
   maxRequests: Number(process.env.APP_CHECK_MAX_REQUESTS) || 60, // per scan, redirects included (big apps load ~40 scripts)
   maxChunkDepth: 2, // scripts referenced from scripts, at most 2 levels below the page's own scripts
-  maxAddressesToCheck: 150, // eth_getCode reads per scan (sequential, small groups); more found -> partial
+  maxAddressesToCheck: Number(process.env.APP_CHECK_MAX_ADDRESSES) || 400, // eth_getCode reads per scan (one at a time); more found -> partial. Our dashboard writes ~360 (team / CEX / validator wallets, other-chain tokens)
   codeReadGroupSize: 5,
   maxContracts: 25, // analysed with Contract Check per scan (registry contracts first, then by occurrences). The
   // rest are still listed as contracts (the set stays complete), just not analysed — so this cap alone
