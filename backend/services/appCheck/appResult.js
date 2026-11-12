@@ -45,13 +45,16 @@ export function computeOverall({ status, app = null, resembles = null, contracts
   const red = checked.filter((c) => c.overall === "red").length;
   const amber = checked.filter((c) => c.overall === "amber").length;
   const worst = worstColour(checked, domainFlags);
-  const domainWorst = worstColour([], domainFlags);
+  // "flags" here = the domain's AND the scan's (assembleResult passes both); name them by what they are
+  const usesOthers = domainFlags.filter((f) => f.id === "uses_known_app_contracts" && FLAG_COLOUR[f.severity]);
+  const domainWorst = worstColour([], domainFlags.filter((f) => f.id !== "uses_known_app_contracts"));
   const flagged = () => {
     const parts = [];
     if (red) parts.push(`${plural(red, "contract")} with high-severity flags`);
     if (amber) parts.push(`${plural(amber, "contract")} with caution flags`);
+    if (usesOthers.length) parts.push(usesOthers.length === 1 ? "a listed app's contracts on a site that isn't listed for it" : "listed apps' contracts on a site that isn't listed for them");
     if (domainWorst !== "green") parts.push("domain warnings");
-    return parts.join(" and ");
+    return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join("");
   };
 
   if (status === "known") {
