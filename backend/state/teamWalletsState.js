@@ -49,7 +49,7 @@ export async function getTeamWalletsCache() {
 
 /** Publishes `{ wallets, movements, updatedAt }`. Short cache lifetime — balances/recent
  * movements are live-ish data, same as this backend's other R2 caches. */
-export async function setTeamWalletsCache({ wallets, movements }) {
+export async function setTeamWalletsCache({ wallets, movements, stale = [] }) {
   const r2 = getR2Client();
   if (!r2) return;
 
@@ -57,7 +57,7 @@ export async function setTeamWalletsCache({ wallets, movements }) {
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: CACHE_KEY,
-      Body: JSON.stringify({ wallets, movements, updatedAt: new Date().toISOString() }, null, 2),
+      Body: JSON.stringify({ wallets, movements, stale, updatedAt: new Date().toISOString() }, null, 2),
       ContentType: "application/json",
       CacheControl: "public, max-age=60",
     })
