@@ -455,3 +455,16 @@ test("the cooldown is per host: sibling sites on one domain can be scanned back 
   assert.equal(scan.status, "ok");
   await assert.rejects(runScan(a.n, a.match, APPS, opts("https://dashboard.planetzephyros.xyz/")), (e) => e.code === "cooldown");
 });
+
+test("only listed registry contracts count as an app's own: a scan-found library address never does", async () => {
+  // Core Ascension Vault's site code mentions a wallet-library address; the rescan records it as a 'scan' row
+  const LIB = "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789"; // ERC-4337 EntryPoint, in every Reown/viem bundle
+  const apps = APPS.map((a) => (a.slug === "core-ascension-vault" ? { ...a, contracts: [...a.contracts, { address: LIB, role: null, source: "scan" }] } : a));
+  const { n, match } = site("https://some-launchpad.example.com/");
+  const pages = { "https://some-launchpad.example.com/": { body: `<script>const ep="${LIB}"</script>` } };
+  const scan = await scanSite(n, match, apps, { fetchText: fixtureSite(pages).fetchText, getCode: codeOf(), analyse: analyseStub() });
+  assert.deepEqual(scan.flags.filter((f) => f.id === "uses_known_app_contracts"), []);
+  const row = scan.contracts.find((c) => c.address === LIB);
+  assert.equal(row.label, null);
+  assert.deepEqual(row.apps, []);
+});

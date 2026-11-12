@@ -41,10 +41,19 @@ export function _resetScanGate() {
   lastScanAt.clear();
 }
 
-/** The contracts in the registry: address -> [{ app, role }]. */
-function registryIndex(apps) {
+/**
+ * The contracts the registry says an app OWNS: address -> [{ app, role }]. Only listed ('registry') rows —
+ * never 'scan' rows: those are whatever a registry app's code mentions, which includes every wallet library's
+ * built-in addresses (Reown/WalletConnect, viem), so they'd make any site "use contracts belonging to" that app.
+ */
+export function registryIndex(apps) {
   const idx = new Map();
-  for (const app of apps) for (const c of app.contracts) idx.set(c.address, [...(idx.get(c.address) || []), { app, role: c.role }]);
+  for (const app of apps) {
+    for (const c of app.contracts) {
+      if (c.source && c.source !== "registry") continue;
+      idx.set(c.address, [...(idx.get(c.address) || []), { app, role: c.role }]);
+    }
+  }
   return idx;
 }
 

@@ -33,10 +33,14 @@ const DEFAULT_DEPS = { store: db, analyse: analyseContract, fingerprint: (a) => 
 const sha = (v) => crypto.createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 32);
 
 /** What invalidates a cached result when the registry changes: the matched app's hosts and registry contracts. */
+// Bumped when a fix changes what a stored result would say, so every cached result is rebuilt once.
+// 2: scan-sourced registry rows no longer count as an app's own contracts (false "uses contracts belonging to").
+const RESULT_VERSION = 2;
+
 export const registryHashOf = (match) =>
   match.app
-    ? sha([match.status, match.app.slug, hostsKey(match.app), match.app.contracts.filter((c) => c.source === "registry").map((c) => c.address).sort()])
-    : `none:${match.status}`;
+    ? sha([RESULT_VERSION, match.status, match.app.slug, hostsKey(match.app), match.app.contracts.filter((c) => c.source === "registry").map((c) => c.address).sort()])
+    : `none:${match.status}:v${RESULT_VERSION}`;
 
 const appIdOf = (match) => (match.status === "known" && match.app.id > 0 ? match.app.id : null);
 
