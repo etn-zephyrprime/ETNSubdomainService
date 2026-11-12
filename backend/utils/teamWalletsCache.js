@@ -104,6 +104,37 @@ async function fetchWalletSnapshot(address) {
   };
 }
 
+/**
+ * Fills the wallets whose fetch failed this cycle from the last published snapshot, so one slow cycle can't
+ * make the combined balance drop. 2026-11-12 19:47 UTC: during a deploy both servers refreshed at once,
+ * Blockscout answered 18 of 23 wallets with HTTP 429, and the 5 that loaded were published on their own —
+ * "Combined Team ETN Balance" fell from ~2.5bn to 20m ETN with no ETN having moved.
+ * Returns `{ wallets, movements, stale }` (wallets in TEAM_WALLET_ADDRESSES order, `stale` = the carried-over
+ * addresses), or null when a failed wallet has nothing to carry over — then nothing is published.
+ * @param results per-address snapshot or null (failed), aligned to `addresses`
+ * @param previous the last published `{ wallets, movements }`
+ */
+export function mergeWithPrevious(addresses, results, previous) {
+  const prevBy = new Map((previous?.wallets || []).map((w) => [String(w.address).toLowerCase(), w]));
+  const wallets = [];
+  const extraMovements = [];
+  const stale = [];
+  for (const [i, address] of addresses.entries()) {
+    const fresh = results[i];
+    if (fresh) {
+      wallets.push(fresh);
+      continue;
+    }
+    const prev = prevBy.get(address.toLowerCase());
+    if (!prev) return null; // no earlier figure for this wallet: publishing without it would understate the total
+    stale.push(address);
+    wallets.push({ address, balance: prev.balance, ensName: prev.ensName || null, movements: [] });
+    const lc = address.toLowerCase();
+    for (const m of previous.movements || []) if ((m.from || "").toLowerCase() === lc || (m.to || "").toLowerCase() === lc) extraMovements.push(m);
+  }
+  return { wallets, extraMovements, stale };
+}
+
 let isRunning = false;
 
 async function refreshAndPublish() {
@@ -118,9 +149,9 @@ async function refreshAndPublish() {
         })
       )
     );
-    const wallets = results.filter(Boolean);
+    const loaded = results.filter(Boolean);
 
-    if (wallets.length === 0) {
+    if (loaded.length === 0) {
       // Every fetch failed this cycle (Blockscout hiccup, etc.) — keep whatever was last
       // published rather than overwriting good data with nothing, same "don't misrepresent a
       // stale-but-real value as freshly-confirmed-empty" reasoning this backend's other caches use.
@@ -128,10 +159,24 @@ async function refreshAndPublish() {
       return;
     }
 
+    // Some failed: carry those over from the last snapshot (see mergeWithPrevious) — never publish a
+    // partial set as if it were the whole team.
+    let wallets = loaded;
+    let extraMovements = [];
+    let stale = [];
+    if (loaded.length < TEAM_WALLET_ADDRESSES.length) {
+      const merged = mergeWithPrevious(TEAM_WALLET_ADDRESSES, results, await getTeamWalletsCache());
+      if (!merged) {
+        console.warn(`⚠️  Team wallets cache: ${TEAM_WALLET_ADDRESSES.length - loaded.length} wallet(s) failed and there's no earlier figure for some of them — keeping previous published data`);
+        return;
+      }
+      ({ wallets, extraMovements, stale } = merged);
+    }
+
     // Merge every wallet's own recent movements into one feed, deduped by tx hash — a transfer
     // BETWEEN two team wallets would otherwise appear twice, once from each side's own tx list.
     const byHash = new Map();
-    for (const w of wallets) {
+    for (const w of [...wallets, { movements: extraMovements }]) {
       for (const m of w.movements) {
         if (byHash.has(m.hash)) continue;
         byHash.set(m.hash, {
@@ -148,8 +193,11 @@ async function refreshAndPublish() {
     await setTeamWalletsCache({
       wallets: wallets.map(({ address, balance, ensName }) => ({ address, balance, ensName })),
       movements,
+      stale,
     });
-    console.log(`👥 Team wallets cache updated — ${wallets.length}/${TEAM_WALLET_ADDRESSES.length} wallet(s), ${movements.length} movement(s)`);
+    console.log(
+      `👥 Team wallets cache updated — ${loaded.length}/${TEAM_WALLET_ADDRESSES.length} wallet(s) fresh${stale.length ? `, ${stale.length} carried over from the last snapshot` : ""}, ${movements.length} movement(s)`
+    );
   } catch (err) {
     console.error("⚠️  Team wallets cache refresh failed:", err.message);
   } finally {

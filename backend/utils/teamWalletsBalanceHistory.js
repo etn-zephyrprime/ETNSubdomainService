@@ -106,6 +106,25 @@ export function forwardFill(perDate, startDate, endDate) {
   return filled;
 }
 
+/**
+ * A failed wallet's daily balances from the last published history (whole ETN, by date; the last known
+ * value carried forward to newer dates), or null if it isn't in there. Same reason as teamWalletsCache.js
+ * mergeWithPrevious: a wallet missing from one run must not drop out of the totals.
+ */
+export function previousWalletSeries(previous, address, dates) {
+  const values = previous?.wallets?.[address.toLowerCase()];
+  const prevDates = (previous?.series || []).map((p) => p.date);
+  if (!Array.isArray(values) || !values.length || values.length !== prevDates.length) return null;
+  const byDate = new Map(prevDates.map((d, i) => [d, values[i]]));
+  const out = new Map();
+  let last = 0;
+  for (const d of dates) {
+    if (byDate.has(d)) last = byDate.get(d);
+    out.set(d, BigInt(Math.round(last)) * 10n ** 18n);
+  }
+  return out;
+}
+
 let isRunning = false;
 
 async function refreshAndPublish() {
@@ -127,11 +146,31 @@ async function refreshAndPublish() {
       })
     );
 
-    const succeeded = perWalletFilled.filter(Boolean);
-    if (succeeded.length === 0) {
+    if (!perWalletFilled.some(Boolean)) {
       console.warn("⚠️  Team wallets balance history: every wallet fetch failed this cycle — keeping previous published series");
       return;
     }
+    // Wallets that failed: their series from the last published history, so they don't drop out of the
+    // totals. No earlier series for one -> publish nothing and try again shortly.
+    const fresh = perWalletFilled.filter(Boolean).length;
+    let carried = 0;
+    if (fresh < TEAM_WALLET_ADDRESSES.length) {
+      const previous = await getTeamWalletsBalanceHistoryCache();
+      const allDates = [];
+      for (let d = cutoffDate; d <= today; d = addDays(d, 1)) allDates.push(d);
+      for (const [i, address] of TEAM_WALLET_ADDRESSES.entries()) {
+        if (perWalletFilled[i]) continue;
+        const prior = previousWalletSeries(previous, address, allDates);
+        if (!prior) {
+          console.warn(`⚠️  Team wallets balance history: ${address} failed and has no earlier series — keeping the previous published history, retrying in 10 min`);
+          setTimeout(refreshAndPublish, 10 * 60 * 1000).unref?.();
+          return;
+        }
+        perWalletFilled[i] = prior;
+        carried++;
+      }
+    }
+    const succeeded = perWalletFilled;
 
     const series = [];
     for (let d = cutoffDate; d <= today; d = addDays(d, 1)) {
@@ -140,7 +179,7 @@ async function refreshAndPublish() {
     }
 
     // Per-wallet daily balances (whole ETN, aligned to `series` by index) so the chart can be filtered to one
-    // wallet. Whole ETN rather than wei keeps the file small; a wallet whose fetch failed is left out.
+    // wallet. Whole ETN rather than wei keeps the file small; a wallet whose fetch failed carries its last series.
     const dates = series.map((p) => p.date);
     const wallets = {};
     TEAM_WALLET_ADDRESSES.forEach((address, i) => {
@@ -150,7 +189,7 @@ async function refreshAndPublish() {
     });
 
     await setTeamWalletsBalanceHistoryCache(series, wallets);
-    console.log(`📈 Team wallets balance history updated — ${series.length} day(s), ${succeeded.length}/${TEAM_WALLET_ADDRESSES.length} wallet(s)`);
+    console.log(`📈 Team wallets balance history updated — ${series.length} day(s), ${fresh}/${TEAM_WALLET_ADDRESSES.length} wallet(s) fresh${carried ? `, ${carried} carried over` : ""}`);
   } catch (err) {
     console.error("⚠️  Team wallets balance history refresh failed:", err.message);
   } finally {
