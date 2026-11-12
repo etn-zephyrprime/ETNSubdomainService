@@ -23,6 +23,28 @@ export async function getTouchedAddresses(wallets, limit = 200) {
   return (res?.rows || []).map((r) => ({ address: r.address, lastAt: r.last_at, kinds: r.kinds }));
 }
 
+/**
+ * The latest transaction the wallets SENT to each of these contracts that moved nothing — no token or ETN
+ * transfer in it, only its gas (the shape of an approve / revoke): `{ [address]: { txHash, at } }`. Every sent
+ * transaction has a gas row (log_index -1, direction out, amount 0) whose counterparty is the contract called.
+ */
+export async function getLatestSentTx(wallets, addresses) {
+  if (!wallets.length || !addresses.length) return {};
+  const res = await query(
+    `SELECT DISTINCT ON (lower(g.counterparty_address)) lower(g.counterparty_address) AS address, g.tx_hash, g."timestamp"
+     FROM ingested_transfers g
+     WHERE g.tracked_wallet = ANY($1) AND g.log_index = -1 AND g.direction = 'out' AND g.gas_fee_wei IS NOT NULL AND g.amount_raw = 0
+       AND lower(g.counterparty_address) = ANY($2)
+       AND NOT EXISTS (
+         SELECT 1 FROM ingested_transfers t
+         WHERE t.tracked_wallet = g.tracked_wallet AND t.tx_hash = g.tx_hash AND (t.log_index <> -1 OR t.amount_raw <> 0)
+       )
+     ORDER BY lower(g.counterparty_address), g."timestamp" DESC`,
+    [wallets.map((w) => w.toLowerCase()), addresses.map((a) => a.toLowerCase())]
+  );
+  return Object.fromEntries((res?.rows || []).map((r) => [r.address, { txHash: r.tx_hash, at: r.timestamp }]));
+}
+
 /** For list rows: `{ [address]: { overall, name, symbol, analysedAt } }` from cached facts (no JSONB body). */
 export async function getFactsSummaries(addresses) {
   if (!addresses.length) return {};

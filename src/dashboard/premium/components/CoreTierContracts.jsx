@@ -144,9 +144,14 @@ function UsedContracts({ wallet, getAuthParams }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, overflowWrap: "anywhere" }}>{rowName(r)}</div>
             <div style={{ fontFamily: monoFont, fontSize: 11, color: muted }}>
-              {shortAddr(r.address)} · last used {ago(r.lastAt)}
+              {shortAddr(r.address)} · {r.lastAction === "revoked" ? "approval revoked" : "last used"} {ago(r.lastAt)}
             </div>
           </div>
+          {r.lastAction === "revoked" && (
+            <span title="The last transaction your wallet sent here revoked an approval" style={{ fontFamily: monoFont, fontSize: 10, fontWeight: 800, color: mutedLight, border: `1px solid ${border}`, borderRadius: 999, padding: "1px 7px", textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" }}>
+              Revoked
+            </span>
+          )}
           <OverallBadge overall={r.overall} small />
         </button>
       ))}

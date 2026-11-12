@@ -3,7 +3,7 @@
 // analyseContract when one is opened. Contracts without cached facts are analysed in the background, a
 // few at a time, so their badges fill in on a later visit without a burst of explorer/RPC calls now.
 import { ethers } from "ethers";
-import { getTouchedAddresses, getFactsSummaries, getKnownContracts, searchKnownContracts } from "../../db/contractCheckLists.js";
+import { getTouchedAddresses, getFactsSummaries, getKnownContracts, searchKnownContracts, getLatestSentTx } from "../../db/contractCheckLists.js";
 import { getCoveredWallets } from "../../db/trackedWallets.js";
 import { fetchBlockscoutJson, fetchBlockscoutJsonOrNull } from "../../utils/blockscoutClient.js";
 import { resolveEtnName } from "../../utils/primaryNameResolver.js";
@@ -61,6 +61,62 @@ async function isContract(address) {
  * by most recent interaction. Rows: `{ address, lastAt, kinds, known, name, symbol, overall }`
  * (overall null = not checked yet — queued for analysis).
  */
+// Revokes: approve(spender, 0) — or approve(address(0), id) for one NFT —, setApprovalForAll(operator, false),
+// and Permit2's approve(token, spender, 0, …) / lockdown(…).
+const REVOKE_ABI = new ethers.Interface([
+  "function approve(address spender, uint256 amount)",
+  "function setApprovalForAll(address operator, bool approved)",
+  "function approve(address token, address spender, uint160 amount, uint48 expiration)",
+  "function lockdown((address token, address spender)[] approvals)",
+]);
+const ZERO = "0x0000000000000000000000000000000000000000";
+
+/** True if a transaction's input revokes an approval (see REVOKE_ABI). Unknown input -> false. */
+export function isRevokeInput(data) {
+  let tx;
+  try {
+    tx = REVOKE_ABI.parseTransaction({ data: String(data || "") });
+  } catch {
+    return false;
+  }
+  if (!tx) return false;
+  if (tx.name === "lockdown") return true;
+  if (tx.name === "setApprovalForAll") return tx.args[1] === false;
+  if (tx.fragment.inputs.length === 4) return tx.args[2] === 0n; // Permit2 approve
+  return tx.args[1] === 0n || String(tx.args[0]).toLowerCase() === ZERO;
+}
+
+// A transaction's input never changes — remembered per hash.
+const revokeMemo = new Map();
+async function txIsRevoke(hash, provider) {
+  if (revokeMemo.has(hash)) return revokeMemo.get(hash);
+  const tx = await provider.getTransaction(hash).catch(() => undefined);
+  if (tx === undefined) return false; // RPC hiccup: don't remember, untagged this time
+  const revoke = isRevokeInput(tx?.data);
+  if (revokeMemo.size > 20000) revokeMemo.clear();
+  revokeMemo.set(hash, revoke);
+  return revoke;
+}
+
+/**
+ * `lastAction: "revoked"` on rows whose most recent activity was a transaction the wallet sent to revoke an
+ * approval there — so a clean-up doesn't read as "used". Reads one transaction per such row, one at a time.
+ */
+async function tagRevokes(rows, wallets, { latestSent = getLatestSentTx, provider = contractCheckProvider() } = {}) {
+  const sent = await latestSent(
+    wallets,
+    rows.map((r) => r.address)
+  ).catch(() => ({}));
+  for (const r of rows) {
+    const s = sent[r.address];
+    // only if that sent transaction IS the row's latest activity (nothing happened there since)
+    if (!s || new Date(s.at).getTime() < new Date(r.lastAt).getTime()) continue;
+    if (await txIsRevoke(s.txHash, provider)) r.lastAction = "revoked";
+  }
+  return rows;
+}
+export { tagRevokes as _tagRevokes };
+
 export async function usedContracts(ownerWallet, { limit = 150 } = {}) {
   const wallets = (await getCoveredWallets(ownerWallet)).map((w) => w.address.toLowerCase());
   const touched = await getTouchedAddresses(wallets, 300);
@@ -75,6 +131,7 @@ export async function usedContracts(ownerWallet, { limit = 150 } = {}) {
   const addrs = rows.map((r) => r.address);
   const [labels, facts] = await Promise.all([labelsFor(addrs), getFactsSummaries(addrs).catch(() => ({}))]);
   const out = rows.map((r) => ({ ...r, known: labels[r.address] || null, name: facts[r.address]?.name || null, symbol: facts[r.address]?.symbol || null, overall: facts[r.address]?.overall || null }));
+  await tagRevokes(out, wallets);
   queueAnalysis(out.filter((r) => !r.overall).map((r) => r.address));
   // unknown contracts first (the ones worth a look), then most recent
   return out.sort((a, b) => (a.known ? 1 : 0) - (b.known ? 1 : 0) || new Date(b.lastAt) - new Date(a.lastAt));
