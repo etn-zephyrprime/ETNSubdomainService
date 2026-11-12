@@ -4,9 +4,8 @@
 //   1. registry host lists: an app whose hosts changed since last recorded gets a domain_changed event
 //      (and its cached results invalidate themselves: the registry hash is part of the cache check);
 //   2. registry apps are rescanned every 6h, watched apps every 24h (everything else only on demand, and
-//      expires by TTL). "Due" is measured from the last OK scan, so a failed or partial scan never counts as
-//      done — it's retried after RESCAN.retryFailedMs, and it produces no events (the previous good scan
-//      stays the baseline). A scan is claimed by compare-and-set first, so two overlapping servers during
+//      expires by TTL). A failed scan is retried after RESCAN.retryFailedMs; a partial one (caps hit) waits
+//      the normal interval. Neither produces events — the previous OK scan stays the baseline. A scan is claimed by compare-and-set first, so two overlapping servers during
 //      a deploy don't both scan (and double the events);
 //   3. alerts: each member watching apps gets the new alertable events for them (contract_added at caution
 //      or above, contract_changed, contract_removed, domain_changed — never frontend_redeployed), through
@@ -44,13 +43,18 @@ export async function checkRegistryHosts(apps, { store = appDb, state = { get: g
   return events;
 }
 
-/** Whether an origin is due a rescan: no OK scan within `everyMs`, and no failed attempt in the last hour. */
+/**
+ * Whether an origin is due a rescan. A FAILED attempt (the page didn't load) is retried after an hour; a
+ * PARTIAL one (it loaded but hit a cap — big apps always will) waits the normal interval like an OK one,
+ * or a site over the caps would get a full 150-request scan every hour and a half, forever. Neither ever
+ * becomes the change-detection baseline: only OK scans are compared.
+ */
 export async function isDue(origin, everyMs, now, store = appDb) {
   const [latest] = await store.latestAppScans(origin, { limit: 1 });
-  const [lastOk] = latest?.status === "ok" ? [latest] : await store.latestAppScans(origin, { status: "ok", limit: 1 });
-  if (lastOk && now - Date.parse(lastOk.scannedAt) < everyMs) return false;
-  if (latest && latest.status !== "ok" && now - Date.parse(latest.scannedAt) < RESCAN.retryFailedMs) return false;
-  return true;
+  if (!latest) return true;
+  const age = now - Date.parse(latest.scannedAt);
+  if (latest.status === "failed") return age >= RESCAN.retryFailedMs;
+  return age >= everyMs;
 }
 
 /** Claims an origin's scan for this server (compare-and-set), so overlapping servers don't both scan it. */
