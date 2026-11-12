@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Globe, Loader2 } from "lucide-react";
-import AppCheckResult from "./AppCheckResult.jsx";
+import AppCheckResult, { RegistryRequestLink } from "./AppCheckResult.jsx";
 import { useAppCheck } from "../hooks/useAppCheck.js";
 import { green, gold, muted, mutedLight, border, panel2, monoFont, error as errorColor } from "../theme.js";
 
@@ -8,6 +8,45 @@ import { green, gold, muted, mutedLight, border, panel2, monoFont, error as erro
 // Core Tier adds the domain facts, the contracts the site uses, scanning and watching (CoreTierAppCheck.jsx).
 
 const btn = { background: green, color: "#000", border: "none", borderRadius: 6, padding: "0 16px", fontFamily: monoFont, fontWeight: 800, fontSize: 12, textTransform: "uppercase", cursor: "pointer", minHeight: 44 };
+
+/**
+ * The website-check box shared by the free check and Core Tier's Contract Check: heading, description, the
+ * "discuss an app being listed" link, the input and Check button; results go in `children`.
+ */
+export function AppCheckShell({ description, value, onChange, onSubmit, busy, children, style = {} }) {
+  return (
+    <section style={{ background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 14, marginBottom: 16, ...style }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: monoFont, fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: green, marginBottom: 6 }}>
+        <Globe size={14} /> Check a website before you connect
+      </div>
+      <div style={{ fontSize: 13, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>{description}</div>
+      <RegistryRequestLink style={{ marginBottom: 10 }} />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit();
+        }}
+        style={{ display: "flex", gap: 8 }}
+      >
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="https://… or app name"
+          aria-label="Website address or app name"
+          inputMode="url"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          style={{ flex: 1, minWidth: 0, background: "#0b0b0b", border: `1px solid ${border}`, borderRadius: 6, color: "#fff", padding: "0 12px", fontSize: 14, minHeight: 44 }}
+        />
+        <button type="submit" disabled={busy} style={{ ...btn, opacity: busy ? 0.6 : 1 }}>
+          {busy ? <Loader2 size={16} /> : "Check"}
+        </button>
+      </form>
+      {children}
+    </section>
+  );
+}
 
 export default function AppCheckFree() {
   const { check } = useAppCheck();
@@ -31,33 +70,7 @@ export default function AppCheckFree() {
   };
 
   return (
-    <section style={{ background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: 14, marginBottom: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: monoFont, fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: green, marginBottom: 6 }}>
-        <Globe size={14} /> Check a website before you connect
-      </div>
-      <div style={{ fontSize: 13, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>Paste a link someone sent you. Argus tells you if it's pretending to be a known Electroneum app.</div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          run();
-        }}
-        style={{ display: "flex", gap: 8 }}
-      >
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="https://… or app name"
-          aria-label="Website address or app name"
-          inputMode="url"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          style={{ flex: 1, minWidth: 0, background: "#0b0b0b", border: `1px solid ${border}`, borderRadius: 6, color: "#fff", padding: "0 12px", fontSize: 14, minHeight: 44 }}
-        />
-        <button type="submit" disabled={busy} style={{ ...btn, opacity: busy ? 0.6 : 1 }}>
-          {busy ? <Loader2 size={16} /> : "Check"}
-        </button>
-      </form>
+    <AppCheckShell description="Paste a link someone sent you. Argus tells you if it's pretending to be a known Electroneum app." value={q} onChange={setQ} onSubmit={() => run()} busy={busy}>
       {error && <div style={{ color: errorColor, fontSize: 13, marginTop: 10 }}>{error}</div>}
       {r?.status === "name" && (
         <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
@@ -83,6 +96,6 @@ export default function AppCheckFree() {
           />
         </div>
       )}
-    </section>
+    </AppCheckShell>
   );
 }

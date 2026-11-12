@@ -8,6 +8,27 @@ import { green, gold, error as errorColor, muted, mutedLight, border, panel2, mo
 // scanned site controls: hosts come from what the member typed, labels from our registry / Contract Check,
 // and React escapes everything anyway.
 
+// Where to ask for an app to be added to the registry (and checked by us).
+export const REGISTRY_REQUEST_URL = "https://t.me/ETN_ZephyrPrime";
+
+/** "Want an app listed?" — a link to discuss it with ZephyrPrime on Telegram (with their profile picture). */
+export function RegistryRequestLink({ style = {} }) {
+  return (
+    <a
+      href={REGISTRY_REQUEST_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none", border: `1px solid ${border}`, borderRadius: 6, padding: "8px 10px", ...style }}
+    >
+      <img src="/team/zephyrprime-pfp.jpg" alt="ZephyrPrime" width={32} height={32} style={{ borderRadius: "50%", flexShrink: 0 }} />
+      <span style={{ fontSize: 12, color: mutedLight, lineHeight: 1.45 }}>
+        Want an app added to our registry and verified on Argus? <span style={{ color: green, fontWeight: 700 }}>Discuss it with ZephyrPrime on Telegram</span>{" "}
+        <span style={{ fontFamily: monoFont, fontSize: 11, color: muted }}>t.me/ETN_ZephyrPrime</span>
+      </span>
+    </a>
+  );
+}
+
 export const APP_CHECK_FOOTER = "Automated analysis of the contracts we could find. It can't see what a site will ask you to sign. Not financial advice.";
 
 const label = { fontFamily: monoFont, fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: mutedLight, margin: "16px 0 8px" };

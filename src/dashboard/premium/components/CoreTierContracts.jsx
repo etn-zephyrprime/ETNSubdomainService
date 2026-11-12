@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ethers } from "ethers";
-import { Search, KeyRound, RefreshCw, FileSearch, Loader2, Globe } from "lucide-react";
+import { Search, KeyRound, RefreshCw, FileSearch, Loader2 } from "lucide-react";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import CoreTierAppCheck from "./CoreTierAppCheck.jsx";
@@ -433,17 +433,22 @@ export default function CoreTierContracts({ wallet, getAuthParams, coreTierAcces
   return (
     <CollapsibleCoreTierPanel title="Contract Check" icon={FileSearch} defaultCollapsed={false}>
       <PendingRevokes wallet={wallet} />
-      <CoreTierGate wallet={wallet} hasAccess={hasAccess} accessError={accessError} awaitingActivation={awaitingActivation} manualCheckLoading={manualCheckLoading} checkAccessOnce={checkAccessOnce} featureDescription="check any contract your wallet touches in plain English">
-        <div style={{ fontSize: 13, color: mutedLight, marginBottom: 12, lineHeight: 1.5 }}>
-          Argus reads a contract's code and on-chain settings and tells you what its owner can do — no copying from an explorer. Tap any contract for the details.
-        </div>
-        <SearchBox getAuthParams={getAuthParams} />
-        {sectionTitle(Globe, "Check an app")}
+      <CoreTierGate wallet={wallet} hasAccess={hasAccess} accessError={accessError} awaitingActivation={awaitingActivation} manualCheckLoading={manualCheckLoading} checkAccessOnce={checkAccessOnce} featureDescription="check websites and any contract your wallet touches in plain English">
+        {/* Two tools, two clearly separate blocks: check a WEBSITE (App Check, its own box), then check a
+            CONTRACT (search, the contracts your wallets used, and their approvals). */}
         <CoreTierAppCheck getAuthParams={getAuthParams} initialInput={linkedApp} />
-        {sectionTitle(FileSearch, "Contracts you've used")}
-        <UsedContracts wallet={wallet} getAuthParams={getAuthParams} />
-        {sectionTitle(KeyRound, "Approvals")}
-        <Approvals wallet={wallet} getAuthParams={getAuthParams} trackedWallets={trackedWallets} />
+
+        <div style={{ borderTop: `1px solid ${border}`, margin: "20px 0 0", paddingTop: 4 }}>
+          {sectionTitle(FileSearch, "Check a contract")}
+          <div style={{ fontSize: 13, color: mutedLight, marginBottom: 12, lineHeight: 1.5 }}>
+            Argus reads a contract's code and on-chain settings and tells you what its owner can do — no copying from an explorer. Tap any contract for the details.
+          </div>
+          <SearchBox getAuthParams={getAuthParams} />
+          {sectionTitle(FileSearch, "Contracts you've used")}
+          <UsedContracts wallet={wallet} getAuthParams={getAuthParams} />
+          {sectionTitle(KeyRound, "Approvals")}
+          <Approvals wallet={wallet} getAuthParams={getAuthParams} trackedWallets={trackedWallets} />
+        </div>
       </CoreTierGate>
     </CollapsibleCoreTierPanel>
   );

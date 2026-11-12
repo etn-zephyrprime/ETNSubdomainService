@@ -8,7 +8,7 @@ import { green, gold, goldGlow, silver, silverGlow, mutedLight, panel2, border, 
 const TABS = [
   { id: "overview", label: "Overview" },
   { id: "tokens", label: "Tokens" },
-  { id: "address", label: "Address Lookup" },
+  { id: "address", label: "Dapp / Address Check" },
   { id: "nameservice", label: "Name Service" },
   { id: "team", label: "Team Wallets" },
   { id: "cex", label: "CEX Balances" },

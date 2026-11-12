@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Globe, Loader2, RefreshCw, Eye, EyeOff, ScanSearch } from "lucide-react";
+import { RefreshCw, Eye, EyeOff, ScanSearch } from "lucide-react";
 import AppCheckResult from "../../components/AppCheckResult.jsx";
+import { AppCheckShell } from "../../components/AppCheckFree.jsx";
 import { useContractCard } from "./ContractCard.jsx";
 import { useAppCheck } from "../../hooks/useAppCheck.js";
-import { green, muted, mutedLight, border, panel2, monoFont, error as errorColor } from "../../theme.js";
+import { green, muted, mutedLight, border, monoFont, error as errorColor } from "../../theme.js";
 
-// "Check an app" in the Core Tier Contract Check panel: the full App Check — status, overall badge, domain
+// "Check a website before you connect" in the Core Tier Contract Check panel (the same box as the free check,
+// AppCheckFree.jsx AppCheckShell, with the Telegram link to discuss an app being listed): the full App Check — status, overall badge, domain
 // facts, the app's contracts (each opens the contract card), Scan this site / Rescan (10 scans a day),
 // Watch this app (Telegram alerts when its contracts change), and its recent changes.
 // A ?app=<origin> link (Telegram /checkapp cards and alerts) opens straight on that site.
@@ -109,33 +111,14 @@ export default function CoreTierAppCheck({ getAuthParams, initialInput = null })
     ) : null;
 
   return (
-    <div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          run("check", q);
-        }}
-        style={{ display: "flex", gap: 8 }}
-      >
-        <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, background: panel2, border: `1px solid ${border}`, borderRadius: 6, padding: "0 12px" }}>
-          <Globe size={16} color={muted} />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Website address or app name"
-            aria-label="Check an app"
-            inputMode="url"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "#fff", padding: "12px 0", fontSize: 14 }}
-          />
-          {busy === "check" && <Loader2 size={16} color={muted} />}
-        </div>
-        <button type="submit" disabled={!!busy} style={actionBtn(true)}>
-          Check
-        </button>
-      </form>
+    <AppCheckShell
+      description="Paste a link someone sent you. Argus tells you if it's pretending to be a known Electroneum app, checks its domain and the contracts it uses, and can scan it and watch it for changes."
+      value={q}
+      onChange={setQ}
+      onSubmit={() => run("check", q)}
+      busy={!!busy}
+      style={{ marginBottom: 0 }}
+    >
       {error && <div style={{ color: errorColor, fontSize: 13, marginTop: 10 }}>{error}</div>}
       {busy === "scan" && <div style={{ fontSize: 13, color: mutedLight, marginTop: 10 }}>Scanning the site's code and checking each contract — this can take a minute or two the first time…</div>}
       {r?.status === "name" && (
@@ -154,6 +137,6 @@ export default function CoreTierAppCheck({ getAuthParams, initialInput = null })
           {scansLeft != null && <div style={{ fontSize: 11, color: muted, marginTop: 6 }}>{scansLeft} site scan{scansLeft === 1 ? "" : "s"} left today</div>}
         </div>
       )}
-    </div>
+    </AppCheckShell>
   );
 }

@@ -254,7 +254,7 @@ export default function ValidatorLineChart({ days, onSelectAddress, cexMap = new
                     e.stopPropagation();
                     onSelectAddress(addr);
                   }}
-                  title="View this validator's balance and activity in Address Lookup"
+                  title="View this validator's balance and activity in Dapp / Address Check"
                   style={{
                     color: mutedLight,
                     fontFamily: "monospace",
