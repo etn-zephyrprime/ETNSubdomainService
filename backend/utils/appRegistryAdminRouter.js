@@ -66,6 +66,8 @@ const view = (apps) =>
       notes: a.notes,
       source: a.source,
       autoRescan: a.autoRescan,
+      scanUrl: a.scanUrl,
+      scanScripts: a.scanScripts,
       hosts: a.hosts,
       contracts: a.contracts.filter((c) => c.source === "registry").map((c) => ({ address: c.address, role: c.role })),
       scannedContracts: a.contracts.filter((c) => c.source === "scan").length,

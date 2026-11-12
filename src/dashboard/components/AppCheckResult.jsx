@@ -211,6 +211,7 @@ export default function AppCheckResult({ r, onOpenContract = null, actions = nul
           <span style={{ fontSize: 12, color: muted }}>
             Checked {minutesAgo(r)}
             {r.scan ? ` · scanned ${new Date(r.scan.scannedAt).toLocaleString()}${r.scan.status !== "ok" ? ` (${r.scan.status})` : ""}` : ""}
+            {r.scan?.url && r.scan.url.replace(/\/$/, "") !== r.normalised?.origin ? ` · page: ${r.scan.url.replace(/^https?:\/\//, "")}${r.scan.pageOnly ? " (page only)" : ""}` : ""}
           </span>
           <span style={{ flex: 1 }} />
           {actions}

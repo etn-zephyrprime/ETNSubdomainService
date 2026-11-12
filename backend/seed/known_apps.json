@@ -243,7 +243,9 @@
           "primary": true
         }
       ],
-      "contracts": []
+      "contracts": [],
+      "scanUrl": "https://rarible.com/electroneum",
+      "scanScripts": false
     },
     {
       "slug": "ankr",

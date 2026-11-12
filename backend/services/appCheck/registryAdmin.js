@@ -77,8 +77,27 @@ export function validateAppInput(input) {
     contracts.push({ address, role: clean(raw?.role, 60) || null });
   }
 
+  // the page to scan: optional, but on one of this app's own websites
+  let scanUrl = null;
+  const rawScan = clean(input?.scanUrl, 500);
+  if (rawScan) {
+    try {
+      const u = new URL(/^https?:\/\//i.test(rawScan) ? rawScan : `https://${rawScan}`);
+      const h = u.hostname.toLowerCase();
+      const facts = describeHost(h);
+      const covered = facts && hosts.some((x) => x.host === h || (x.registrableDomain && facts.registrableDomain === x.host));
+      if ((u.protocol !== "https:" && u.protocol !== "http:") || u.username || u.password || u.port || !covered) errors.push(`The page to scan must be on one of this app's websites.`);
+      else {
+        u.hash = "";
+        scanUrl = u.toString();
+      }
+    } catch {
+      errors.push("The page to scan isn't a valid web address.");
+    }
+  }
+
   if (errors.length) return { ok: false, errors };
-  return { ok: true, app: { slug, name, category, verifiedByUs: !!input?.verifiedByUs, notes: clean(input?.notes, 500) || null, hosts, contracts, autoRescan: input?.autoRescan !== false } };
+  return { ok: true, app: { slug, name, category, verifiedByUs: !!input?.verifiedByUs, notes: clean(input?.notes, 500) || null, hosts, contracts, autoRescan: input?.autoRescan !== false, scanUrl, scanScripts: input?.scanScripts !== false } };
 }
 
 /** Hosts this entry would take from another app (each host belongs to one app). */
