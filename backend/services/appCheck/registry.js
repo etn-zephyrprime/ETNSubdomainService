@@ -24,6 +24,9 @@ export function seedApps() {
     category: a.category,
     verifiedByUs: !!a.verifiedByUs,
     notes: a.notes || null,
+    source: "seed",
+    externalId: null,
+    autoRescan: true,
     hosts: a.hosts.map((h) => ({ host: h.host.toLowerCase(), registrableDomain: !!h.registrableDomain, primary: !!h.primary })),
     contracts: a.contracts.map((c) => ({ address: c.address.toLowerCase(), role: c.role || null, source: "registry" })),
   }));

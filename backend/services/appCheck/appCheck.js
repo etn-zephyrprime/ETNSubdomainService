@@ -11,11 +11,11 @@ import { normaliseInput } from "./normaliseInput.js";
 import { matchApp } from "./matchApp.js";
 import { getKnownApps, findAppsByName, primaryHost } from "./registry.js";
 import { getDomainSignals } from "./domainSignals.js";
-import { computeOverall } from "./appResult.js";
+import { computeOverall, listedAs } from "./appResult.js";
 import { analyseContract } from "../contractCheck/analyseContract.js";
 import { runScan } from "./scanSite.js";
 
-const appSummary = (app) => (app ? { slug: app.slug, name: app.name, category: app.category, primaryHost: primaryHost(app), verifiedByUs: app.verifiedByUs } : null);
+const appSummary = (app) => (app ? { slug: app.slug, name: app.name, category: app.category, primaryHost: primaryHost(app), verifiedByUs: app.verifiedByUs, source: app.source || null } : null);
 
 const normalisedView = (n) => ({
   url: n.url,
@@ -118,7 +118,7 @@ export async function checkApp(input, { core = false, scan: doScan = false, anal
       overallReason:
         overallReason ||
         (match.status === "known"
-          ? `Listed site for ${match.app.name}. Core Tier checks its contracts and domain.`
+          ? `${listedAs(match.app)}. Core Tier checks its contracts and domain.`
           : "Not in our registry, and it doesn't resemble a listed app. Core Tier checks its domain and scans the contracts it uses."),
     };
   }
@@ -156,6 +156,17 @@ export function mergeScanContracts(contracts, scan) {
 }
 
 /**
+ * Which contracts decide the badge. A known app: its listed (registry) contracts — or, when none are listed,
+ * the ones found in its own site's code. Anything else: every contract found.
+ */
+export function badgeContractsOf(match, contracts, scan) {
+  if (match.status !== "known") return { contracts, fromScan: false };
+  const listed = contracts.filter((c) => c.source === "registry");
+  if (listed.length) return { contracts: listed, fromScan: false };
+  return { contracts: scan ? contracts.filter((c) => c.source === "scan") : [], fromScan: true };
+}
+
+/**
  * The Core result from its parts (also used when a cached result is revalidated).
  * A known app's badge is its registry contracts'. Other contracts its code mentions are listed with their
  * own badges, never hidden — but don't decide the app's badge. For an unknown site every scanned contract counts.
@@ -163,8 +174,8 @@ export function mergeScanContracts(contracts, scan) {
 export function assembleResult({ base, match, domain, contracts, scan }) {
   const all = scan ? mergeScanContracts(contracts.filter((c) => c.source !== "scan"), scan) : contracts;
   const flags = [...domain.flags, ...(scan?.flags || [])];
-  const badgeContracts = match.status === "known" ? all.filter((c) => c.source === "registry") : all;
-  const { overall, overallReason } = computeOverall({ status: match.status, app: match.app, resembles: match.resembles, contracts: badgeContracts, domainFlags: flags, scan });
+  const { contracts: badgeContracts, fromScan } = badgeContractsOf(match, all, scan);
+  const { overall, overallReason } = computeOverall({ status: match.status, app: match.app, resembles: match.resembles, contracts: badgeContracts, domainFlags: flags, scan, fromScan });
   const result = { ...base, tier: "core", domain, contracts: all, flags, scan: scan ? (scan.scriptHashes ? scanSummary(scan) : scan) : null, overall, overallReason, cache: { hit: false, ageSeconds: 0, revalidated: false } };
   result.fingerprint = fingerprintOf(result);
   return result;

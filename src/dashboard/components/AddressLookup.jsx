@@ -16,7 +16,6 @@ import { bucketDailyCounts, ONE_DAY_MS } from "../utils/history.js";
 import { isTeamWallet } from "../utils/teamWallets.js";
 import { lockBadgeText } from "../utils/lockStatus.js";
 import { EXPLORER_BASE_URL } from "../config.js";
-import NeonButton from "../../components/NeonButton.jsx";
 import TileChart from "./TileChart.jsx";
 import TeamWalletTag from "./TeamWalletTag.jsx";
 import CexTag from "./CexTag.jsx";
@@ -465,9 +464,15 @@ export default function AddressLookup({ initialAddress = null, onSelectToken }) 
           onKeyDown={(e) => { if (e.key === "Enter") handleLookup(); }}
           style={{ ...inputStyle, flex: 1 }}
         />
-        <NeonButton variant="green" onClick={handleLookup} loading={resolving} style={{ padding: "12px 20px" }}>
-          Look Up
-        </NeonButton>
+        {/* the same solid dashboard-green as the website check's Check button above it */}
+        <button
+          type="button"
+          onClick={handleLookup}
+          disabled={resolving}
+          style={{ background: green, color: "#000", border: "none", borderRadius: 6, padding: "0 16px", fontFamily: monoFont, fontWeight: 800, fontSize: 12, textTransform: "uppercase", cursor: resolving ? "default" : "pointer", minHeight: 44, opacity: resolving ? 0.6 : 1, whiteSpace: "nowrap" }}
+        >
+          {resolving ? "Looking up…" : "Look Up"}
+        </button>
       </div>
 
       {resolveError && (

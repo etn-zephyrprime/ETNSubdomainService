@@ -78,7 +78,7 @@ export function validateAppInput(input) {
   }
 
   if (errors.length) return { ok: false, errors };
-  return { ok: true, app: { slug, name, category, verifiedByUs: !!input?.verifiedByUs, notes: clean(input?.notes, 500) || null, hosts, contracts } };
+  return { ok: true, app: { slug, name, category, verifiedByUs: !!input?.verifiedByUs, notes: clean(input?.notes, 500) || null, hosts, contracts, autoRescan: input?.autoRescan !== false } };
 }
 
 /** Hosts this entry would take from another app (each host belongs to one app). */

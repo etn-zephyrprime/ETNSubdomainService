@@ -29,7 +29,7 @@ export function formatAppCard(r) {
   }
   const host = md(r.normalised?.displayHost || r.normalised?.host || "");
   const lines = [`${BADGE[r.overall] || "🔎"} *App Check:* ${host}`];
-  if (r.status === "known") lines.push(`✅ Listed site for ${md(r.app.name)}`);
+  if (r.status === "known") lines.push(r.app.source === "explorer" ? `On the Electroneum block explorer's app list as ${md(r.app.name)} (not checked by us)` : `✅ Listed site for ${md(r.app.name)}`);
   else if (r.status === "lookalike") lines.push(`⚠️ *Resembles ${md(r.resembles)} (${md(r.app.name)}) but isn't a listed site for it*`);
   else lines.push("Not in our registry");
   if (r.overallReason) lines.push(md(r.overallReason));

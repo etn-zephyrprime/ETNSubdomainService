@@ -33,15 +33,33 @@ export function knownMatch(facts, apps) {
   return byDomain;
 }
 
-/** What each known host looks like, for lookalike comparison: one target per (app, registrable domain). */
+/**
+ * What each known app's domain looks like, for lookalike comparison: one target per (app, registrable domain)
+ * the app OWNS — a "+ subdomains" entry, or a host that is itself a whole domain (www. aside). An app that
+ * only lives on a subdomain of someone else's domain (etn-radar.galacticsl.com, nexus.hyperlane.xyz) doesn't
+ * make that domain's name a target: "galacticsl" isn't ETN Radar's name.
+ */
 export function lookalikeTargets(apps) {
-  const out = new Map();
+  // subdomain words used on each domain, across every app there (dashboard., nameservice., staking. on
+  // planetzephyros.xyz) — "nameservice-planetzephyros.com" is keyword stuffing of the domain's owner
+  const wordsByDomain = new Map();
   for (const app of apps) {
-    const extraWords = new Set();
     for (const entry of app.hosts) {
       const f = describeHost(entry.host);
       if (!f) continue;
-      for (const w of f.subdomain.split(".").filter(Boolean)) extraWords.add(w);
+      const words = wordsByDomain.get(f.registrableDomain) || new Set();
+      for (const w of f.subdomain.split(".").filter(Boolean)) words.add(w);
+      wordsByDomain.set(f.registrableDomain, words);
+    }
+  }
+  const out = new Map();
+  for (const app of apps) {
+    for (const entry of app.hosts) {
+      const f = describeHost(entry.host);
+      if (!f) continue;
+      const extraWords = wordsByDomain.get(f.registrableDomain) || new Set();
+      const ownsDomain = entry.registrableDomain || entry.host.replace(/^www\./, "") === f.registrableDomain;
+      if (!ownsDomain) continue;
       const key = `${app.slug}|${f.registrableDomain}`;
       if (!out.has(key)) out.set(key, { app, host: entry.host, registrableDomain: f.registrableDomain, label: f.label, suffix: f.suffix, extraWords });
     }

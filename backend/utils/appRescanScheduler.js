@@ -1,9 +1,12 @@
 // App Check rescans and watched-app alerts (in-process, like the other schedulers started from index.js).
 //
+// Once a day: the Electroneum block explorer's Apps list is synced into the registry (explorerApps.js).
+//
 // Every RESCAN.tickMs (30 min):
 //   1. registry host lists: an app whose hosts changed since last recorded gets a domain_changed event
 //      (and its cached results invalidate themselves: the registry hash is part of the cache check);
-//   2. registry apps are rescanned every 6h, watched apps every 24h (everything else only on demand, and
+//   2. registry apps are rescanned every 6h (unless auto_rescan is off, as for explorer-listed apps), watched
+//      apps every 24h (everything else only on demand, and
 //      expires by TTL). A failed scan is retried after RESCAN.retryFailedMs; a partial one (caps hit) waits
 //      the normal interval. Neither produces events — the previous OK scan stays the baseline. A scan is claimed by compare-and-set first, so two overlapping servers during
 //      a deploy don't both scan (and double the events);
@@ -23,6 +26,9 @@ import { getNotisLinkState } from "../state/notisLinkState.js";
 import { sendNotisDirectMessage, notisConfigured } from "./notisLinkRouter.js";
 import { hasCoreAccess } from "./premiumAccess.js";
 import { runHeavy } from "./heavyWork.js";
+import { syncExplorerApps } from "../services/appCheck/explorerApps.js";
+import { listKnownApps, upsertKnownApp, deleteKnownApp } from "../db/knownApps.js";
+import { resetRegistryMemo } from "../services/appCheck/registry.js";
 
 const originOf = (app) => (primaryHost(app) ? `https://${primaryHost(app)}` : null);
 
@@ -135,6 +141,7 @@ async function tick() {
     await checkRegistryHosts(apps);
     const targets = new Map();
     for (const app of apps) {
+      if (app.autoRescan === false) continue; // e.g. explorer-listed apps: scanned on demand
       const origin = originOf(app);
       if (origin) targets.set(origin, { origin, everyMs: RESCAN.registryEveryMs });
     }
@@ -151,6 +158,29 @@ async function tick() {
   }
 }
 
+/** Runs the explorer-list sync now (Argus admin button, and the daily timer). Returns the plan. */
+export async function runExplorerSync() {
+  const plan = await syncExplorerApps({
+    registry: await listKnownApps(),
+    upsert: (a) => upsertKnownApp(a),
+    remove: (slug) => deleteKnownApp(slug),
+    onDone: resetRegistryMemo,
+  });
+  console.log(`🗂️  Explorer apps sync: +${plan.add.length} added, ${plan.update.length} updated, -${plan.remove.length} removed, ${plan.skipped.length} skipped (${plan.skipped.map((x) => `${x.id}: ${x.reason}`).join("; ") || "none"})`);
+  return plan;
+}
+
+/** Once a day (claimed by compare-and-set, so one server does it). A failed fetch changes nothing. */
+async function explorerSyncTick() {
+  const day = new Date().toISOString().slice(0, 10);
+  if (!(await advanceAlertState(`explorersync:${day}`, null, true).catch(() => false))) return;
+  try {
+    await runExplorerSync();
+  } catch (err) {
+    console.warn("⚠️  Explorer apps sync failed (registry unchanged):", err.message);
+  }
+}
+
 export function startAppRescans() {
   if (!process.env.DATABASE_URL) {
     console.log("ℹ️  Database not configured — App Check rescans disabled");
@@ -159,4 +189,6 @@ export function startAppRescans() {
   console.log(`🔎 App Check rescans started (registry apps every ${RESCAN.registryEveryMs / 3600000}h, watched apps every ${RESCAN.followedEveryMs / 3600000}h)`);
   setTimeout(tick, 15 * 60 * 1000);
   setInterval(tick, RESCAN.tickMs);
+  setTimeout(explorerSyncTick, 5 * 60 * 1000);
+  setInterval(explorerSyncTick, 60 * 60 * 1000); // hourly check, runs once per UTC day
 }

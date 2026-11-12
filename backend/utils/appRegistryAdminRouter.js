@@ -8,6 +8,7 @@
 //                                           own scans have found
 //   POST   /api/admin/app-registry          add or update one app (by slug; a new name makes a new slug)
 //   DELETE /api/admin/app-registry/:slug    remove an app
+//   POST   /api/admin/app-registry/sync-explorer   pull the block explorer's Apps list now (also runs daily)
 //
 //   GET    /api/admin/app-registry/access?wallet=0x…   { admin } — only so the panel knows whether to show
 //                                           itself; every real request is still signature-checked
@@ -24,6 +25,7 @@ import { listKnownApps, upsertKnownApp, deleteKnownApp } from "../db/knownApps.j
 import { resetRegistryMemo } from "../services/appCheck/registry.js";
 import { validateAppInput, hostConflicts, CATEGORIES } from "../services/appCheck/registryAdmin.js";
 import { createRateLimiter } from "./rateLimit.js";
+import { runExplorerSync } from "./appRescanScheduler.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const ADMIN_WALLET = (process.env.ARGUS_ADMIN_WALLET || "0xa48Bc549a329EEd01E491C7CD950857A8ae56E73").toLowerCase();
@@ -62,6 +64,8 @@ const view = (apps) =>
       category: a.category,
       verifiedByUs: a.verifiedByUs,
       notes: a.notes,
+      source: a.source,
+      autoRescan: a.autoRescan,
       hosts: a.hosts,
       contracts: a.contracts.filter((c) => c.source === "registry").map((c) => ({ address: c.address, role: c.role })),
       scannedContracts: a.contracts.filter((c) => c.source === "scan").length,
@@ -92,13 +96,29 @@ router.post("/admin/app-registry", express.json({ limit: "32kb" }), async (req, 
     const existing = await listKnownApps();
     const conflicts = hostConflicts(v.app, existing);
     if (conflicts.length) return res.status(409).json({ error: conflicts.join(" ") });
-    await upsertKnownApp(v.app);
+    // saving in Argus makes the app the admins' (an explorer app edited here is no longer synced over)
+    const previous = existing.find((a) => a.slug === v.app.slug);
+    await upsertKnownApp({ ...v.app, source: previous?.source === "seed" ? "seed" : "admin", externalId: previous?.externalId || null });
     resetRegistryMemo();
     console.log(`🗂️  App registry: ${v.app.slug} saved by ${body.wallet.toLowerCase()} (${v.app.hosts.map((h) => h.host).join(", ")}; ${v.app.contracts.length} contract(s))`);
     res.json({ ok: true, slug: v.app.slug, apps: view(await listKnownApps()) });
   } catch (err) {
     console.error("⚠️  App registry admin: save failed:", err.message);
     res.status(502).json({ error: "Couldn't save that app" });
+  }
+});
+
+// Pull the Electroneum block explorer's Apps list now (it also runs daily on its own).
+router.post("/admin/app-registry/sync-explorer", express.json({ limit: "4kb" }), async (req, res) => {
+  const body = req.body || {};
+  if (!requireAdmin(res, body)) return;
+  if (!writes("w").ok) return res.status(429).json({ error: "Too many changes — try again in a few minutes" });
+  try {
+    const plan = await runExplorerSync();
+    res.json({ ok: true, added: plan.add.map((a) => a.name), updated: plan.update.map((a) => a.name), removed: plan.remove, skipped: plan.skipped, apps: view(await listKnownApps()) });
+  } catch (err) {
+    console.error("⚠️  App registry admin: explorer sync failed:", err.message);
+    res.status(502).json({ error: `Couldn't sync from the explorer: ${err.message}` });
   }
 });
 

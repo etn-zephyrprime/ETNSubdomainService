@@ -36,6 +36,19 @@ const rowStyle = { display: "flex", alignItems: "center", gap: 10, width: "100%"
 
 function StatusBanner({ r }) {
   const host = r.normalised?.displayHost || r.input;
+  if (r.status === "known" && r.app.source === "explorer") {
+    // on the explorer's Apps list: a listing, not a check by us — no tick, no green border
+    return (
+      <div style={{ display: "flex", gap: 10, alignItems: "center", border: `1px solid ${border}`, borderRadius: 6, padding: "10px 12px" }}>
+        <Globe size={18} color={mutedLight} style={{ flexShrink: 0 }} />
+        <div style={{ fontSize: 14, fontWeight: 700 }}>
+          On the Electroneum block explorer's app list as {r.app.name}
+          <div style={{ fontSize: 11, color: muted, fontWeight: 400 }}>A listing there isn't a safety check — the badge below comes from its contracts.</div>
+          <div style={{ fontFamily: monoFont, fontSize: 11, color: muted, fontWeight: 400, overflowWrap: "anywhere" }}>{host}</div>
+        </div>
+      </div>
+    );
+  }
   if (r.status === "known") {
     return (
       <div style={{ display: "flex", gap: 10, alignItems: "center", border: `1px solid ${green}`, borderRadius: 6, padding: "10px 12px" }}>
