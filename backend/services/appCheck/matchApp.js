@@ -74,7 +74,7 @@ export function lookalikeReasons(facts, target) {
   if (L === T) reasons.add(facts.sharedHosting ? "shared_hosting_same_name" : "different_domain_ending");
   if (longEnough && L !== T) {
     const d = editDistance(display, T);
-    if (d >= 1 && d <= maxDistance(T) && !facts.punycode) reasons.add("typo");
+    if (d >= 1 && d <= maxDistance(T) && !facts.punycode && [...T].length >= (LOOKALIKE.minTypoLabelLength ?? 0)) reasons.add("typo");
     if (skL === skT) reasons.add("homoglyph");
     if (facts.mixedScript && (skL === skT || editDistance(skL, skT) <= maxDistance(T))) reasons.add("mixed_script");
     if (facts.punycode && !reasons.has("homoglyph") && editDistance(skL, skT) <= maxDistance(T)) reasons.add("homoglyph");
