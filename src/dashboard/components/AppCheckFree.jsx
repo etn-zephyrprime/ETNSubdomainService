@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Globe, Loader2 } from "lucide-react";
-import AppCheckResult from "./AppCheckResult.jsx";
+import AppCheckResult, { RegistryRequestLink } from "./AppCheckResult.jsx";
 import { useAppCheck } from "../hooks/useAppCheck.js";
 import { green, gold, muted, mutedLight, border, panel2, monoFont, error as errorColor } from "../theme.js";
 
@@ -36,6 +36,7 @@ export default function AppCheckFree() {
         <Globe size={14} /> Check a website before you connect
       </div>
       <div style={{ fontSize: 13, color: mutedLight, marginBottom: 10, lineHeight: 1.5 }}>Paste a link someone sent you. Argus tells you if it's pretending to be a known Electroneum app.</div>
+      <RegistryRequestLink style={{ marginBottom: 10 }} />
       <form
         onSubmit={(e) => {
           e.preventDefault();
