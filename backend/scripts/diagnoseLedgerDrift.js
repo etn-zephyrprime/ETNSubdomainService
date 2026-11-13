@@ -33,16 +33,24 @@ import { buildEventsForWallet } from "../services/pnlSnapshotService.js";
 import { replayFifo } from "../services/fifoLotEngine.js";
 import { NATIVE_SENTINEL } from "../services/pnlEventBuilder.js";
 import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
+import { rateLimitDelayMs, RATE_LIMIT_RETRIES } from "../utils/blockscoutClient.js";
 
 dotenv.config();
 
 const BLOCKSCOUT = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 
 async function getJson(path) {
+  let limited = 0;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const res = await fetch(`${BLOCKSCOUT}${path}`, { signal: AbortSignal.timeout(20000) });
       if (res.ok) return normalizeBlockscoutTokens(await res.json());
+      // Rate limited: wait it out (Retry-After / 5s→60s) without using up the normal retries.
+      if (res.status === 429 && limited < RATE_LIMIT_RETRIES) {
+        await new Promise((r) => setTimeout(r, rateLimitDelayMs(res, limited++)));
+        attempt--;
+        continue;
+      }
     } catch {
       // retry below
     }

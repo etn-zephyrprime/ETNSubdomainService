@@ -260,8 +260,23 @@ function netNativeWithinTx(events) {
  *     as a lock. The transaction walk runs concurrently with the DeFi scan, so it can't know a tx is a
  *     farm deposit yet. Confirmed live 2026-11-13: a 102,183 ETN farm #5 deposit was booked as both a
  *     plain disposal AND a lock (204,366 out). Filtered here, so existing rows need no re-ingest.
+ *   - drops a farm/stake tx's plain token rows (log_index >= 0) and internal-ETN rows (-1000..-1999):
+ *     ingestion's token and internal walks already skip every farm/stake tx (its farm events book those
+ *     amounts), but only for txs ALREADY in defi_activity when the walk runs. Confirmed live 2026-11-13:
+ *     during a reset, the server started its own DeFi scan of the same wallet alongside the script; the
+ *     script's token walk stored a farm #3 withdraw's 106.12 BOLT + DYNO as plain transfers at 21:50, the
+ *     farm_withdraw row landed at 22:05, and the ledger booked the payout twice (+452.87 BOLT across
+ *     188 farm txs). Applying the same rule here makes it race-proof and fixes stored rows without a
+ *     re-ingest. Gas (-1) and the tx value (-2, see the next rule) are not affected.
  *   - folds WETN into ETN, drops ETN<->WETN "swaps" (now same-asset no-ops), and nets same-tx ETN
  *     round trips (see the section comment above, and netNativeWithinTx). */
+/** A row written by ingestion's token-transfer walk (log_index >= 0) or internal-transaction walk
+ * (-1000..-1999) — the two walks that skip farm/stake txs. */
+const isWalkedTransferRow = (t) => {
+  const i = Number(t.log_index);
+  return i >= 0 || (i <= -1000 && i > -2000);
+};
+
 export function assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity }) {
   const defiTxHashes = new Set(defiActivity.map((d) => String(d.tx_hash).toLowerCase()));
   const defiTxContracts = new Set(defiActivity.map((d) => `${String(d.tx_hash).toLowerCase()}:${String(d.contract_address).toLowerCase()}`));
@@ -273,6 +288,7 @@ export function assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedR
     .filter((t) => !nftConsumedRowIds.has(t.id))
     .filter((t) => !(Number(t.log_index) <= -2000 && defiTxHashes.has(String(t.tx_hash).toLowerCase())))
     .filter((t) => !isFarmEtnPayment(t))
+    .filter((t) => !(defiTxHashes.has(String(t.tx_hash).toLowerCase()) && isWalkedTransferRow(t)))
     .map(transferToEvent);
   const events = [...transferEvents, ...swaps.map(swapToEvent), ...nftEvents, ...defiEvents]
     .map(canonicalizeEvent)
