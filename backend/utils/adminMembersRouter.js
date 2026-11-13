@@ -12,7 +12,7 @@
 // planetzephyros.etn (0x3Fd2…5099) and mav-browney.electroswap.etn (0x696A…db2e). Addresses, never names.
 import express from "express";
 import { verifyWalletOwnership } from "./walletAuth.js";
-import { REGISTRY_ADMINS } from "./appRegistryAdminRouter.js";
+import { ARGUS_ADMINS, parseAdminList } from "./argusAdmins.js";
 import { query } from "../db/pool.js";
 import { createRateLimiter } from "./rateLimit.js";
 
@@ -20,9 +20,7 @@ const AUTH_PURPOSE = "Premium Dashboard";
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const EXPIRING_SOON_DAYS = 7;
 
-export const MEMBERS_ADMINS = process.env.MEMBERS_ADMINS
-  ? new Set(process.env.MEMBERS_ADMINS.split(",").map((a) => a.trim().toLowerCase()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))
-  : REGISTRY_ADMINS;
+export const MEMBERS_ADMINS = process.env.MEMBERS_ADMINS ? parseAdminList(process.env.MEMBERS_ADMINS) : ARGUS_ADMINS;
 
 const reads = createRateLimiter({ max: 60, windowMs: 10 * 60 * 1000 });
 const router = express.Router();

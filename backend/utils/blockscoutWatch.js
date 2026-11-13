@@ -15,11 +15,14 @@
 //      the moment checks pass again, e.g. after a normalizer fix deploys. BLOCKSCOUT_WATCH_PAUSE=off
 //      disables the pause (alerts still fire).
 //
+// Alerts are DMs from the Notis alerts bot (the one that sends portfolio summaries) to every Argus admin
+// wallet (argusAdmins.js) that has linked Telegram on the dashboard; an unlinked admin just doesn't get them.
+//
 // State lives in contract_alert_state (key/value, compare-and-set), so overlapping servers during a
 // deploy agree on one state and only the server whose write wins sends each alert.
 import { fetchBlockscoutJsonOrNull } from "./blockscoutClient.js";
 import { getAlertState, advanceAlertState } from "../db/contractAlerts.js";
-import { sendTelegramDirectMessage } from "./telegramNotifier.js";
+import { ARGUS_ADMINS } from "./argusAdmins.js";
 
 export const CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const FIRST_CHECK_DELAY_MS = 60 * 1000;
@@ -148,20 +151,35 @@ export async function getIngestionPauseReason({ getState = getAlertState } = {})
   return `Paused: Blockscout API fields changed (${what}). Resumes automatically once fixed.`;
 }
 
-async function notify(text, send) {
-  const chatId = process.env.BLOCKSCOUT_WATCH_CHAT_ID;
-  if (!chatId) {
-    console.warn(`ℹ️  BLOCKSCOUT_WATCH_CHAT_ID not set, alert only logged:\n${text}`);
+/** Linked Notis chat ids of the Argus admin wallets (deduped). Loaded lazily: pnlIngestion imports this
+ * module for the pause gate and shouldn't pull in the whole Telegram bot with it. */
+async function adminChatIds() {
+  const { getNotisLinkedChatId } = await import("./notisLinkRouter.js");
+  const ids = await Promise.all([...ARGUS_ADMINS].map((w) => getNotisLinkedChatId(w).catch(() => null)));
+  return [...new Set(ids.filter(Boolean))];
+}
+
+async function defaultSend(chatId, text) {
+  const { sendNotisDirectMessage } = await import("./notisLinkRouter.js");
+  return sendNotisDirectMessage(chatId, text);
+}
+
+async function notify(text, { send, recipients }) {
+  const chatIds = await recipients();
+  if (!chatIds.length) {
+    console.warn(`ℹ️  Blockscout watch: no admin wallet has linked Telegram, alert only logged:
+${text}`);
     return;
   }
-  await send(chatId, text);
+  for (const chatId of chatIds) await send(chatId, text);
 }
 
 /** One full cycle: version watch, field checks, state + alerts. Exported for tests and the CLI script. */
 export async function runBlockscoutWatch({
   fetchJson = fetchBlockscoutJsonOrNull,
   state = { get: getAlertState, advance: advanceAlertState },
-  send = sendTelegramDirectMessage,
+  send = defaultSend,
+  recipients = adminChatIds,
   checks = SCHEMA_CHECKS,
 } = {}) {
   const summary = { version: null, versionChanged: false, schema: null, alerts: [] };
@@ -191,7 +209,7 @@ export async function runBlockscoutWatch({
     }
   }
 
-  for (const text of summary.alerts) await notify(text, send).catch((err) => console.warn("⚠️  Blockscout watch alert failed:", err.message));
+  for (const text of summary.alerts) await notify(text, { send, recipients }).catch((err) => console.warn("⚠️  Blockscout watch alert failed:", err.message));
   return summary;
 }
 

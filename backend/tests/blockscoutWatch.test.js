@@ -63,14 +63,13 @@ test("version: first run records a baseline silently, a change alerts once", asy
   const state = memState();
   const sent = [];
   const send = async (_c, t) => sent.push(t);
-  process.env.BLOCKSCOUT_WATCH_CHAT_ID = "1";
-  await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.0.4" }), state, send });
+  await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.0.4" }), state, send, recipients: async () => ["1"] });
   assert.equal(sent.length, 0);
-  const s = await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.1.0" }), state, send });
+  const s = await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.1.0" }), state, send, recipients: async () => ["1"] });
   assert.equal(s.versionChanged, true);
   assert.equal(sent.length, 1);
   assert.match(sent[0], /v12\.0\.4 → \*v12\.1\.0\*/);
-  await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.1.0" }), state, send });
+  await runBlockscoutWatch({ fetchJson: fakeFetch({ version: "v12.1.0" }), state, send, recipients: async () => ["1"] });
   assert.equal(sent.length, 1);
 });
 
@@ -78,23 +77,22 @@ test("field failure pauses ingestion, alerts once, and recovery clears it", asyn
   const state = memState();
   const sent = [];
   const send = async (_c, t) => sent.push(t);
-  process.env.BLOCKSCOUT_WATCH_CHAT_ID = "1";
   delete process.env.BLOCKSCOUT_WATCH_PAUSE;
 
-  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send });
+  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send, recipients: async () => ["1"] });
   assert.equal(sent.length, 1);
   assert.match(sent[0], /paused/);
   const reason = await getIngestionPauseReason({ getState: state.get });
   assert.match(reason, /token list: address \(now address_hash\?\)/);
 
-  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send });
+  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send, recipients: async () => ["1"] });
   assert.equal(sent.length, 1, "same failure doesn't re-alert");
 
   process.env.BLOCKSCOUT_WATCH_PAUSE = "off";
   assert.equal(await getIngestionPauseReason({ getState: state.get }), null);
   delete process.env.BLOCKSCOUT_WATCH_PAUSE;
 
-  await runBlockscoutWatch({ fetchJson: fakeFetch(), state, send });
+  await runBlockscoutWatch({ fetchJson: fakeFetch(), state, send, recipients: async () => ["1"] });
   assert.equal(sent.length, 2);
   assert.match(sent[1], /passing again/);
   assert.equal(await getIngestionPauseReason({ getState: state.get }), null);
@@ -104,6 +102,6 @@ test("a lost compare-and-set race sends nothing (another server has it)", async 
   const state = memState();
   state.advance = async () => false;
   const sent = [];
-  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send: async (_c, t) => sent.push(t) });
+  await runBlockscoutWatch({ fetchJson: fakeFetch({ normalize: false }), state, send: async (_c, t) => sent.push(t), recipients: async () => ["1"] });
   assert.equal(sent.length, 0);
 });
