@@ -125,3 +125,29 @@ test("a plain ETN payment to a DIFFERENT contract in a farm tx is kept", () => {
   const events = assembleLedgerEvents({ transfers, swaps: [], nftEvents: [], nftConsumedRowIds: new Set(), defiEvents: [], defiActivity: [{ tx_hash: "0xh", contract_address: FARM }] });
   assert.equal(events.length, 1);
 });
+
+test("farm tx rows written by the token/internal walks before the farm row existed are dropped (race)", () => {
+  const FARM = "0xe653ac16b732876f58a1722d24801230fa96bc82";
+  const H = "0xc2a5b8f0cdadc1567092339fc8bcf0bad7058e44ff5bb8ac404b9b98ce8b6e17";
+  const BOLT = "0x043faa1b5c5fc9a7dc35171f290c29ecde0ccff1";
+  const DYNO = "0xee432c220273e4f949007b4c1946562826efa055";
+  const ts = "2026-11-01T00:00:00Z";
+  const row = (o) => ({ id: Math.random(), tx_hash: H, timestamp: ts, is_self_transfer: false, direction: "in", counterparty_address: FARM, price_usd_at_time: 0, usd_value: 0, ...o });
+  const transfers = [
+    row({ log_index: -1, direction: "out", token_address: null, amount_decimal: "0.01" }), // gas: kept
+    row({ log_index: 5, token_address: DYNO, counterparty_address: "0x0000000000000000000000000000000000000000", amount_decimal: "3.5518" }),
+    row({ log_index: 7, token_address: BOLT, amount_decimal: "106.1233" }),
+    row({ log_index: 8, token_address: DYNO, amount_decimal: "0.1516" }),
+    row({ log_index: -1003, token_address: null, amount_decimal: "1" }), // internal ETN on the farm tx: dropped too
+    row({ tx_hash: "0xplain", log_index: 3, token_address: BOLT, amount_decimal: "50" }), // not a farm tx: kept
+  ];
+  const defiActivity = [{ tx_hash: H, contract_address: FARM }];
+  const defiEvents = [
+    { kind: "in", tokenAddress: BOLT, txHash: H, timestamp: new Date(ts), quantity: "106.1233", unitCostUsd: 0 },
+    { kind: "in", tokenAddress: DYNO, txHash: H, timestamp: new Date(ts), quantity: "3.7034", unitCostUsd: 0 },
+  ];
+  const events = assembleLedgerEvents({ transfers, swaps: [], nftEvents: [], nftConsumedRowIds: new Set(), defiEvents, defiActivity });
+  const onFarmTx = events.filter((e) => e.txHash === H).map((e) => `${e.kind}:${e.tokenAddress.slice(0, 6)}:${e.quantity}`).sort();
+  assert.deepEqual(onFarmTx, ["in:0x043f:106.1233", "in:0xee43:3.7034", "out:NATIVE:0.01"]);
+  assert.ok(events.some((e) => e.txHash === "0xplain"));
+});
