@@ -548,8 +548,20 @@ async function priceOrNull(asset, timestamp, priorityAssets) {
  *    bought token but never the sold one, because the wallet paid the V3 pool, not the V2 pair.
  * Transfers with any other address (e.g. a buyBackAndBurn's burn-to-zero leg) are still ignored.
  * A tx that nets out more than one token, or nets in more than one, returns null so its legs fall
- * through to plain transfers instead of being forced into a one-for-one trade. */
-export function deriveSwapLegs(walletLc, tx, logs, tokenTransfers) {
+ * through to plain transfers instead of being forced into a one-for-one trade.
+ *
+ * ElectroSwap's Universal Router (`execute`, 0x3593564c), confirmed on live txs 2026-11-13:
+ *  - FEE LEG: it takes a 0.3% fee straight from the wallet as its own transfer to a fee address (e.g.
+ *    10,000 BOLT sold = 9,970 to the pool + 30 to 0xD6Cf…). That address is neither a pool nor the
+ *    router, so it used to be dropped, and the tx's transfers are excluded from the plain walk too: the
+ *    fee vanished from the ledger. A wallet-sent transfer of the SOLD token to any other address in a
+ *    tx the wallet itself sent is now part of the amount sold.
+ *  - ETN REFUND: an exact-output buy paid in ETN wraps the whole msg.value, spends part, and refunds the
+ *    rest to the wallet as an internal ETN transfer (e.g. 87,071 sent, 7,916 refunded). Pass the tx's
+ *    internal transactions (`internalTxs`) and an ETN sold leg is msg.value minus what came back; an
+ *    ETN bought leg is what the wallet actually received. Without them (older callers) both fall back
+ *    to msg.value, as before. */
+export function deriveSwapLegs(walletLc, tx, logs, tokenTransfers, internalTxs = null) {
   let swapLog = null;
   const pools = new Set();
   for (const l of logs) {
@@ -592,18 +604,52 @@ export function deriveSwapLegs(walletLc, tx, logs, tokenTransfers) {
   const ins = [...net].filter(([, e]) => e.wei > 0n);
   if (outs.length > 1 || ins.length > 1 || (outs.length === 0 && ins.length === 0)) return null;
 
-  // A pure ETN<->token swap has only one token leg; the other is the tx's own native value (the
-  // caller skips this tx's plain native-transfer rows, since it's a swap leg instead).
+  // Router fee leg (see the doc comment): the wallet's own transfers of the sold token to any address
+  // that isn't a pool or the router, in a tx the wallet sent, are part of what it gave up.
+  if (outs.length === 1 && String(tx.from?.hash || "").toLowerCase() === walletLc) {
+    const [soldToken, soldEntry] = outs[0];
+    for (const t of tokenTransfers) {
+      const from = String(t.from?.hash).toLowerCase();
+      const to = String(t.to?.hash).toLowerCase();
+      if (from !== walletLc || to === walletLc || counterparties.has(to) || t.token?.address !== soldToken) continue;
+      soldEntry.wei -= BigInt(t.total?.value || "0");
+    }
+  }
+
+  // A pure ETN<->token swap has only one token leg; the other is native ETN (the caller skips this
+  // tx's plain native-transfer rows, since it's a swap leg instead). msg.value is what was sent; any
+  // internal ETN transfer back to the wallet in the same tx is a refund (sold side) or the proceeds
+  // (bought side).
   const nativeValue = BigInt(tx.value || "0");
+  const nativeBack = Array.isArray(internalTxs)
+    ? internalTxs.reduce((sum, itx) => {
+        if (itx.success === false || String(itx.to?.hash || "").toLowerCase() !== walletLc) return sum;
+        return sum + BigInt(itx.value || "0");
+      }, 0n)
+    : 0n;
+  const nativeSold = nativeValue > nativeBack ? nativeValue - nativeBack : 0n;
+  const nativeBought = Array.isArray(internalTxs) && nativeBack > 0n ? nativeBack : nativeValue;
   const [soldAddress, soldEntry] = outs[0] || ["NATIVE", null];
   const [boughtAddress, boughtEntry] = ins[0] || ["NATIVE", null];
   return {
     swapLog,
     soldAddress,
-    soldAmount: soldEntry ? weiToDecimal(-soldEntry.wei, soldEntry.decimals) : weiToDecimal(nativeValue),
+    soldAmount: soldEntry ? weiToDecimal(-soldEntry.wei, soldEntry.decimals) : weiToDecimal(nativeSold),
     boughtAddress,
-    boughtAmount: boughtEntry ? weiToDecimal(boughtEntry.wei, boughtEntry.decimals) : weiToDecimal(nativeValue),
+    boughtAmount: boughtEntry ? weiToDecimal(boughtEntry.wei, boughtEntry.decimals) : weiToDecimal(nativeBought),
   };
+}
+
+/** A swap tx's internal transactions, only when one of its legs is native ETN (the only case
+ * deriveSwapLegs uses them). null when not needed or unfetchable: the legs then fall back to msg.value. */
+export async function fetchSwapInternalTxs(legs, txHash, getItems) {
+  if (!legs || (legs.soldAddress !== "NATIVE" && legs.boughtAddress !== "NATIVE")) return null;
+  try {
+    return await getItems(`/transactions/${txHash}/internal-transactions`);
+  } catch (err) {
+    console.warn(`⚠️  Ingestion: could not fetch internal txs for swap ${txHash} (ETN leg falls back to msg.value):`, err.message);
+    return null;
+  }
 }
 
 /** Detects whether a single /transactions item `tx` is an ElectroSwap trade — same heuristic as
@@ -623,8 +669,10 @@ async function detectAndRecordSwap(trackedWallet, walletLc, tx, tokenTransfers, 
     return false;
   }
 
-  const legs = deriveSwapLegs(walletLc, tx, logsPage.items || [], tokenTransfers);
+  let legs = deriveSwapLegs(walletLc, tx, logsPage.items || [], tokenTransfers);
   if (!legs) return false;
+  const internalTxs = await fetchSwapInternalTxs(legs, tx.hash, async (path) => (await fetchPage(path, null)).items || []);
+  if (internalTxs) legs = deriveSwapLegs(walletLc, tx, logsPage.items || [], tokenTransfers, internalTxs) || legs;
   const { swapLog, soldAddress, soldAmount, boughtAddress, boughtAmount } = legs;
   const timestamp = new Date(tx.timestamp);
 
