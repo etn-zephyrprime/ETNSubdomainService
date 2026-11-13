@@ -16,6 +16,12 @@
 //     (every harvest). raw_args.amountBoltAdded/amountBoltReturned is recomputed with
 //     computeFarmBoltAmount and set, changed, or removed to match.
 //
+//  3. (2026-11-13) Universal Router swaps: the 0.3% fee the router takes straight from the wallet
+//     (a transfer to a fee address, not a pool) is now part of the amount sold, and an ETN-paid
+//     exact-output buy's ETN refund (an internal transfer back to the wallet) is subtracted from the
+//     ETN sold. Same in-place re-derivation as (1), with the tx's internal transactions fetched when a
+//     leg is native ETN.
+//
 // pnl_snapshots are cleared for every wallet that changed (unless --keep-history), since
 // backfillPnlHistory only fills MISSING days. Run backfillPnlHistory.js afterwards.
 //
@@ -30,7 +36,8 @@
 import dotenv from "dotenv";
 import { ethers } from "ethers";
 import { getPool, query } from "../db/pool.js";
-import { deriveSwapLegs, computeFarmBoltAmount, getFarmBoltContext } from "../services/pnlIngestion.js";
+import { deriveSwapLegs, fetchSwapInternalTxs, computeFarmBoltAmount, getFarmBoltContext } from "../services/pnlIngestion.js";
+import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
 import { getHistoricalPriceUsd } from "../services/pnlPricing.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 
@@ -60,7 +67,7 @@ async function getJson(path) {
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
       const res = await fetch(`${BLOCKSCOUT}${path}`, { signal: AbortSignal.timeout(20000) });
-      if (res.ok) return await res.json();
+      if (res.ok) return normalizeBlockscoutTokens(await res.json());
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get("retry-after"));
         await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 5000 * (attempt + 1));
@@ -160,7 +167,13 @@ async function repairSwaps(changedWallets) {
         await sleep(250);
       }
 
-      const legs = deriveSwapLegs(String(row.tracked_wallet).toLowerCase(), data.tx, data.logs, data.transfers);
+      const walletLc = String(row.tracked_wallet).toLowerCase();
+      let legs = deriveSwapLegs(walletLc, data.tx, data.logs, data.transfers);
+      if (data.internals === undefined) {
+        data.internals = await fetchSwapInternalTxs(legs, hash, getAllItems);
+        if (data.internals) await sleep(250);
+      }
+      if (data.internals) legs = deriveSwapLegs(walletLc, data.tx, data.logs, data.transfers, data.internals) || legs;
       if (!legs) {
         console.log(`  ?  ${row.tracked_wallet.slice(0, 10)} ${hash} no longer a one-for-one swap — left unchanged (needs a re-ingest)`);
         notSwap++;

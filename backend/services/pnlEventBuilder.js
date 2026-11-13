@@ -255,13 +255,24 @@ function netNativeWithinTx(events) {
  *     lock/unlock from the farm's events — confirmed live (burny.etn's farm #4 deposit) that keeping
  *     both credited the wallet the farm's fee collect and double-counted the withdrawal. Rows
  *     ingested before pnlIngestion.js started declining these are filtered here, so no re-ingest.
+ *   - drops a tx's plain top-level ETN payment (log_index -2, tx.value) when that tx is a farm/stake tx
+ *     and the ETN went to that same farm/stake contract: the farm's own deposit event already books it
+ *     as a lock. The transaction walk runs concurrently with the DeFi scan, so it can't know a tx is a
+ *     farm deposit yet. Confirmed live 2026-11-13: a 102,183 ETN farm #5 deposit was booked as both a
+ *     plain disposal AND a lock (204,366 out). Filtered here, so existing rows need no re-ingest.
  *   - folds WETN into ETN, drops ETN<->WETN "swaps" (now same-asset no-ops), and nets same-tx ETN
  *     round trips (see the section comment above, and netNativeWithinTx). */
 export function assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity }) {
   const defiTxHashes = new Set(defiActivity.map((d) => String(d.tx_hash).toLowerCase()));
+  const defiTxContracts = new Set(defiActivity.map((d) => `${String(d.tx_hash).toLowerCase()}:${String(d.contract_address).toLowerCase()}`));
+  const isFarmEtnPayment = (t) =>
+    Number(t.log_index) === -2 &&
+    t.direction === "out" &&
+    defiTxContracts.has(`${String(t.tx_hash).toLowerCase()}:${String(t.counterparty_address).toLowerCase()}`);
   const transferEvents = transfers
     .filter((t) => !nftConsumedRowIds.has(t.id))
     .filter((t) => !(Number(t.log_index) <= -2000 && defiTxHashes.has(String(t.tx_hash).toLowerCase())))
+    .filter((t) => !isFarmEtnPayment(t))
     .map(transferToEvent);
   const events = [...transferEvents, ...swaps.map(swapToEvent), ...nftEvents, ...defiEvents]
     .map(canonicalizeEvent)
