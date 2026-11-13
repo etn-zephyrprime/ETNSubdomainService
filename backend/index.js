@@ -60,6 +60,7 @@ import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
 import { startPriceTopUpScheduler } from "./utils/priceTopUpScheduler.js";
+import { startBlockscoutWatch } from "./utils/blockscoutWatch.js";
 import { startEtnAccumulatorBot } from "./utils/etnAccumulatorBot.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import adminSplitRouter from "./utils/adminSplitRouter.js";
@@ -192,6 +193,7 @@ app.listen(PORT, () => {
 
   // Premium Feature #3 (Telegram alerts) — see migrations/009_alerts.sql. Reuses the Telegram
   // link every premium feature already authenticates against; no separate linking flow.
+  safeStart("Blockscout watch", startBlockscoutWatch);
   safeStart("Wallet alert scheduler", startWalletAlertScheduler);
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
   safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);
