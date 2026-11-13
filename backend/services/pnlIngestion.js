@@ -37,6 +37,7 @@ import { isTestNamedToken } from "./ignoredAssets.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
+import { rateLimitDelayMs, RateLimitedError, RATE_LIMIT_RETRIES } from "../utils/blockscoutClient.js";
 import { getIngestionPauseReason } from "../utils/blockscoutWatch.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
@@ -415,9 +416,17 @@ async function fetchPage(path, cursorParams, attempt = 0) {
   }
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (res.status === 429) throw new RateLimitedError(path, rateLimitDelayMs(res, attempt));
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
     return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
+    // Rate limited: wait it out on its own, longer budget (see blockscoutClient.js) instead of the
+    // short generic retries below, which gave up within seconds on a re-ingest's first page.
+    if (err instanceof RateLimitedError && attempt < RATE_LIMIT_RETRIES) {
+      console.warn(`⏳ Blockscout rate limit on ${path}, waiting ${Math.round(err.delayMs / 1000)}s (retry ${attempt + 1}/${RATE_LIMIT_RETRIES})`);
+      await sleep(err.delayMs);
+      return fetchPage(path, cursorParams, attempt + 1);
+    }
     // A timeout throws the same as any other network failure here, so it falls through to the
     // existing retry path below rather than needing special-case handling.
     if (attempt < MAX_RETRIES) {
@@ -454,7 +463,7 @@ async function fetchPage(path, cursorParams, attempt = 0) {
  * real oldest-block-seen number the console % is built from, just expressed as a block count
  * instead of a percentage so doIngestWalletHistory can sum it together with the other three
  * walks' own counts into one combined total. */
-async function walkAllPages(path, stopAtBlock, onPage, label, latestBlockAtStart = null, onProgress = null) {
+async function walkAllPages(path, stopAtBlock, onPage, label, latestBlockAtStart = null, onProgress = null, abortState = null) {
   const startedAt = Date.now();
   let lastLoggedAt = 0;
   let lastProgressAt = 0;
@@ -462,6 +471,7 @@ async function walkAllPages(path, stopAtBlock, onPage, label, latestBlockAtStart
   let cursor;
   let itemCount = 0;
   for (;;) {
+    if (abortState?.aborted) throw new Error(abortState.reason || `${path} walk aborted`);
     const page = await fetchPage(path, cursor);
     const items = page.items || [];
     if (items.length === 0) break;
@@ -1321,7 +1331,7 @@ async function fetchTokenTransfersForTx(txHash) {
   }
 }
 
-async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets, latestBlockAtStart = null, onProgress = null) {
+async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets, latestBlockAtStart = null, onProgress = null, abortState = null) {
   const walletLc = trackedWallet.toLowerCase();
   const rows = [];
   const swapTxHashes = new Set();
@@ -1422,7 +1432,7 @@ async function ingestTransactionsGasAndSwaps(trackedWallet, selfOwnedSet, cexAdd
         });
       }
     }
-  }, "transactions", latestBlockAtStart, onProgress);
+  }, "transactions", latestBlockAtStart, onProgress, abortState);
 
   if (rows.length > 0) await insertTransfers(rows);
   if (swapRows.length > 0) await insertSwapTrades(swapRows);
@@ -1804,6 +1814,10 @@ async function queryDefiLogsChunked(provider, topic0, walletTopicIndex, walletTo
   }
   try {
     await Promise.all(Array.from({ length: Math.min(DEFI_LOG_CONCURRENCY, windows.length) }, () => worker()));
+    // Stopped from outside (the run's transaction walk failed) with no error of our own: the windows
+    // aren't all done, so this must fail rather than return partial results the caller would treat as
+    // a complete scan and advance the cursor past. Contiguous progress is still checkpointed below.
+    if (abortState.aborted) throw new Error(abortState.reason || `DeFi:${label} scan aborted`);
     if (onProgress) onProgress(completedCount, windows.length); // final, unthrottled — guarantees an exact 100% at the end
   } finally {
     // Unconditional final flush — runs whether this topic fully succeeded, was aborted by a
@@ -2059,12 +2073,12 @@ async function decodeAndPersistDefiLogs(trackedWallet, provider, logs) {
 // resulting highestBlock/defiTxHashes are the same regardless of which caller's params "won").
 const inFlightDefiScans = new Map(); // walletLc -> Promise
 
-function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
+function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null, abortState = null) {
   const walletLc = trackedWallet.toLowerCase();
   const existing = inFlightDefiScans.get(walletLc);
   if (existing) return existing;
 
-  const promise = doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress, latestBlockAtStart).finally(() => {
+  const promise = doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress, latestBlockAtStart, abortState).finally(() => {
     if (inFlightDefiScans.get(walletLc) === promise) inFlightDefiScans.delete(walletLc);
   });
   inFlightDefiScans.set(walletLc, promise);
@@ -2085,7 +2099,7 @@ function ingestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, lates
  * walks' own, rather than each drifting by however many blocks land between their separate calls.
  * ensureDefiActivityIngested (the lighter Portfolio-page caller, which has no such shared value)
  * omits this and gets the previous behavior: a fresh, independent read. */
-async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null) {
+async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = null, latestBlockAtStart = null, externalAbort = null) {
   // batchMaxCount: 1 — this function is the heaviest concurrent-RPC caller in this file by far:
   // 6 topics x DEFI_LOG_CONCURRENCY (4) workers each means up to 24 simultaneous getLogs() calls on
   // the very first tick of a cold-start scan. Without this, ethers' own default batching bundles
@@ -2126,7 +2140,9 @@ async function doIngestDefiActivity(trackedWallet, stopAtBlock, onProgress = nul
   // this, one topic failing used to leave the other 5 running (and failing, repeatedly, against the
   // same already-struggling RPC endpoints) for a real stretch of time after this whole scan had
   // already been written off, confirmed live.
-  const abortState = { aborted: false };
+  // `externalAbort` (doIngestWalletHistory's run-wide flag) lets the caller stop this scan when the
+  // transaction walk running beside it fails, instead of leaving it scanning (and writing) on its own.
+  const abortState = externalAbort ?? { aborted: false };
 
   // Per-topic resumable starting point — see defi_scan_topic_progress's own migration comment.
   // `fromBlock` (this scan attempt's own lower bound) is the staleness key: a saved row from a
@@ -2379,16 +2395,35 @@ async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], pri
     // two swap-dependent walks run concurrently with each other too — see each function's own
     // comment for why this whole restructure is deliberate: /transactions used to be walked twice
     // and everything used to run fully sequentially.
-    const [{ swapTxHashes, highestBlock: highestFromTx }, { highestBlock: highestFromDefi, defiTxHashes }] = await Promise.all([
+    //
+    // If either side fails, the other is told to stop (runAbort) and BOTH are awaited before the error
+    // propagates. Confirmed live 2026-11-13: a 429 failed the transaction walk in seconds, the caller
+    // (a maintenance script) moved on and closed the database pool, and the DeFi scan kept running
+    // for minutes, every write failing with "Cannot use a pool after calling end on the pool".
+    const runAbort = { aborted: false, reason: null };
+    const stopOther = (side) => (err) => {
+      if (!runAbort.aborted) {
+        runAbort.aborted = true;
+        runAbort.reason = `stopped: the ${side} failed (${err.message})`;
+      }
+      throw err;
+    };
+    const [txResult, defiResult] = await Promise.allSettled([
       ingestTransactionsGasAndSwaps(
         trackedWallet, selfOwnedSet, cexAddressSet, stopAtBlock, priorityAssets,
-        latestBlockAtStart, (b) => reportProgress("tx", b, "Scanning transaction history…")
-      ),
+        latestBlockAtStart, (b) => reportProgress("tx", b, "Scanning transaction history…"), runAbort
+      ).catch(stopOther("transaction walk")),
       ingestDefiActivity(
         trackedWallet, stopAtDefiBlock,
-        (b) => reportProgress("defi", b, "Scanning DeFi activity…"), latestBlockAtStart
-      ),
+        (b) => reportProgress("defi", b, "Scanning DeFi activity…"), latestBlockAtStart, runAbort
+      ).catch(stopOther("DeFi scan")),
     ]);
+    // The side that failed FIRST is the real cause; the other's error is just "stopped: ...".
+    const rejected = [txResult, defiResult].filter((r) => r.status === "rejected");
+    const firstFailure = rejected.find((r) => !String(r.reason?.message).startsWith("stopped:")) ?? rejected[0];
+    if (firstFailure) throw firstFailure.reason;
+    const { swapTxHashes, highestBlock: highestFromTx } = txResult.value;
+    const { highestBlock: highestFromDefi, defiTxHashes } = defiResult.value;
     // A farm/stake deposit or withdrawal moves its own underlying tokens via ordinary ERC20
     // transferFrom/transfer calls under the hood — without excluding defiTxHashes here too (same
     // role swapTxHashes already plays for a swap's own legs), those same amounts would ALSO get

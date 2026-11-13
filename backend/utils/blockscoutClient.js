@@ -1,4 +1,21 @@
 import { normalizeBlockscoutTokens } from "./blockscoutNormalize.js";
+
+/** Blockscout rate limits (HTTP 429) get their own, longer retry budget: honor Retry-After when sent,
+ * otherwise back off 5s, 10s, 20s... capped at 60s. Confirmed live 2026-11-13 (after the v12 upgrade):
+ * a re-ingest's very first /transactions page got 429s, and the old 0.5s/1s/1.5s retries gave up
+ * within seconds. */
+export const RATE_LIMIT_RETRIES = 6;
+export function rateLimitDelayMs(res, attempt) {
+  const retryAfter = Number(res?.headers?.get?.("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter, 120) * 1000;
+  return Math.min(5000 * 2 ** attempt, 60000);
+}
+export class RateLimitedError extends Error {
+  constructor(path, delayMs) {
+    super(`HTTP 429 for ${path}`);
+    this.delayMs = delayMs;
+  }
+}
 // backend/utils/blockscoutClient.js
 //
 // Small retrying JSON fetch against Blockscout's v2 API — shared by walletAlertScheduler.js and
@@ -27,9 +44,14 @@ export async function fetchBlockscoutJsonOrNull(path, attempt = 0) {
   try {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 404) return null;
+    if (res.status === 429) throw new RateLimitedError(path, rateLimitDelayMs(res, attempt));
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
     return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
+    if (err instanceof RateLimitedError && attempt < RATE_LIMIT_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, err.delayMs));
+      return fetchBlockscoutJsonOrNull(path, attempt + 1);
+    }
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
       return fetchBlockscoutJsonOrNull(path, attempt + 1);
@@ -41,9 +63,14 @@ export async function fetchBlockscoutJsonOrNull(path, attempt = 0) {
 export async function fetchBlockscoutJson(path, attempt = 0) {
   try {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (res.status === 429) throw new RateLimitedError(path, rateLimitDelayMs(res, attempt));
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
     return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
+    if (err instanceof RateLimitedError && attempt < RATE_LIMIT_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, err.delayMs));
+      return fetchBlockscoutJson(path, attempt + 1);
+    }
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
       return fetchBlockscoutJson(path, attempt + 1);
