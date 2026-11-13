@@ -1,12 +1,13 @@
 import { useCallback } from "react";
 import { BLOCKSCOUT_API_BASE } from "../config.js";
+import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
 
 async function fetchJson(path) {
   const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`);
   if (!res.ok) {
     throw new Error(`Blockscout ${path} returned ${res.status}`);
   }
-  return res.json();
+  return normalizeBlockscoutTokens(await res.json());
 }
 
 // Thin, one-function-per-endpoint wrapper around Electroneum's public Blockscout v2 API — no

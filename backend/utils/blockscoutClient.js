@@ -1,3 +1,4 @@
+import { normalizeBlockscoutTokens } from "./blockscoutNormalize.js";
 // backend/utils/blockscoutClient.js
 //
 // Small retrying JSON fetch against Blockscout's v2 API — shared by walletAlertScheduler.js and
@@ -27,7 +28,7 @@ export async function fetchBlockscoutJsonOrNull(path, attempt = 0) {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
-    return await res.json();
+    return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
@@ -41,7 +42,7 @@ export async function fetchBlockscoutJson(path, attempt = 0) {
   try {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
-    return await res.json();
+    return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));

@@ -32,6 +32,7 @@ import { getAllDefiActivityBefore } from "../db/defiActivity.js";
 import { buildEventsForWallet } from "../services/pnlSnapshotService.js";
 import { replayFifo } from "../services/fifoLotEngine.js";
 import { NATIVE_SENTINEL } from "../services/pnlEventBuilder.js";
+import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
 
 dotenv.config();
 
@@ -41,7 +42,7 @@ async function getJson(path) {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const res = await fetch(`${BLOCKSCOUT}${path}`, { signal: AbortSignal.timeout(20000) });
-      if (res.ok) return await res.json();
+      if (res.ok) return normalizeBlockscoutTokens(await res.json());
     } catch {
       // retry below
     }

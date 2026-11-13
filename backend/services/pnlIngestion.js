@@ -36,6 +36,7 @@ import { getFarmTokens, getFarmRewardToken, getThirdPartyRewardToken } from "./p
 import { isTestNamedToken } from "./ignoredAssets.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
+import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 export const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
@@ -414,7 +415,7 @@ async function fetchPage(path, cursorParams, attempt = 0) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
-    return await res.json();
+    return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
     // A timeout throws the same as any other network failure here, so it falls through to the
     // existing retry path below rather than needing special-case handling.
