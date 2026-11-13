@@ -26,17 +26,10 @@ import { resetRegistryMemo } from "../services/appCheck/registry.js";
 import { validateAppInput, hostConflicts, CATEGORIES } from "../services/appCheck/registryAdmin.js";
 import { createRateLimiter } from "./rateLimit.js";
 import { runExplorerSync } from "./appRescanScheduler.js";
+import { ARGUS_ADMINS } from "./argusAdmins.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
-const ADMIN_WALLET = (process.env.ARGUS_ADMIN_WALLET || "0xa48Bc549a329EEd01E491C7CD950857A8ae56E73").toLowerCase();
-const DEFAULT_REGISTRY_ADMINS = [
-  ADMIN_WALLET,
-  "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099", // planetzephyros.etn
-  "0x696a7b9ea5c86da15d569d99d75ed788cce4db2e", // mav-browney.electroswap.etn
-];
-export const REGISTRY_ADMINS = new Set(
-  (process.env.APP_REGISTRY_ADMINS ? process.env.APP_REGISTRY_ADMINS.split(",") : DEFAULT_REGISTRY_ADMINS).map((a) => a.trim().toLowerCase()).filter((a) => /^0x[0-9a-f]{40}$/.test(a))
-);
+export const REGISTRY_ADMINS = ARGUS_ADMINS;
 const writes = createRateLimiter({ max: 60, windowMs: 10 * 60 * 1000 });
 
 const router = express.Router();

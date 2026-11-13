@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch, Users } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -22,6 +22,7 @@ import { ContractCardProvider } from "./components/ContractCard.jsx";
 import { ETN_BOT_VIEWERS } from "../hooks/useEtnBot.js";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import AdminAppRegistryPanel from "./components/AdminAppRegistryPanel.jsx";
+import AdminMembersPanel, { useMembersAdmin } from "./components/AdminMembersPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
 // The panels below used to all render stacked, each collapsed-by-default behind its own +/-
@@ -47,6 +48,8 @@ const PANELS = [
 ];
 // Owner-only: shown just for the ETN_BOT_VIEWERS wallets (the backend enforces it too — see useEtnBot.js).
 const BOT_PANEL = { id: "etnbot", label: "ETN Bot", icon: Bot };
+// Admins only (backend-enforced too — see utils/adminMembersRouter.js): who's subscribed and when it ends.
+const MEMBERS_PANEL = { id: "members", label: "Members", icon: Users };
 
 // Gold-accented even when inactive (a faint tint, same convention NavButton's own accented tabs
 // use) so the whole row reads as a cohesive, premium feature set at a glance — not just whichever
@@ -120,6 +123,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   }, []);
   const [activePanel, setActivePanel] = useState(linkedContract || linkedApp ? "contracts" : "portfolio");
   const isBotViewer = Boolean(wallet.isConnected && wallet.account && ETN_BOT_VIEWERS.has(wallet.account.toLowerCase()));
+  const isMembersAdmin = useMembersAdmin(wallet);
   // One signed-ownership proof for the whole tab, not one per child component — see
   // useCoreTierAccess.js's own comment on why this used to be 3+ independent instances (and,
   // within each of those, several concurrent callers) each prompting their own wallet signature.
@@ -273,7 +277,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
           }
         `}</style>
         <div className="core-tier-panel-switcher">
-          {(isBotViewer ? [...PANELS, BOT_PANEL] : PANELS).map((p) => (
+          {[...PANELS, ...(isBotViewer ? [BOT_PANEL] : []), ...(isMembersAdmin ? [MEMBERS_PANEL] : [])].map((p) => (
             <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
           ))}
         </div>
@@ -305,6 +309,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
           <CoreTierNftPnl wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}
         {activePanel === "etnbot" && isBotViewer && <CoreTierEtnBot wallet={wallet} getAuthParams={getAuthParams} />}
+        {activePanel === "members" && isMembersAdmin && <AdminMembersPanel wallet={wallet} getAuthParams={getAuthParams} />}
         {activePanel === "farms" && (
           <CoreTierYieldFarms wallet={wallet} getAuthParams={getAuthParams} coreTierAccess={coreTierAccess} walletFilter={walletFilter} />
         )}

@@ -60,10 +60,12 @@ import { startPortfolioDigestScheduler } from "./utils/portfolioDigestScheduler.
 import { startSubscriptionReminderScheduler } from "./utils/subscriptionReminderScheduler.js";
 import { startPnlSnapshotScheduler } from "./utils/pnlSnapshotScheduler.js";
 import { startPriceTopUpScheduler } from "./utils/priceTopUpScheduler.js";
+import { startBlockscoutWatch } from "./utils/blockscoutWatch.js";
 import { startEtnAccumulatorBot } from "./utils/etnAccumulatorBot.js";
 import pnlSnapshotRouter from "./utils/pnlSnapshotRouter.js";
 import adminSplitRouter from "./utils/adminSplitRouter.js";
 import appRegistryAdminRouter from "./utils/appRegistryAdminRouter.js";
+import adminMembersRouter from "./utils/adminMembersRouter.js";
 import pnlStatementRouter from "./utils/pnlStatementRouter.js";
 import premiumDashboardRouter from "./utils/premiumDashboardRouter.js";
 import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
@@ -113,6 +115,7 @@ app.use("/api", premiumAlertsRouter);
 app.use("/api", pnlSnapshotRouter);
 app.use("/api", adminSplitRouter);
 app.use("/api", appRegistryAdminRouter);
+app.use("/api", adminMembersRouter);
 app.use("/api", coreTierDemoRouter);
 app.use("/api", contractCheckRouter);
 app.use("/api", appCheckRouter);
@@ -192,6 +195,7 @@ app.listen(PORT, () => {
 
   // Premium Feature #3 (Telegram alerts) — see migrations/009_alerts.sql. Reuses the Telegram
   // link every premium feature already authenticates against; no separate linking flow.
+  safeStart("Blockscout watch", startBlockscoutWatch);
   safeStart("Wallet alert scheduler", startWalletAlertScheduler);
   safeStart("Token price alert scheduler", startTokenPriceAlertScheduler);
   safeStart("Portfolio alert scheduler", startPortfolioAlertScheduler);

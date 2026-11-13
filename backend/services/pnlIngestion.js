@@ -37,6 +37,7 @@ import { isTestNamedToken } from "./ignoredAssets.js";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { createPrimaryNameResolver } from "../utils/primaryNameResolver.js";
 import { normalizeBlockscoutTokens } from "../utils/blockscoutNormalize.js";
+import { getIngestionPauseReason } from "../utils/blockscoutWatch.js";
 
 const BLOCKSCOUT_API_BASE = `${process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com"}/api/v2`;
 export const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
@@ -2239,6 +2240,14 @@ export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddres
 }
 
 async function doIngestWalletHistory(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
+  // Blockscout watch (utils/blockscoutWatch.js): while the explorer's API fields don't match what this
+  // file reads, refuse to ingest rather than store rows with missing fields and advance the cursor past
+  // them. FAILED (not thrown before the job row) so the normal cooldown retries once checks pass.
+  const pauseReason = await getIngestionPauseReason();
+  if (pauseReason) {
+    await failJob(trackedWallet, pauseReason).catch(() => {});
+    throw new Error(pauseReason);
+  }
   const selfOwnedSet = new Set([trackedWallet.toLowerCase(), ...selfOwnedAddresses.map((a) => a.toLowerCase())]);
   // Loaded once per ingestion run rather than queried per-row (see cexAddressSet's own comment
   // below at its call sites) — the list itself is small and manually-maintained (see
