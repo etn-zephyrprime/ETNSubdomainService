@@ -33,15 +33,30 @@ const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const md = (s) => String(s).replace(/([_*`[])/g, "\\$1");
 const pairLabel = (legs) => (legs || []).map((l) => l.symbol || "?").join("/");
 
+/** The position's impermanent-loss percent as a number, or null when it can't be trusted: a leg whose
+ * token couldn't be resolved (no symbol — the "?/?" pairs) means the position's tokens/prices weren't
+ * read properly, so any IL figure derived from them is meaningless. Also rejects non-finite values and
+ * anything below -100% (impossible for a real position). null makes evaluatePositionAlert treat it as
+ * "no reading this time" rather than alerting on bad data. */
+export function trustedIlPercent(position) {
+  const raw = position?.impermanentLoss?.percent;
+  if (raw == null) return null;
+  const legs = position.legs;
+  if (!Array.isArray(legs) || legs.length === 0 || !legs.every((l) => l?.symbol)) return null;
+  const percent = Number(raw);
+  if (!Number.isFinite(percent) || percent < -100) return null;
+  return percent;
+}
+
 /** Flattens one wallet's LP + DeFi results into the positions the alerts look at:
  * [{ key, kind, label, wallet, ilPercent, inRange, durationMultiplier }]. */
 export function collectPositions(wallet, lp, defi) {
   const out = [];
   for (const p of lp?.v2Positions || []) {
-    out.push({ key: `v2:${String(p.tokenAddress).toLowerCase()}:${wallet}`, kind: "v2", label: `${pairLabel(p.legs)} LP`, wallet, ilPercent: p.impermanentLoss?.percent ?? null });
+    out.push({ key: `v2:${String(p.tokenAddress).toLowerCase()}:${wallet}`, kind: "v2", label: `${pairLabel(p.legs)} LP`, wallet, ilPercent: trustedIlPercent(p) });
   }
   for (const p of lp?.v3Positions || []) {
-    out.push({ key: `v3:${p.tokenId}`, kind: "v3", label: `${pairLabel(p.legs)} V3 #${p.tokenId}`, wallet, ilPercent: p.impermanentLoss?.percent ?? null, inRange: typeof p.inRange === "boolean" ? p.inRange : null });
+    out.push({ key: `v3:${p.tokenId}`, kind: "v3", label: `${pairLabel(p.legs)} V3 #${p.tokenId}`, wallet, ilPercent: trustedIlPercent(p), inRange: typeof p.inRange === "boolean" ? p.inRange : null });
   }
   for (const p of defi?.positions || []) {
     if (p.kind !== "farm") continue;
@@ -50,7 +65,7 @@ export function collectPositions(wallet, lp, defi) {
       kind: "farm",
       label: p.label || `Yield Farm #${p.farmId}`,
       wallet,
-      ilPercent: p.impermanentLoss?.percent ?? null,
+      ilPercent: trustedIlPercent(p),
       durationMultiplier: p.multipliers?.durationMultiplier ?? null,
     });
   }

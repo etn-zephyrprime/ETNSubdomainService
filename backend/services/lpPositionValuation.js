@@ -178,6 +178,32 @@ async function decimalsFor(tokenAddress) {
   return decimals;
 }
 
+// A token's display symbol. getTokenMetadata (pnlIngestion.js) is the first choice, but it can come back
+// empty when its upstream lookup fails or is rate-limited — which left legs symbol-less (rendered "?/?" in
+// the UI and in position alerts). Fall back to reading symbol() straight off the contract. Only a
+// successful result is cached, so a transient failure is retried on the next call.
+const symbolCache = new Map(); // address (lowercase) -> string
+async function symbolFor(tokenAddress) {
+  const key = tokenAddress.toLowerCase();
+  if (symbolCache.has(key)) return symbolCache.get(key);
+  let symbol = null;
+  try {
+    symbol = (await getTokenMetadata(tokenAddress))?.symbol || null;
+  } catch {
+    // fall through to the on-chain read
+  }
+  if (!symbol) {
+    try {
+      const token = new ethers.Contract(tokenAddress, ["function symbol() view returns (string)"], getProvider());
+      symbol = (await token.symbol()) || null;
+    } catch {
+      // left null — callers treat a missing symbol as unresolved
+    }
+  }
+  if (symbol) symbolCache.set(key, symbol);
+  return symbol;
+}
+
 // ---------------------------------------------------------------------------------------------
 // V2 LP — probe a candidate address for the standard UniswapV2Pair interface (token0/token1/
 // getReserves/totalSupply); if all four succeed, it's a real pool. A pool's IDENTITY (token0/
@@ -294,7 +320,7 @@ async function resolveV2LpCandidate(walletAddress, tokenAddress, rawBalance, dec
  * moved in price). `pendingFees` is omitted for V2 (always null) since, per resolveV2LpCandidate's
  * own comment, `amount` already includes every fee earned — there's no separate figure to show. */
 async function finalizeV2LpPosition(candidate, priceMap) {
-  const [meta0, meta1] = await Promise.all([getTokenMetadata(candidate.token0), getTokenMetadata(candidate.token1)]);
+  const [symbol0, symbol1] = await Promise.all([symbolFor(candidate.token0), symbolFor(candidate.token1)]);
   const price0 = priceMap.get(candidate.token0) ?? null;
   const price1 = priceMap.get(candidate.token1) ?? null;
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
@@ -328,8 +354,8 @@ async function finalizeV2LpPosition(candidate, priceMap) {
     quantity: candidate.quantity,
     lockedQuantity: candidate.lockedQuantity,
     legs: [
-      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.depositedAmount0, price0),
-      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.depositedAmount1, price1),
+      buildLeg(candidate.token0, symbol0, candidate.amount0, usd0, candidate.depositedAmount0, price0),
+      buildLeg(candidate.token1, symbol1, candidate.amount1, usd1, candidate.depositedAmount1, price1),
     ],
     // vs. holding what was deposited — see impermanentLoss.js (null when there's no baseline/price).
     impermanentLoss: computeImpermanentLoss(
@@ -516,7 +542,7 @@ async function resolveV3Candidate(walletAddress, tokenId) {
  * unlike the farm's debt-accounting) represents fees accrued but not yet collected, genuinely on
  * top of `amount` — so `netAmount = amount + pendingFees` here, matching the farm convention. */
 async function finalizeV3Position(candidate, priceMap) {
-  const [meta0, meta1] = await Promise.all([getTokenMetadata(candidate.token0), getTokenMetadata(candidate.token1)]);
+  const [symbol0, symbol1] = await Promise.all([symbolFor(candidate.token0), symbolFor(candidate.token1)]);
   const price0 = priceMap.get(candidate.token0) ?? null;
   const price1 = priceMap.get(candidate.token1) ?? null;
   const usd0 = price0 != null ? candidate.amount0.times(price0) : null;
@@ -550,8 +576,8 @@ async function finalizeV3Position(candidate, priceMap) {
     tokenId: candidate.tokenId,
     inRange: candidate.inRange,
     legs: [
-      buildLeg(candidate.token0, meta0?.symbol || null, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0, price0),
-      buildLeg(candidate.token1, meta1?.symbol || null, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1, price1),
+      buildLeg(candidate.token0, symbol0, candidate.amount0, usd0, candidate.pendingFees0, candidate.depositedAmount0, price0),
+      buildLeg(candidate.token1, symbol1, candidate.amount1, usd1, candidate.pendingFees1, candidate.depositedAmount1, price1),
     ],
     // Concentrated range, so the value-vs-hold method — see impermanentLoss.js.
     impermanentLoss: computeImpermanentLoss(
