@@ -355,26 +355,38 @@ export async function getBlockByTimestamp(timestamp, closest = "before") {
 
 // Token name/symbol never changes post-deploy in any way this app cares about — no TTL needed,
 // unlike the price caches elsewhere in this feature.
-const tokenMetadataCache = new Map(); // address (lowercase) -> { name, symbol } | null
+const tokenMetadataCache = new Map(); // address (lowercase) -> { name, symbol } | null (only ever set from a genuine response)
+// A FAILED lookup (timeout, rate limit, non-200) is deliberately not put in the cache above: it used to
+// be, which pinned that token's metadata to null for the life of the process, so a single transient
+// failure left it unlabelled ("?/?" pairs in positions and alerts) until a restart. Failures are only
+// remembered briefly, so an outage isn't hammered with a request per call but recovers on its own.
+const tokenMetadataFailedAt = new Map(); // address (lowercase) -> ms of the last failed lookup
+const TOKEN_METADATA_RETRY_MS = process.env.TOKEN_METADATA_RETRY_MS ? parseInt(process.env.TOKEN_METADATA_RETRY_MS, 10) : 30000;
 
-/** Resolves a token's name/symbol via Blockscout, cached indefinitely per address. Returns null
+/** Resolves a token's name/symbol via Blockscout, cached indefinitely per address once successfully
+ * resolved (a failed lookup is only remembered for TOKEN_METADATA_RETRY_MS). Returns null
  * (not a throw) on any failure — callers treat missing metadata as "show the raw address instead",
  * never as a reason to fail statement generation. */
 export async function getTokenMetadata(tokenAddress) {
   const key = tokenAddress.toLowerCase();
   if (tokenMetadataCache.has(key)) return tokenMetadataCache.get(key);
+  const failedAt = tokenMetadataFailedAt.get(key);
+  if (failedAt != null && Date.now() - failedAt < TOKEN_METADATA_RETRY_MS) return null;
 
-  let result = null;
   try {
     const res = await fetch(`${BLOCKSCOUT_API_BASE}/tokens/${tokenAddress}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    if (json.name || json.symbol) result = { name: json.name || null, symbol: json.symbol || null };
+    const result = json.name || json.symbol ? { name: json.name || null, symbol: json.symbol || null } : null;
+    // A genuine response (even one with no name/symbol) is a real answer — safe to cache indefinitely.
+    tokenMetadataCache.set(key, result);
+    tokenMetadataFailedAt.delete(key);
+    return result;
   } catch (err) {
     console.warn(`⚠️  Could not fetch token metadata for ${tokenAddress}:`, err.message);
+    tokenMetadataFailedAt.set(key, Date.now());
+    return null;
   }
-  tokenMetadataCache.set(key, result);
-  return result;
 }
 
 // Reuses the exact same ReverseRegistrar+resolver chain the Core Clash Telegram bots already use
