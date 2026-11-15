@@ -58,7 +58,10 @@ async function printStatus(wallet, latestBlock) {
   }
 
   const fullyIngested = Boolean(state?.cold_start_completed_at) && job?.status !== "FAILED" && job?.status !== "RUNNING";
-  console.log(`  => ${fullyIngested ? "✅ fully ingested" : job?.status === "RUNNING" ? "⏳ still running" : job?.status === "FAILED" ? "❌ last run FAILED" : "⚠️  cold start not yet completed"}`);
+  // Same 15 min rule as pnlIngestion.js's isOrphanedIngestJob: a RUNNING row nothing has touched for
+  // that long was left behind by a process that died mid-run (it restarts on the wallet's next visit).
+  const orphaned = job?.status === "RUNNING" && Date.now() - new Date(job.updated_at).getTime() > 15 * 60 * 1000;
+  console.log(`  => ${fullyIngested ? "✅ fully ingested" : orphaned ? "💀 left RUNNING by a dead process (restarts on next visit)" : job?.status === "RUNNING" ? "⏳ still running" :job?.status === "FAILED" ? "❌ last run FAILED" : "⚠️  cold start not yet completed"}`);
 }
 
 async function main() {

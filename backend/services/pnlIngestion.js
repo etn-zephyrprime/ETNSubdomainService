@@ -100,6 +100,24 @@ const INGEST_FAILURE_COOLDOWN_MS = process.env.PNL_INGEST_FAILURE_COOLDOWN_MS
   ? parseInt(process.env.PNL_INGEST_FAILURE_COOLDOWN_MS, 10)
   : 60000;
 
+// A RUNNING job row whose run died with its process (a crash, an OOM, a restart mid-ingest) is
+// never moved to COMPLETE/FAILED, and both checkAndStart* functions below treat RUNNING as "already
+// in progress, don't start another" — so without this, the wallet never ingests again. A job counts
+// as orphaned when THIS process isn't running it AND its row hasn't been touched for this long (a
+// live run writes progress every few seconds; the longest quiet stretch is a page waiting out
+// Blockscout 429 backoff, ~3 min worst case). The age check keeps a new instance from stealing a
+// run the old instance is still finishing during a Render deploy overlap.
+const INGEST_ORPHANED_RUNNING_MS = process.env.PNL_INGEST_ORPHANED_RUNNING_MS
+  ? parseInt(process.env.PNL_INGEST_ORPHANED_RUNNING_MS, 10)
+  : 15 * 60 * 1000;
+
+/** True when a RUNNING job row has no live run behind it (see INGEST_ORPHANED_RUNNING_MS). */
+export function isOrphanedIngestJob(job, { runningHere = false, now = Date.now(), maxQuietMs = INGEST_ORPHANED_RUNNING_MS } = {}) {
+  if (job?.status !== "RUNNING" || runningHere) return false;
+  const last = new Date(job.updated_at ?? job.started_at ?? 0).getTime();
+  return !Number.isFinite(last) || now - last > maxQuietMs;
+}
+
 const SWAP_TOPIC = ethers.id("Swap(address,uint256,uint256,uint256,uint256,address)");
 const SWAP_IFACE = new ethers.Interface([
   "event Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)",
@@ -2280,7 +2298,12 @@ export async function ingestWalletHistory(trackedWallet, selfOwnedAddresses = []
 export async function checkAndStartIngestIfNeeded(trackedWallet, selfOwnedAddresses, priorityAssets) {
   const existingJob = await getIngestJob(trackedWallet);
   if (existingJob?.status === "RUNNING") {
-    return { needed: true, job: existingJob };
+    const walletLc = trackedWallet.toLowerCase();
+    const runningHere = inFlightIngestions.has(walletLc) || inFlightDefiScans.has(walletLc);
+    if (!isOrphanedIngestJob(existingJob, { runningHere })) return { needed: true, job: existingJob };
+    // Orphaned by a dead process: fall through and start a fresh run (it resumes from the
+    // checkpointed cursors, so nothing already ingested is redone).
+    console.warn(`♻️ PnL ingest for ${walletLc} was left RUNNING by a previous process (last update ${existingJob.updated_at}); restarting it`);
   }
   if (
     existingJob?.status === "FAILED" &&
@@ -2545,7 +2568,10 @@ export async function ensureDefiActivityIngested(trackedWallet) {
 export async function checkAndStartDefiIngestIfNeeded(trackedWallet) {
   const existingJob = await getIngestJob(trackedWallet);
   if (existingJob?.status === "RUNNING") {
-    return { needed: true, job: existingJob };
+    const walletLc = trackedWallet.toLowerCase();
+    const runningHere = inFlightIngestions.has(walletLc) || inFlightDefiScans.has(walletLc);
+    if (!isOrphanedIngestJob(existingJob, { runningHere })) return { needed: true, job: existingJob };
+    console.warn(`♻️ DeFi ingest for ${walletLc} was left RUNNING by a previous process (last update ${existingJob.updated_at}); restarting it`);
   }
   if (
     existingJob?.status === "FAILED" &&
