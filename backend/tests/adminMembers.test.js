@@ -8,7 +8,7 @@ const d = (days) => new Date(now + days * 86400000).toISOString();
 test("plans, status, ordering and summary", () => {
   const { members, summary } = buildMembersView(
     [
-      { wallet_address: "0xa", monthly_expiry: d(20), annual_expiry: null, last_tx_hash: "0xtx1", tracked_wallets: 2 },
+      { wallet_address: "0xa", monthly_expiry: d(20), annual_expiry: null, last_tx_hash: "0xtx1", last_seen_at: "2026-11-12T08:30:00Z", tracked_wallets: 2 },
       { wallet_address: "0xb", monthly_expiry: d(-3), annual_expiry: d(200), last_tx_hash: "0xtx2" },
       { wallet_address: "0xc", monthly_expiry: d(3), annual_expiry: null, last_tx_hash: "trial:2026-11-01" },
       { wallet_address: "0xd", monthly_expiry: d(-10), annual_expiry: null, last_tx_hash: "0xtx4" },
@@ -22,6 +22,8 @@ test("plans, status, ordering and summary", () => {
   assert.equal(byW["0xa"].plan, "monthly");
   assert.equal(byW["0xa"].daysLeft, 20);
   assert.equal(byW["0xa"].trackedWallets, 2);
+  assert.equal(byW["0xa"].lastSeenAt, "2026-11-12T08:30:00.000Z");
+  assert.equal(byW["0xc"].lastSeenAt, null);
   assert.equal(byW["0xc"].plan, "trial");
   assert.equal(byW["0xc"].lastTxHash, null);
   assert.equal(byW["0xd"].active, false);
