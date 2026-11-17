@@ -8,7 +8,7 @@ import { ethers } from "ethers";
 import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getBotState } from "../state/etnAccumulatorBotState.js";
 import { gatherQuotes, readConfig, POOLS, botViewers } from "../utils/etnAccumulatorBot.js";
-import { summarize, botEtnInventory } from "./etnAccumulatorStrategy.js";
+import { summarize, botEtnInventory, totalAccruedEtn } from "./etnAccumulatorStrategy.js";
 import { catchupContributedEtn } from "./etnCatchupStrategy.js";
 import { VENUES } from "./cexVenues.js";
 import { getBalances as kucoinBalances } from "../utils/kucoinClient.js";
@@ -71,7 +71,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
     { key: "lots", label: "Sell / buyback", gainEtn: s.realizedGainEtn || 0, count: s.cyclesClosed || 0, unit: "cycles", on: true },
     { key: "tri", label: "Triangles", gainEtn: s.triGainEtn || 0, count: s.triTrades || 0, unit: "trades", on: Boolean(state.tri) },
   ];
-  const accumulated = byStrategy.reduce((t, x) => t + x.gainEtn, 0);
+  const accumulated = totalAccruedEtn(state);
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
 
   // Where the bot's money is right now.
