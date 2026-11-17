@@ -45,6 +45,7 @@ export function buildMembersView(rows, now = Date.now()) {
       daysSinceExpiry: !active && expires ? Math.floor((now - expires) / DAY_MS) : null,
       lastTxHash: isTrial ? null : r.last_tx_hash || null,
       updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+      lastSeenAt: r.last_seen_at ? new Date(r.last_seen_at).toISOString() : null,
       trackedWallets: Number(r.tracked_wallets || 0),
     };
   });
@@ -84,7 +85,7 @@ router.get("/admin/members", async (req, res) => {
   if (!reads(String(wallet).toLowerCase()).ok) return res.status(429).json({ error: "Too many requests, try again shortly" });
   try {
     const result = await query(
-      `SELECT m.wallet_address, m.monthly_expiry, m.annual_expiry, m.last_tx_hash, m.updated_at,
+      `SELECT m.wallet_address, m.monthly_expiry, m.annual_expiry, m.last_tx_hash, m.updated_at, m.last_seen_at,
               (SELECT count(*) FROM tracked_wallets t WHERE lower(t.owner_wallet) = m.wallet_address AND t.removed_at IS NULL)::int AS tracked_wallets
          FROM premium_memberships m`
     );

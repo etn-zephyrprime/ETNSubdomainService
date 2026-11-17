@@ -33,6 +33,13 @@ export async function getMembership(walletAddress) {
   return res?.rows[0] || null;
 }
 
+export async function recordCoreTierLastSeen(walletAddress) {
+  await query(
+    "UPDATE premium_memberships SET last_seen_at = now() WHERE wallet_address = $1",
+    [walletAddress.toLowerCase()]
+  );
+}
+
 /** Every wallet with a currently-active Core Tier membership (either tier) — the complete universe
  * of Core Tier members, confirmed live to be MISSING from pnlSnapshotScheduler.js's own (and
  * several backfill scripts') prior approach of deriving "which owners to process" purely from

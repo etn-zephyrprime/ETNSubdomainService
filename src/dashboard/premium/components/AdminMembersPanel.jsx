@@ -34,6 +34,7 @@ const PLAN_STYLE = { annual: gold, monthly: green, trial: blue };
 const chip = (color) => ({ fontFamily: monoFont, fontSize: 10, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color, border: `1px solid ${color}`, borderRadius: 4, padding: "2px 6px" });
 const btn = { display: "inline-flex", alignItems: "center", gap: 4, background: "transparent", border: `1px solid ${border}`, color: mutedLight, borderRadius: 6, padding: "6px 10px", fontFamily: monoFont, fontWeight: 800, fontSize: 11, textTransform: "uppercase", cursor: "pointer" };
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—");
+const fmtDateTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Not recorded");
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 function Stat({ label, value, color = "#fff" }) {
@@ -65,6 +66,10 @@ function MemberRow({ m, name }) {
       </div>
       <div style={{ flex: "0 1 110px", fontSize: 12, color: mutedLight }}>
         {m.trackedWallets} tracked wallet{m.trackedWallets === 1 ? "" : "s"}
+      </div>
+      <div style={{ flex: "1 1 150px", minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: muted }}>Last login</div>
+        <div style={{ fontSize: 12, color: mutedLight }}>{fmtDateTime(m.lastSeenAt)}</div>
       </div>
       <div style={{ flex: "0 1 auto", fontSize: 11 }}>
         {m.lastTxHash ? (
@@ -157,7 +162,7 @@ export default function AdminMembersPanel({ wallet, getAuthParams }) {
             shown.map((m) => <MemberRow key={m.wallet} m={m} name={resolve(m.wallet)} />)
           )}
           <div style={{ fontSize: 11, color: muted, marginTop: 10 }}>
-            From the PremiumSubscription contract's purchase events. Trials are granted with scripts/grantCoreTrial.js. Active members are sorted by soonest end date.
+            Memberships come from PremiumSubscription events; trials are granted with scripts/grantCoreTrial.js. Last login is the latest successful signed Core Tier dashboard access since tracking was added, not a persistent session record. Active members are sorted by soonest end date.
           </div>
         </>
       )}

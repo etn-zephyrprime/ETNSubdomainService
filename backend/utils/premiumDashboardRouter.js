@@ -21,6 +21,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { verifyWalletOwnership } from "./walletAuth.js";
 import { hasCoreAccess } from "./premiumAccess.js";
+import { recordCoreTierLastSeen } from "../db/premiumMemberships.js";
 import { getYieldFarmSnapshot } from "../services/yieldFarmSnapshot.js";
 import { getBotReport, botViewers } from "../services/etnBotReport.js";
 import {
@@ -84,6 +85,12 @@ router.get("/premium/tracked-wallets", async (req, res) => {
 
   if (!(await hasCoreAccess(wallet))) {
     return res.status(403).json({ error: "Core tier membership required" });
+  }
+
+  try {
+    await recordCoreTierLastSeen(wallet);
+  } catch (err) {
+    console.error("⚠️  Core Tier: couldn't record member last-seen time:", err.message);
   }
 
   const [active, cooling] = await Promise.all([
