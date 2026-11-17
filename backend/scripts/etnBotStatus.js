@@ -12,7 +12,7 @@ import { createRpcProvider } from "../utils/rpcProvider.js";
 import { getBotState } from "../state/etnAccumulatorBotState.js";
 import { ethers } from "ethers";
 import { gatherQuotes, readConfig, POOLS } from "../utils/etnAccumulatorBot.js";
-import { summarize, botEtnInventory } from "../services/etnAccumulatorStrategy.js";
+import { summarize, botEtnInventory, totalAccruedEtn } from "../services/etnAccumulatorStrategy.js";
 import { catchupContributedEtn } from "../services/etnCatchupStrategy.js";
 import { kucoinConfigured, getTradeBalances } from "../utils/kucoinClient.js";
 import { htxConfigured, getBalances as htxBalances } from "../utils/htxClient.js";
@@ -68,7 +68,7 @@ async function main() {
   // mark-to-market "if everything were converted now" figure is the last line, not the headline.
   const hedgeGainEtn = (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0); // net of round-trip fees
   const arbGainEtn = (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0); // net of withdrawal fees
-  const accumulated = s.realizedGainEtn + s.gapGainEtn + s.triGainEtn + s.cuGainEtn + hedgeGainEtn + arbGainEtn;
+  const accumulated = totalAccruedEtn(state);
   const days = Math.max((Date.parse(state.updatedAt) - Date.parse(state.startedAt)) / 86400000, 1 / 24);
   const signed = (n) => `${n >= 0 ? "+" : "−"}${etn(Math.abs(n))}`;
   const deposits = Object.entries(s.gapDepositsUsd || {}).filter(([, v]) => Math.abs(v) >= 0.01);

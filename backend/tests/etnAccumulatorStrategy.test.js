@@ -1,7 +1,7 @@
 // Pure decision tests for services/etnAccumulatorStrategy.js. Run from backend/: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
+import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, summarize, botEtnInventory, totalAccruedEtn, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
 
 const cfg = { ...DEFAULT_CONFIG, clipEtn: 10000, warmupSamples: 1 };
 const fresh = (over = {}) => ({ budgetEtn: 100000, realizedGainEtn: 0, lots: [], ema: 0.002, samples: 5, ...over });
@@ -64,6 +64,19 @@ test("books: inventory, realized gain and summary", () => {
   assert.equal(sum.cyclesClosed, 1);
   assert.equal(sum.etnEquivalentNow, 90500 + 9800);
   assert.ok(Math.abs(sum.vsHoldPct - 0.3) < 1e-9);
+});
+
+test("total accrued gain combines realized strategies net of hedge and arbitrage fees", () => {
+  assert.equal(totalAccruedEtn({
+    realizedGainEtn: 10,
+    gap: { gainEtn: 20 },
+    tri: { gainEtn: 30 },
+    cu: { gainEtn: 40 },
+    hedgeLive: { gainEtn: 50, costsEtn: 5 },
+    cexArb: { gainEtn: 60, costsEtn: 6, paper: { profitUsd: 9999 } },
+    hedge: { profitUsd: 9999 },
+  }), 199);
+  assert.equal(totalAccruedEtn({}), 0);
 });
 
 test("inventory below a clip holds", () => {

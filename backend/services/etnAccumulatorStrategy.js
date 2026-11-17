@@ -55,6 +55,16 @@ export function botEtnInventory(state) {
   return state.budgetEtn + state.realizedGainEtn - openSold + gap + triangles + catchup;
 }
 
+/** Realized ETN gain across completed strategies, net of live hedge and CEX-arbitrage fees. */
+export function totalAccruedEtn(state) {
+  return (state.realizedGainEtn || 0) +
+    (state.gap?.gainEtn || 0) +
+    (state.tri?.gainEtn || 0) +
+    (state.cu?.gainEtn || 0) +
+    (state.hedgeLive?.gainEtn || 0) - (state.hedgeLive?.costsEtn || 0) +
+    (state.cexArb?.gainEtn || 0) - (state.cexArb?.costsEtn || 0);
+}
+
 /**
  * The one action to take this tick, or { action: "hold", reason }.
  *

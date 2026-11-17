@@ -33,6 +33,7 @@ import os from "os";
 import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
+import { etnBotAlertWallets, formatEtnBotNotification } from "../services/etnBotNotifications.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit, GAP_REBALANCE_DEFAULTS, gapRebalanceNeed, decideGapRebalance, applyGapRebalance } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
@@ -296,7 +297,7 @@ const other = (stable) => (stable === "USDT" ? "USDC" : "USDT");
 
 // `store` is swappable for tests (in-memory books); the bot itself always uses R2.
 const DEFAULT_STORE = { get: getBotState, set: setBotState, claimLease: claimBotLease, releaseLease: releaseBotLease };
-const DEFAULT_ALERT = { viewers: botViewers, chatIdFor: getNotisLinkedChatId, send: sendNotisDirectMessage };
+const DEFAULT_ALERT = { wallets: etnBotAlertWallets, chatIdFor: getNotisLinkedChatId, send: sendNotisDirectMessage };
 
 export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT_STORE, owner = `${process.env.RENDER_INSTANCE_ID || os.hostname()}:${process.pid}`, alert = DEFAULT_ALERT }) {
   async function saveWithRetry(state) {
@@ -324,9 +325,39 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
   // Shutdown (stop()): no new ticks start; the lease is released once the running one ends.
   let stopped = false;
   let leaseHolderLogged = null;
-  // Fills and problems go to the Render logs only (no Telegram, by request).
+  let notificationState = null;
+  let notificationQueue = Promise.resolve();
+  const unlinkedAlertWallets = new Set();
+  async function dmAlertWallets(text) {
+    for (const address of alert.wallets()) {
+      let chatId;
+      try {
+        chatId = await alert.chatIdFor(address);
+      } catch (err) {
+        console.error(`⚠️  ETN bot: Telegram link lookup for ${address} failed:`, err.message);
+        continue;
+      }
+      if (chatId == null) {
+        if (!unlinkedAlertWallets.has(address)) {
+          unlinkedAlertWallets.add(address);
+          console.warn(`⚠️  ETN bot: ${address} isn't linked to the Core Tier Telegram bot; its alerts are not being delivered`);
+        }
+        continue;
+      }
+      unlinkedAlertWallets.delete(address);
+      try {
+        await alert.send(chatId, text);
+      } catch (err) {
+        console.error(`⚠️  ETN bot: Telegram alert to ${address} failed:`, err.message);
+      }
+    }
+  }
   function notify(text) {
     console.log(`🤖 ETN bot${cfg.mode === "paper" ? " (paper)" : ""}: ${text}`);
+    const message = formatEtnBotNotification(text, cfg.mode, notificationState);
+    notificationQueue = notificationQueue.then(() => dmAlertWallets(message)).catch((err) => {
+      console.error("⚠️  ETN bot: Telegram notification failed:", err.message);
+    });
   }
 
   const quoteSellEtn = async (stable, etn) => {
@@ -406,6 +437,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       case "gapSell": {
         applyGapSellLeg(gap, { dear: order.stable, stableReceived: stableOut });
         state.gapLeg = { dear: order.stable, cheap: order.cheap, etnSold: etnIn, stableReceived: stableOut, sellTx: txHash, at };
+        notify(`⚠️ Gap trade first leg: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}; buying on ${order.cheap} is pending`);
         break;
       }
       case "gapBuy": {
@@ -452,6 +484,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           at,
           clientOid: `etnbot-${(txHash || "0x" + Date.now()).slice(2, 20)}`,
         };
+        notify(`⚠️ Live hedge first leg filled on ElectroSwap: ${sellOnEs ? "sold" : "bought"} ${fmtEtn(sellOnEs ? etnIn : etnOut)} ETN; the ${VENUES[order.venue || "kucoin"].name} leg is pending`);
         break;
       }
       case "triangle": {
@@ -1010,17 +1043,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     return changed;
   }
 
-  /** Telegram-DMs the ETN Bot viewers (as the KuCoin withdraw alert does). */
-  async function dmViewers(text) {
-    for (const viewer of alert.viewers()) {
-      const chatId = await alert.chatIdFor(viewer).catch(() => null);
-      if (chatId != null) await alert.send(chatId, text).catch((err) => console.error(`⚠️  ETN bot: DM to ${viewer} failed:`, err.message));
-    }
-  }
-
   /** Works out the profit if every open lot closed now (profitNowEtn) and which side the floor blocks
    * (profitFloorBlocks: below it, only the losing side). Only changes on a fully quoted reading; announces
-   * each change (logs + DM). Returns { buys, sells } — true = no new lots on that side. */
+   * each change. Returns { buys, sells } — true = no new lots on that side. */
   async function checkProfitFloor(state, ladderBack) {
     const cuLots = state.cu?.lots || [];
     const cuBack = {};
@@ -1045,7 +1070,6 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         ? `🛡️ *ETN Bot — under the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (buy side ${signedEtn(p.buyOpenEtn)}, sell side ${signedEtn(p.sellOpenEtn)}), under the ${fmtEtn(cfg.profitFloorEtn)} ETN floor. ${blocked} until it's back above. Open lots still close, and gap/triangle/hedge/arbitrage round trips carry on.`
         : `✅ *ETN Bot — back above the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (floor ${fmtEtn(cfg.profitFloorEtn)} ETN). New lots can open on both sides again.`;
       notify(text.replace(/\*/g, "").replace(/\n+/g, " "));
-      await dmViewers(text);
     }
     // A floor state saved before the per-side split (below, no sides yet) blocks both until a quoted reading.
     return { buys: pf.blockBuys ?? Boolean(pf.below), sells: pf.blockSells ?? Boolean(pf.below) };
@@ -1053,7 +1077,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
   let lastWithdrawAlertCheckAt = 0;
   /** When the bot can't sweep KuCoin itself (its key has no Withdraw permission, or the sweep is off),
-   * Telegram-DMs the ETN Bot viewers (botViewers, via the Core Tier Notis bot) how much ETN to withdraw
+   * alerts the configured Telegram wallet how much ETN to withdraw
    * by hand: anything over the KuCoin float, once it's at least the sweep minimum. Once per amount — again
    * when it grows by half or after a day; it resets when the excess is gone. Returns true if state changed. */
   async function kucoinWithdrawAlert(state) {
@@ -1078,16 +1102,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       `Network: Electroneum (ETN-EVM) · fee ${rules.fee} ETN` +
       (fromTrade > 0 ? `\n\nMove ${fmtEtn(Math.ceil(fromTrade))} ETN from Trading to Main in the KuCoin app first.` : "") +
       `\n\n_The bot can't withdraw it itself: ${sweepOff.get("kucoin")?.until > Date.now() ? "the KuCoin key has no Withdraw permission (it retries every few hours)" : "the sweep (ETN_BOT_CEX_SWEEP) is off"}._`;
-    let sent = 0;
-    for (const viewer of alert.viewers()) {
-      const chatId = await alert.chatIdFor(viewer).catch(() => null);
-      if (chatId == null) {
-        console.log(`🤖 ETN bot: ${viewer} isn't linked to the Core Tier Telegram bot — no KuCoin withdraw alert for it`);
-        continue;
-      }
-      await alert.send(chatId, text).then(() => sent++, (err) => console.error(`⚠️  ETN bot: withdraw alert to ${viewer} failed:`, err.message));
-    }
-    notify(`📨 KuCoin withdraw alert: ${fmtEtn(amount)} ETN due, sent to ${sent} chat(s)`);
+    notify(text);
     state.kucoinWithdrawAlert = { etn: amount, at: new Date(now).toISOString() };
     return true;
   }
@@ -1251,7 +1266,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const what = paper.dir === "sellOnEs"
         ? `sell ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.esUsd)} ${paper.stable}, buy it back on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 + fee))}`
         : `buy ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.usd)} ${paper.stable}, sell it on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 - fee))}`;
-      console.log(`🧪 ETN bot (hedge, paper): ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — would ${what}: +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Paper total +${fmtUsd(state.hedge.profitUsd)} over ${state.hedge.trades}`);
+      notify(`🧪 Hedge paper opportunity: ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — would ${what}: +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Simulated total +${fmtUsd(state.hedge.profitUsd)} over ${state.hedge.trades}`);
     }
     if (!liveReady) return false;
 
@@ -1408,7 +1423,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       ab.paper = ab.paper || { trades: 0, profitUsd: 0 };
       ab.paper.trades += 1;
       ab.paper.profitUsd += plan.profitUsd;
-      console.log(`🧪 ETN bot (CEX arb, paper): buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Paper total +${fmtUsd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
+      notify(`🧪 CEX arbitrage paper opportunity: buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Simulated total +${fmtUsd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
     }
     if (!cfg.arbLive || state.arbLeg || !VENUES[plan.buyVenue].configured() || !VENUES[plan.sellVenue].configured()) return false;
 
@@ -1464,6 +1479,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     leg.cex = fo.side === "sell"
       ? { venue: secondVenue, side: "buy", budgetUsd: f.usd, breakEvenEtn: f.etn, gotEtn: 0, spentUsd: 0, attempts: 0, clientOid: `${leg.oid}-b` }
       : { venue: secondVenue, side: "sell", targetUsd: f.usd, availableEtn: f.etn, soldEtn: 0, gotUsd: 0, attempts: 0, clientOid: `${leg.oid}-b` };
+    notify(`CEX arbitrage first leg filled: ${fo.side} ${fmtEtn(f.etn)} ETN on ${VENUES[fo.venue].name}; second leg on ${VENUES[secondVenue].name} is starting`);
   }
 
   async function completeArbLeg(state) {
@@ -1569,6 +1585,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         leaseHolderLogged = null;
       }
       const state = (await store.get(cfg.mode)) || freshState(cfg);
+      notificationState = state;
       if (state.budgetEtn !== cfg.budgetEtn) {
         console.log(`🤖 ETN bot: budget ${state.budgetEtn} -> ${cfg.budgetEtn} ETN (ETN_BOT_BUDGET_ETN changed)`);
         state.budgetEtn = cfg.budgetEtn;
@@ -1910,6 +1927,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     try {
       if (store.claimLease && !(await store.claimLease(owner)).ok) return false;
       const state = await store.get(cfg.mode);
+      notificationState = state;
       if (!state?.cu || state.pending || state.hedgeLeg || state.arbLeg || state.gapLeg) return false;
       if (cfg.profitFloorEtn > 0 && (state.profitFloor?.blockSells ?? Boolean(state.profitFloor?.below))) return false;
       const day = new Date().toISOString().slice(0, 10);
