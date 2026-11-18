@@ -61,7 +61,10 @@ export default function PnlStatementRequest({ wallet }) {
   const [activatedDomainName, setActivatedDomainName] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
-  const [trackedWallet, setTrackedWallet] = useState("");
+  const [trackedWallet, setTrackedWallet] = useState(() => {
+    const candidate = new URLSearchParams(window.location.search).get("wallet") || "";
+    return /^0x[0-9a-f]{40}$/i.test(candidate) ? candidate : "";
+  });
   const [selfOwnedRaw, setSelfOwnedRaw] = useState("");
   const [selectedPeriods, setSelectedPeriods] = useState([]); // [{ periodType, year }]
   const [newPeriodType, setNewPeriodType] = useState(0);
