@@ -8,8 +8,10 @@ export function etnBotAlertWallets(value = process.env.ETN_BOT_ALERT_WALLETS) {
 }
 
 export function formatEtnBotNotification(text, mode, state) {
-  const total = state ? totalAccruedEtn(state) : null;
+  const opportunity = mode === "opportunity";
+  const total = !opportunity && state ? totalAccruedEtn(state) : null;
   const accrued = total == null ? "unavailable" : `${total >= 0 ? "+" : "−"}${Math.round(Math.abs(total)).toLocaleString("en-US")} ETN`;
-  const paperNote = mode === "paper" ? "\n\n_ETN strategy trades are simulated in PAPER mode._" : "";
-  return `*ETN Accumulator Bot — ${mode.toUpperCase()}*\n\n${text}\n\n*Realized ETN accrued: ${accrued}*${paperNote}`;
+  const label = opportunity ? "MARKET OPPORTUNITY" : mode.toUpperCase();
+  const footer = opportunity ? "" : `\n\n*Realized ETN accrued: ${accrued}*${mode === "paper" ? "\n\n_ETN strategy trades are simulated in PAPER mode._" : ""}`;
+  return `*ETN Accumulator Bot — ${label}*\n\n${text}${footer}`;
 }

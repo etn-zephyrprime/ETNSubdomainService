@@ -352,9 +352,10 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       }
     }
   }
-  function notify(text) {
+  function notify(text, { telegram = true, mode = cfg.mode } = {}) {
     console.log(`🤖 ETN bot${cfg.mode === "paper" ? " (paper)" : ""}: ${text}`);
-    const message = formatEtnBotNotification(text, cfg.mode, notificationState);
+    if (!telegram) return;
+    const message = formatEtnBotNotification(text, mode, notificationState);
     notificationQueue = notificationQueue.then(() => dmAlertWallets(message)).catch((err) => {
       console.error("⚠️  ETN bot: Telegram notification failed:", err.message);
     });
@@ -415,58 +416,59 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     const etnIn = amounts.etnDelta, stableOut = -amounts.stableDelta; // for sells
     const etnOut = -amounts.etnDelta, stableIn = amounts.stableDelta; // for buys
     const gap = state.gap;
+    const notifyTrade = (text) => notify(text, { telegram: Boolean(txHash) });
     switch (order.kind) {
       case "sell": {
         applySell(state, { id: order.lotId, stable: order.stable, etnSold: etnIn, stableAmount: stableOut, txHash, at });
-        notify(`🔴 Sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} at ${(stableOut / etnIn).toPrecision(4)} (lot #${order.lotId}, EMA ${state.ema?.toPrecision(4)})`);
+        notifyTrade(`🔴 Sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} at ${(stableOut / etnIn).toPrecision(4)} (lot #${order.lotId}, EMA ${state.ema?.toPrecision(4)})`);
         break;
       }
       case "buyback": {
         const lot = state.lots.find((l) => l.id === order.lotId);
         applyBuyback(state, order.lotId, { etnBought: etnOut, txHash, at });
-        notify(`🟢 Bought back ${fmtEtn(etnOut)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} — ${signedEtn(etnOut - lot.etnSold)} ETN (lot #${lot.id}). Realized so far: ${signedEtn(state.realizedGainEtn)} ETN`);
+        notifyTrade(`🟢 Bought back ${fmtEtn(etnOut)} ETN for ${fmtUsd(lot.stableAmount)} ${lot.stable} — ${signedEtn(etnOut - lot.etnSold)} ETN (lot #${lot.id}). Realized so far: ${signedEtn(state.realizedGainEtn)} ETN`);
         break;
       }
       case "seed": {
         gap.seedEtn += etnIn;
         gap.stables[order.stable] += stableOut;
         gap.seeded[order.stable] = true;
-        notify(`🌱 Gap book seeded: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}`);
+        notifyTrade(`🌱 Gap book seeded: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}`);
         break;
       }
       case "gapSell": {
         applyGapSellLeg(gap, { dear: order.stable, stableReceived: stableOut });
         state.gapLeg = { dear: order.stable, cheap: order.cheap, etnSold: etnIn, stableReceived: stableOut, sellTx: txHash, at };
-        notify(`⚠️ Gap trade first leg: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}; buying on ${order.cheap} is pending`);
+        notifyTrade(`⚠️ Gap trade first leg: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}; buying on ${order.cheap} is pending`);
         break;
       }
       case "gapBuy": {
         const leg = state.gapLeg;
         applyGapBuyLeg(gap, { dear: leg.dear, cheap: order.stable, etnSold: leg.etnSold, stableReceived: leg.stableReceived, stableSpent: stableIn, etnBought: etnOut, at, txHashes: [leg.sellTx, txHash] });
         state.gapLeg = null;
-        notify(`🔁 Gap trade: sold ${fmtEtn(leg.etnSold)} ETN for ${fmtUsd(leg.stableReceived)} ${leg.dear}, bought ${fmtEtn(etnOut)} ETN with ${fmtUsd(stableIn)} ${order.stable} — ${signedEtn(etnOut - leg.etnSold)} ETN. Gap total: ${signedEtn(gap.gainEtn)} ETN over ${gap.trades} trade(s)`);
+        notifyTrade(`🔁 Gap trade: sold ${fmtEtn(leg.etnSold)} ETN for ${fmtUsd(leg.stableReceived)} ${leg.dear}, bought ${fmtEtn(etnOut)} ETN with ${fmtUsd(stableIn)} ${order.stable} — ${signedEtn(etnOut - leg.etnSold)} ETN. Gap total: ${signedEtn(gap.gainEtn)} ETN over ${gap.trades} trade(s)`);
         break;
       }
       case "cuBuy": {
         applyCatchupBuy(state.cu, { stable: order.stable, usdSpent: stableIn, etnBought: etnOut, at, txHash, lagPct: order.lagPct });
-        notify(`📥 Catch-up buy: ElectroSwap ${Math.abs(order.lagPct).toFixed(1)}% below KuCoin — ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN (lot #${state.cu.nextId - 1}; pot ${fmtUsd(state.cu.cash.USDT)} USDT / ${fmtUsd(state.cu.cash.USDC)} USDC)`);
+        notifyTrade(`📥 Catch-up buy: ElectroSwap ${Math.abs(order.lagPct).toFixed(1)}% below KuCoin — ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN (lot #${state.cu.nextId - 1}; pot ${fmtUsd(state.cu.cash.USDT)} USDT / ${fmtUsd(state.cu.cash.USDC)} USDC)`);
         break;
       }
       case "cuSell": {
         const lot = state.cu.lots.find((l) => l.id === order.lotId);
         applyCatchupClose(state.cu, order.lotId, { etnSold: etnIn, usdReceived: stableOut, at, txHash });
-        notify(`📤 Catch-up close: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}, kept ${signedEtn(lot.etn - etnIn)} ETN (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
+        notifyTrade(`📤 Catch-up close: sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable}, kept ${signedEtn(lot.etn - etnIn)} ETN (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
         break;
       }
       case "cuSellFirst": {
         applyCatchupSell(state.cu, { stable: order.stable, etnSold: etnIn, usdReceived: stableOut, at, txHash, lagPct: order.lagPct });
-        notify(`📤 Catch-up sell: ElectroSwap ${order.lagPct.toFixed(1)}% above KuCoin — sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} (lot #${state.cu.nextId - 1}; ${fmtEtn(openSellEtn(state.cu))} ETN out on the sell side)`);
+        notifyTrade(`📤 Catch-up sell: ElectroSwap ${order.lagPct.toFixed(1)}% above KuCoin — sold ${fmtEtn(etnIn)} ETN for ${fmtUsd(stableOut)} ${order.stable} (lot #${state.cu.nextId - 1}; ${fmtEtn(openSellEtn(state.cu))} ETN out on the sell side)`);
         break;
       }
       case "cuBuyBack": {
         const lot = state.cu.lots.find((l) => l.id === order.lotId);
         applyCatchupBuyBack(state.cu, order.lotId, { usdSpent: stableIn, etnBought: etnOut, at, txHash });
-        notify(`📥 Catch-up buy-back: ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN, ${signedEtn(etnOut - lot.etn)} ETN vs the ${fmtEtn(lot.etn)} sold (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
+        notifyTrade(`📥 Catch-up buy-back: ${fmtUsd(stableIn)} ${order.stable} -> ${fmtEtn(etnOut)} ETN, ${signedEtn(etnOut - lot.etn)} ETN vs the ${fmtEtn(lot.etn)} sold (lot #${lot.id}). Catch-up total: ${signedEtn(state.cu.gainEtn)} ETN over ${state.cu.closed}`);
         break;
       }
       case "hedgeSellEs":
@@ -484,13 +486,13 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           at,
           clientOid: `etnbot-${(txHash || "0x" + Date.now()).slice(2, 20)}`,
         };
-        notify(`⚠️ Live hedge first leg filled on ElectroSwap: ${sellOnEs ? "sold" : "bought"} ${fmtEtn(sellOnEs ? etnIn : etnOut)} ETN; the ${VENUES[order.venue || "kucoin"].name} leg is pending`);
+        notifyTrade(`⚠️ Live hedge first leg filled on ElectroSwap: ${sellOnEs ? "sold" : "bought"} ${fmtEtn(sellOnEs ? etnIn : etnOut)} ETN; the ${VENUES[order.venue || "kucoin"].name} leg is pending`);
         break;
       }
       case "triangle": {
         state.tri = state.tri || freshTriangleBook();
         applyTriangleTrade(state.tri, { route: order.route, etnIn: order.amountIn, etnOut: amounts.etnOut, txHash, at });
-        notify(`🔺 Triangle ${order.route}: ${fmtEtn(order.amountIn)} ETN in, ${fmtEtn(amounts.etnOut)} out — ${signedEtn(amounts.etnOut - order.amountIn)} ETN. Triangle total: ${signedEtn(state.tri.gainEtn)} ETN over ${state.tri.trades} trade(s)`);
+        notifyTrade(`🔺 Triangle ${order.route}: ${fmtEtn(order.amountIn)} ETN in, ${fmtEtn(amounts.etnOut)} out — ${signedEtn(amounts.etnOut - order.amountIn)} ETN. Triangle total: ${signedEtn(state.tri.gainEtn)} ETN over ${state.tri.trades} trade(s)`);
         break;
       }
       default:
@@ -1069,7 +1071,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const text = b.below
         ? `🛡️ *ETN Bot — under the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (buy side ${signedEtn(p.buyOpenEtn)}, sell side ${signedEtn(p.sellOpenEtn)}), under the ${fmtEtn(cfg.profitFloorEtn)} ETN floor. ${blocked} until it's back above. Open lots still close, and gap/triangle/hedge/arbitrage round trips carry on.`
         : `✅ *ETN Bot — back above the profit floor*\n\nProfit is ${signedEtn(p.profitEtn)} ETN counting open positions (floor ${fmtEtn(cfg.profitFloorEtn)} ETN). New lots can open on both sides again.`;
-      notify(text.replace(/\*/g, "").replace(/\n+/g, " "));
+      notify(text.replace(/\*/g, "").replace(/\n+/g, " "), { telegram: cfg.mode === "live" });
     }
     // A floor state saved before the per-side split (below, no sides yet) blocks both until a quoted reading.
     return { buys: pf.blockBuys ?? Boolean(pf.below), sells: pf.blockSells ?? Boolean(pf.below) };
@@ -1266,7 +1268,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const what = paper.dir === "sellOnEs"
         ? `sell ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.esUsd)} ${paper.stable}, buy it back on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 + fee))}`
         : `buy ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.usd)} ${paper.stable}, sell it on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 - fee))}`;
-      notify(`🧪 Hedge paper opportunity: ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — would ${what}: +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Simulated total +${fmtUsd(state.hedge.profitUsd)} over ${state.hedge.trades}`);
+      notify(`⚡ Hedge market opportunity (not executed): ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — ${what}; estimated spread +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Exchange balances not checked`, { mode: "opportunity" });
     }
     if (!liveReady) return false;
 
@@ -1423,7 +1425,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       ab.paper = ab.paper || { trades: 0, profitUsd: 0 };
       ab.paper.trades += 1;
       ab.paper.profitUsd += plan.profitUsd;
-      notify(`🧪 CEX arbitrage paper opportunity: buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Simulated total +${fmtUsd(ab.paper.profitUsd)} over ${ab.paper.trades}`);
+      notify(`⚡ CEX arbitrage market opportunity (not executed): buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — estimated spread +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Exchange balances not checked`, { mode: "opportunity" });
     }
     if (!cfg.arbLive || state.arbLeg || !VENUES[plan.buyVenue].configured() || !VENUES[plan.sellVenue].configured()) return false;
 
@@ -1562,7 +1564,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
   async function tick() {
     if (pausedReason && pausedUntil && Date.now() >= pausedUntil) {
-      notify(`▶️ Resumed after a ${Math.round(cfg.simPauseMs / 60000)}-minute pause (${pausedReason})`);
+      notify(`▶️ Resumed after a ${Math.round(cfg.simPauseMs / 60000)}-minute pause (${pausedReason})`, { telegram: cfg.mode === "live" });
       pausedReason = null;
       pausedUntil = null;
       consecutiveFailures = 0;
@@ -1906,7 +1908,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     if (realFailures === 0 && cfg.simPauseMs > 0) {
       pausedReason = "3 swaps in a row rejected in simulation (nothing sent)";
       pausedUntil = Date.now() + cfg.simPauseMs;
-      notify(`⏸️ Paused: ${pausedReason} — resuming by itself in ${Math.round(cfg.simPauseMs / 60000)} minutes.`);
+      notify(`⏸️ Paused: ${pausedReason} — resuming by itself in ${Math.round(cfg.simPauseMs / 60000)} minutes.`, { telegram: cfg.mode === "live" });
     } else {
       pausedReason = "3 failed trades in a row";
       notify(`⏸️ Paused: ${pausedReason}. Restart the service to resume.`);
@@ -1940,7 +1942,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const sell = decideCatchupSell(state.cu, lags, mids, catchupSellCfg(cfg), Date.now(), canSpendEtn);
       if (!sell) return false;
       state.cuTradesByDay = { [day]: (state.cuTradesByDay?.[day] || 0) + 1 };
-      notify(`⚡ Fast path: ElectroSwap ${sell.lagPct.toFixed(1)}% above KuCoin (${sell.stable}) — catch-up sell of ${fmtEtn(sell.etn)} ETN`);
+      notify(`⚡ Fast path: ElectroSwap ${sell.lagPct.toFixed(1)}% above KuCoin (${sell.stable}) — catch-up sell of ${fmtEtn(sell.etn)} ETN`, { telegram: cfg.mode === "live" });
       await execute(state, { kind: "cuSellFirst", side: "sellEtn", stable: sell.stable, amountIn: sell.etn, expectedOut: await quoteSellEtn(sell.stable, sell.etn), lagPct: sell.lagPct });
       await saveWithRetry(state);
       return true;
