@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeBubblemap, findHubAddresses, hasNftTransfer } from "../services/bubblemaps/analysis.js";
-import { cursorQuery, splitTransfersAtBlock } from "../services/bubblemaps/worker.js";
+import { cursorQuery, isTokenCatalogFresh, splitTransfersAtBlock } from "../services/bubblemaps/worker.js";
+import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks, hasActiveLiquidityLock } from "../utils/electroSwapTokens.js";
 
 const address = (number) => `0x${number.toString(16).padStart(40, "0")}`;
 const holder = (number, value = "100") => ({ address: address(number), value });
@@ -49,6 +50,36 @@ test("hub detection uses distinct counterparties and a strict greater-than thres
     [address(4), [address(5), address(6), address(7)]],
   ]);
   assert.deepEqual(findHubAddresses(counterparties, 2), new Set([address(4)]));
+});
+
+test("token catalog freshness forces refresh for legacy state, expired syncs, or incomplete syncs", () => {
+  const now = Date.parse("2026-01-01T12:00:00.000Z");
+  const state = {
+    catalog_key: "electroswap-listed-addresses",
+    synced_at: new Date(now - 60 * 60 * 1000).toISOString(),
+  };
+  assert.equal(isTokenCatalogFresh(state, "electroswap-listed-addresses", now), true);
+  assert.equal(isTokenCatalogFresh({ ...state, catalog_key: undefined }, "electroswap-listed-addresses", now), false);
+  assert.equal(isTokenCatalogFresh({ ...state, started_at: "2026-01-01T11:00:00.000Z" }, "electroswap-listed-addresses", now), false);
+  assert.equal(isTokenCatalogFresh({ ...state, synced_at: "2025-12-30T12:00:00.000Z" }, "electroswap-listed-addresses", now), false);
+});
+
+test("Bubblemaps includes only currently active or permanent liquidity locks", () => {
+  const now = Date.parse("2026-01-01T12:00:00.000Z");
+  assert.equal(hasActiveLiquidityLock({ count: 1, permanentCount: 0, latestUnlockAt: "2026-01-02T00:00:00.000Z" }, now), true);
+  assert.equal(hasActiveLiquidityLock({ count: 1, permanentCount: 1, latestUnlockAt: null }, now), true);
+  assert.equal(hasActiveLiquidityLock({ count: 1, permanentCount: 0, latestUnlockAt: "2026-01-01T00:00:00.000Z" }, now), false);
+  assert.equal(hasActiveLiquidityLock({ count: 0, permanentCount: 0, latestUnlockAt: null }, now), false);
+  assert.equal(hasActiveLiquidityLock(null, now), false);
+});
+
+test("locked-liquidity catalog excludes listed tokens without a current lock", () => {
+  const now = Date.parse("2026-01-01T12:00:00.000Z");
+  const eligible = getElectroSwapTokensWithActiveLocks({
+    [ELECTROSWAP_LISTED_TOKENS[0].address]: { count: 1, permanentCount: 0, latestUnlockAt: "2026-01-02T00:00:00.000Z" },
+    [ELECTROSWAP_LISTED_TOKENS[3].address]: { count: 0, permanentCount: 0, latestUnlockAt: null },
+  }, now);
+  assert.deepEqual(eligible.map(({ symbol }) => symbol), ["BOLT"]);
 });
 
 test("NFT activity in an ETN transaction does not produce an ETN link", () => {
