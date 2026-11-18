@@ -92,33 +92,58 @@ function CorePanelButton({ p, isActive, onChange }) {
   );
 }
 
-function CorePanelGroupButton({ id, label, icon: Icon, activeGroup, onChange }) {
+function CorePanelGroupButton({ id, label, description, icon: Icon, color, glow, tint, activeGroup, onChange }) {
   const active = id === activeGroup;
   return (
     <button
       type="button"
       onClick={() => onChange(id)}
       aria-pressed={active}
+      className="core-tier-group-tile"
       style={{
         display: "flex",
         alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
+        gap: 12,
         flex: 1,
-        padding: "10px 12px",
-        borderRadius: 8,
-        border: `1px solid ${active ? gold : "rgba(232,191,76,0.28)"}`,
-        background: active ? "rgba(232,191,76,0.18)" : "rgba(232,191,76,0.04)",
-        color: active ? gold : "#d8c488",
+        minWidth: 0,
+        minHeight: 72,
+        padding: "12px 14px",
+        borderRadius: 10,
+        border: `2px solid ${color}`,
+        background: active ? `rgba(${tint},0.22)` : `rgba(${tint},0.07)`,
+        boxShadow: active
+          ? `0 0 18px ${glow}, inset 0 0 14px rgba(${tint},0.12)`
+          : `0 0 8px rgba(${tint},0.15)`,
+        color: active ? "#fff" : color,
+        textAlign: "left",
+        transition: "background 0.15s, box-shadow 0.15s, transform 0.15s",
         fontFamily: monoFont,
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: 0.5,
-        textTransform: "uppercase",
         cursor: "pointer",
       }}
     >
-      <Icon size={14} /> {label}
+      <span
+        aria-hidden="true"
+        className="core-tier-group-icon"
+        style={{
+          width: 38,
+          height: 38,
+          flexShrink: 0,
+          display: "grid",
+          placeItems: "center",
+          borderRadius: 8,
+          background: `rgba(${tint},0.12)`,
+        }}
+      >
+        <Icon size={22} />
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase" }}>
+          {label}
+        </span>
+        <span style={{ display: "block", marginTop: 4, color: active ? "rgba(255,255,255,0.76)" : mutedLight, fontSize: 10, lineHeight: 1.35 }}>
+          {description}
+        </span>
+      </span>
     </button>
   );
 }
@@ -327,15 +352,43 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
 
       <div style={{ marginBottom: 20 }}>
         <style>{`
-          .core-tier-groups{display:flex;gap:8px;margin-bottom:8px;}
+          .core-tier-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:10px;}
+          .core-tier-group-tile:hover{transform:translateY(-2px);}
+          .core-tier-group-tile:focus-visible{outline:2px solid #fff;outline-offset:3px;}
           .core-tier-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
           @media (min-width:720px){
             .core-tier-panel-switcher{grid-template-columns:repeat(3,1fr);}
           }
+          @media (max-width:420px){
+            .core-tier-groups{gap:7px;}
+            .core-tier-group-tile{padding:10px !important;gap:8px !important;}
+            .core-tier-group-icon{width:32px !important;height:32px !important;}
+            .core-tier-group-icon svg{width:18px;height:18px;}
+          }
         `}</style>
         <div className="core-tier-groups">
-          <CorePanelGroupButton id="portfolio" label="Portfolio" icon={WalletIcon} activeGroup={activeGroup} onChange={setActiveGroup} />
-          <CorePanelGroupButton id="infrastructure" label="Infrastructure" icon={Network} activeGroup={activeGroup} onChange={setActiveGroup} />
+          <CorePanelGroupButton
+            id="portfolio"
+            label="Portfolio"
+            description="Wallets, balances & PnL"
+            icon={WalletIcon}
+            color={gold}
+            glow={goldGlow}
+            tint="232,191,76"
+            activeGroup={activeGroup}
+            onChange={setActiveGroup}
+          />
+          <CorePanelGroupButton
+            id="infrastructure"
+            label="Infrastructure"
+            description="Chain-wide tools & analysis"
+            icon={Network}
+            color={green}
+            glow={greenGlow}
+            tint="24,187,26"
+            activeGroup={activeGroup}
+            onChange={setActiveGroup}
+          />
         </div>
         <div className="core-tier-panel-switcher">
           {[...visiblePanels, ...(activeGroup === "portfolio" && isBotViewer ? [BOT_PANEL] : []), ...(activeGroup === "portfolio" && isMembersAdmin ? [MEMBERS_PANEL] : [])].map((p) => (
