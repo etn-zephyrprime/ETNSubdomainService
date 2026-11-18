@@ -3,12 +3,15 @@ import { listCexAddresses } from "../../db/cexAddresses.js";
 import { listKnownContracts } from "../../db/knownContracts.js";
 import { listBubblemapOverrides } from "../../db/bubblemaps.js";
 import { fetchBlockscoutJson } from "../../utils/blockscoutClient.js";
+import { getTokenLocksCache } from "../../state/tokenLocksState.js";
+import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks } from "../../utils/electroSwapTokens.js";
 import { BRIDGE_PROXY_ADDRESS } from "../../utils/etnBridge.js";
 import { TEAM_WALLET_ADDRESSES } from "../../utils/teamWalletsCache.js";
 import { analyzeBubblemap, hasNftTransfer } from "./analysis.js";
 import { BUBBLEMAP_CONFIG } from "./config.js";
 
 const TOKEN_CATALOG_REFRESH_MS = 24 * 60 * 60 * 1000;
+const TOKEN_CATALOG_KEY = ELECTROSWAP_LISTED_TOKENS.map(({ address }) => address).join(",");
 const MAX_HOLDER_PAGES_PER_TICK = 10;
 const MAX_TRANSFER_PAGES_PER_TICK = BUBBLEMAP_CONFIG.maxTransferPagesPerTick;
 const MAX_MAPS_PER_TICK = 3;
@@ -23,11 +26,20 @@ let nextRequestAt = 0;
 let cachedEntities = null;
 let cachedEntitiesAt = 0;
 let cachedStats = null;
+let lockCacheUnavailableLogged = false;
 
 export function cursorQuery(cursor) {
   if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return "";
   const queryString = new URLSearchParams(cursor).toString();
   return queryString ? `?${queryString}` : "";
+}
+
+export function isTokenCatalogFresh(state, catalogKey, now = Date.now()) {
+  const syncedAt = Date.parse(state?.synced_at || "");
+  return state?.catalog_key === catalogKey
+    && !state.started_at
+    && Number.isFinite(syncedAt)
+    && now - syncedAt < TOKEN_CATALOG_REFRESH_MS;
 }
 
 export function normalizeTokenTransfer(item, tokenAddress) {
@@ -134,32 +146,82 @@ async function saveTokenPage(items) {
 }
 
 async function syncTokenCatalog() {
-  const state = await getWorkerState("token_catalog");
   const now = Date.now();
-  if (!state.started_at && state.synced_at && now - Date.parse(state.synced_at) < TOKEN_CATALOG_REFRESH_MS) return;
-  const startedAt = state.started_at || new Date().toISOString();
-  let cursor = state.started_at ? jsonOrNull(state.cursor) : null;
-  if (!state.started_at) {
+  const lockCache = await getTokenLocksCache();
+  const locksByAddress = lockCache?.locksByAddress;
+  const lockCacheUpdatedAt = Date.parse(lockCache?.updatedAt || "");
+  if (
+    !Number.isFinite(lockCacheUpdatedAt)
+    || !locksByAddress
+    || typeof locksByAddress !== "object"
+    || Array.isArray(locksByAddress)
+    || Object.keys(locksByAddress).length === 0
+  ) {
+    if (!lockCacheUnavailableLogged) {
+      console.warn("⚠️  Bubblemaps catalog unchanged — ElectroSwap lock cache is unavailable or empty");
+      lockCacheUnavailableLogged = true;
+    }
+    return;
+  }
+  lockCacheUnavailableLogged = false;
+
+  const eligibleTokens = getElectroSwapTokensWithActiveLocks(locksByAddress, now);
+  const addresses = eligibleTokens.map(({ address }) => address);
+  const catalogKey = [
+    TOKEN_CATALOG_KEY,
+    addresses.join(","),
+  ].join("|");
+  const state = await getWorkerState("token_catalog");
+  if (isTokenCatalogFresh(state, catalogKey, now)) return;
+
+  const resumed = state.catalog_key === catalogKey && Boolean(state.started_at);
+  const startedAt = resumed ? state.started_at : new Date().toISOString();
+  const savedCursor = resumed ? jsonOrNull(state.cursor) : null;
+  const savedIndex = Number(savedCursor?.index);
+  let index = Number.isInteger(savedIndex) && savedIndex >= 0 && savedIndex <= addresses.length ? savedIndex : 0;
+  if (!resumed) {
     await query("UPDATE bubblemap_addresses SET degree_complete = false");
-    await setWorkerState("token_catalog", { ...state, degree_ready: false, started_at: startedAt, cursor });
+    await setWorkerState("token_catalog", {
+      ...state,
+      source: "electroswap-listed-tokens-with-locked-liquidity",
+      catalog_key: catalogKey,
+      degree_ready: false,
+      started_at: startedAt,
+      cursor: { index },
+    });
   }
 
-  for (let page = 0; page < 10; page++) {
-    const response = await blockscout(`/tokens?type=ERC-20${cursorQuery(cursor)}`);
-    await saveTokenPage(response.items || []);
-    cursor = response.next_page_params || null;
-    if (!cursor) {
-      await setWorkerState("token_catalog", {
-        ...state,
-        synced_at: new Date().toISOString(),
-        started_at: null,
-        cursor: null,
-        degree_ready: false,
-      });
-      console.log("🫧 Bubblemaps token catalog synchronized");
-      return;
-    }
-    await setWorkerState("token_catalog", { started_at: startedAt, cursor });
+  for (let count = 0; count < 10 && index < eligibleTokens.length; count++) {
+    const listedToken = eligibleTokens[index];
+    const details = await blockscout(`/tokens/${listedToken.address}`);
+    await saveTokenPage([{
+      ...details,
+      address_hash: listedToken.address,
+      symbol: details.symbol || listedToken.symbol,
+      decimals: details.decimals ?? listedToken.decimals,
+    }]);
+    index += 1;
+    await setWorkerState("token_catalog", {
+      source: "electroswap-listed-tokens-with-locked-liquidity",
+      catalog_key: catalogKey,
+      degree_ready: false,
+      started_at: startedAt,
+      cursor: { index },
+    });
+  }
+
+  if (index >= eligibleTokens.length) {
+    await query("DELETE FROM bubblemap_tokens WHERE NOT (token_address = ANY($1::text[]))", [addresses]);
+    await query("UPDATE bubblemap_tokens SET analysis_dirty = true");
+    await setWorkerState("token_catalog", {
+      source: "electroswap-listed-tokens-with-locked-liquidity",
+      catalog_key: catalogKey,
+      synced_at: new Date().toISOString(),
+      started_at: null,
+      cursor: null,
+      degree_ready: false,
+    });
+    console.log(`🫧 Bubblemaps catalog synchronized for ${addresses.length} ElectroSwap-listed tokens with locked liquidity`);
   }
 }
 

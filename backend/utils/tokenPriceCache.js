@@ -1,26 +1,16 @@
 import { isElectroSwapConfigured } from "./electroSwapApi.js";
 import { getCachedBatchTokenPrices, registerPricePiggyback } from "./electroSwapPriceCache.js";
 import { getTokenPriceCache, setTokenPriceCache } from "../state/tokenPriceState.js";
+import { ELECTROSWAP_LISTED_TOKENS } from "./electroSwapTokens.js";
 
 // Keeps a small public JSON cache of the whitelisted ERC20 payment tokens' live USD prices in R2
 // — same reasoning/shape as etnPriceCache.js, just for BOLT/USDC/USDT/CLUB/CORE/DYNO/DCNT/PDY/
 // FUGAZI instead of ETN itself, so a subname quote paid in any of them can show a "≈ $X.XX"
 // estimate the same way an ETN quote already does (see src/hooks/useTokenPrices.js/
-// UsdEstimate.jsx). Same 9-token list marketplaceWatcher.js's/subdomainAdvertScheduler.js's own
-// TOKEN_DECIMALS_BY_ADDRESS track (symbol/decimals there; only addresses needed here) —
-// duplicated per this codebase's established "small per-file lists are fine to drift
-// independently" convention.
-const WHITELISTED_TOKEN_ADDRESSES = [
-  "0x043fAa1b5C5FC9a7dc35171f290c29ECDE0cCff1", // BOLT
-  "0x309B916b3A90cb3E071697Ea9680e9217A30066f", // CORE
-  "0xEe432C220273e4F949007B4c1946562826Efa055", // DYNO
-  "0xc20d02538368D8F7deBeAeB99D9a8b4d4D1DDC1C", // PDY
-  "0x075533AB8EeC6A6999F07C8bc2f1900eB8312e25", // FUGAZI
-  "0x3187deAd7A2Bd6770F5Fe81495D1B715926AAe6e", // USDC
-  "0x48E722f1458b253c2FB0E573F939318D7Dbd54e7", // USDT
-  "0xC9FC4AB00911793D99b5c7Bd01f01203C21D4131", // CLUB
-  "0xE74e4E7A064310466f3bdBd3F3Ce4e8c8F7CF1d5", // DCNT
-];
+// UsdEstimate.jsx). These addresses are the shared candidate set; Bubblemaps further filters for
+// active locks. The marketplace watcher and advert scheduler maintain their own
+// TOKEN_DECIMALS_BY_ADDRESS maps.
+const WHITELISTED_TOKEN_ADDRESSES = ELECTROSWAP_LISTED_TOKENS.map(({ address }) => address);
 
 // ElectroSwap is metered (a batch call is 100 credits + 10 per token), and this file used to spend ~55K
 // credits/day refreshing every 5 minutes around the clock. Three things now keep that down without slowing
