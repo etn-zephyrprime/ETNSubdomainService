@@ -11,6 +11,7 @@
     "@reown/appkit": "^1.8.23",
     "@reown/appkit-adapter-ethers": "^1.8.23",
     "@vercel/analytics": "^2.0.1",
+    "d3-force": "^3.0.1",
     "ethers": "^6.13.0",
     "lucide-react": "^1.21.0",
     "obscenity": "^0.4.6",

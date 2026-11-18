@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch, Users } from "lucide-react";
+import { Wallet as WalletIcon, LineChart, TrendingUp, Image as ImageIcon, Activity, Bell, FlaskConical, Sprout, Bot, FileSearch, Users, Network } from "lucide-react";
 import { useReownWallet } from "../../hooks/useReownWallet.jsx";
 import { useWalletAuthSignature } from "../../hooks/useWalletAuthSignature.js";
 import { useCoreTierAccess } from "../hooks/useCoreTierAccess.js";
@@ -18,11 +18,13 @@ import CoreTierScenarios from "./components/CoreTierScenarios.jsx";
 import CoreTierYieldFarms from "./components/CoreTierYieldFarms.jsx";
 import CoreTierEtnBot from "./components/CoreTierEtnBot.jsx";
 import CoreTierContracts from "./components/CoreTierContracts.jsx";
+import CoreTierBubblemaps from "./components/CoreTierBubblemaps.jsx";
 import { ContractCardProvider } from "./components/ContractCard.jsx";
 import { ETN_BOT_VIEWERS } from "../hooks/useEtnBot.js";
 import AdminSplitPanel from "./components/AdminSplitPanel.jsx";
 import AdminAppRegistryPanel from "./components/AdminAppRegistryPanel.jsx";
 import AdminMembersPanel, { useMembersAdmin } from "./components/AdminMembersPanel.jsx";
+import AdminBubblemapsPanel from "./components/AdminBubblemapsPanel.jsx";
 import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, goldGlow } from "../theme.js";
 
 // The panels below used to all render stacked, each collapsed-by-default behind its own +/-
@@ -35,16 +37,21 @@ import { green, greenGlow, muted, mutedLight, border, panel2, monoFont, gold, go
 // until opened" behavior, so a second layer of collapse inside would just be a redundant extra click.
 // Gas Spent used to be a panel here too — it's now the gas ticker under the wallet filter, since it's
 // one headline figure.
-const PANELS = [
+const PORTFOLIO_PANELS = [
   { id: "portfolio", label: "Portfolio", icon: WalletIcon },
   { id: "balance", label: "Balance History", icon: LineChart },
   { id: "pnl", label: "PnL", icon: TrendingUp },
   { id: "nftpnl", label: "NFT PnL", icon: ImageIcon },
-  { id: "farms", label: "Yield Farms", icon: Sprout },
   { id: "scenarios", label: "Scenarios", icon: FlaskConical },
   { id: "activity", label: "Recent Activity", icon: Activity },
   { id: "contracts", label: "Contract Check", icon: FileSearch },
   { id: "alerts", label: "Telegram Alerts", icon: Bell },
+];
+const INFRASTRUCTURE_PANELS = [
+  { id: "farms", label: "Yield Farms", icon: Sprout },
+  { id: "scenarios", label: "Scenarios", icon: FlaskConical },
+  { id: "contracts", label: "Contract Check", icon: FileSearch },
+  { id: "bubblemaps", label: "Bubblemaps", icon: Network },
 ];
 // Owner-only: shown just for the ETN_BOT_VIEWERS wallets (the backend enforces it too — see useEtnBot.js).
 const BOT_PANEL = { id: "etnbot", label: "ETN Bot", icon: Bot };
@@ -81,6 +88,37 @@ function CorePanelButton({ p, isActive, onChange }) {
     >
       <Icon size={14} />
       {p.label}
+    </button>
+  );
+}
+
+function CorePanelGroupButton({ id, label, icon: Icon, activeGroup, onChange }) {
+  const active = id === activeGroup;
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(id)}
+      aria-pressed={active}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        flex: 1,
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: `1px solid ${active ? gold : "rgba(232,191,76,0.28)"}`,
+        background: active ? "rgba(232,191,76,0.18)" : "rgba(232,191,76,0.04)",
+        color: active ? gold : "#d8c488",
+        fontFamily: monoFont,
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 0.5,
+        textTransform: "uppercase",
+        cursor: "pointer",
+      }}
+    >
+      <Icon size={14} /> {label}
     </button>
   );
 }
@@ -122,6 +160,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
     }
   }, []);
   const [activePanel, setActivePanel] = useState(linkedContract || linkedApp ? "contracts" : "portfolio");
+  const [activeGroup, setActiveGroup] = useState("portfolio");
   const isBotViewer = Boolean(wallet.isConnected && wallet.account && ETN_BOT_VIEWERS.has(wallet.account.toLowerCase()));
   const isMembersAdmin = useMembersAdmin(wallet);
   // One signed-ownership proof for the whole tab, not one per child component — see
@@ -141,6 +180,23 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
   const coreTierAccess = useCoreTierAccess(wallet, membershipVersion, getAuthParams);
   const { active, hasAccess } = coreTierAccess;
   const { resolve: resolveName } = useDisplayNames(active.map((w) => w.address));
+  const visiblePanels = useMemo(
+    () => (activeGroup === "portfolio" ? PORTFOLIO_PANELS : INFRASTRUCTURE_PANELS.filter((p) => p.id !== "bubblemaps" || hasAccess)),
+    [activeGroup, hasAccess]
+  );
+
+  useEffect(() => {
+    if (!visiblePanels.some((panel) => panel.id === activePanel)) {
+      setActivePanel(activeGroup === "portfolio" ? "portfolio" : "farms");
+    }
+  }, [activeGroup, activePanel, visiblePanels]);
+
+  useEffect(() => {
+    if (!hasAccess && activePanel === "bubblemaps") {
+      setActiveGroup("portfolio");
+      setActivePanel("portfolio");
+    }
+  }, [hasAccess, activePanel]);
 
   // Reports confirmed membership (wallet connected + signed + backend-confirmed active Core Tier
   // access — exactly what hasAccess===true means, see useCoreTierAccess.js's own comment) up to
@@ -200,7 +256,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
           Premium — Core Tier
         </div>
         <h2 style={{ fontSize: 26, fontWeight: 900, margin: "0 0 12px 0", color: "#fff", textShadow: `0 0 16px ${greenGlow}` }}>
-          Portfolio
+          {activeGroup === "portfolio" ? "Portfolio" : "Infrastructure"}
         </h2>
         <div style={{ width: 40, height: 2, background: green, margin: "0 auto", borderRadius: 2, boxShadow: `0 0 8px ${greenGlow}` }} />
       </div>
@@ -271,13 +327,18 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
 
       <div style={{ marginBottom: 20 }}>
         <style>{`
+          .core-tier-groups{display:flex;gap:8px;margin-bottom:8px;}
           .core-tier-panel-switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
           @media (min-width:720px){
             .core-tier-panel-switcher{grid-template-columns:repeat(3,1fr);}
           }
         `}</style>
+        <div className="core-tier-groups">
+          <CorePanelGroupButton id="portfolio" label="Portfolio" icon={WalletIcon} activeGroup={activeGroup} onChange={setActiveGroup} />
+          <CorePanelGroupButton id="infrastructure" label="Infrastructure" icon={Network} activeGroup={activeGroup} onChange={setActiveGroup} />
+        </div>
         <div className="core-tier-panel-switcher">
-          {[...PANELS, ...(isBotViewer ? [BOT_PANEL] : []), ...(isMembersAdmin ? [MEMBERS_PANEL] : [])].map((p) => (
+          {[...visiblePanels, ...(activeGroup === "portfolio" && isBotViewer ? [BOT_PANEL] : []), ...(activeGroup === "portfolio" && isMembersAdmin ? [MEMBERS_PANEL] : [])].map((p) => (
             <CorePanelButton key={p.id} p={p} isActive={p.id === activePanel} onChange={setActivePanel} />
           ))}
         </div>
@@ -323,6 +384,9 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
         {activePanel === "alerts" && (
           <CoreTierAlerts wallet={wallet} getAuthParams={getAuthParams} onSelectToken={onSelectToken} coreTierAccess={coreTierAccess} />
         )}
+        {activePanel === "bubblemaps" && hasAccess && (
+          <CoreTierBubblemaps wallet={wallet} getAuthParams={getAuthParams} />
+        )}
       </div>
 
       {/* Only render it again down here if it ISN'T already showing at the top — hasAccess alone
@@ -331,6 +395,7 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
       {hasAccess && !showMembershipAtTop && membershipPanel}
       <AdminSplitPanel wallet={wallet} getAuthParams={getAuthParams} />
       <AdminAppRegistryPanel wallet={wallet} getAuthParams={getAuthParams} />
+      <AdminBubblemapsPanel wallet={wallet} getAuthParams={getAuthParams} />
     </div>
     </ContractCardProvider>
   );

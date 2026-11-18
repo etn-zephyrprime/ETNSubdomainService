@@ -12,6 +12,14 @@ export async function getKnownContract(address) {
   return r ? { address: r.address, label: r.label, project: r.project, category: r.category, verifiedByUs: r.verified_by_us, notes: r.notes } : null;
 }
 
+/** `{ address, label, category }[]` for the curated entity labels used by Bubblemaps. */
+export async function listKnownContracts() {
+  const res = await query(
+    `SELECT address, label, category FROM known_contracts ORDER BY address`
+  );
+  return res?.rows || [];
+}
+
 /** Insert or update one registry row. */
 export async function upsertKnownContract({ address, label, project = null, category, verifiedByUs = false, notes = null }) {
   await query(

@@ -72,6 +72,8 @@ import premiumAlertsRouter from "./utils/premiumAlertsRouter.js";
 import coreTierDemoRouter from "./utils/coreTierDemoRouter.js";
 import contractCheckRouter from "./utils/contractCheckRouter.js";
 import appCheckRouter from "./utils/appCheckRouter.js";
+import bubblemapsRouter from "./utils/bubblemapsRouter.js";
+import { startBubblemapWorker } from "./services/bubblemaps/worker.js";
 
 dotenv.config();
 
@@ -119,6 +121,7 @@ app.use("/api", adminMembersRouter);
 app.use("/api", coreTierDemoRouter);
 app.use("/api", contractCheckRouter);
 app.use("/api", appCheckRouter);
+app.use("/api", bubblemapsRouter);
 
 const PORT = process.env.PORT || 3001;
 
@@ -209,4 +212,5 @@ app.listen(PORT, () => {
 
   // ETN accumulator bot — off unless ETN_BOT_ENABLED=true; paper-trades unless ETN_BOT_MODE=live.
   safeStart("ETN accumulator bot", startEtnAccumulatorBot);
+  safeStart("Argus Bubblemaps worker", startBubblemapWorker);
 });
