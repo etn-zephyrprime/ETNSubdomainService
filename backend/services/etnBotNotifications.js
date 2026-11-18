@@ -1,6 +1,7 @@
 import { totalAccruedEtn } from "./etnAccumulatorStrategy.js";
 
 export const DEFAULT_ETN_BOT_ALERT_WALLET = "0x3Fd2e5B4AC0efF6DFDF2446abddAB3f66B425099";
+const OPPORTUNITY_ALERT_INTERVAL_MS = 60 * 60 * 1000;
 
 export function etnBotAlertWallets(value = process.env.ETN_BOT_ALERT_WALLETS) {
   const list = value == null ? DEFAULT_ETN_BOT_ALERT_WALLET : value;
@@ -14,4 +15,11 @@ export function formatEtnBotNotification(text, mode, state) {
   const label = opportunity ? "MARKET OPPORTUNITY" : mode.toUpperCase();
   const footer = opportunity ? "" : `\n\n*Realized ETN accrued: ${accrued}*${mode === "paper" ? "\n\n_ETN strategy trades are simulated in PAPER mode._" : ""}`;
   return `*ETN Accumulator Bot — ${label}*\n\n${text}${footer}`;
+}
+
+export function claimEtnBotOpportunityNotification(state, now = Date.now()) {
+  const last = Date.parse(state.lastOpportunityNotificationAt || "");
+  if (Number.isFinite(last) && now - last < OPPORTUNITY_ALERT_INTERVAL_MS) return false;
+  state.lastOpportunityNotificationAt = new Date(now).toISOString();
+  return true;
 }

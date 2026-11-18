@@ -33,7 +33,7 @@ import os from "os";
 import { getBotState, setBotState, botStateConfigured, claimBotLease, releaseBotLease } from "../state/etnAccumulatorBotState.js";
 import { getNotisLinkedChatId, sendNotisDirectMessage } from "./notisLinkRouter.js";
 import { DEFAULT_CONFIG, updateEma, decide, applySell, applyBuyback, botEtnInventory, profitNowEtn, profitFloorBlocks } from "../services/etnAccumulatorStrategy.js";
-import { etnBotAlertWallets, formatEtnBotNotification } from "../services/etnBotNotifications.js";
+import { claimEtnBotOpportunityNotification, etnBotAlertWallets, formatEtnBotNotification } from "../services/etnBotNotifications.js";
 import { GAP_DEFAULTS, gapSizes, affordableLegEtn, decideGap, freshGapBook, applyGapSellLeg, applyGapBuyLeg, applyGapDeposit, GAP_REBALANCE_DEFAULTS, gapRebalanceNeed, decideGapRebalance, applyGapRebalance } from "../services/etnGapStrategy.js";
 import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js";
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
@@ -359,6 +359,11 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     notificationQueue = notificationQueue.then(() => dmAlertWallets(message)).catch((err) => {
       console.error("⚠️  ETN bot: Telegram notification failed:", err.message);
     });
+  }
+  async function notifyOpportunity(state, text) {
+    if (!claimEtnBotOpportunityNotification(state)) return;
+    await saveWithRetry(state);
+    notify(text, { mode: "opportunity" });
   }
 
   const quoteSellEtn = async (stable, etn) => {
@@ -1268,7 +1273,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       const what = paper.dir === "sellOnEs"
         ? `sell ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.esUsd)} ${paper.stable}, buy it back on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 + fee))}`
         : `buy ${fmtEtn(paper.etn)} ETN on ElectroSwap for ${fmtUsd(paper.usd)} ${paper.stable}, sell it on ${VENUES[paper.venue].name} for ${fmtUsd(paper.kcUsd * (1 - fee))}`;
-      notify(`⚡ Hedge market opportunity (not executed): ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — ${what}; estimated spread +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Exchange balances not checked`, { mode: "opportunity" });
+      await notifyOpportunity(state, `⚡ Hedge market opportunity (not executed): ElectroSwap ${paper.lagPct >= 0 ? "+" : ""}${paper.lagPct.toFixed(1)}% vs KuCoin — ${what}; estimated spread +${fmtUsd(paper.profitUsd)} (${paper.profitPct.toFixed(2)}%, ≈ +${fmtEtn(paper.profitUsd / kMid)} ETN). Exchange balances not checked`);
     }
     if (!liveReady) return false;
 
@@ -1425,7 +1430,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       ab.paper = ab.paper || { trades: 0, profitUsd: 0 };
       ab.paper.trades += 1;
       ab.paper.profitUsd += plan.profitUsd;
-      notify(`⚡ CEX arbitrage market opportunity (not executed): buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — estimated spread +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Exchange balances not checked`, { mode: "opportunity" });
+      await notifyOpportunity(state, `⚡ CEX arbitrage market opportunity (not executed): buy ${fmtEtn(plan.etn)} ETN on ${VENUES[plan.buyVenue].name} for ${fmtUsd(plan.buyUsd)}, sell on ${VENUES[plan.sellVenue].name} for ${fmtUsd(plan.sellUsd)} — estimated spread +${fmtUsd(plan.profitUsd)} (${plan.edgePct.toFixed(2)}% after fees). Exchange balances not checked`);
     }
     if (!cfg.arbLive || state.arbLeg || !VENUES[plan.buyVenue].configured() || !VENUES[plan.sellVenue].configured()) return false;
 
