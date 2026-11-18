@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation } from "d3-force";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 import { RefreshCw, Network, ExternalLink } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import { PNL_BACKEND_URL, EXPLORER_BASE_URL } from "../../../config.js";
@@ -23,17 +23,36 @@ function layoutGraph(map, showWeak) {
     radius: nodeRadius(node),
   }));
   if (!nodes.length) return [];
+  const clusterCounts = new Map();
+  for (const node of nodes) {
+    if (node.data.cluster_id == null) continue;
+    clusterCounts.set(node.data.cluster_id, (clusterCounts.get(node.data.cluster_id) || 0) + 1);
+  }
+  const groupedClusters = [...clusterCounts].filter(([, count]) => count > 1).map(([id]) => id);
+  const columns = Math.max(1, Math.ceil(Math.sqrt(groupedClusters.length * GRAPH_WIDTH / GRAPH_HEIGHT)));
+  const rows = Math.max(1, Math.ceil(groupedClusters.length / columns));
+  const clusterTargets = new Map(groupedClusters.map((id, index) => {
+    if (groupedClusters.length === 1) return [id, { x: GRAPH_WIDTH / 2, y: GRAPH_HEIGHT / 2 }];
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    return [id, {
+      x: ((column + 0.5) / columns) * GRAPH_WIDTH,
+      y: ((row + 0.5) / rows) * GRAPH_HEIGHT,
+    }];
+  }));
   const available = new Set(nodes.map((node) => node.id));
   const links = (map.edges || [])
     .filter((edge) => (edge.strong || showWeak) && available.has(edge.a) && available.has(edge.b))
     .map((edge) => ({ source: edge.a, target: edge.b, strong: edge.strong, score: edge.score }));
   const simulation = forceSimulation(nodes)
-    .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 54 : 86).strength((edge) => edge.strong ? 0.28 : 0.04))
-    .force("charge", forceManyBody().strength(-95))
+    .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 34 : 86).strength((edge) => edge.strong ? 0.72 : 0.035))
+    .force("charge", forceManyBody().strength(-55))
+    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0))
+    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0))
     .force("center", forceCenter(GRAPH_WIDTH / 2, GRAPH_HEIGHT / 2))
-    .force("collide", forceCollide((node) => node.radius + 3).iterations(2))
+    .force("collide", forceCollide((node) => node.radius + 4).iterations(3))
     .stop();
-  for (let tick = 0; tick < 140; tick++) simulation.tick();
+  for (let tick = 0; tick < 180; tick++) simulation.tick();
   return nodes.map((node) => ({
     ...node,
     x: Math.max(node.radius + 5, Math.min(GRAPH_WIDTH - node.radius - 5, node.x)),
@@ -87,6 +106,9 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [loadingMap, setLoadingMap] = useState(false);
   const [error, setError] = useState(null);
+  const [graphNodes, setGraphNodes] = useState([]);
+  const dragRef = useRef(null);
+  const suppressClickRef = useRef(false);
 
   const authQuery = useCallback(async () => {
     const auth = await getAuthParams(AUTH_PURPOSE);
@@ -145,7 +167,9 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     };
   }, [authQuery, selectedToken]);
 
-  const graphNodes = useMemo(() => layoutGraph(map, showWeak), [map, showWeak]);
+  useEffect(() => {
+    setGraphNodes(layoutGraph(map, showWeak));
+  }, [map, showWeak]);
   const positioned = useMemo(() => new Map(graphNodes.map((node) => [node.id, node])), [graphNodes]);
   const tokenInfo = catalog.find((token) => token.token === selectedToken);
   const chosenNode = map?.nodes?.find((node) => node.address === selectedAddress) || null;
@@ -163,11 +187,51 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     ? (map?.edges || []).filter((edge) => edge.a === chosenNode.address || edge.b === chosenNode.address)
     : [];
   const excludedNodes = map?.nodes?.filter((node) => node.excluded) || [];
+  const beginDrag = (event, node) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    const svg = event.currentTarget.ownerSVGElement;
+    const bounds = svg?.getBoundingClientRect();
+    if (!bounds?.width || !bounds?.height) return;
+    const x = (event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width;
+    const y = (event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height;
+    suppressClickRef.current = false;
+    dragRef.current = {
+      id: node.id,
+      pointerId: event.pointerId,
+      offsetX: node.x - x,
+      offsetY: node.y - y,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+  const moveBubble = (event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 3) drag.moved = true;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    const x = (event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width + drag.offsetX;
+    const y = (event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height + drag.offsetY;
+    setGraphNodes((current) => current.map((node) => node.id !== drag.id ? node : {
+      ...node,
+      x: Math.max(node.radius + 5, Math.min(GRAPH_WIDTH - node.radius - 5, x)),
+      y: Math.max(node.radius + 5, Math.min(GRAPH_HEIGHT - node.radius - 5, y)),
+    }));
+  };
+  const endDrag = (event) => {
+    if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
+    suppressClickRef.current = dragRef.current.moved;
+    dragRef.current = null;
+  };
 
   return (
     <DashboardPanel accent={gold} style={{ borderColor: "rgba(232,191,76,0.4)" }}>
       <style>{`
-        .bubblemap-graph{display:block;width:100%;height:auto;background:#090d0b;border:1px solid ${border};border-radius:8px;}
+        .bubblemap-graph{display:block;width:100%;height:auto;background:radial-gradient(ellipse at 50% 45%,#102019 0%,#090d0b 72%);border:1px solid ${border};border-radius:8px;touch-action:none;}
+        .bubblemap-node{cursor:grab;touch-action:none;}
+        .bubblemap-node:active{cursor:grabbing;}
         .bubblemap-mobile{display:none;}
         @media (max-width:640px){.bubblemap-graph{display:none;}.bubblemap-mobile{display:block;}}
       `}</style>
@@ -180,7 +244,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         </button>
       </div>
       <p style={{ color: muted, fontSize: 12, lineHeight: 1.5, margin: "8px 0 12px" }}>
-        Bubble size represents holdings. Solid links affect clusters; dotted links are weaker observed connections.
+        Bubble size represents holdings. Solid links affect clusters; dotted links are weaker observed connections. Drag bubbles to arrange the map.
       </p>
 
       <label style={{ display: "block", color: mutedLight, fontSize: 11, fontFamily: monoFont, marginBottom: 5 }} htmlFor="bubblemap-token">
@@ -228,23 +292,36 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
             </label>
           </div>
 
-          <svg className="bubblemap-graph" viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`} role="img" aria-label="Interactive holder cluster map">
+          <svg
+            className="bubblemap-graph"
+            viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
+            role="img"
+            aria-label="Interactive holder cluster map"
+            onPointerMove={moveBubble}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onLostPointerCapture={endDrag}
+          >
             {(map.edges || []).filter((edge) => edge.strong || showWeak).map((edge, index) => {
               const a = positioned.get(edge.a);
               const b = positioned.get(edge.b);
               if (!a || !b) return null;
               return (
-                <line
-                  key={`${edge.a}-${edge.b}-${index}`}
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke={edge.strong ? clusterColor(a.data.cluster_id) : "#66706b"}
-                  strokeWidth={edge.strong ? 1.7 : 1}
-                  strokeDasharray={edge.strong ? undefined : "3 5"}
-                  opacity={edge.strong ? 0.72 : 0.36}
-                />
+                <g key={`${edge.a}-${edge.b}-${index}`} pointerEvents="none">
+                  {edge.strong && (
+                    <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={clusterColor(a.data.cluster_id)} strokeWidth={6} opacity={0.14} />
+                  )}
+                  <line
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={edge.strong ? clusterColor(a.data.cluster_id) : "#66706b"}
+                    strokeWidth={edge.strong ? 2.4 : 1}
+                    strokeDasharray={edge.strong ? undefined : "3 5"}
+                    opacity={edge.strong ? 0.88 : 0.36}
+                  />
+                </g>
               );
             })}
             {graphNodes.map((node) => {
@@ -252,14 +329,25 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
               return (
                 <g
                   key={node.id}
+                  className="bubblemap-node"
                   role="button"
                   tabIndex={0}
                   aria-label={`${displayName(node.id)}, ${node.data.pct ?? 0}% of supply`}
-                  onClick={() => { setSelectedAddress(node.id); setSelectedCluster(null); }}
+                  onPointerDown={(event) => beginDrag(event, node)}
+                  onClick={() => {
+                    if (suppressClickRef.current) {
+                      suppressClickRef.current = false;
+                      return;
+                    }
+                    setSelectedAddress(node.id);
+                    setSelectedCluster(null);
+                  }}
                   onKeyDown={(event) => event.key === "Enter" && setSelectedAddress(node.id)}
-                  style={{ cursor: "pointer" }}
+                  style={{ filter: `drop-shadow(0 0 7px ${fill}70)` }}
                 >
-                  <circle cx={node.x} cy={node.y} r={node.radius} fill={fill} fillOpacity={0.78} stroke={selectedAddress === node.id ? "#fff" : fill} strokeWidth={selectedAddress === node.id ? 2 : 1} />
+                  <circle cx={node.x} cy={node.y} r={node.radius + 5} fill={fill} fillOpacity={0.12} />
+                  <circle cx={node.x} cy={node.y} r={node.radius} fill={fill} fillOpacity={0.9} stroke={selectedAddress === node.id ? "#fff" : `${fill}cc`} strokeWidth={selectedAddress === node.id ? 2 : 1.2} />
+                  <circle cx={node.x - node.radius * 0.32} cy={node.y - node.radius * 0.36} r={Math.max(1.5, node.radius * 0.25)} fill="#fff" fillOpacity={0.4} pointerEvents="none" />
                   <title>{displayName(node.id)} · {node.data.pct ?? 0}%</title>
                 </g>
               );
