@@ -26,4 +26,8 @@ test("notifications label mode, include realized accrued ETN, and keep paper est
   const paper = formatEtnBotNotification("Opportunity observed", "paper", state);
   assert.match(paper, /ETN Accumulator Bot — PAPER/);
   assert.match(paper, /strategy trades are simulated/);
+
+  const opportunity = formatEtnBotNotification("Spread detected; not executed", "opportunity", state);
+  assert.match(opportunity, /ETN Accumulator Bot — MARKET OPPORTUNITY/);
+  assert.doesNotMatch(opportunity, /Realized ETN accrued|9999|PAPER/);
 });
