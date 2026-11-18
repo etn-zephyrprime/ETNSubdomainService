@@ -37,43 +37,67 @@ const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplore
 const BLOCKSCOUT_API_BASE = `${EXPLORER_BASE_URL}/api/v2`;
 const FETCH_TIMEOUT_MS = 20000;
 
+function requestOptions(options = {}) {
+  const apiKey = options.apiKey ?? process.env.BLOCKSCOUT_API_KEY;
+  return {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    ...(apiKey ? { headers: { "x-api-key": apiKey } } : {}),
+  };
+}
+
 /** Like fetchBlockscoutJson, but a 404 is an answer ("no such record" — e.g. no verified source for
  * an address) and returns null; anything else that fails (5xx, timeout) still throws after retries,
  * so a caller can tell "not there" from "couldn't ask". */
-export async function fetchBlockscoutJsonOrNull(path, attempt = 0) {
+export async function fetchBlockscoutJsonOrNull(path, attempt = 0, options = {}) {
   try {
-    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, requestOptions(options));
     if (res.status === 404) return null;
     if (res.status === 429) throw new RateLimitedError(path, rateLimitDelayMs(res, attempt));
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+    if (!res.ok) {
+      const error = new Error(`HTTP ${res.status} for ${path}`);
+      error.status = res.status;
+      throw error;
+    }
     return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
     if (err instanceof RateLimitedError && attempt < RATE_LIMIT_RETRIES) {
       await new Promise((resolve) => setTimeout(resolve, err.delayMs));
-      return fetchBlockscoutJsonOrNull(path, attempt + 1);
+      return fetchBlockscoutJsonOrNull(path, attempt + 1, options);
+    }
+    if (err.status >= 500 && attempt < 6) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 60000)));
+      return fetchBlockscoutJsonOrNull(path, attempt + 1, options);
     }
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      return fetchBlockscoutJsonOrNull(path, attempt + 1);
+      return fetchBlockscoutJsonOrNull(path, attempt + 1, options);
     }
     throw err;
   }
 }
 
-export async function fetchBlockscoutJson(path, attempt = 0) {
+export async function fetchBlockscoutJson(path, attempt = 0, options = {}) {
   try {
-    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}${path}`, requestOptions(options));
     if (res.status === 429) throw new RateLimitedError(path, rateLimitDelayMs(res, attempt));
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+    if (!res.ok) {
+      const error = new Error(`HTTP ${res.status} for ${path}`);
+      error.status = res.status;
+      throw error;
+    }
     return normalizeBlockscoutTokens(await res.json());
   } catch (err) {
     if (err instanceof RateLimitedError && attempt < RATE_LIMIT_RETRIES) {
       await new Promise((resolve) => setTimeout(resolve, err.delayMs));
-      return fetchBlockscoutJson(path, attempt + 1);
+      return fetchBlockscoutJson(path, attempt + 1, options);
+    }
+    if (err.status >= 500 && attempt < 6) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 60000)));
+      return fetchBlockscoutJson(path, attempt + 1, options);
     }
     if (attempt < 2) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      return fetchBlockscoutJson(path, attempt + 1);
+      return fetchBlockscoutJson(path, attempt + 1, options);
     }
     throw err;
   }
