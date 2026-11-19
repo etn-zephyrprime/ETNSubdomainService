@@ -9,6 +9,7 @@
     "start:local": "node start-local.js",
     "dev": "node --watch index.js",
     "backfill:images": "node scripts/backfillNftImages.js",
+    "check:etn-balances": "node scripts/checkEtnBotBalances.js",
     "set-r2-cors": "node scripts/setR2Cors.js",
     "migrate": "node scripts/runMigrations.js",
     "test": "node --test"
