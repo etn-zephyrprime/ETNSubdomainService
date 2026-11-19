@@ -39,6 +39,7 @@ import { FAST_DEFAULTS, fastTriggerReason } from "../services/etnFastTrigger.js"
 import { HEDGE_DEFAULTS, kucoinFill, decideHedge, freshHedgeBook, applyHedge, etnToSellForUsd, freshLiveHedgeBook, applyLiveHedge, REBALANCE_DEFAULTS, decideRebalance, settleArrival, SWEEP_DEFAULTS, sweepAmount, REFILL_DEFAULTS, decideEtnRefill, decideUsdtRefill, affordableHedgeUsd } from "../services/etnHedgeStrategy.js";
 import { VENUES, allBooks, feesOf, refreshFees } from "../services/cexVenues.js";
 import { ARB_DEFAULTS, planArb, arbChecks, buyLegOrder, sellLegOrder, netFill, freshArbBook, roundDown, roundUp } from "../services/cexArbStrategy.js";
+import { allocateSharedStable, sharedStableAvailable } from "../services/etnSharedStablePool.js";
 import { htxConfigured, getWithdrawRules as htxWithdrawRules, withdraw as htxWithdraw, getBalances as htxBalances, getDepositAddress as htxDepositAddress, getTransfers as htxTransfers } from "./htxClient.js";
 import { kucoinConfigured, getTradeBalances, getSymbolRules, floorToIncrement, marketOrderAndWait, getOrderByClientOid, getBalances, getDepositAddress, innerTransfer, withdraw, getWithdrawRules, marketSellOn, getWithdrawals } from "./kucoinClient.js";
 import { CATCHUP_DEFAULTS, freshCatchupBook, kucoinMid, lagsPct, decideCatchupBuy, decideCatchupClose, decideCatchupSell, decideCatchupBuyBack, applyCatchupBuy, applyCatchupClose, applyCatchupSell, applyCatchupBuyBack, applyCatchupFunding, splitDeposit, openSellUsd, openSellEtn, SELL_SIZING_DEFAULTS, parseLagTiers } from "../services/etnCatchupStrategy.js";
@@ -729,11 +730,11 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
   }
 
   async function reconcileGapStables(state, mids) {
-    // The wallet's USDT/USDC should be exactly: open sell/buyback lots + the gap book + the catch-up pot's
-    // cash. A surplus is a deposit: it fills the catch-up pot up to its target first (that's how the pot
-    // is funded), then joins the gap book. A shortfall comes off the gap book, then the pot.
+    // The wallet's USDT/USDC backs open lots, the catch-up pot, and the shared gap/hedge pool.
+    // Deposits fill the catch-up target first, then join whichever shared book is active.
     const gap = state.gap;
     const cu = cfg.cuEnabled ? state.cu : null;
+    if (cfg.hedgeLive && !state.hedgeLive) state.hedgeLive = freshLiveHedgeBook();
     for (const [k, p] of Object.entries(POOLS)) {
       const held = Number(ethers.formatUnits(await new ethers.Contract(p.token, ERC20_ABI, provider).balanceOf(wallet.address), p.decimals));
       const inLots = state.lots.filter((l) => l.status === "open" && l.stable === k).reduce((s, l) => s + l.stableAmount, 0);
@@ -752,6 +753,9 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         if (rest >= 0.01 && gap) {
           applyGapDeposit(gap, k, rest, rest / mids[k]);
           notify(`💵 ${fmtUsd(rest)} ${k} found in the wallet — added to the gap book (now ${fmtUsd(gap.stables[k])} ${k})`);
+        } else if (rest >= 0.01 && cfg.hedgeLive && state.hedgeLive) {
+          state.hedgeLive.stables[k] = (state.hedgeLive.stables[k] || 0) + rest;
+          notify(`💵 ${fmtUsd(rest)} ${k} found in the wallet — added to the shared hedge/gap pool`);
         } else if (rest >= 0.01) {
           notify(`ℹ️ ${fmtUsd(rest)} ${k} in the wallet isn't assigned to any mode (gap mode is off and the catch-up pot is full)`);
         }
@@ -761,6 +765,12 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           const before = gap.stables[k] || 0;
           applyGapDeposit(gap, k, -short, -short / mids[k]);
           short -= before - (gap.stables[k] || 0);
+        }
+        if (short >= 0.01 && state.hedgeLive) {
+          const before = Math.max(0, state.hedgeLive.stables[k] || 0);
+          const reduction = Math.min(before, short);
+          state.hedgeLive.stables[k] = before - reduction;
+          short -= reduction;
         }
         if (short >= 0.01 && state.cu) state.cu.cash[k] = Math.max(0, (state.cu.cash[k] || 0) - short);
         notify(`⚠️ ${fmtUsd(-diff)} ${k} missing from the wallet — books reduced to match`);
@@ -1287,7 +1297,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     }
     // Plus, per venue, the largest hedge the balances allow (the fixed sizes are often just out of reach):
     // a sell on ElectroSwap is limited by the venue's USDT (it buys the ETN back there), a buy by the
-    // hedge book's dollars in the wallet.
+    // shared gap/hedge stablecoin pool.
     const extra = [];
     for (const [v, bal] of Object.entries(usable)) {
       if (!bal) continue;
@@ -1298,7 +1308,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
         const kc = kucoinFill(books[v].asks, etn, "buy");
         if (esUsd > 0 && kc) extra.push({ venue: v, dir: "sellOnEs", stable: dear, etn, esUsd, kcUsd: kc.usd, lagPct: lags[dear] });
       }
-      const buyUsd = buySide ? affordableHedgeUsd(hb.stables[cheap] || 0, cfg.hedgeMaxUsd, cfg.hedgeMinUsd) : null;
+      const buyUsd = buySide ? affordableHedgeUsd(sharedStableAvailable(state, cheap), cfg.hedgeMaxUsd, cfg.hedgeMinUsd) : null;
       if (buyUsd) {
         const etn = await quoteBuyEtn(cheap, buyUsd).catch(() => 0);
         const kc = etn > 0 ? kucoinFill(books[v].bids, etn, "sell") : null;
@@ -1310,10 +1320,11 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
       if (!bal) return false;
       return c.dir === "sellOnEs"
         ? (c.esUsd || 0) <= cfg.hedgeMaxUsd && canSpendEtn(c.etn) && hb.walletEtnNet - c.etn >= -cfg.hedgeMaxEtnOut && bal.USDT >= (c.esUsd || 0) * 1.02
-        : c.usd <= cfg.hedgeMaxUsd && (hb.stables[c.stable] || 0) >= c.usd && bal.ETN >= c.etn * 1.02;
+        : c.usd <= cfg.hedgeMaxUsd && sharedStableAvailable(state, c.stable) >= c.usd && bal.ETN >= c.etn * 1.02;
     });
     const h = best(affordable);
     if (!h) return false;
+    if (h.dir === "buyOnEs" && !allocateSharedStable(state, "hedge", h.stable, h.usd)) return false;
     state.hedgeTradesByDay = { [day]: (state.hedgeTradesByDay?.[day] || 0) + 1 };
     const order = h.dir === "sellOnEs"
       ? { kind: "hedgeSellEs", side: "sellEtn", stable: h.stable, amountIn: h.etn, expectedOut: h.esUsd, lagPct: h.lagPct, venue: h.venue }
@@ -1550,13 +1561,13 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
   /** Gap trade candidates — only quoted when the pools' mid prices are far enough apart to clear the
    * fees at all (a cheap pre-screen on the mids already read; the full quotes are six quoter calls). */
-  async function gapCandidates(mids, book) {
+  async function gapCandidates(mids, book, state) {
     const gapPct = Math.abs(Math.log(mids.USDT / mids.USDC)) * 100;
     if (gapPct < cfg.gapMinGainPct + 0.6) return { gapPct, candidates: [] };
     const dear = mids.USDT > mids.USDC ? "USDT" : "USDC";
     const cheap = other(dear);
     const candidates = [];
-    for (const etnIn of gapSizes(cfg.gapClipEtn, affordableLegEtn(book.stables[cheap], mids[dear]))) {
+    for (const etnIn of gapSizes(cfg.gapClipEtn, affordableLegEtn(sharedStableAvailable(state, cheap), mids[dear]))) {
       try {
         const stableOut = await quoteSellEtn(dear, etnIn);
         candidates.push({ dear, cheap, etnIn, stableOut, etnBack: await quoteBuyEtn(cheap, stableOut) });
@@ -1721,7 +1732,7 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
 
       // USDT/USDC you send to the wallet joins the gap book (live only; see reconcileGapStables). Not while a
       // book rebalance is in flight: its USDC would look like a top-up and then be booked twice.
-      if ((cfg.gapEnabled || cfg.cuEnabled) && cfg.mode === "live" && wallet && !state.gapRebalancePending) await reconcileGapStables(state, mids);
+      if ((cfg.gapEnabled || cfg.cuEnabled || cfg.hedgeLive) && cfg.mode === "live" && wallet && !state.gapRebalancePending) await reconcileGapStables(state, mids);
 
       const quotes = await gatherQuotes(provider, state, cfg.clipEtn);
       if (wallet) {
@@ -1827,29 +1838,38 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
           gapNote = " · gap book not seeded (not enough ETN)";
         } else if (state.gapTradesByDay[day] < cfg.gapMaxTradesPerDay) {
           // 3. A gap trade: sell into the dear pool, buy back in the cheap one.
-          const { gapPct, candidates } = await gapCandidates(mids, gap);
+          const { gapPct, candidates } = await gapCandidates(mids, gap, state);
+          const spendableGap = {
+            ...gap,
+            stables: {
+              USDT: sharedStableAvailable(state, "USDT"),
+              USDC: sharedStableAvailable(state, "USDC"),
+            },
+          };
           // Paper fills don't move the pools, so the same gap would be "traded" every tick. In paper,
           // wait for either pool's price to actually change (someone else trading) before the next one.
           const midsKey = `${mids.USDT}|${mids.USDC}`;
           const paperStale = cfg.mode === "paper" && state.gapPaperMids === midsKey;
-          const d = paperStale ? null : decideGap(gap, candidates.filter((c) => canSpendEtn(c.etnIn)), { minGainPct: cfg.gapMinGainPct });
+          const d = paperStale ? null : decideGap(spendableGap, candidates.filter((c) => canSpendEtn(c.etnIn)), { minGainPct: cfg.gapMinGainPct });
           if (d) {
             if (cfg.mode === "paper") state.gapPaperMids = midsKey;
-            state.gapTradesByDay[day]++;
-            const first = await execute(state, { kind: "gapSell", side: "sellEtn", stable: d.dear, cheap: d.cheap, amountIn: d.etnIn, expectedOut: d.stableOut });
-            if (first === "filled" && state.gapLeg) await completeGapLeg(state);
-            await saveWithRetry(state);
-            return;
+            if (allocateSharedStable(state, "gap", d.cheap, d.stableOut)) {
+              state.gapTradesByDay[day]++;
+              const first = await execute(state, { kind: "gapSell", side: "sellEtn", stable: d.dear, cheap: d.cheap, amountIn: d.etnIn, expectedOut: d.stableOut });
+              if (first === "filled" && state.gapLeg) await completeGapLeg(state);
+              await saveWithRetry(state);
+              return;
+            }
           }
           gapNote = ` · pool gap ${gapPct.toFixed(2)}% (book ${fmtUsd(gap.stables.USDT)} USDT / ${fmtUsd(gap.stables.USDC)} USDC, +${fmtEtn(gap.gainEtn)} ETN over ${gap.trades})`;
 
           // 3b. No gap trade: if the book is one-sided, top the short side back up — only when the WETN route
           // is cheap (it costs the open gap otherwise), once a day.
-          const need = cfg.gapRebalance && gap.rebalanceDay !== day ? gapRebalanceNeed(gap, { ...GAP_REBALANCE_DEFAULTS, minSideSharePct: cfg.gapRebalanceMinSidePct }) : null;
+          const need = cfg.gapRebalance && gap.rebalanceDay !== day ? gapRebalanceNeed(spendableGap, { ...GAP_REBALANCE_DEFAULTS, minSideSharePct: cfg.gapRebalanceMinSidePct }) : null;
           if (need) {
             const out = await quoteStableRoute(need.from, need.to, need.amountUsd).catch(() => 0);
             const r = decideGapRebalance(need, out, { ...GAP_REBALANCE_DEFAULTS, maxCostPct: cfg.gapRebalanceMaxCostPct });
-            if (r) {
+            if (r && allocateSharedStable(state, "gap", r.from, r.amountUsd)) {
               gap.rebalanceDay = day;
               try {
                 await rebalanceGapBook(state, r, mid);

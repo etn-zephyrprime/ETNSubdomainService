@@ -43,9 +43,10 @@ async function readLedger() {
   if (!botStateConfigured()) return { configured: false };
   try {
     const state = await getBotState("live");
-    if (!state) return { configured: true, state: null };
+    if (!state) return { configured: true, stateExists: false };
     return {
       configured: true,
+      stateExists: true,
       updatedAt: state.updatedAt || null,
       hedgeLive: state.hedgeLive
         ? {
@@ -109,13 +110,15 @@ printBalances("HTX trading account", htx);
 console.log("\nLive ledger allocation");
 if (!ledger.configured) console.log("  R2 not configured");
 else if (ledger.error) console.log(`  ERROR: ${ledger.error}`);
-else if (!ledger.state) console.log("  No live ledger has been created");
+else if (!ledger.stateExists) console.log("  No live ledger has been created");
 else console.log(JSON.stringify(ledger, null, 2));
 
 if (ledger?.hedgeLive && wallet) {
   console.log("\nHedge affordability snapshot");
-  console.log(`  Wallet USDC: ${amount(wallet.tokens.USDC)}; hedge-book USDC: ${amount(ledger.hedgeLive.stables.USDC || 0)}`);
-  console.log(`  Wallet USDT: ${amount(wallet.tokens.USDT)}; hedge-book USDT: ${amount(ledger.hedgeLive.stables.USDT || 0)}`);
+  const sharedUsdc = (ledger.gapBook?.stables?.USDC || 0) + (ledger.hedgeLive.stables.USDC || 0);
+  const sharedUsdt = (ledger.gapBook?.stables?.USDT || 0) + (ledger.hedgeLive.stables.USDT || 0);
+  console.log(`  Wallet USDC: ${amount(wallet.tokens.USDC)}; shared gap/hedge USDC: ${amount(sharedUsdc)}`);
+  console.log(`  Wallet USDT: ${amount(wallet.tokens.USDT)}; shared gap/hedge USDT: ${amount(sharedUsdt)}`);
   console.log(`  KuCoin trade ETN: ${amount(kucoinTrade?.balances?.ETN || 0)}`);
-  console.log("  A buy-on-ElectroSwap hedge needs both the hedge-book stablecoin and KuCoin ETN; wallet balances alone do not satisfy that check.");
+  console.log("  Gap and hedge trades share these book balances; catch-up cash and open positions remain reserved.");
 }
