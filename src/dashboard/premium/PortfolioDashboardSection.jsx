@@ -209,12 +209,20 @@ export default function PortfolioDashboardSection({ onSelectToken, onViewDemo, o
     () => (activeGroup === "portfolio" ? PORTFOLIO_PANELS : INFRASTRUCTURE_PANELS.filter((p) => p.id !== "bubblemaps" || hasAccess)),
     [activeGroup, hasAccess]
   );
+  const selectablePanelIds = useMemo(
+    () => new Set([
+      ...visiblePanels.map((panel) => panel.id),
+      ...(activeGroup === "portfolio" && isBotViewer ? ["etnbot"] : []),
+      ...(activeGroup === "portfolio" && isMembersAdmin ? ["members"] : []),
+    ]),
+    [activeGroup, isBotViewer, isMembersAdmin, visiblePanels]
+  );
 
   useEffect(() => {
-    if (!visiblePanels.some((panel) => panel.id === activePanel)) {
+    if (!selectablePanelIds.has(activePanel)) {
       setActivePanel(activeGroup === "portfolio" ? "portfolio" : "farms");
     }
-  }, [activeGroup, activePanel, visiblePanels]);
+  }, [activeGroup, activePanel, selectablePanelIds]);
 
   useEffect(() => {
     if (!hasAccess && activePanel === "bubblemaps") {
