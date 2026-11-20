@@ -31,6 +31,12 @@ test("plan: buys on the cheap venue, sells on the dear one, only past the edge a
   assert.equal(planArb({ kucoin: book(0.001935, 0.00194), htx: book(0.0019458, 0.00196) }, fees), null);
 });
 
+test("tuned arb threshold skips edges below the added fee margin", () => {
+  const books = { kucoin: book(0.001935, 0.00194), htx: book(0.001957, 0.00196) };
+  assert.ok(planArb(books, fees, { ...ARB_DEFAULTS, minEdgePct: 0.4, minProfitUsd: 0.1 }));
+  assert.equal(planArb(books, fees), null);
+});
+
 test("pre-trade checks: all clear, then each failure is reported", () => {
   const books = { kucoin: book(0.001935, 0.00194), htx: book(0.00197, 0.001975) };
   const plan = planArb(books, fees);

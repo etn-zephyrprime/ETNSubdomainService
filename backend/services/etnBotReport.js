@@ -138,7 +138,7 @@ export async function buildReportFrom(state, cfg = readConfig()) {
       catchup: cfg.cuEnabled ? (cfg.cuSellEnabled ? "buy + sell" : "buy") : "off",
       triangles: cfg.triEnabled ? "on" : "off",
     },
-    settings: { hedgeLagPct: cfg.hedgeLagPct, hedgeMaxUsd: cfg.hedgeMaxUsd, arbMinEdgePct: cfg.arb.minEdgePct, arbMaxUsd: Math.max(...cfg.arb.sizesUsd), cuLagPct: cfg.cuLagPct, cuMaxSellEtn: cfg.cuMaxSellEtn, gapMinGainPct: cfg.gapMinGainPct, sweepFloats: { kucoin: cfg.sweep.kucoin.float, htx: cfg.sweep.htx.float } },
+    settings: { hedgeLagPct: cfg.hedgeLagPct, hedgeMinProfitPct: cfg.hedgeMinProfitPct, hedgeMinProfitUsd: cfg.hedgeMinProfitUsd, hedgeMaxUsd: cfg.hedgeMaxUsd, arbMinEdgePct: cfg.arb.minEdgePct, arbMinProfitUsd: cfg.arb.minProfitUsd, arbMaxUsd: Math.max(...cfg.arb.sizesUsd), cuLagPct: cfg.cuLagPct, cuMaxSellEtn: cfg.cuMaxSellEtn, gapMinGainPct: cfg.gapMinGainPct, sweepFloats: { kucoin: cfg.sweep.kucoin.float, htx: cfg.sweep.htx.float } },
     openCatchupLots: (state.cu?.lots || []).map((l) => ({ id: l.id, kind: l.kind === "sellFirst" ? "sell first" : "buy", stable: l.stable, usd: l.usd, etn: l.etn, openedAt: l.openedAt })),
     openLots: state.lots.filter((l) => l.status === "open").map((l) => ({ id: l.id, stable: l.stable, etnSold: l.etnSold, stableAmount: l.stableAmount, sellPrice: l.sellPrice, buybackEtnNow: buyback[l.id] ?? null })),
     gapBook: state.gap ? { USDT: state.gap.stables.USDT, USDC: state.gap.stables.USDC } : null,
