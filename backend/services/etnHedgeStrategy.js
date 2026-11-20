@@ -17,8 +17,8 @@ export const HEDGE_DEFAULTS = {
   lagPct: 1.5, // look for a hedge once a pool is this far from KuCoin's mid (where 073C trades from)
   sizesUsd: [45, 90, 180, 360], // notionals tried; the most profitable wins
   kucoinFeePct: 0.1, // KuCoin spot taker fee (0.1% default tier; less with KCS)
-  minProfitPct: 0.3, // after both venues' fees and impact
-  minProfitUsd: 0.1,
+  minProfitPct: 0.8, // after both venues' fees and impact; leaves room for the observed round-trip costs
+  minProfitUsd: 0.35,
 };
 
 /**

@@ -31,6 +31,13 @@ test("buy on ElectroSwap / sell on KuCoin, and the most profitable size wins", (
   assert.equal(HEDGE_DEFAULTS.lagPct, 1.5);
 });
 
+test("live hedge threshold filters trades that don't clear the tuned net edge", () => {
+  const belowThreshold = { dir: "buyOnEs", stable: "USDC", usd: 45, etn: 30000, kcUsd: 45.1 };
+  const aboveThreshold = { ...belowThreshold, kcUsd: 45.42 };
+  assert.equal(decideHedge([belowThreshold]), null);
+  assert.ok(decideHedge([aboveThreshold]));
+});
+
 test("the paper book: profit in $ and ETN, and the rebalancing each direction leaves behind", () => {
   const b = freshHedgeBook();
   applyHedge(b, { dir: "sellOnEs", stable: "USDC", etn: 25000, notional: 52, profitUsd: 1.95, profitPct: 3.75 }, { kucoinPrice: 0.002 });

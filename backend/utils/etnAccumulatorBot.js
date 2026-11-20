@@ -137,6 +137,8 @@ export function readConfig() {
     hedgePaper: process.env.ETN_BOT_HEDGE_PAPER !== "false",
     hedgeLagPct: num("ETN_BOT_HEDGE_LAG_PCT", HEDGE_DEFAULTS.lagPct),
     hedgeKucoinFeePct: num("ETN_BOT_HEDGE_KUCOIN_FEE_PCT", HEDGE_DEFAULTS.kucoinFeePct),
+    hedgeMinProfitPct: Math.max(num("ETN_BOT_HEDGE_MIN_PROFIT_PCT", HEDGE_DEFAULTS.minProfitPct), HEDGE_DEFAULTS.minProfitPct),
+    hedgeMinProfitUsd: Math.max(num("ETN_BOT_HEDGE_MIN_PROFIT_USD", HEDGE_DEFAULTS.minProfitUsd), HEDGE_DEFAULTS.minProfitUsd),
     // LIVE hedging: only with ETN_BOT_HEDGE_LIVE=true, live mode, and the KuCoin key set (kucoinClient.js).
     hedgeLive: process.env.ETN_BOT_HEDGE_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured(),
     hedgeMaxUsd: num("ETN_BOT_HEDGE_MAX_USD", 180), // largest hedge
@@ -179,7 +181,8 @@ export function readConfig() {
     arbLive: process.env.ETN_BOT_CEX_ARB_LIVE === "true" && process.env.ETN_BOT_MODE === "live" && kucoinConfigured() && htxConfigured(),
     arb: {
       ...ARB_DEFAULTS,
-      minEdgePct: num("ETN_BOT_CEX_ARB_MIN_EDGE_PCT", ARB_DEFAULTS.minEdgePct),
+      minEdgePct: Math.max(num("ETN_BOT_CEX_ARB_MIN_EDGE_PCT", ARB_DEFAULTS.minEdgePct), ARB_DEFAULTS.minEdgePct),
+      minProfitUsd: Math.max(num("ETN_BOT_CEX_ARB_MIN_PROFIT_USD", ARB_DEFAULTS.minProfitUsd), ARB_DEFAULTS.minProfitUsd),
       sizesUsd: ARB_DEFAULTS.sizesUsd.filter((u) => u <= num("ETN_BOT_CEX_ARB_MAX_USD", 90)),
       maxTradesPerDay: num("ETN_BOT_CEX_ARB_MAX_TRADES_PER_DAY", ARB_DEFAULTS.maxTradesPerDay),
       maxUsdPerDay: num("ETN_BOT_CEX_ARB_MAX_USD_PER_DAY", ARB_DEFAULTS.maxUsdPerDay),
@@ -1268,7 +1271,13 @@ export function createEtnAccumulatorBot({ provider, wallet, cfg, store = DEFAULT
     const best = (list) => {
       let pick = null;
       for (const v of Object.keys(VENUES)) {
-        const h = decideHedge(list.filter((c) => c.venue === v), { ...HEDGE_DEFAULTS, lagPct: cfg.hedgeLagPct, kucoinFeePct: VENUES[v].feePct });
+        const h = decideHedge(list.filter((c) => c.venue === v), {
+          ...HEDGE_DEFAULTS,
+          lagPct: cfg.hedgeLagPct,
+          kucoinFeePct: VENUES[v].feePct,
+          minProfitPct: cfg.hedgeMinProfitPct,
+          minProfitUsd: cfg.hedgeMinProfitUsd,
+        });
         if (h && (!pick || h.profitUsd > pick.profitUsd)) pick = h;
       }
       return pick;
@@ -2075,8 +2084,8 @@ export async function startEtnAccumulatorBot() {
   const gapText =
     (cfg.gapEnabled ? `; gap mode ON (seed ${fmtEtn(cfg.gapSeedEtn)} ETN, clip ${fmtEtn(cfg.gapClipEtn)}, min gain ${cfg.gapMinGainPct}%${cfg.gapRebalance ? `, rebalance below ${cfg.gapRebalanceMinSidePct}% a side at <= ${cfg.gapRebalanceMaxCostPct}% cost` : ""})` : "; gap mode off") +
     (cfg.triEnabled ? `; triangles ON (up to ${fmtEtn(cfg.triMaxEtn)} ETN, min gain ${cfg.triMinGainEtn} ETN)` : "; triangles off") +
-    (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
-    (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, ${cfg.arb.minEdgePct}%+ after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
+    (cfg.hedgeLive ? `; HEDGING LIVE (${cfg.hedgeLagPct}%+ gap, min ${cfg.hedgeMinProfitPct}% / ${fmtUsd(cfg.hedgeMinProfitUsd)}, up to $${cfg.hedgeMaxUsd}, max ${fmtEtn(cfg.hedgeMaxEtnOut)} ETN on the CEX side; round trip ${cfg.hedgeRebalance ? "ON" : "off"}; venues: ${Object.values(VENUES).filter((v) => v.configured()).map((v) => v.name).join(" + ") || "none"})` : cfg.hedgePaper ? "; hedging paper-only (KuCoin + HTX books)" : "") +
+    (cfg.arbLive ? `; CEX ARB LIVE (KuCoin <-> HTX, min ${cfg.arb.minEdgePct}% / ${fmtUsd(cfg.arb.minProfitUsd)} after fees, up to $${Math.max(...cfg.arb.sizesUsd)})` : cfg.arbPaper ? "; CEX arb paper-only" : "") +
     (cfg.profitFloorEtn > 0 ? `; profit floor ${fmtEtn(cfg.profitFloorEtn)} ETN` : "") +
     (cfg.cexRefill ? `; refills ON (HTX ETN < ${fmtEtn(cfg.refill.htxEtnLow)} -> ${fmtEtn(cfg.refill.htxEtnTarget)}, KuCoin USDT < $${cfg.refill.kucoinUsdtLow} -> $${cfg.refill.kucoinUsdtTarget})` : "") +
     (cfg.cuEnabled ? `; KuCoin catch-up ON (pot ${fmtUsd(cfg.cuPotUsd)}, lag ${cfg.cuLagPct}%, $${cfg.cuClipUsd} clips, min gain ${cfg.cuMinGainPct}%, sell side ${cfg.cuSellEnabled ? `ON up to ${fmtEtn(cfg.cuMaxSellEtn)} ETN${cfg.cuSellTiers ? `, clips ${cfg.cuSellTiers.map((t) => `$${t.usd} at ${t.lag}%`).join(" / ")}` : ""}${cfg.cuSellReentry ? `, waits ${cfg.cuSellReentry.map((t) => `${t.min}m at ${t.lag}%`).join(" / ")}` : ""}${cfg.fastSellLagPct > 0 ? `, fast path at ${cfg.fastSellLagPct}%+` : ""}` : "off"})` : "; KuCoin catch-up off");

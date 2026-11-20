@@ -12,8 +12,8 @@
 // price than planned. A partial fill is fine — the other leg is sized to what actually filled.
 
 export const ARB_DEFAULTS = {
-  minEdgePct: 0.4, // profit after both venues' fees, as % of the dollars traded
-  minProfitUsd: 0.1,
+  minEdgePct: 0.7, // profit after both venues' fees, as % of the dollars traded
+  minProfitUsd: 0.25,
   sizesUsd: [45, 90], // HTX's book is thin (~$1.8k in its top 20 bids) — keep trades small
   maxGapPct: 5, // a bigger gap between venues is treated as bad data, not an opportunity
   maxSpreadPct: 2, // either venue's own bid/ask spread wider than this: don't trade there
