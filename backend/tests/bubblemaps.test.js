@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeBubblemap, findHubAddresses, hasNftTransfer } from "../services/bubblemaps/analysis.js";
-import { cursorQuery, isTokenCatalogFresh, splitTransfersAtBlock } from "../services/bubblemaps/worker.js";
+import { bubblemapKnownContractTag, cursorQuery, isTokenCatalogFresh, splitTransfersAtBlock } from "../services/bubblemaps/worker.js";
 import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks, hasActiveLiquidityLock } from "../utils/electroSwapTokens.js";
 
 const address = (number) => `0x${number.toString(16).padStart(40, "0")}`;
@@ -127,6 +127,24 @@ test("team wallets cannot join bundled-buy clusters", () => {
   }), config);
   assert.equal(result.edges.length, 0);
   assert.equal(result.nodes.find((node) => node.address === address(1)).tags.includes("Team"), true);
+});
+
+test("yield farms and liquidity pools are excluded from holder analysis", () => {
+  const farmTag = bubblemapKnownContractTag({ category: "farm", label: "ElectroSwap Yield Farms" });
+  const lockerTag = bubblemapKnownContractTag({ category: "locker", label: "ElectroSwap Liquidity Locker" });
+  const result = analyzeBubblemap(baseInput([holder(1), holder(2), holder(3), holder(4)], {
+    entities: new Map([
+      [address(1), { tag: farmTag, label: "ElectroSwap Yield Farms" }],
+      [address(2), { tag: lockerTag, label: "ElectroSwap Liquidity Locker" }],
+    ]),
+    addresses: new Map([[address(3), { name: "ElectroSwap V2 Pair", is_contract: false }]]),
+  }), config);
+
+  assert.equal(result.nodes.find((node) => node.address === address(1)).exclusion_reason, "Yield farm");
+  assert.equal(result.nodes.find((node) => node.address === address(2)).exclusion_reason, "Liquidity pool");
+  assert.equal(result.nodes.find((node) => node.address === address(3)).exclusion_reason, "Liquidity pool");
+  assert.equal(result.calibration.holders_considered, 1);
+  assert.equal(result.supply_considered, "100");
 });
 
 test("dust acquisitions do not create bundled-buy links", () => {

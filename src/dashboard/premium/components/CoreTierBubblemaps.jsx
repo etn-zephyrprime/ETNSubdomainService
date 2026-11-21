@@ -8,6 +8,7 @@ import { gold, green, muted, mutedLight, border, panel2, monoFont, error as erro
 
 const AUTH_PURPOSE = "Premium Dashboard";
 const BASE = `${PNL_BACKEND_URL}/api/premium/bubblemaps`;
+const MAP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const GRAPH_WIDTH = 760;
 const GRAPH_HEIGHT = 460;
 const CLUSTER_COLORS = [green, gold, "#3ea6ff", "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8"];
@@ -107,17 +108,20 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   const [loadingMap, setLoadingMap] = useState(false);
   const [error, setError] = useState(null);
   const [graphNodes, setGraphNodes] = useState([]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const authRef = useRef(getAuthParams);
+  authRef.current = getAuthParams;
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
 
   const authQuery = useCallback(async () => {
-    const auth = await getAuthParams(AUTH_PURPOSE);
+    const auth = await authRef.current(AUTH_PURPOSE);
     return new URLSearchParams({
       wallet: wallet.account,
       signature: auth.signature,
       timestamp: String(auth.timestamp),
     });
-  }, [getAuthParams, wallet.account]);
+  }, [wallet.account]);
 
   const loadCatalog = useCallback(async () => {
     if (!wallet?.account) return;
@@ -136,9 +140,20 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     }
   }, [authQuery, wallet?.account]);
 
+  const refresh = useCallback(() => {
+    loadCatalog();
+    setRefreshVersion((current) => current + 1);
+  }, [loadCatalog]);
+
   useEffect(() => {
     loadCatalog();
   }, [loadCatalog]);
+
+  useEffect(() => {
+    if (!wallet?.account) return undefined;
+    const interval = setInterval(refresh, MAP_REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [refresh, wallet?.account]);
 
   useEffect(() => {
     if (!selectedToken) {
@@ -165,7 +180,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     return () => {
       active = false;
     };
-  }, [authQuery, selectedToken]);
+  }, [authQuery, selectedToken, refreshVersion]);
 
   useEffect(() => {
     setGraphNodes(layoutGraph(map, showWeak));
@@ -304,8 +319,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
           </div>
           <div className="bubblemap-actions">
             <span className="bubblemap-status">Cached analysis</span>
-            <button type="button" className="bubblemap-refresh" onClick={loadCatalog} disabled={loadingCatalog} style={buttonStyle()}>
-              <RefreshCw size={12} /> {loadingCatalog ? "Refreshing…" : "Refresh"}
+            <button type="button" className="bubblemap-refresh" onClick={refresh} disabled={loadingCatalog || loadingMap} style={buttonStyle()}>
+              <RefreshCw size={12} /> {loadingCatalog || loadingMap ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         </div>
