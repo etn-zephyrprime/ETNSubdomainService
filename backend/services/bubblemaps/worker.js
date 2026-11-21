@@ -658,6 +658,23 @@ function addEntity(map, address, tag, label = null) {
   map.set(key, existing);
 }
 
+export function bubblemapKnownContractTag(item) {
+  const category = String(item?.category || "").toLowerCase();
+  const label = String(item?.label || "").toLowerCase();
+  const identity = `${category} ${label}`;
+  if (category.includes("bridge")) return "Bridge";
+  if (category.includes("cex") || category.includes("exchange")) return "CEX";
+  if (category.includes("team")) return "Team";
+  if (category.includes("burn")) return "Burn";
+  if (category.includes("farm") || category.includes("staking") || /yield[\s_-]*farm/i.test(identity)) return "Yield Farm";
+  if (
+    category.includes("liquidity") ||
+    category.includes("locker") ||
+    /\b(?:pool|pair|lp)\b/i.test(identity)
+  ) return "Liquidity Pool";
+  return null;
+}
+
 async function getEntities() {
   if (cachedEntities && Date.now() - cachedEntitiesAt < 5 * 60 * 1000) return cachedEntities;
   const entities = new Map();
@@ -669,12 +686,7 @@ async function getEntities() {
 
   for (const item of await listCexAddresses()) addEntity(entities, item.address, "CEX", item.label);
   for (const item of await listKnownContracts()) {
-    const category = String(item.category || "").toLowerCase();
-    const tag = category.includes("bridge") ? "Bridge"
-      : category.includes("cex") || category.includes("exchange") ? "CEX"
-        : category.includes("team") ? "Team"
-          : category.includes("burn") ? "Burn"
-            : null;
+    const tag = bubblemapKnownContractTag(item);
     if (tag) addEntity(entities, item.address, tag, item.label);
   }
   cachedEntities = entities;

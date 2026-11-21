@@ -66,13 +66,33 @@ function tagsFor(metadata, entity) {
   return [...tags];
 }
 
+function infrastructureExclusion(metadata, entity) {
+  const entityTag = lower(entity?.tag);
+  if (entityTag.includes("farm") || entityTag.includes("staking")) return "Yield farm";
+  if (entityTag.includes("liquidity") || entityTag.includes("pool") || entityTag.includes("locker")) return "Liquidity pool";
+
+  const metadataTags = [...(metadata?.public_tags || []), ...(metadata?.private_tags || []), ...(metadata?.watchlist_names || [])]
+    .map((raw) => typeof raw === "string" ? raw : raw?.display_name || raw?.name || raw?.label)
+    .filter(Boolean);
+  const labels = [metadata?.name, entity?.label, ...metadataTags].filter(Boolean).join(" ");
+  if (/\byield[\s_-]*farms?\b|\bstaking[\s_-]*(?:pool|contract|vault)\b/i.test(labels)) return "Yield farm";
+  if (/\b(?:liquidity[\s_-]*(?:pool|locker)|LP(?:\s+Token)?|Pair|Pool)\b|-LP\b/i.test(labels)) return "Liquidity pool";
+  return null;
+}
+
 function exclusionFor(address, metadata, override, entity, degree, cfg) {
   if (BURN_ADDRESSES.has(address) || entity?.tag === "Burn") return "Burn address";
   if (override?.type === "ignore") return override.label ? `Ignored: ${override.label}` : "Ignored by admin";
   if (override?.type === "entity" && String(override.label || "").toLowerCase() !== "team") {
     return `Entity: ${override.label || "admin label"}`;
   }
-  if (entity && entity.tag !== "Team") return `${entity.tag} entity${entity.label ? `: ${entity.label}` : ""}`;
+  const infrastructure = infrastructureExclusion(metadata, entity);
+  if (infrastructure && override?.type !== "include") return infrastructure;
+  if (
+    entity &&
+    entity.tag !== "Team" &&
+    !(override?.type === "include" && ["Yield Farm", "Liquidity Pool"].includes(entity.tag))
+  ) return `${entity.tag} entity${entity.label ? `: ${entity.label}` : ""}`;
   if (override?.type === "hub") return "Hub marked by admin";
   if (override?.type !== "not_hub" && degree > cfg.hubDegree) return `Hub: ${degree} distinct counterparties`;
   if (metadata?.is_contract && override?.type !== "include") return "Contract";
