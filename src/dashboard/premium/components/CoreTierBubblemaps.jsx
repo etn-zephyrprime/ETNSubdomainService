@@ -42,22 +42,39 @@ function layoutGraph(map, showWeak) {
     node.radius = maxSupplyShare > 0 ? MAX_NODE_RADIUS * Math.sqrt(node.supplyShare / maxSupplyShare) : 0;
     node.hitRadius = Math.max(MIN_NODE_HIT_RADIUS, node.radius);
   }
-  const clusterCounts = new Map();
+  const clusterMembers = new Map();
   for (const node of nodes) {
     if (node.data.cluster_id == null) continue;
-    clusterCounts.set(node.data.cluster_id, (clusterCounts.get(node.data.cluster_id) || 0) + 1);
+    const members = clusterMembers.get(node.data.cluster_id) || [];
+    members.push(node);
+    clusterMembers.set(node.data.cluster_id, members);
   }
-  for (const node of nodes) node.clusterSize = clusterCounts.get(node.data.cluster_id) || 1;
-  const groupedClusters = [...clusterCounts].filter(([, count]) => count > 1).map(([id]) => id);
-  const columns = Math.max(1, Math.ceil(Math.sqrt(groupedClusters.length * GRAPH_WIDTH / GRAPH_HEIGHT)));
-  const rows = Math.max(1, Math.ceil(groupedClusters.length / columns));
-  const clusterTargets = new Map(groupedClusters.map((id, index) => {
-    if (groupedClusters.length === 1) return [id, { x: GRAPH_WIDTH / 2, y: GRAPH_HEIGHT / 2 }];
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    return [id, {
-      x: ((column + 0.5) / columns) * GRAPH_WIDTH,
-      y: ((row + 0.5) / rows) * GRAPH_HEIGHT,
+  const clusterOrder = [...clusterMembers.entries()]
+    .map(([id, members]) => [id, members.reduce((sum, node) => sum + (Number(node.data.pct) || 0), 0)])
+    .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]));
+  const clusterTargets = new Map();
+  const clusterRadius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.34;
+  clusterOrder.forEach(([id], index) => {
+    if (index === 0) {
+      clusterTargets.set(id, { x: GRAPH_WIDTH / 2, y: GRAPH_HEIGHT / 2 });
+      return;
+    }
+    const angle = -Math.PI / 2 + ((index - 1) * 2 * Math.PI) / Math.max(1, clusterOrder.length - 1);
+    const radius = clusterRadius * Math.sqrt(index / Math.max(1, clusterOrder.length - 1));
+    clusterTargets.set(id, {
+      x: GRAPH_WIDTH / 2 + Math.cos(angle) * radius,
+      y: GRAPH_HEIGHT / 2 + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
+    });
+  });
+  const singletonOrder = nodes
+    .filter((node) => node.data.cluster_id == null)
+    .sort((a, b) => (Number(b.data.pct) || 0) - (Number(a.data.pct) || 0));
+  const singletonTargets = new Map(singletonOrder.map((node, index) => {
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(1, singletonOrder.length);
+    const radius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.44;
+    return [node.id, {
+      x: GRAPH_WIDTH / 2 + Math.cos(angle) * radius,
+      y: GRAPH_HEIGHT / 2 + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
     }];
   }));
   const available = new Set(nodes.map((node) => node.id));
@@ -67,8 +84,8 @@ function layoutGraph(map, showWeak) {
   const simulation = forceSimulation(nodes)
     .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 34 : 86).strength((edge) => edge.strong ? 0.72 : 0.035))
     .force("charge", forceManyBody().strength(-55))
-    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0))
-    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0))
+    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? singletonTargets.get(node.id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0.12))
+    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? singletonTargets.get(node.id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0.12))
     .force("center", forceCenter(GRAPH_WIDTH / 2, GRAPH_HEIGHT / 2))
     .force("collide", forceCollide((node) => node.radius + 4).iterations(3))
     .stop();

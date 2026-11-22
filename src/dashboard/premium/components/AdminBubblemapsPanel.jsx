@@ -176,7 +176,7 @@ export default function AdminBubblemapsPanel({ wallet, getAuthParams }) {
             <div style={{ overflowX: "auto", maxHeight: 320, border: `1px solid ${border}`, borderRadius: 6 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 760 }}>
                 <thead>
-                  <tr>{["Token", "Score", "Holders", "Clusters", "Largest cluster", "Edges by type", "Guard"].map((item) => <th key={item} style={tableCell}>{item}</th>)}</tr>
+                  <tr>{["Token", "Score", "Holders", "Clusters", "Largest cluster", "Edges by type"].map((item) => <th key={item} style={tableCell}>{item}</th>)}</tr>
                 </thead>
                 <tbody>
                   {report.tokens.map((token) => (
@@ -189,7 +189,6 @@ export default function AdminBubblemapsPanel({ wallet, getAuthParams }) {
                       <td style={{ ...tableCell, whiteSpace: "normal", minWidth: 150 }}>
                         {Object.entries(token.edge_counts || {}).map(([type, count]) => `${type}: ${count}`).join(" · ") || "None"}
                       </td>
-                      <td style={tableCell}>{token.giant_cluster_guard_raised}×</td>
                     </tr>
                   ))}
                 </tbody>
