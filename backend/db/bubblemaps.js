@@ -1,4 +1,5 @@
 import { query } from "./pool.js";
+import { supplyShare } from "../services/bubblemaps/analysis.js";
 
 export async function getBubblemapCatalog() {
   const result = await query(
@@ -26,10 +27,18 @@ export async function getBubblemapCatalog() {
 
 export async function getBubblemap(tokenAddress) {
   const result = await query(
-    `SELECT map_json FROM bubblemap_tokens WHERE token_address = $1 AND map_json IS NOT NULL`,
+    `SELECT map_json, total_supply FROM bubblemap_tokens WHERE token_address = $1 AND map_json IS NOT NULL`,
     [tokenAddress.toLowerCase()]
   );
-  return result?.rows?.[0]?.map_json || null;
+  const row = result?.rows?.[0];
+  if (!row?.map_json) return null;
+  return {
+    ...row.map_json,
+    nodes: row.map_json.nodes.map((node) => ({
+      ...node,
+      supply_share: supplyShare(node.balance, row.total_supply),
+    })),
+  };
 }
 
 export async function listBubblemapOverrides() {

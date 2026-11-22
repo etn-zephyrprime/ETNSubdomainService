@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 import { RefreshCw, Network, ExternalLink } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
@@ -11,24 +11,36 @@ const BASE = `${PNL_BACKEND_URL}/api/premium/bubblemaps`;
 const MAP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const GRAPH_WIDTH = 760;
 const GRAPH_HEIGHT = 460;
-const CLUSTER_COLORS = [green, gold, "#3ea6ff", "#c792ea", "#ff6b9d", "#4dd0e1", "#ffd54f", "#81c784", "#ba68c8"];
+const MAX_NODE_RADIUS = 22;
+const MIN_NODE_HIT_RADIUS = 5;
+const CLUSTER_COLORS = ["#26d9c1", "#e34bb7", "#668cff", "#ae7cff", "#f49a5b", "#48bed3"];
 
-function nodeRadius(node) {
-  return Math.max(4, Math.min(20, 3 + Math.sqrt(Math.max(0, Number(node.pct) || 0)) * 3));
+function nodeSupplyShare(node) {
+  const share = node.supply_share == null ? Number.NaN : Number(node.supply_share);
+  if (Number.isFinite(share) && share >= 0) return share;
+  const pct = Number(node.pct);
+  return Number.isFinite(pct) && pct > 0 ? pct / 100 : 0;
 }
 
 function layoutGraph(map, showWeak) {
   const nodes = (map?.nodes || []).filter((node) => !node.excluded).map((node) => ({
     id: node.address,
     data: node,
-    radius: nodeRadius(node),
+    supplyShare: nodeSupplyShare(node),
   }));
   if (!nodes.length) return [];
+  const maxSupplyShare = Math.max(...nodes.map((node) => node.supplyShare));
+  for (const node of nodes) {
+    // Square-root radius makes bubble area proportional to total-supply share.
+    node.radius = maxSupplyShare > 0 ? MAX_NODE_RADIUS * Math.sqrt(node.supplyShare / maxSupplyShare) : 0;
+    node.hitRadius = Math.max(MIN_NODE_HIT_RADIUS, node.radius);
+  }
   const clusterCounts = new Map();
   for (const node of nodes) {
     if (node.data.cluster_id == null) continue;
     clusterCounts.set(node.data.cluster_id, (clusterCounts.get(node.data.cluster_id) || 0) + 1);
   }
+  for (const node of nodes) node.clusterSize = clusterCounts.get(node.data.cluster_id) || 1;
   const groupedClusters = [...clusterCounts].filter(([, count]) => count > 1).map(([id]) => id);
   const columns = Math.max(1, Math.ceil(Math.sqrt(groupedClusters.length * GRAPH_WIDTH / GRAPH_HEIGHT)));
   const rows = Math.max(1, Math.ceil(groupedClusters.length / columns));
@@ -56,8 +68,8 @@ function layoutGraph(map, showWeak) {
   for (let tick = 0; tick < 180; tick++) simulation.tick();
   return nodes.map((node) => ({
     ...node,
-    x: Math.max(node.radius + 5, Math.min(GRAPH_WIDTH - node.radius - 5, node.x)),
-    y: Math.max(node.radius + 5, Math.min(GRAPH_HEIGHT - node.radius - 5, node.y)),
+    x: Math.max(node.hitRadius + 2, Math.min(GRAPH_WIDTH - node.hitRadius - 2, node.x)),
+    y: Math.max(node.hitRadius + 2, Math.min(GRAPH_HEIGHT - node.hitRadius - 2, node.y)),
   }));
 }
 
@@ -98,6 +110,7 @@ async function responseData(response) {
 }
 
 export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
+  const orbGradientId = `bubblemap-orb-${useId().replaceAll(":", "")}`;
   const [catalog, setCatalog] = useState([]);
   const [selectedToken, setSelectedToken] = useState("");
   const [map, setMap] = useState(null);
@@ -233,8 +246,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     const y = (event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height + drag.offsetY;
     setGraphNodes((current) => current.map((node) => node.id !== drag.id ? node : {
       ...node,
-      x: Math.max(node.radius + 5, Math.min(GRAPH_WIDTH - node.radius - 5, x)),
-      y: Math.max(node.radius + 5, Math.min(GRAPH_HEIGHT - node.radius - 5, y)),
+      x: Math.max(node.hitRadius + 2, Math.min(GRAPH_WIDTH - node.hitRadius - 2, x)),
+      y: Math.max(node.hitRadius + 2, Math.min(GRAPH_HEIGHT - node.hitRadius - 2, y)),
     }));
   };
   const endDrag = (event) => {
@@ -276,10 +289,11 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-map-heading{margin-bottom:8px;}
         .bubblemap-map-title,.bubblemap-section-title{color:#d9e2e0;font:800 10px ${monoFont};letter-spacing:.07em;text-transform:uppercase;}
         .bubblemap-map-subtitle{margin-top:4px;color:#778589;font-size:10px;}
-        .bubblemap-graph{display:block;width:100%;height:auto;background-color:#080d11;background-image:linear-gradient(rgba(180,205,202,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(180,205,202,.035) 1px,transparent 1px),radial-gradient(ellipse at 50% 43%,rgba(24,187,26,.11),transparent 57%);background-size:34px 34px,34px 34px,auto;border:1px solid #1e2a2f;border-radius:6px;touch-action:none;}
+        .bubblemap-graph{display:block;width:100%;height:auto;background-color:#050814;background-image:radial-gradient(ellipse at 50% 44%,rgba(38,59,105,.24),transparent 68%),linear-gradient(180deg,#070b16,#050711);border:1px solid #1b2435;border-radius:6px;touch-action:none;}
         .bubblemap-node{cursor:grab;touch-action:none;}
         .bubblemap-node:active{cursor:grabbing;}
         .bubblemap-node:focus-visible{outline:none;filter:drop-shadow(0 0 9px rgba(255,255,255,.8));}
+        .bubblemap-node:hover .bubblemap-node-core{stroke:#dbe9ff;stroke-width:1.6;stroke-opacity:.95;}
         .bubblemap-toggle{display:flex;align-items:center;gap:6px;color:#aab6b7;font-size:10px;white-space:nowrap;}
         .bubblemap-map-meta{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:8px;color:#748287;font:9px ${monoFont};}
         .bubblemap-sidebar{display:grid;grid-template-rows:minmax(180px,.9fr) minmax(220px,1.1fr);gap:10px;min-height:460px;}
@@ -399,6 +413,13 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                   onPointerCancel={endDrag}
                   onLostPointerCapture={endDrag}
                 >
+                  <defs>
+                    <radialGradient id={orbGradientId} cx="30%" cy="25%" r="78%">
+                      <stop offset="0%" stopColor="#52698f" stopOpacity="0.88" />
+                      <stop offset="48%" stopColor="#263653" stopOpacity="0.94" />
+                      <stop offset="100%" stopColor="#0b1220" />
+                    </radialGradient>
+                  </defs>
                   {(map.edges || []).filter((edge) => edge.strong || showWeak).map((edge, index) => {
                     const a = positioned.get(edge.a);
                     const b = positioned.get(edge.b);
@@ -406,7 +427,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                     return (
                       <g key={`${edge.a}-${edge.b}-${index}`} pointerEvents="none">
                         {edge.strong && (
-                          <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={clusterColor(a.data.cluster_id)} strokeWidth={6} opacity={0.14} />
+                          <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={clusterColor(a.data.cluster_id)} strokeWidth={4} opacity={0.1} />
                         )}
                         <line
                           x1={a.x}
@@ -414,15 +435,29 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                           x2={b.x}
                           y2={b.y}
                           stroke={edge.strong ? clusterColor(a.data.cluster_id) : "#66706b"}
-                          strokeWidth={edge.strong ? 2.4 : 1}
-                          strokeDasharray={edge.strong ? undefined : "3 5"}
-                          opacity={edge.strong ? 0.88 : 0.36}
+                          strokeWidth={edge.strong ? 1.25 : 0.8}
+                          strokeDasharray={edge.strong ? undefined : "2 5"}
+                          opacity={edge.strong ? 0.62 : 0.28}
                         />
                       </g>
                     );
                   })}
                   {graphNodes.map((node) => {
-                    const fill = node.data.tags?.includes("Team") ? "#3ea6ff" : clusterColor(node.data.cluster_id);
+                    const selected = selectedAddress === node.id;
+                    const clustered = node.clusterSize > 1;
+                    const accent = node.data.tags?.includes("Team")
+                      ? "#73b8ff"
+                      : clustered
+                        ? clusterColor(node.data.cluster_id)
+                        : "#58749b";
+                    const label = selected ? displayName(node.id) : "";
+                    const shortLabel = label.length > 20 ? `${label.slice(0, 19)}…` : label;
+                    const labelWidth = Math.max(142, Math.min(220, shortLabel.length * 6.4 + 66));
+                    const labelOnRight = node.x + node.radius + labelWidth + 8 <= GRAPH_WIDTH;
+                    const labelX = labelOnRight
+                      ? node.x + node.radius + 8
+                      : Math.max(6, node.x - node.radius - labelWidth - 8);
+                    const labelY = Math.max(18, Math.min(GRAPH_HEIGHT - 18, node.y));
                     return (
                       <g
                         key={node.id}
@@ -446,11 +481,32 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                             setSelectedCluster(null);
                           }
                         }}
-                        style={{ filter: `drop-shadow(0 0 7px ${fill}70)` }}
+                        style={selected ? { filter: `drop-shadow(0 0 9px ${accent}80)` } : undefined}
                       >
-                        <circle cx={node.x} cy={node.y} r={node.radius + 5} fill={fill} fillOpacity={0.12} />
-                        <circle cx={node.x} cy={node.y} r={node.radius} fill={fill} fillOpacity={0.9} stroke={selectedAddress === node.id ? "#fff" : `${fill}cc`} strokeWidth={selectedAddress === node.id ? 2 : 1.2} />
-                        <circle cx={node.x - node.radius * 0.32} cy={node.y - node.radius * 0.36} r={Math.max(1.5, node.radius * 0.25)} fill="#fff" fillOpacity={0.4} pointerEvents="none" />
+                        <circle cx={node.x} cy={node.y} r={node.hitRadius} fill="transparent" pointerEvents="all" />
+                        <circle cx={node.x} cy={node.y} r={node.radius * 1.65} fill={accent} fillOpacity={selected ? 0.07 : clustered ? 0.035 : 0.018} />
+                        <circle cx={node.x} cy={node.y} r={node.radius * 1.25} fill={accent} fillOpacity={selected ? 0.18 : clustered ? 0.12 : 0.06} />
+                        <circle
+                          className="bubblemap-node-core"
+                          cx={node.x}
+                          cy={node.y}
+                          r={node.radius}
+                          fill={`url(#${orbGradientId})`}
+                          stroke={selected ? "#f4f8ff" : accent}
+                          strokeOpacity={selected ? 1 : clustered ? 0.84 : 0.5}
+                          strokeWidth={selected ? 2 : node.radius * 0.08}
+                        />
+                        <circle cx={node.x - node.radius * 0.32} cy={node.y - node.radius * 0.36} r={node.radius * 0.22} fill="#e2ecff" fillOpacity={selected ? 0.6 : 0.3} pointerEvents="none" />
+                        {selected && (
+                          <g className="bubblemap-node-label" pointerEvents="none">
+                            <rect x={labelX} y={labelY - 12} width={labelWidth} height={24} rx={8} fill="#080c16" fillOpacity={0.97} stroke={accent} strokeOpacity={0.62} />
+                            <rect x={labelX} y={labelY - 12} width={3} height={24} rx={1.5} fill={accent} />
+                            <text x={labelX + 10} y={labelY + 3.5} fill="#edf3ff" fontFamily={monoFont} fontSize={10} fontWeight={700}>
+                              {shortLabel}
+                              <tspan dx="7" fill="#9aa9c2">{Number(node.data.pct || 0).toFixed(2)}%</tspan>
+                            </text>
+                          </g>
+                        )}
                         <title>{displayName(node.id)} · {node.data.pct ?? 0}%</title>
                       </g>
                     );

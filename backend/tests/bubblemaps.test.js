@@ -147,6 +147,17 @@ test("yield farms and liquidity pools are excluded from holder analysis", () => 
   assert.equal(result.supply_considered, "100");
 });
 
+test("holder supply shares retain precision for proportional bubble sizing", () => {
+  const result = analyzeBubblemap(baseInput([holder(1, "1"), holder(2, "9")], { totalSupply: "10000" }), config);
+  const first = result.nodes.find((node) => node.address === address(1));
+  const second = result.nodes.find((node) => node.address === address(2));
+
+  assert.equal(first.pct, 0);
+  assert.equal(second.pct, 0.1);
+  assert.ok(Math.abs(first.supply_share - 0.0001) < 1e-12);
+  assert.ok(Math.abs(second.supply_share - 0.0009) < 1e-12);
+});
+
 test("dust acquisitions do not create bundled-buy links", () => {
   const result = analyzeBubblemap(baseInput([holder(1), holder(2)], {
     tokenTransfers: [
