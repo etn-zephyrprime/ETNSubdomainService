@@ -41,7 +41,7 @@ const txIndex = (transfer) => safeNumber(transfer.log_index ?? transfer.index ??
 const fromAddress = (transfer) => lower(transfer.from?.hash || transfer.from_address || transfer.from);
 const toAddress = (transfer) => lower(transfer.to?.hash || transfer.to_address || transfer.to);
 const transferTimestamp = (transfer) => Date.parse(transfer.timestamp || transfer.at || "");
-export const BUBBLEMAP_ANALYSIS_VERSION = 2;
+export const BUBBLEMAP_ANALYSIS_VERSION = 3;
 
 export function supplyShare(balance, totalSupply) {
   const total = bigintOrZero(totalSupply);
@@ -94,21 +94,10 @@ function infrastructureExclusion(metadata, entity) {
   return null;
 }
 
-function exclusionFor(address, metadata, override, entity, degree, cfg, preserveTeamHolder = false) {
+function exclusionFor(address, metadata, override, entity) {
   if (BURN_ADDRESSES.has(address) || entity?.tag === "Burn") return "Burn address";
-  if (override?.type === "ignore") return override.label ? `Ignored: ${override.label}` : "Ignored by admin";
-  if (override?.type === "entity" && String(override.label || "").toLowerCase() !== "team") {
-    return `Entity: ${override.label || "admin label"}`;
-  }
   const infrastructure = infrastructureExclusion(metadata, entity);
-  if (infrastructure && override?.type !== "include") return infrastructure;
-  if (
-    entity &&
-    entity.tag !== "Team" &&
-    !(override?.type === "include" && ["Yield Farm", "Liquidity Pool"].includes(entity.tag))
-  ) return `${entity.tag} entity${entity.label ? `: ${entity.label}` : ""}`;
-  if (override?.type === "hub" && !preserveTeamHolder) return "Hub marked by admin";
-  if (override?.type !== "not_hub" && !preserveTeamHolder && degree > cfg.hubDegree) return `Hub: ${degree} distinct counterparties`;
+  if (infrastructure && metadata?.is_contract === true && override?.type !== "include") return infrastructure;
   if (metadata?.is_contract && override?.type !== "include") return "Contract";
   return null;
 }
@@ -221,7 +210,8 @@ function collectPairData(input, nodes, cfg) {
     const funderEntity = mapValue(input.entities, funder) || null;
     const degree = safeNumber(funderMeta.degree);
     if (!Object.keys(funderMeta).length || funderMeta.degree == null || funderMeta.degree_complete !== true) continue;
-    if (exclusionFor(funder, funderMeta, funderOverride, funderEntity, degree, cfg)) continue;
+    if (funderOverride.type === "hub" || (degree > cfg.hubDegree && funderOverride.type !== "not_hub")) continue;
+    if (exclusionFor(funder, funderMeta, funderOverride, funderEntity)) continue;
     const group = funders.get(funder) || [];
     group.push(node.address);
     funders.set(funder, group);
@@ -422,7 +412,6 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const addresses = input.addresses || new Map();
   const overrides = input.overrides || new Map();
   const entities = input.entities || new Map();
-  const hubs = input.hubs || new Set();
   const holders = (input.holders || []).slice(0, cfg.holdersTopN);
   const totalSupply = bigintOrZero(input.totalSupply);
   const isCoreToken = lower(input.token) === CORE_TOKEN_ADDRESS;
@@ -441,11 +430,9 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     const override = mapValue(overrides, address) || {};
     const entity = mapValue(entities, address) || null;
     const isContract = holder.address?.is_contract === true || holder.is_contract === true || metadata.is_contract === true;
-    const degree = Math.max(safeNumber(metadata.degree), safeNumber(input.degreeByAddress?.get?.(address)));
-    const forcedHub = override.type === "hub" || (hubs.has(address) && override.type !== "not_hub");
     const exclusionReason = isCoreToken
       ? (isContract ? "Contract" : null)
-      : exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity, forcedHub ? Math.max(degree, cfg.hubDegree + 1) : degree, cfg, preserveTeamHolder);
+      : exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity);
     const team = preserveTeamHolder || entity?.tag === "Team" || String(override.label || "").toLowerCase() === "team" || (metadata.tags || []).includes("Team");
     const display = entity?.label || override.label || metadata.ens_domain_name || metadata.name || holder.address?.ens_domain_name || holder.address?.name || shortAddress(address);
     return {

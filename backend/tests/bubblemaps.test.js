@@ -153,7 +153,7 @@ test("CORE team holders remain visible despite hub-like activity without being f
   assert.ok(result.clusters.every((cluster) => cluster.members === 1));
   assert.equal(result.nodes.find((node) => node.address === CORE_TEAM_WALLET_ADDRESSES[0]).pct, 6.85);
   assert.equal(result.clusters[0].supply_pct, 6.85);
-  assert.ok(otherTokenResult.nodes.every((node) => node.exclusion_reason.startsWith("Hub:")));
+  assert.ok(otherTokenResult.nodes.every((node) => !node.excluded));
   assert.equal(otherTokenResult.core_team_holder_rules_version, undefined);
 });
 
@@ -211,25 +211,29 @@ test("yield farms and liquidity pools are excluded from holder analysis", () => 
       [address(1), { tag: farmTag, label: "ElectroSwap Yield Farms" }],
       [address(2), { tag: lockerTag, label: "ElectroSwap Liquidity Locker" }],
     ]),
-    addresses: new Map([[address(3), { name: "ElectroSwap V2 Pair", is_contract: false }]]),
+    addresses: new Map([
+      [address(1), { is_contract: true }],
+      [address(2), { is_contract: true }],
+      [address(3), { name: "ElectroSwap V2 Pair", is_contract: false }],
+    ]),
   }), config);
 
   assert.equal(result.nodes.find((node) => node.address === address(1)).exclusion_reason, "Yield farm");
   assert.equal(result.nodes.find((node) => node.address === address(2)).exclusion_reason, "Liquidity pool");
-  assert.equal(result.nodes.find((node) => node.address === address(3)).exclusion_reason, "Liquidity pool");
-  assert.equal(result.calibration.holders_considered, 1);
-  assert.equal(result.supply_considered, "100");
+  assert.equal(result.nodes.find((node) => node.address === address(3)).exclusion_reason, null);
+  assert.equal(result.calibration.holders_considered, 2);
+  assert.equal(result.supply_considered, "200");
 });
 
-test("a liquidity-pool label on the holder record is not lost without cached address metadata", () => {
+test("a liquidity-pool label alone does not exclude an unverified wallet", () => {
   const result = analyzeBubblemap(baseInput([
     { address: { hash: address(1), name: "ElectroSwap LP" }, value: "50" },
     holder(2, "100"),
   ]), config);
 
-  assert.equal(result.nodes.find((node) => node.address === address(1)).exclusion_reason, "Liquidity pool");
-  assert.equal(result.calibration.holders_considered, 1);
-  assert.equal(result.supply_considered, "100");
+  assert.equal(result.nodes.find((node) => node.address === address(1)).exclusion_reason, null);
+  assert.equal(result.calibration.holders_considered, 2);
+  assert.equal(result.supply_considered, "150");
 });
 
 test("holder supply shares retain precision for proportional bubble sizing", () => {

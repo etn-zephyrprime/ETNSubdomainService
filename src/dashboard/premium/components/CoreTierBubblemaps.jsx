@@ -122,6 +122,61 @@ function layoutGraph(map, showWeak) {
   }));
 }
 
+function buildConnectedClusters(map, showWeak) {
+  const nodes = (map?.nodes || []).filter((node) => !node.excluded);
+  const nodeByAddress = new Map(nodes.map((node) => [node.address, node]));
+  const strongClusters = (map?.clusters || [])
+    .filter((cluster) => cluster.members > 1)
+    .map((cluster) => ({
+      ...cluster,
+      strength: "strong",
+      memberAddresses: nodes.filter((node) => node.cluster_id === cluster.id).map((node) => node.address),
+    }));
+  if (!showWeak) return strongClusters;
+
+  const weakEdges = (map?.edges || []).filter((edge) =>
+    !edge.strong && nodeByAddress.has(edge.a) && nodeByAddress.has(edge.b)
+  );
+  const parent = new Map(nodes.map((node) => [node.address, node.address]));
+  const find = (address) => {
+    let root = address;
+    while (parent.get(root) !== root) root = parent.get(root);
+    return root;
+  };
+  const union = (a, b) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+  weakEdges.forEach((edge) => union(edge.a, edge.b));
+  const weakGroups = new Map();
+  for (const edge of weakEdges) {
+    const root = find(edge.a);
+    const members = weakGroups.get(root) || new Set();
+    members.add(edge.a);
+    members.add(edge.b);
+    weakGroups.set(root, members);
+  }
+  const weakClusters = [...weakGroups.values()]
+    .filter((members) => members.size > 1)
+    .map((members, index) => {
+      const memberAddresses = [...members];
+      const edges = weakEdges.filter((edge) => members.has(edge.a) && members.has(edge.b));
+      const supplyPct = memberAddresses.reduce((sum, address) => sum + Number(nodeByAddress.get(address)?.pct || 0), 0);
+      const reasons = [...new Set(edges.flatMap((edge) => (edge.reasons || []).map((reason) => reason.type)))];
+      return {
+        id: `weak-${index + 1}`,
+        members: memberAddresses.length,
+        pct: supplyPct,
+        supply_pct: supplyPct,
+        strength: "weak",
+        memberAddresses,
+        reasons_summary: reasons.length ? reasons : ["SHARED_COUNTERPARTY"],
+      };
+    });
+  return [...strongClusters, ...weakClusters].sort((a, b) => b.supply_pct - a.supply_pct);
+}
+
 function formatBalance(value, decimals) {
   try {
     const raw = BigInt(value || "0");
@@ -167,6 +222,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   const [selectedAddress, setSelectedAddress] = useState(null);
   const [selectedCluster, setSelectedCluster] = useState(null);
   const [showWeak, setShowWeak] = useState(true);
+  const [mapZoom, setMapZoom] = useState(1);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [loadingMap, setLoadingMap] = useState(false);
   const [error, setError] = useState(null);
@@ -247,18 +303,19 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
 
   useEffect(() => {
     setGraphNodes(layoutGraph(map, showWeak));
+    setMapZoom(1);
   }, [map, showWeak]);
   const positioned = useMemo(() => new Map(graphNodes.map((node) => [node.id, node])), [graphNodes]);
   const tokenInfo = catalog.find((token) => token.token === selectedToken);
   const tokenLogoUrl = getTokenLogoUrl(selectedToken);
   const chosenNode = map?.nodes?.find((node) => node.address === selectedAddress) || null;
   const chosenCluster = map?.clusters?.find((cluster) => cluster.id === selectedCluster) || null;
-  const chosenClusterMembers = chosenCluster
+  const chosenMapClusterMembers = chosenCluster
     ? map.nodes.filter((node) => node.cluster_id === chosenCluster.id)
     : [];
   const { resolve: resolveName } = useDisplayNames([
     ...(chosenNode ? [chosenNode.address] : []),
-    ...chosenClusterMembers.slice(0, 15).map((node) => node.address),
+    ...chosenMapClusterMembers.slice(0, 15).map((node) => node.address),
   ]);
   const labelByAddress = useMemo(() => new Map((map?.nodes || []).map((node) => [node.address, node.label])), [map]);
   const displayName = (address) => address === selectedAddress ? resolveName(address) : labelByAddress.get(address) || resolveName(address);
@@ -280,15 +337,19 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
       : `The largest individual holding is ${largestClusterSupplyPercent.toFixed(2)}% of total supply (${largestCluster.pct}% of considered supply).`
     : map?.summary;
   const displayedSummary = map?.score_parts?.largest_cluster_supply_pct == null ? generatedSummary : map?.summary || generatedSummary;
-  const connectedClusters = (map?.clusters || []).filter((cluster) => cluster.members > 1);
+  const connectedClusters = useMemo(() => buildConnectedClusters(map, showWeak), [map, showWeak]);
   const orderedClusters = [...connectedClusters].sort((a, b) => b.pct - a.pct);
+  const chosenConnectedCluster = connectedClusters.find((cluster) => cluster.id === selectedCluster) || null;
+  const chosenClusterMembers = chosenConnectedCluster
+    ? map.nodes.filter((node) => chosenConnectedCluster.memberAddresses.includes(node.address))
+    : [];
   const beginDrag = (event, node) => {
     if (event.button !== undefined && event.button !== 0) return;
     const svg = event.currentTarget.ownerSVGElement;
     const bounds = svg?.getBoundingClientRect();
     if (!bounds?.width || !bounds?.height) return;
-    const x = (event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width;
-    const y = (event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height;
+    const x = GRAPH_WIDTH / 2 + ((event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width - GRAPH_WIDTH / 2) / mapZoom;
+    const y = GRAPH_HEIGHT / 2 + ((event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height - GRAPH_HEIGHT / 2) / mapZoom;
     suppressClickRef.current = false;
     dragRef.current = {
       id: node.id,
@@ -307,8 +368,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 3) drag.moved = true;
     const bounds = event.currentTarget.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
-    const x = (event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width + drag.offsetX;
-    const y = (event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height + drag.offsetY;
+    const x = GRAPH_WIDTH / 2 + ((event.clientX - bounds.left) * GRAPH_WIDTH / bounds.width - GRAPH_WIDTH / 2) / mapZoom + drag.offsetX;
+    const y = GRAPH_HEIGHT / 2 + ((event.clientY - bounds.top) * GRAPH_HEIGHT / bounds.height - GRAPH_HEIGHT / 2) / mapZoom + drag.offsetY;
     setGraphNodes((current) => current.map((node) => node.id !== drag.id ? node : {
       ...node,
       x: Math.max(node.hitRadius + 2, Math.min(GRAPH_WIDTH - node.hitRadius - 2, x)),
@@ -320,12 +381,22 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     suppressClickRef.current = dragRef.current.moved;
     dragRef.current = null;
   };
+  const zoomMap = (event) => {
+    event.preventDefault();
+    setMapZoom((current) => Math.max(1, Math.min(3, current * (event.deltaY < 0 ? 1.12 : 0.9))));
+  };
+  const adjustZoom = (amount) => {
+    setMapZoom((current) => Math.max(1, Math.min(3, current + amount)));
+  };
 
   return (
     <DashboardPanel accent={gold} style={{ padding: 12, borderColor: "rgba(232,191,76,0.4)", background: "#0b1014" }}>
       <style>{`
         .bubblemap-terminal{display:grid;gap:12px;color:#d6e0de;}
         .bubblemap-topbar,.bubblemap-tokenbar,.bubblemap-map-heading,.bubblemap-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+        .bubblemap-zoom-controls{display:flex;align-items:center;gap:4px;}
+        .bubblemap-zoom-controls button{width:26px;height:24px;padding:0;border:1px solid #26343a;border-radius:5px;background:#0e1519;color:#b9c5c1;font:700 11px ${monoFont};cursor:pointer;}
+        .bubblemap-zoom-controls button:hover{border-color:${green};color:#f3f6f5;}
         .bubblemap-topbar{min-height:32px;}
         .bubblemap-brand{display:flex;align-items:center;gap:10px;}
         .bubblemap-brand-icon{display:grid;place-items:center;width:34px;height:34px;border:1px solid rgba(232,191,76,.32);border-radius:9px;background:rgba(232,191,76,.08);color:${gold};}
@@ -466,6 +537,11 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                     <input type="checkbox" checked={showWeak} onChange={(event) => setShowWeak(event.target.checked)} />
                     Show weak links
                   </label>
+                  <div className="bubblemap-zoom-controls" aria-label="Map zoom controls">
+                    <button type="button" onClick={() => adjustZoom(-0.25)} aria-label="Zoom out">−</button>
+                    <button type="button" onClick={() => setMapZoom(1)} aria-label="Reset zoom">{Math.round(mapZoom * 100)}%</button>
+                    <button type="button" onClick={() => adjustZoom(0.25)} aria-label="Zoom in">+</button>
+                  </div>
                 </div>
                 <div className="bubblemap-mobile-note">Explore the ranked cluster list below; the interactive canvas is best viewed on a wider screen.</div>
                 <svg
@@ -474,6 +550,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                   role="img"
                   aria-label="Interactive holder cluster map"
                   onPointerMove={moveBubble}
+                  onWheel={zoomMap}
                   onPointerUp={endDrag}
                   onPointerCancel={endDrag}
                   onLostPointerCapture={endDrag}
@@ -488,6 +565,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                       <circle cx="0.5" cy="0.5" r="0.5" />
                     </clipPath>
                   </defs>
+                  <g transform={`translate(${GRAPH_WIDTH / 2} ${GRAPH_HEIGHT / 2}) scale(${mapZoom}) translate(${-GRAPH_WIDTH / 2} ${-GRAPH_HEIGHT / 2})`}>
                   {(map.edges || []).filter((edge) => edge.strong || showWeak).map((edge, index) => {
                     const a = positioned.get(edge.a);
                     const b = positioned.get(edge.b);
@@ -592,6 +670,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                       </g>
                     );
                   })}
+                  </g>
                 </svg>
                 <div className="bubblemap-map-meta">
                   <span>Solid: cluster evidence&nbsp; · &nbsp;dotted: weaker observed links</span>
@@ -614,10 +693,10 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                         aria-pressed={selectedCluster === cluster.id}
                         onClick={() => { setSelectedCluster(cluster.id); setSelectedAddress(null); }}
                       >
-                        <span className="bubblemap-cluster-dot" style={{ background: clusterColor(cluster.id) }} />
+                        <span className="bubblemap-cluster-dot" style={{ background: cluster.strength === "strong" ? clusterColor(cluster.id) : "#66706b" }} />
                         <span>
-                          <span className="bubblemap-cluster-name">Cluster {cluster.id} · {cluster.members} wallet{cluster.members === 1 ? "" : "s"}</span>
-                          <span className="bubblemap-cluster-note">{cluster.reasons_summary.map(reasonLabel).join(" · ")}</span>
+                          <span className="bubblemap-cluster-name">{cluster.strength === "strong" ? `Cluster ${cluster.id}` : "Weak connection"} · {cluster.members} wallet{cluster.members === 1 ? "" : "s"}</span>
+                          <span className="bubblemap-cluster-note">{cluster.strength === "strong" ? "Strong" : "Weak"} · {cluster.reasons_summary.map(reasonLabel).join(" · ")}</span>
                         </span>
                         <span className="bubblemap-cluster-share">{clusterSupplyPercent(map, cluster).toFixed(2)}%</span>
                       </button>
@@ -627,7 +706,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
 
                 <section className="bubblemap-side-card">
                   <div className="bubblemap-section-heading">
-                    <div className="bubblemap-section-title">{chosenNode ? "Wallet detail" : chosenCluster ? `Cluster ${chosenCluster.id}` : "Selection detail"}</div>
+                    <div className="bubblemap-section-title">{chosenNode ? "Wallet detail" : chosenConnectedCluster ? (chosenConnectedCluster.strength === "strong" ? `Cluster ${chosenConnectedCluster.id}` : "Weak connection") : "Selection detail"}</div>
                     {chosenNode && <span className="bubblemap-count">HOLDER</span>}
                   </div>
                   <div className="bubblemap-selection">
@@ -653,10 +732,10 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                         </div>
                       </>
                     )}
-                    {chosenCluster && (
+                    {chosenConnectedCluster && (
                       <>
                         <div style={{ color: mutedLight, fontSize: 10, lineHeight: 1.5, marginBottom: 7 }}>
-                          {chosenCluster.members} wallet{chosenCluster.members === 1 ? "" : "s"} hold {clusterSupplyPercent(map, chosenCluster).toFixed(2)}% of total supply ({chosenCluster.pct}% of considered supply). Reasons: {chosenCluster.reasons_summary.map(reasonLabel).join(", ")}.
+                          {chosenConnectedCluster.strength === "strong" ? "Strong cluster" : "Weak connection"}: {chosenConnectedCluster.members} wallet{chosenConnectedCluster.members === 1 ? "" : "s"} hold {clusterSupplyPercent(map, chosenConnectedCluster).toFixed(2)}% of total supply. Reasons: {chosenConnectedCluster.reasons_summary.map(reasonLabel).join(", ")}.
                         </div>
                         {chosenClusterMembers.map((node) => (
                           <button
@@ -670,7 +749,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                         ))}
                       </>
                     )}
-                    {!chosenNode && !chosenCluster && (
+                    {!chosenNode && !chosenConnectedCluster && (
                       <div className="bubblemap-empty">Select a bubble or a cluster to inspect holder balances and the observed connection signals.</div>
                     )}
                   </div>
