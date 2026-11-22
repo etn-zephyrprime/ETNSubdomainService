@@ -152,15 +152,15 @@ test("bidirectional repeated ETN links keep the configured edge weight", () => {
   assert.equal(result.edges[0].strong, false);
 });
 
-test("giant-cluster guard raises the threshold and breaks an oversized same-funder cluster", () => {
+test("verified same-funder relationships remain one cluster regardless of cluster size", () => {
   const funder = address(50);
   const holders = Array.from({ length: 8 }, (_, index) => holder(index + 1));
   const addresses = new Map([[funder, { degree: 1, degree_complete: true }]]);
   for (const item of holders.slice(0, 4)) addresses.set(item.address, { first_funder: funder });
   const result = analyzeBubblemap(baseInput(holders, { addresses }), config);
-  assert.equal(result.calibration.giant_cluster_guard_raised, 2);
-  assert.equal(result.calibration.largest_cluster_holder_share_pct, 12.5);
-  assert.equal(result.calibration.cluster_count, 8);
+  assert.equal(result.calibration.largest_cluster_holder_share_pct, 50);
+  assert.equal(result.calibration.cluster_count, 5);
+  assert.equal(result.clusters.find((cluster) => cluster.members === 4)?.reasons_summary.includes("SAME_FUNDER"), true);
 });
 
 test("NFT trades and small social tips leave only the four-wallet same-funder cluster", () => {

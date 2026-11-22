@@ -34,6 +34,7 @@ const txIndex = (transfer) => safeNumber(transfer.log_index ?? transfer.index ??
 const fromAddress = (transfer) => lower(transfer.from?.hash || transfer.from_address || transfer.from);
 const toAddress = (transfer) => lower(transfer.to?.hash || transfer.to_address || transfer.to);
 const transferTimestamp = (transfer) => Date.parse(transfer.timestamp || transfer.at || "");
+export const BUBBLEMAP_ANALYSIS_VERSION = 2;
 
 export function hasNftTransfer(transaction) {
   if (transaction?.has_nft === true || transaction?.hasNft === true || transaction?.token_transfers_overflow === true) return true;
@@ -417,30 +418,11 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
 
   const { allPairs, eligible, team } = collectPairData(input, nodes, cfg);
   const eligibleAddresses = [...eligible];
-  let threshold = cfg.clusterThreshold;
+  const threshold = cfg.clusterThreshold;
+  // Keep each connected component intact. The component is built only from
+  // strong, on-chain signals; splitting it by holder-count share would
+  // manufacture boundaries inside a verified relationship.
   let groups = components(eligibleAddresses, allPairs, threshold);
-  const isOversized = (clusterList) => clusterList.some((group) =>
-    group.length > 1 && group.length / Math.max(1, eligibleAddresses.length) > cfg.maxClusterHolderShare
-  );
-  let guardRaised = 0;
-  while (isOversized(groups) && guardRaised < 3) {
-    threshold = Math.round((threshold + 0.2) * 10) / 10;
-    guardRaised++;
-    groups = components(eligibleAddresses, allPairs, threshold);
-  }
-  let louvainSplits = 0;
-  if (isOversized(groups)) {
-    groups = groups.flatMap((group) => {
-      if (group.length / Math.max(1, eligibleAddresses.length) <= cfg.maxClusterHolderShare) return [group];
-      louvainSplits++;
-      const split = louvainPartition(group, allPairs.filter((pair) => pair.score >= threshold), cfg.maxClusterHolderShare);
-      console.warn(
-        `🫧 Bubblemaps giant-cluster guard: token ${input.token} split ${group.length}/${eligibleAddresses.length} holders; ` +
-          `edge types: ${[...new Set(allPairs.filter((pair) => group.includes(pair.a) && group.includes(pair.b)).flatMap((pair) => pair.signals.map((signal) => signal.type)))].join(", ") || "none"}`
-      );
-      return split;
-    });
-  }
   groups = groups.map((group) => [...group].sort()).sort((a, b) => {
     const balance = (list) => list.reduce((sum, address) => sum + bigintOrZero(nodes.find((node) => node.address === address)?.balance), 0n);
     const diff = balance(b) - balance(a);
@@ -508,6 +490,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
       ? `${largest.members} linked wallets hold ${largest.pct.toFixed(1)}% of considered supply${largestReasons ? ` (${largestReasons})` : ""}.`
       : `The largest individual holding is ${largestClusterPct.toFixed(1)}% of considered supply.`;
   const output = {
+    analysis_version: BUBBLEMAP_ANALYSIS_VERSION,
     token: lower(input.token),
     computed_at_block: safeNumber(input.computedAtBlock),
     computed_at: input.computedAt || new Date().toISOString(),
@@ -535,8 +518,6 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
       largest_cluster_holders: largest?.members || 0,
       largest_cluster_holder_share_pct: eligibleAddresses.length ? cleanPercent((largest?.members || 0) / eligibleAddresses.length * 100) : 0,
       edge_counts: Object.fromEntries(Object.keys(cfg.edgeWeights).map((type) => [type, allPairs.filter((pair) => pair.signals.some((signal) => signal.type === type)).length])),
-      giant_cluster_guard_raised: guardRaised,
-      louvain_splits: louvainSplits,
       final_cluster_threshold: threshold,
     },
   };

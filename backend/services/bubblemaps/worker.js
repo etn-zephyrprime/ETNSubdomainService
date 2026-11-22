@@ -7,7 +7,7 @@ import { getTokenLocksCache } from "../../state/tokenLocksState.js";
 import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks } from "../../utils/electroSwapTokens.js";
 import { BRIDGE_PROXY_ADDRESS } from "../../utils/etnBridge.js";
 import { TEAM_WALLET_ADDRESSES } from "../../utils/teamWalletsCache.js";
-import { analyzeBubblemap, hasNftTransfer } from "./analysis.js";
+import { analyzeBubblemap, BUBBLEMAP_ANALYSIS_VERSION, hasNftTransfer } from "./analysis.js";
 import { BUBBLEMAP_CONFIG } from "./config.js";
 
 const TOKEN_CATALOG_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -902,7 +902,6 @@ async function saveCalibrationReport() {
       largest_cluster_holder_share_pct: row.calibration?.largest_cluster_holder_share_pct || 0,
       largest_cluster_supply_pct: row.score_parts?.largest_cluster_pct || 0,
       edge_counts: row.calibration?.edge_counts || {},
-      giant_cluster_guard_raised: row.calibration?.giant_cluster_guard_raised || 0,
       score: row.score == null ? null : Number(row.score),
     })),
     top_hubs: (hubs?.rows || []).map((row) => ({ address: row.address, label: row.name || null, degree: row.degree })),
@@ -918,8 +917,10 @@ async function analyzeDirtyMaps(stats) {
       `      SELECT token_address, name, symbol, decimals, total_supply, exchange_rate, price_checked_at,
               launch_block, launch_timestamp, launch_checked_at
        FROM bubblemap_tokens
-       WHERE analysis_dirty = true AND holders_refreshed_at IS NOT NULL AND transfer_backfill_complete = true
-       ORDER BY map_updated_at ASC NULLS FIRST, updated_at ASC LIMIT 1`
+       WHERE (analysis_dirty = true OR map_json IS NULL OR map_json->>'analysis_version' IS DISTINCT FROM $1)
+         AND holders_refreshed_at IS NOT NULL AND transfer_backfill_complete = true
+       ORDER BY map_updated_at ASC NULLS FIRST, updated_at ASC LIMIT 1`,
+      [String(BUBBLEMAP_ANALYSIS_VERSION)]
     );
     const token = result?.rows?.[0];
     if (!token) break;
