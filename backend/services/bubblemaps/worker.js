@@ -912,7 +912,7 @@ async function saveCalibrationReport() {
       holders_considered: row.calibration?.holders_considered || 0,
       cluster_count: row.calibration?.cluster_count || 0,
       largest_cluster_holder_share_pct: row.calibration?.largest_cluster_holder_share_pct || 0,
-      largest_cluster_supply_pct: row.score_parts?.largest_cluster_pct || 0,
+      largest_cluster_supply_pct: row.score_parts?.largest_cluster_supply_pct ?? null,
       edge_counts: row.calibration?.edge_counts || {},
       giant_cluster_guard_raised: row.calibration?.giant_cluster_guard_raised || 0,
       score: row.score == null ? null : Number(row.score),

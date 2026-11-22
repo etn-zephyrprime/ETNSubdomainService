@@ -169,6 +169,17 @@ test("holder supply shares retain precision for proportional bubble sizing", () 
   assert.ok(Math.abs(second.supply_share - 0.0009) < 1e-12);
 });
 
+test("cluster and holder percentages can be compared on the total-supply basis", () => {
+  const result = analyzeBubblemap(baseInput([holder(1, "125")], { totalSupply: "1000" }), config);
+
+  assert.equal(result.clusters[0].pct, 100);
+  assert.equal(result.clusters[0].supply_pct, 12.5);
+  assert.equal(result.nodes[0].pct, 12.5);
+  assert.equal(result.score_parts.largest_cluster_pct, 100);
+  assert.equal(result.score_parts.largest_cluster_supply_pct, 12.5);
+  assert.equal(result.summary, "The largest individual holding is 12.5% of total supply (100.0% of considered supply).");
+});
+
 test("dust acquisitions do not create bundled-buy links", () => {
   const result = analyzeBubblemap(baseInput([holder(1), holder(2)], {
     tokenTransfers: [
@@ -236,6 +247,7 @@ test("score uses cluster HHI and applies only the stated penalties", () => {
   assert.equal(result.band, "Widely spread");
   assert.deepEqual(result.score_parts, {
     largest_cluster_pct: 25,
+    largest_cluster_supply_pct: 25,
     bundled_pct: 0,
     team_pct: 0,
   });
