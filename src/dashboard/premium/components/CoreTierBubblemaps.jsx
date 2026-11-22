@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
+import { forceCenter, forceCollide, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 import { RefreshCw, Network, ExternalLink } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import { PNL_BACKEND_URL, EXPLORER_BASE_URL } from "../../../config.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
+import { getTokenLogoUrl } from "../../utils/tokenLogos.js";
 import { gold, green, muted, mutedLight, border, panel2, monoFont, error as errorColor } from "../../theme.js";
 
 const AUTH_PURPOSE = "Premium Dashboard";
@@ -49,6 +50,7 @@ function layoutGraph(map, showWeak) {
     members.push(node);
     clusterMembers.set(node.data.cluster_id, members);
   }
+  for (const node of nodes) node.clusterSize = clusterMembers.get(node.data.cluster_id)?.length || 1;
   const clusterOrder = [...clusterMembers.entries()]
     .filter(([, members]) => members.length > 1)
     .map(([id, members]) => [id, members.reduce((sum, node) => sum + (Number(node.data.pct) || 0), 0)])
@@ -84,7 +86,6 @@ function layoutGraph(map, showWeak) {
     .filter((edge) => (edge.strong || showWeak) && available.has(edge.a) && available.has(edge.b))
     .map((edge) => ({ source: edge.a, target: edge.b, strong: edge.strong, score: edge.score }));
   const simulation = forceSimulation(nodes)
-    .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 24 : 86).strength((edge) => edge.strong ? 0.62 : 0.025))
     .force("charge", forceManyBody().strength(-32))
     .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? singletonTargets.get(node.id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
     .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? singletonTargets.get(node.id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
@@ -137,6 +138,7 @@ async function responseData(response) {
 
 export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   const orbGradientId = `bubblemap-orb-${useId().replaceAll(":", "")}`;
+  const tokenLogoClipId = `bubblemap-token-logo-${useId().replaceAll(":", "")}`;
   const [catalog, setCatalog] = useState([]);
   const [selectedToken, setSelectedToken] = useState("");
   const [map, setMap] = useState(null);
@@ -226,6 +228,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   }, [map, showWeak]);
   const positioned = useMemo(() => new Map(graphNodes.map((node) => [node.id, node])), [graphNodes]);
   const tokenInfo = catalog.find((token) => token.token === selectedToken);
+  const tokenLogoUrl = getTokenLogoUrl(selectedToken);
   const chosenNode = map?.nodes?.find((node) => node.address === selectedAddress) || null;
   const chosenCluster = map?.clusters?.find((cluster) => cluster.id === selectedCluster) || null;
   const chosenClusterMembers = chosenCluster
@@ -459,6 +462,9 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                       <stop offset="48%" stopColor="#263653" stopOpacity="0.94" />
                       <stop offset="100%" stopColor="#0b1220" />
                     </radialGradient>
+                    <clipPath id={tokenLogoClipId} clipPathUnits="objectBoundingBox">
+                      <circle cx="0.5" cy="0.5" r="0.5" />
+                    </clipPath>
                   </defs>
                   {(map.edges || []).filter((edge) => edge.strong || showWeak).map((edge, index) => {
                     const a = positioned.get(edge.a);
@@ -536,6 +542,19 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                           strokeOpacity={selected ? 1 : clustered ? 0.84 : 0.5}
                           strokeWidth={selected ? 2 : node.radius * 0.08}
                         />
+                        {tokenLogoUrl && node.radius >= 8 && (
+                          <image
+                            href={tokenLogoUrl}
+                            x={node.x - node.radius * 0.58}
+                            y={node.y - node.radius * 0.58}
+                            width={node.radius * 1.16}
+                            height={node.radius * 1.16}
+                            preserveAspectRatio="xMidYMid slice"
+                            opacity={selected ? 0.95 : 0.8}
+                            clipPath={`url(#${tokenLogoClipId})`}
+                            pointerEvents="none"
+                          />
+                        )}
                         <circle cx={node.x - node.radius * 0.32} cy={node.y - node.radius * 0.36} r={node.radius * 0.22} fill="#e2ecff" fillOpacity={selected ? 0.6 : 0.3} pointerEvents="none" />
                         {selected && (
                           <g className="bubblemap-node-label" pointerEvents="none">
