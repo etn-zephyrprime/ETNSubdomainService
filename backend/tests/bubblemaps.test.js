@@ -147,6 +147,17 @@ test("yield farms and liquidity pools are excluded from holder analysis", () => 
   assert.equal(result.supply_considered, "100");
 });
 
+test("a liquidity-pool label on the holder record is not lost without cached address metadata", () => {
+  const result = analyzeBubblemap(baseInput([
+    { address: { hash: address(1), name: "ElectroSwap LP" }, value: "50" },
+    holder(2, "100"),
+  ]), config);
+
+  assert.equal(result.nodes.find((node) => node.address === address(1)).exclusion_reason, "Liquidity pool");
+  assert.equal(result.calibration.holders_considered, 1);
+  assert.equal(result.supply_considered, "100");
+});
+
 test("holder supply shares retain precision for proportional bubble sizing", () => {
   const result = analyzeBubblemap(baseInput([holder(1, "1"), holder(2, "9")], { totalSupply: "10000" }), config);
   const first = result.nodes.find((node) => node.address === address(1));
