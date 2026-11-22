@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { analyzeBubblemap, findHubAddresses, hasNftTransfer } from "../services/bubblemaps/analysis.js";
+import { CORE_TEAM_HOLDER_RULES_VERSION, CORE_TEAM_WALLET_ADDRESSES, CORE_TOKEN_ADDRESS } from "../services/bubblemaps/config.js";
 import { bubblemapKnownContractTag, cursorQuery, isTokenCatalogFresh, splitTransfersAtBlock } from "../services/bubblemaps/worker.js";
 import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks, hasActiveLiquidityLock } from "../utils/electroSwapTokens.js";
 
@@ -129,6 +130,33 @@ test("team wallets cannot join bundled-buy clusters", () => {
   assert.equal(result.nodes.find((node) => node.address === address(1)).tags.includes("Team"), true);
 });
 
+test("CORE team holders remain visible despite hub-like activity without being forced into a cluster", () => {
+  const ownerBalance = "55613271416122549743443";
+  const totalSupply = "811387801162340474568424";
+  const holders = CORE_TEAM_WALLET_ADDRESSES.map((wallet, index) => ({
+    address: wallet,
+    value: index === 0 ? ownerBalance : "100",
+  }));
+  const addresses = new Map(holders.map(({ address }) => [address, { degree: 26, degree_complete: true, is_contract: false }]));
+  const input = baseInput(holders, {
+    token: CORE_TOKEN_ADDRESS,
+    totalSupply,
+    addresses,
+  });
+  const result = analyzeBubblemap(input, config);
+  const otherTokenResult = analyzeBubblemap({ ...input, token: address(999) }, config);
+
+  assert.equal(result.core_team_holder_rules_version, CORE_TEAM_HOLDER_RULES_VERSION);
+  assert.equal(result.calibration.holders_considered, CORE_TEAM_WALLET_ADDRESSES.length);
+  assert.equal(result.supply_considered, (BigInt(ownerBalance) + 300n).toString());
+  assert.ok(result.nodes.every((node) => !node.excluded && node.tags.includes("Team")));
+  assert.ok(result.clusters.every((cluster) => cluster.members === 1));
+  assert.equal(result.nodes.find((node) => node.address === CORE_TEAM_WALLET_ADDRESSES[0]).pct, 6.85);
+  assert.equal(result.clusters[0].supply_pct, 6.85);
+  assert.ok(otherTokenResult.nodes.every((node) => node.exclusion_reason.startsWith("Hub:")));
+  assert.equal(otherTokenResult.core_team_holder_rules_version, undefined);
+});
+
 test("yield farms and liquidity pools are excluded from holder analysis", () => {
   const farmTag = bubblemapKnownContractTag({ category: "farm", label: "ElectroSwap Yield Farms" });
   const lockerTag = bubblemapKnownContractTag({ category: "locker", label: "ElectroSwap Liquidity Locker" });
@@ -163,8 +191,8 @@ test("holder supply shares retain precision for proportional bubble sizing", () 
   const first = result.nodes.find((node) => node.address === address(1));
   const second = result.nodes.find((node) => node.address === address(2));
 
-  assert.equal(first.pct, 0);
-  assert.equal(second.pct, 0.1);
+  assert.equal(first.pct, 0.01);
+  assert.equal(second.pct, 0.09);
   assert.ok(Math.abs(first.supply_share - 0.0001) < 1e-12);
   assert.ok(Math.abs(second.supply_share - 0.0009) < 1e-12);
 });
@@ -177,7 +205,7 @@ test("cluster and holder percentages can be compared on the total-supply basis",
   assert.equal(result.nodes[0].pct, 12.5);
   assert.equal(result.score_parts.largest_cluster_pct, 100);
   assert.equal(result.score_parts.largest_cluster_supply_pct, 12.5);
-  assert.equal(result.summary, "The largest individual holding is 12.5% of total supply (100.0% of considered supply).");
+  assert.equal(result.summary, "The largest individual holding is 12.50% of total supply (100.0% of considered supply).");
 });
 
 test("dust acquisitions do not create bundled-buy links", () => {

@@ -232,8 +232,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     .join(", ");
   const generatedSummary = largestCluster
     ? largestClusterMembers > 1
-      ? `${largestClusterMembers} linked wallets hold ${largestClusterSupplyPercent.toFixed(1)}% of total supply (${largestCluster.pct}% of considered supply)${largestClusterReasons ? ` (${largestClusterReasons})` : ""}.`
-      : `The largest individual holding is ${largestClusterSupplyPercent.toFixed(1)}% of total supply (${largestCluster.pct}% of considered supply).`
+      ? `${largestClusterMembers} linked wallets hold ${largestClusterSupplyPercent.toFixed(2)}% of total supply (${largestCluster.pct}% of considered supply)${largestClusterReasons ? ` (${largestClusterReasons})` : ""}.`
+      : `The largest individual holding is ${largestClusterSupplyPercent.toFixed(2)}% of total supply (${largestCluster.pct}% of considered supply).`
     : map?.summary;
   const displayedSummary = map?.score_parts?.largest_cluster_supply_pct == null ? generatedSummary : map?.summary || generatedSummary;
   const connectedClusters = (map?.clusters || []).filter((cluster) => cluster.members > 1);
@@ -403,7 +403,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
             <div className="bubblemap-stats">
               <Metric label="Concentration score" value={map.score == null ? "—" : `${map.score}/100`} note={map.band} />
               <Metric label="Wallets mapped" value={mappedNodes.length.toLocaleString()} note="eligible holders" />
-              <Metric label={largestClusterMembers > 1 ? "Largest cluster" : "Largest holder"} value={`${largestClusterSupplyPercent.toFixed(1)}%`} note="of total supply" />
+              <Metric label={largestClusterMembers > 1 ? "Largest cluster" : "Largest holder"} value={`${largestClusterSupplyPercent.toFixed(2)}%`} note="of total supply" />
               <Metric label="Bundled buys" value={`${map.score_parts?.bundled_pct ?? 0}%`} note="of considered supply" />
               <Metric label="Team holdings" value={`${map.score_parts?.team_pct ?? 0}%`} note="of considered supply" />
             </div>
@@ -559,7 +559,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                           <span className="bubblemap-cluster-name">Cluster {cluster.id} · {cluster.members} wallet{cluster.members === 1 ? "" : "s"}</span>
                           <span className="bubblemap-cluster-note">{cluster.reasons_summary.map(reasonLabel).join(" · ")}</span>
                         </span>
-                        <span className="bubblemap-cluster-share">{clusterSupplyPercent(map, cluster).toFixed(1)}%</span>
+                        <span className="bubblemap-cluster-share">{clusterSupplyPercent(map, cluster).toFixed(2)}%</span>
                       </button>
                     )) : <div className="bubblemap-empty">No linked holder clusters were detected in this snapshot.</div>}
                   </div>
@@ -596,7 +596,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                     {chosenCluster && (
                       <>
                         <div style={{ color: mutedLight, fontSize: 10, lineHeight: 1.5, marginBottom: 7 }}>
-                          {chosenCluster.members} wallet{chosenCluster.members === 1 ? "" : "s"} hold {clusterSupplyPercent(map, chosenCluster).toFixed(1)}% of total supply ({chosenCluster.pct}% of considered supply). Reasons: {chosenCluster.reasons_summary.map(reasonLabel).join(", ")}.
+                          {chosenCluster.members} wallet{chosenCluster.members === 1 ? "" : "s"} hold {clusterSupplyPercent(map, chosenCluster).toFixed(2)}% of total supply ({chosenCluster.pct}% of considered supply). Reasons: {chosenCluster.reasons_summary.map(reasonLabel).join(", ")}.
                         </div>
                         {chosenClusterMembers.map((node) => (
                           <button
