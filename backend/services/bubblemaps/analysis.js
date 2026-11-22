@@ -27,6 +27,7 @@ const bigintOrZero = (value) => {
     return 0n;
   }
 };
+const SUPPLY_SHARE_SCALE = 1_000_000_000_000_000n;
 const shortAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 const pairKey = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
 const blockNumber = (transfer) => safeNumber(transfer.block_number ?? transfer.blockNumber);
@@ -34,6 +35,12 @@ const txIndex = (transfer) => safeNumber(transfer.log_index ?? transfer.index ??
 const fromAddress = (transfer) => lower(transfer.from?.hash || transfer.from_address || transfer.from);
 const toAddress = (transfer) => lower(transfer.to?.hash || transfer.to_address || transfer.to);
 const transferTimestamp = (transfer) => Date.parse(transfer.timestamp || transfer.at || "");
+
+export function supplyShare(balance, totalSupply) {
+  const total = bigintOrZero(totalSupply);
+  if (total <= 0n) return null;
+  return Number((bigintOrZero(balance) * SUPPLY_SHARE_SCALE) / total) / Number(SUPPLY_SHARE_SCALE);
+}
 
 export function hasNftTransfer(transaction) {
   if (transaction?.has_nft === true || transaction?.hasNft === true || transaction?.token_transfers_overflow === true) return true;
@@ -411,6 +418,8 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const hubs = input.hubs || new Set();
   const holders = (input.holders || []).slice(0, cfg.holdersTopN);
   const nodes = holders.map((holder) => {
+    const balance = bigintOrZero(holder.value ?? holder.balance);
+    const totalSupply = bigintOrZero(input.totalSupply);
     const address = lower(holder.address?.hash || holder.address || holder.address_hash);
     const metadata = mapValue(addresses, address) || {};
     const override = mapValue(overrides, address) || {};
@@ -425,7 +434,8 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
       address,
       label: display,
       balance: String(holder.value ?? holder.balance ?? "0"),
-      pct: input.totalSupply ? cleanPercent(Number(bigintOrZero(holder.value ?? holder.balance) * 10000n / bigintOrZero(input.totalSupply)) / 100) : null,
+      pct: totalSupply > 0n ? cleanPercent(Number(balance * 10000n / totalSupply) / 100) : null,
+      supply_share: supplyShare(balance, totalSupply),
       cluster_id: null,
       excluded: Boolean(exclusionReason),
       exclusion_reason: exclusionReason || null,
@@ -573,6 +583,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
       address: node.address,
       balance: node.balance,
       pct: node.pct,
+      supply_share: node.supply_share,
       cluster_id: node.cluster_id,
       excluded: node.excluded,
       exclusion_reason: node.exclusion_reason,
