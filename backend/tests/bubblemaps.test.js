@@ -157,6 +157,52 @@ test("CORE team holders remain visible despite hub-like activity without being f
   assert.equal(otherTokenResult.core_team_holder_rules_version, undefined);
 });
 
+test("CORE excludes only holders known to be contracts", () => {
+  const holders = [
+    holder(1),
+    holder(2),
+    holder(3),
+    holder(4),
+    holder(5),
+    { address: { hash: address(6), is_contract: false }, value: "100" },
+    holder(0),
+  ];
+  const input = baseInput(holders, {
+    token: CORE_TOKEN_ADDRESS,
+    totalSupply: "700",
+    addresses: new Map([
+      [address(1), { degree: 26, degree_complete: true, is_contract: false }],
+      [address(2), { is_contract: false }],
+      [address(3), { is_contract: false }],
+      [address(4), { is_contract: true }],
+      [address(5), { is_contract: null }],
+      [address(6), { is_contract: true }],
+    ]),
+    overrides: new Map([
+      [address(2), { type: "ignore", label: "admin ignore" }],
+      [address(3), { type: "entity", label: "Yield Farm" }],
+      [address(4), { type: "include" }],
+    ]),
+    entities: new Map([
+      [address(3), { tag: "Liquidity Pool", label: "ElectroSwap LP" }],
+      [address(0), { tag: "Burn", label: "Burn address" }],
+    ]),
+  });
+  const result = analyzeBubblemap(input, config);
+  const nodesByAddress = new Map(result.nodes.map((node) => [node.address, node]));
+
+  assert.equal(result.core_team_holder_rules_version, CORE_TEAM_HOLDER_RULES_VERSION);
+  for (const addressValue of [address(1), address(2), address(3), address(5), address(0)]) {
+    assert.equal(nodesByAddress.get(addressValue).excluded, false, `${addressValue} should remain included`);
+    assert.equal(nodesByAddress.get(addressValue).exclusion_reason, null);
+  }
+  assert.equal(nodesByAddress.get(address(4)).excluded, true);
+  assert.equal(nodesByAddress.get(address(4)).exclusion_reason, "Contract");
+  assert.equal(nodesByAddress.get(address(6)).excluded, true);
+  assert.equal(nodesByAddress.get(address(6)).exclusion_reason, "Contract");
+  assert.equal(result.supply_considered, "500");
+});
+
 test("yield farms and liquidity pools are excluded from holder analysis", () => {
   const farmTag = bubblemapKnownContractTag({ category: "farm", label: "ElectroSwap Yield Farms" });
   const lockerTag = bubblemapKnownContractTag({ category: "locker", label: "ElectroSwap Liquidity Locker" });

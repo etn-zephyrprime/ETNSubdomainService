@@ -9,8 +9,8 @@ function numberEnv(name, fallback, min, max) {
 const coreToken = ELECTROSWAP_LISTED_TOKENS.find((token) => token.symbol === "CORE");
 if (!coreToken) throw new Error("CORE token is missing from the ElectroSwap token configuration");
 export const CORE_TOKEN_ADDRESS = coreToken.address.toLowerCase();
-// Increment when CORE holder inclusion rules change so the worker rebuilds its cached map.
-export const CORE_TEAM_HOLDER_RULES_VERSION = "1";
+// Increment when CORE holder inclusion or exclusion rules change so the worker rebuilds its cached map.
+export const CORE_TEAM_HOLDER_RULES_VERSION = "2";
 export const CORE_TEAM_WALLET_ADDRESSES = Object.freeze([
   "0x3fd2e5b4ac0eff6dfdf2446abddab3f66b425099",
   "0x2871835ca982f248f61c3a1995931e205c9d5243",

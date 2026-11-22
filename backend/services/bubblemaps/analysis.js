@@ -439,10 +439,12 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     };
     const override = mapValue(overrides, address) || {};
     const entity = mapValue(entities, address) || null;
-    const isContract = holder.address?.is_contract ?? holder.is_contract ?? metadata.is_contract;
+    const isContract = holder.address?.is_contract === true || holder.is_contract === true || metadata.is_contract === true;
     const degree = Math.max(safeNumber(metadata.degree), safeNumber(input.degreeByAddress?.get?.(address)));
     const forcedHub = override.type === "hub" || (hubs.has(address) && override.type !== "not_hub");
-    const exclusionReason = exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity, forcedHub ? Math.max(degree, cfg.hubDegree + 1) : degree, cfg, preserveTeamHolder);
+    const exclusionReason = isCoreToken
+      ? (isContract ? "Contract" : null)
+      : exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity, forcedHub ? Math.max(degree, cfg.hubDegree + 1) : degree, cfg, preserveTeamHolder);
     const team = preserveTeamHolder || entity?.tag === "Team" || String(override.label || "").toLowerCase() === "team" || (metadata.tags || []).includes("Team");
     const display = entity?.label || override.label || metadata.ens_domain_name || metadata.name || holder.address?.ens_domain_name || holder.address?.name || shortAddress(address);
     return {
