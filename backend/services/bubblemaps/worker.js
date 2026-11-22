@@ -8,7 +8,7 @@ import { ELECTROSWAP_LISTED_TOKENS, getElectroSwapTokensWithActiveLocks } from "
 import { BRIDGE_PROXY_ADDRESS } from "../../utils/etnBridge.js";
 import { TEAM_WALLET_ADDRESSES } from "../../utils/teamWalletsCache.js";
 import { analyzeBubblemap, hasNftTransfer } from "./analysis.js";
-import { BUBBLEMAP_CONFIG } from "./config.js";
+import { BUBBLEMAP_CONFIG, CORE_TEAM_HOLDER_RULES_VERSION, CORE_TOKEN_ADDRESS } from "./config.js";
 
 const TOKEN_CATALOG_REFRESH_MS = 24 * 60 * 60 * 1000;
 const TOKEN_CATALOG_KEY = ELECTROSWAP_LISTED_TOKENS.map(({ address }) => address).join(",");
@@ -930,8 +930,12 @@ async function analyzeDirtyMaps(stats) {
       `      SELECT token_address, name, symbol, decimals, total_supply, exchange_rate, price_checked_at,
               launch_block, launch_timestamp, launch_checked_at
        FROM bubblemap_tokens
-       WHERE analysis_dirty = true AND holders_refreshed_at IS NOT NULL AND transfer_backfill_complete = true
-       ORDER BY map_updated_at ASC NULLS FIRST, updated_at ASC LIMIT 1`
+       WHERE (analysis_dirty = true OR (
+         token_address = $1 AND map_json->>'core_team_holder_rules_version' IS DISTINCT FROM $2
+       ))
+         AND holders_refreshed_at IS NOT NULL AND transfer_backfill_complete = true
+       ORDER BY (token_address = $1) DESC, map_updated_at ASC NULLS FIRST, updated_at ASC LIMIT 1`,
+      [CORE_TOKEN_ADDRESS, CORE_TEAM_HOLDER_RULES_VERSION]
     );
     const token = result?.rows?.[0];
     if (!token) break;

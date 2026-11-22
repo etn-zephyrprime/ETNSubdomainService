@@ -1,4 +1,9 @@
-import { BUBBLEMAP_CONFIG } from "./config.js";
+import {
+  BUBBLEMAP_CONFIG,
+  CORE_TEAM_HOLDER_RULES_VERSION,
+  CORE_TEAM_WALLET_ADDRESSES,
+  CORE_TOKEN_ADDRESS,
+} from "./config.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const BURN_ADDRESSES = new Set([
@@ -16,6 +21,7 @@ const REASON_LABELS = {
   TEAM: "team wallet",
 };
 const lower = (value) => String(value || "").toLowerCase();
+const CORE_TEAM_WALLET_SET = new Set(CORE_TEAM_WALLET_ADDRESSES);
 const safeNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -87,7 +93,7 @@ function infrastructureExclusion(metadata, entity) {
   return null;
 }
 
-function exclusionFor(address, metadata, override, entity, degree, cfg) {
+function exclusionFor(address, metadata, override, entity, degree, cfg, preserveTeamHolder = false) {
   if (BURN_ADDRESSES.has(address) || entity?.tag === "Burn") return "Burn address";
   if (override?.type === "ignore") return override.label ? `Ignored: ${override.label}` : "Ignored by admin";
   if (override?.type === "entity" && String(override.label || "").toLowerCase() !== "team") {
@@ -100,8 +106,8 @@ function exclusionFor(address, metadata, override, entity, degree, cfg) {
     entity.tag !== "Team" &&
     !(override?.type === "include" && ["Yield Farm", "Liquidity Pool"].includes(entity.tag))
   ) return `${entity.tag} entity${entity.label ? `: ${entity.label}` : ""}`;
-  if (override?.type === "hub") return "Hub marked by admin";
-  if (override?.type !== "not_hub" && degree > cfg.hubDegree) return `Hub: ${degree} distinct counterparties`;
+  if (override?.type === "hub" && !preserveTeamHolder) return "Hub marked by admin";
+  if (override?.type !== "not_hub" && !preserveTeamHolder && degree > cfg.hubDegree) return `Hub: ${degree} distinct counterparties`;
   if (metadata?.is_contract && override?.type !== "include") return "Contract";
   return null;
 }
@@ -418,9 +424,11 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const hubs = input.hubs || new Set();
   const holders = (input.holders || []).slice(0, cfg.holdersTopN);
   const totalSupply = bigintOrZero(input.totalSupply);
+  const isCoreToken = lower(input.token) === CORE_TOKEN_ADDRESS;
   const nodes = holders.map((holder) => {
     const balance = bigintOrZero(holder.value ?? holder.balance);
     const address = lower(holder.address?.hash || holder.address || holder.address_hash);
+    const preserveTeamHolder = isCoreToken && CORE_TEAM_WALLET_SET.has(address);
     const holderAddressData = holder.address && typeof holder.address === "object" ? holder.address : {};
     const addressMetadata = mapValue(addresses, address) || {};
     const metadata = {
@@ -434,19 +442,19 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     const isContract = holder.address?.is_contract ?? holder.is_contract ?? metadata.is_contract;
     const degree = Math.max(safeNumber(metadata.degree), safeNumber(input.degreeByAddress?.get?.(address)));
     const forcedHub = override.type === "hub" || (hubs.has(address) && override.type !== "not_hub");
-    const exclusionReason = exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity, forcedHub ? Math.max(degree, cfg.hubDegree + 1) : degree, cfg);
-    const team = entity?.tag === "Team" || String(override.label || "").toLowerCase() === "team" || (metadata.tags || []).includes("Team");
+    const exclusionReason = exclusionFor(address, { ...metadata, is_contract: isContract }, override, entity, forcedHub ? Math.max(degree, cfg.hubDegree + 1) : degree, cfg, preserveTeamHolder);
+    const team = preserveTeamHolder || entity?.tag === "Team" || String(override.label || "").toLowerCase() === "team" || (metadata.tags || []).includes("Team");
     const display = entity?.label || override.label || metadata.ens_domain_name || metadata.name || holder.address?.ens_domain_name || holder.address?.name || shortAddress(address);
     return {
       address,
       label: display,
       balance: String(holder.value ?? holder.balance ?? "0"),
-      pct: totalSupply > 0n ? cleanPercent(Number(balance * 10000n / totalSupply) / 100) : null,
+      pct: totalSupply > 0n ? Number(balance * 10000n / totalSupply) / 100 : null,
       supply_share: supplyShare(balance, totalSupply),
       cluster_id: null,
       excluded: Boolean(exclusionReason),
       exclusion_reason: exclusionReason || null,
-      tags: [...new Set([...tagsFor({ ...metadata, is_contract: isContract }, entity), ...(override.label ? [override.label] : [])])],
+      tags: [...new Set([...tagsFor({ ...metadata, is_contract: isContract }, entity), ...(preserveTeamHolder ? ["Team"] : []), ...(override.label ? [override.label] : [])])],
       team,
       metadata,
     };
@@ -492,7 +500,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     const id = index + 1;
     const balance = members.reduce((sum, address) => sum + bigintOrZero(nodeByAddress.get(address)?.balance), 0n);
     const pct = consideredSupply > 0n ? cleanPercent(Number(balance * 10000n / consideredSupply) / 100) : 0;
-    const supplyPct = totalSupply > 0n ? cleanPercent(Number(balance * 10000n / totalSupply) / 100) : null;
+    const supplyPct = totalSupply > 0n ? Number(balance * 10000n / totalSupply) / 100 : null;
     for (const address of members) clusterByAddress.set(address, id);
     const reasons = new Set(
       allPairs
@@ -544,17 +552,18 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const summary = score == null
     ? "Not enough eligible holder data to calculate a concentration score."
     : largest?.members > 1
-      ? `${largest.members} linked wallets hold ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(1)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply)${largestReasons ? ` (${largestReasons})` : ""}.`
-      : `The largest individual holding is ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(1)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply).`;
+      ? `${largest.members} linked wallets hold ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(2)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply)${largestReasons ? ` (${largestReasons})` : ""}.`
+      : `The largest individual holding is ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(2)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply).`;
   const output = {
     token: lower(input.token),
+    ...(isCoreToken ? { core_team_holder_rules_version: CORE_TEAM_HOLDER_RULES_VERSION } : {}),
     computed_at_block: safeNumber(input.computedAtBlock),
     computed_at: input.computedAt || new Date().toISOString(),
     score,
     band: score == null ? "Insufficient data" : bandFor(score),
     score_parts: {
       largest_cluster_pct: cleanPercent(largestClusterPct),
-      largest_cluster_supply_pct: cleanPercent(largestClusterSupplyPct),
+      largest_cluster_supply_pct: largestClusterSupplyPct,
       bundled_pct: cleanPercent(bundledPct),
       team_pct: cleanPercent(teamPct),
     },
