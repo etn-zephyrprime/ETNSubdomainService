@@ -417,9 +417,9 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const entities = input.entities || new Map();
   const hubs = input.hubs || new Set();
   const holders = (input.holders || []).slice(0, cfg.holdersTopN);
+  const totalSupply = bigintOrZero(input.totalSupply);
   const nodes = holders.map((holder) => {
     const balance = bigintOrZero(holder.value ?? holder.balance);
-    const totalSupply = bigintOrZero(input.totalSupply);
     const address = lower(holder.address?.hash || holder.address || holder.address_hash);
     const holderAddressData = holder.address && typeof holder.address === "object" ? holder.address : {};
     const addressMetadata = mapValue(addresses, address) || {};
@@ -492,6 +492,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     const id = index + 1;
     const balance = members.reduce((sum, address) => sum + bigintOrZero(nodeByAddress.get(address)?.balance), 0n);
     const pct = consideredSupply > 0n ? cleanPercent(Number(balance * 10000n / consideredSupply) / 100) : 0;
+    const supplyPct = totalSupply > 0n ? cleanPercent(Number(balance * 10000n / totalSupply) / 100) : null;
     for (const address of members) clusterByAddress.set(address, id);
     const reasons = new Set(
       allPairs
@@ -499,7 +500,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
         .flatMap((pair) => pair.reasons.map((reason) => reason.type))
     );
     if (members.some((address) => team.has(address))) reasons.add("TEAM");
-    return { id, members: members.length, pct, reasons_summary: reasons.size ? [...reasons].sort() : ["No detected link"] };
+    return { id, members: members.length, pct, supply_pct: supplyPct, reasons_summary: reasons.size ? [...reasons].sort() : ["No detected link"] };
   });
   for (const node of nodes) node.cluster_id = node.excluded ? null : clusterByAddress.get(node.address) ?? null;
 
@@ -507,6 +508,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const bundledBalance = [...bundledAddresses].reduce((sum, address) => sum + bigintOrZero(nodeByAddress.get(address)?.balance), 0n);
   const teamBalance = nodes.filter((node) => node.team && !node.excluded).reduce((sum, node) => sum + bigintOrZero(node.balance), 0n);
   const largestClusterPct = clusters.length ? Math.max(...clusters.map((cluster) => cluster.pct)) : 0;
+  const largestClusterSupplyPct = clusters.length ? Math.max(...clusters.map((cluster) => cluster.supply_pct ?? 0)) : 0;
   const bundledPct = consideredSupply > 0n ? Number(bundledBalance * 10000n / consideredSupply) / 100 : 0;
   const teamPct = consideredSupply > 0n ? Number(teamBalance * 10000n / consideredSupply) / 100 : 0;
   let hhi = 0;
@@ -542,8 +544,8 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
   const summary = score == null
     ? "Not enough eligible holder data to calculate a concentration score."
     : largest?.members > 1
-      ? `${largest.members} linked wallets hold ${largest.pct.toFixed(1)}% of considered supply${largestReasons ? ` (${largestReasons})` : ""}.`
-      : `The largest individual holding is ${largestClusterPct.toFixed(1)}% of considered supply.`;
+      ? `${largest.members} linked wallets hold ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(1)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply)${largestReasons ? ` (${largestReasons})` : ""}.`
+      : `The largest individual holding is ${largest.supply_pct == null ? "an unknown share" : `${largest.supply_pct.toFixed(1)}%`} of total supply (${largest.pct.toFixed(1)}% of considered supply).`;
   const output = {
     token: lower(input.token),
     computed_at_block: safeNumber(input.computedAtBlock),
@@ -552,6 +554,7 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     band: score == null ? "Insufficient data" : bandFor(score),
     score_parts: {
       largest_cluster_pct: cleanPercent(largestClusterPct),
+      largest_cluster_supply_pct: cleanPercent(largestClusterSupplyPct),
       bundled_pct: cleanPercent(bundledPct),
       team_pct: cleanPercent(teamPct),
     },
