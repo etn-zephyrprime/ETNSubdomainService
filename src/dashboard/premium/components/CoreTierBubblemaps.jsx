@@ -216,7 +216,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
     : [];
   const excludedNodes = map?.nodes?.filter((node) => node.excluded) || [];
   const mappedNodes = map?.nodes?.filter((node) => !node.excluded) || [];
-  const orderedClusters = [...(map?.clusters || [])].sort((a, b) => b.pct - a.pct);
+  const connectedClusters = (map?.clusters || []).filter((cluster) => cluster.members > 1);
+  const orderedClusters = [...connectedClusters].sort((a, b) => b.pct - a.pct);
   const beginDrag = (event, node) => {
     if (event.button !== undefined && event.button !== 0) return;
     const svg = event.currentTarget.ownerSVGElement;
@@ -283,7 +284,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-stat-value{margin-top:5px;color:#f1f5f4;font-size:17px;font-weight:800;line-height:1.1;overflow-wrap:anywhere;}
         .bubblemap-stat-note{margin-top:4px;color:#778589;font-size:10px;}
         .bubblemap-summary{padding:10px 12px;border:1px solid rgba(24,187,26,.18);border-left:2px solid ${green};border-radius:6px;background:rgba(24,187,26,.035);color:#aab8b6;font-size:11px;line-height:1.5;}
-        .bubblemap-main{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(265px,.85fr);gap:10px;align-items:stretch;}
+        .bubblemap-main{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;align-items:stretch;}
         .bubblemap-map-card,.bubblemap-side-card{min-width:0;border:1px solid #26343a;border-radius:8px;background:#0c1216;}
         .bubblemap-map-card{padding:10px;}
         .bubblemap-map-heading{margin-bottom:8px;}
@@ -296,7 +297,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-node:hover .bubblemap-node-core{stroke:#dbe9ff;stroke-width:1.6;stroke-opacity:.95;}
         .bubblemap-toggle{display:flex;align-items:center;gap:6px;color:#aab6b7;font-size:10px;white-space:nowrap;}
         .bubblemap-map-meta{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:8px;color:#748287;font:9px ${monoFont};}
-        .bubblemap-sidebar{display:grid;grid-template-rows:minmax(180px,.9fr) minmax(220px,1.1fr);gap:10px;min-height:460px;}
+        .bubblemap-sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;min-height:0;}
         .bubblemap-side-card{display:flex;flex-direction:column;padding:10px;}
         .bubblemap-section-heading{margin-bottom:8px;}
         .bubblemap-count{color:#718085;font:9px ${monoFont};}
@@ -319,8 +320,8 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-error{padding:8px 10px;border:1px solid rgba(255,107,107,.25);border-radius:6px;background:rgba(255,107,107,.06);color:${errorColor};font-size:11px;}
         .bubblemap-excluded{margin-top:2px;border-top:1px solid #26343a;padding-top:10px;}
         .bubblemap-excluded summary{color:#859397;font:700 9px ${monoFont};letter-spacing:.04em;text-transform:uppercase;cursor:pointer;}
-        @media(max-width:980px){.bubblemap-stats{grid-template-columns:repeat(3,minmax(0,1fr));}.bubblemap-main{grid-template-columns:minmax(0,1fr);}.bubblemap-sidebar{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none;min-height:0;}.bubblemap-side-card{min-height:220px;}}
-        @media(max-width:640px){.bubblemap-topbar{align-items:flex-start;}.bubblemap-status{display:none;}.bubblemap-tokenbar{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:11px;}.bubblemap-selector{width:100%;}.bubblemap-token-symbol{font-size:19px;}.bubblemap-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.bubblemap-main{grid-template-columns:minmax(0,1fr);}.bubblemap-graph{display:none;}.bubblemap-mobile-note{display:block;margin:4px 0 8px;color:#778589;font-size:10px;}.bubblemap-sidebar{grid-template-columns:minmax(0,1fr);}.bubblemap-side-card{min-height:0;}.bubblemap-clusters{max-height:280px;}.bubblemap-map-meta{align-items:flex-start;flex-direction:column;}.bubblemap-map-heading{align-items:flex-start;flex-direction:column;}}
+        @media(max-width:980px){.bubblemap-stats{grid-template-columns:repeat(3,minmax(0,1fr));}.bubblemap-side-card{min-height:220px;}}
+        @media(max-width:640px){.bubblemap-topbar{align-items:flex-start;}.bubblemap-status{display:none;}.bubblemap-tokenbar{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:11px;}.bubblemap-selector{width:100%;}.bubblemap-token-symbol{font-size:19px;}.bubblemap-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.bubblemap-graph{display:none;}.bubblemap-mobile-note{display:block;margin:4px 0 8px;color:#778589;font-size:10px;}.bubblemap-sidebar{grid-template-columns:minmax(0,1fr);}.bubblemap-side-card{min-height:0;}.bubblemap-clusters{max-height:280px;}.bubblemap-map-meta{align-items:flex-start;flex-direction:column;}.bubblemap-map-heading{align-items:flex-start;flex-direction:column;}}
       `}</style>
       <div className="bubblemap-terminal">
         <div className="bubblemap-topbar">
@@ -522,7 +523,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                 <section className="bubblemap-side-card">
                   <div className="bubblemap-section-heading">
                     <div className="bubblemap-section-title">Connected clusters</div>
-                    <span className="bubblemap-count">{map.clusters.length} found</span>
+                    <span className="bubblemap-count">{connectedClusters.length} linked</span>
                   </div>
                   <div className="bubblemap-clusters">
                     {orderedClusters.length ? orderedClusters.map((cluster) => (

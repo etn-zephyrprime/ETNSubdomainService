@@ -421,7 +421,14 @@ export function analyzeBubblemap(input, config = BUBBLEMAP_CONFIG) {
     const balance = bigintOrZero(holder.value ?? holder.balance);
     const totalSupply = bigintOrZero(input.totalSupply);
     const address = lower(holder.address?.hash || holder.address || holder.address_hash);
-    const metadata = mapValue(addresses, address) || {};
+    const holderAddressData = holder.address && typeof holder.address === "object" ? holder.address : {};
+    const addressMetadata = mapValue(addresses, address) || {};
+    const metadata = {
+      ...holderAddressData,
+      ...addressMetadata,
+      name: addressMetadata.name || holderAddressData.name || null,
+      ens_domain_name: addressMetadata.ens_domain_name || holderAddressData.ens_domain_name || null,
+    };
     const override = mapValue(overrides, address) || {};
     const entity = mapValue(entities, address) || null;
     const isContract = holder.address?.is_contract ?? holder.is_contract ?? metadata.is_contract;
