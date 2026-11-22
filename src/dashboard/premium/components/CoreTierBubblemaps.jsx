@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { forceCenter, forceCollide, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
+import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 import { RefreshCw, Network, ExternalLink } from "lucide-react";
 import DashboardPanel from "./DashboardPanel.jsx";
 import { PNL_BACKEND_URL, EXPLORER_BASE_URL } from "../../../config.js";
@@ -43,56 +43,78 @@ function layoutGraph(map, showWeak) {
     node.radius = maxSupplyShare > 0 ? MAX_NODE_RADIUS * Math.sqrt(node.supplyShare / maxSupplyShare) : 0;
     node.hitRadius = Math.max(MIN_NODE_HIT_RADIUS, node.radius);
   }
-  const clusterMembers = new Map();
-  for (const node of nodes) {
-    if (node.data.cluster_id == null) continue;
-    const members = clusterMembers.get(node.data.cluster_id) || [];
-    members.push(node);
-    clusterMembers.set(node.data.cluster_id, members);
-  }
-  for (const node of nodes) node.clusterSize = clusterMembers.get(node.data.cluster_id)?.length || 1;
-  const clusterOrder = [...clusterMembers.entries()]
-    .filter(([, members]) => members.length > 1)
-    .map(([id, members]) => [id, members.reduce((sum, node) => sum + (Number(node.data.pct) || 0), 0)])
-    .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]));
-  const clusterTargets = new Map();
-  const clusterRadius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.34;
-  clusterOrder.forEach(([id], index) => {
-    if (index === 0) {
-      clusterTargets.set(id, { x: GRAPH_WIDTH / 2, y: GRAPH_HEIGHT / 2 });
-      return;
-    }
-    const angle = -Math.PI / 2 + ((index - 1) * 2 * Math.PI) / Math.max(1, clusterOrder.length - 1);
-    const radius = clusterRadius * Math.sqrt(index / Math.max(1, clusterOrder.length - 1));
-    clusterTargets.set(id, {
-      x: GRAPH_WIDTH / 2 + Math.cos(angle) * radius,
-      y: GRAPH_HEIGHT / 2 + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
-    });
-  });
-  const singletonOrder = nodes
-    .filter((node) => node.data.cluster_id == null || clusterMembers.get(node.data.cluster_id)?.length === 1)
-    .sort((a, b) => (Number(b.data.pct) || 0) - (Number(a.data.pct) || 0));
-  const singletonTargets = new Map(singletonOrder.map((node, index) => {
-    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(1, singletonOrder.length);
-    const rank = index / Math.max(1, singletonOrder.length - 1);
-    const radius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * (0.30 + rank * 0.15);
-    return [node.id, {
-      x: GRAPH_WIDTH / 2 + Math.cos(angle) * radius,
-      y: GRAPH_HEIGHT / 2 + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
-    }];
-  }));
   const available = new Set(nodes.map((node) => node.id));
   const links = (map.edges || [])
     .filter((edge) => (edge.strong || showWeak) && available.has(edge.a) && available.has(edge.b))
     .map((edge) => ({ source: edge.a, target: edge.b, strong: edge.strong, score: edge.score }));
+  const strongLinks = links.filter((edge) => edge.strong);
+  const parent = new Map(nodes.map((node) => [node.id, node.id]));
+  const find = (id) => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root);
+    while (parent.get(id) !== id) {
+      const next = parent.get(id);
+      parent.set(id, root);
+      id = next;
+    }
+    return root;
+  };
+  const union = (a, b) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+  strongLinks.forEach((edge) => union(edge.source, edge.target));
+  const components = new Map();
+  for (const node of nodes) {
+    const root = find(node.id);
+    const members = components.get(root) || [];
+    members.push(node);
+    components.set(root, members);
+  }
+  const componentOrder = [...components.values()]
+    .map((members) => ({
+      members,
+      supply: members.reduce((sum, node) => sum + node.supplyShare, 0),
+    }))
+    .sort((a, b) => b.supply - a.supply || b.members.length - a.members.length);
+  const componentTargets = new Map();
+  const centerX = GRAPH_WIDTH / 2;
+  const centerY = GRAPH_HEIGHT / 2;
+  const maxRadius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.39;
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  componentOrder.forEach((component, index) => {
+    const rank = index / Math.max(1, componentOrder.length - 1);
+    const angle = index * goldenAngle - Math.PI / 2;
+    const radius = index === 0 ? 0 : maxRadius * (0.18 + 0.82 * Math.sqrt(rank));
+    const target = {
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
+    };
+    component.members.forEach((node) => componentTargets.set(node.id, target));
+  });
+  componentOrder.forEach((component) => {
+    const target = componentTargets.get(component.members[0].id);
+    component.members
+      .sort((a, b) => b.supplyShare - a.supplyShare)
+      .forEach((node, index) => {
+        const angle = index * goldenAngle;
+        const localRadius = index === 0 ? 0 : Math.min(74, 12 + Math.sqrt(index) * 13);
+        node.x = target.x + Math.cos(angle) * localRadius;
+        node.y = target.y + Math.sin(angle) * localRadius;
+      });
+    component.members.forEach((node) => {
+      node.clusterSize = component.members.length;
+    });
+  });
   const simulation = forceSimulation(nodes)
-    .force("charge", forceManyBody().strength(-32))
-    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? singletonTargets.get(node.id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
-    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? singletonTargets.get(node.id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
-    .force("center", forceCenter(GRAPH_WIDTH / 2, GRAPH_HEIGHT / 2))
+    .force("link", forceLink(strongLinks).id((node) => node.id).distance(30).strength(0.42))
+    .force("charge", forceManyBody().strength(-24))
+    .force("component-x", forceX((node) => componentTargets.get(node.id).x).strength(0.24))
+    .force("component-y", forceY((node) => componentTargets.get(node.id).y).strength(0.24))
     .force("collide", forceCollide((node) => node.radius + 4).iterations(3))
     .stop();
-  for (let tick = 0; tick < 180; tick++) simulation.tick();
+  for (let tick = 0; tick < 220; tick++) simulation.tick();
   return nodes.map((node) => ({
     ...node,
     x: Math.max(node.hitRadius + 2, Math.min(GRAPH_WIDTH - node.hitRadius - 2, node.x)),
@@ -332,7 +354,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-map-heading{margin-bottom:8px;}
         .bubblemap-map-title,.bubblemap-section-title{color:#d9e2e0;font:800 10px ${monoFont};letter-spacing:.07em;text-transform:uppercase;}
         .bubblemap-map-subtitle{margin-top:4px;color:#778589;font-size:10px;}
-        .bubblemap-graph{display:block;width:100%;height:auto;background-color:#050814;background-image:radial-gradient(ellipse at 50% 44%,rgba(38,59,105,.24),transparent 68%),linear-gradient(180deg,#070b16,#050711);border:1px solid #1b2435;border-radius:6px;touch-action:none;}
+        .bubblemap-graph{display:block;width:100%;height:auto;background-color:#07100a;background-image:radial-gradient(ellipse at 50% 44%,rgba(24,187,26,.14),transparent 68%),linear-gradient(180deg,#0a160d,#050b07);border:1px solid #1b3525;border-radius:6px;touch-action:none;}
         .bubblemap-node{cursor:grab;touch-action:none;}
         .bubblemap-node:active{cursor:grabbing;}
         .bubblemap-node:focus-visible{outline:none;filter:drop-shadow(0 0 9px rgba(255,255,255,.8));}
