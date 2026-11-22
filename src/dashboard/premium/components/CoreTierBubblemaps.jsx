@@ -50,6 +50,7 @@ function layoutGraph(map, showWeak) {
     clusterMembers.set(node.data.cluster_id, members);
   }
   const clusterOrder = [...clusterMembers.entries()]
+    .filter(([, members]) => members.length > 1)
     .map(([id, members]) => [id, members.reduce((sum, node) => sum + (Number(node.data.pct) || 0), 0)])
     .sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]));
   const clusterTargets = new Map();
@@ -67,11 +68,12 @@ function layoutGraph(map, showWeak) {
     });
   });
   const singletonOrder = nodes
-    .filter((node) => node.data.cluster_id == null)
+    .filter((node) => node.data.cluster_id == null || clusterMembers.get(node.data.cluster_id)?.length === 1)
     .sort((a, b) => (Number(b.data.pct) || 0) - (Number(a.data.pct) || 0));
   const singletonTargets = new Map(singletonOrder.map((node, index) => {
     const angle = -Math.PI / 2 + (index * 2 * Math.PI) / Math.max(1, singletonOrder.length);
-    const radius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.44;
+    const rank = index / Math.max(1, singletonOrder.length - 1);
+    const radius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * (0.30 + rank * 0.15);
     return [node.id, {
       x: GRAPH_WIDTH / 2 + Math.cos(angle) * radius,
       y: GRAPH_HEIGHT / 2 + Math.sin(angle) * radius * GRAPH_HEIGHT / GRAPH_WIDTH,
@@ -82,10 +84,10 @@ function layoutGraph(map, showWeak) {
     .filter((edge) => (edge.strong || showWeak) && available.has(edge.a) && available.has(edge.b))
     .map((edge) => ({ source: edge.a, target: edge.b, strong: edge.strong, score: edge.score }));
   const simulation = forceSimulation(nodes)
-    .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 34 : 86).strength((edge) => edge.strong ? 0.72 : 0.035))
-    .force("charge", forceManyBody().strength(-55))
-    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? singletonTargets.get(node.id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0.12))
-    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? singletonTargets.get(node.id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.28 : 0.12))
+    .force("link", forceLink(links).id((node) => node.id).distance((edge) => edge.strong ? 24 : 86).strength((edge) => edge.strong ? 0.62 : 0.025))
+    .force("charge", forceManyBody().strength(-32))
+    .force("cluster-x", forceX((node) => clusterTargets.get(node.data.cluster_id)?.x ?? singletonTargets.get(node.id)?.x ?? GRAPH_WIDTH / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
+    .force("cluster-y", forceY((node) => clusterTargets.get(node.data.cluster_id)?.y ?? singletonTargets.get(node.id)?.y ?? GRAPH_HEIGHT / 2).strength((node) => clusterTargets.has(node.data.cluster_id) ? 0.72 : 0.2))
     .force("center", forceCenter(GRAPH_WIDTH / 2, GRAPH_HEIGHT / 2))
     .force("collide", forceCollide((node) => node.radius + 4).iterations(3))
     .stop();
@@ -140,7 +142,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
   const [map, setMap] = useState(null);
   const [selectedAddress, setSelectedAddress] = useState(null);
   const [selectedCluster, setSelectedCluster] = useState(null);
-  const [showWeak, setShowWeak] = useState(false);
+  const [showWeak, setShowWeak] = useState(true);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [loadingMap, setLoadingMap] = useState(false);
   const [error, setError] = useState(null);
@@ -649,7 +651,9 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
               </details>
             )}
             <div style={{ color: "#748287", fontSize: 9, lineHeight: 1.5 }}>
-              Informational only, not financial advice. On-chain links are signals for review and do not establish common ownership.
+              Informational only, not financial advice. Same-funder evidence makes the edge solid.
+              “Same first funder” means both wallets’ earliest observed inbound native transfer came from
+              the same non-hub wallet; it is blockchain evidence, but not proof of common ownership.
             </div>
           </>
         )}
