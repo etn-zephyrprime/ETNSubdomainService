@@ -456,7 +456,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
         .bubblemap-excluded{margin-top:2px;border-top:1px solid #26343a;padding-top:10px;}
         .bubblemap-excluded summary{color:#859397;font:700 9px ${monoFont};letter-spacing:.04em;text-transform:uppercase;cursor:pointer;}
         @media(max-width:980px){.bubblemap-stats{grid-template-columns:repeat(3,minmax(0,1fr));}.bubblemap-side-card{min-height:220px;}}
-        @media(max-width:640px){.bubblemap-topbar{align-items:flex-start;}.bubblemap-status{display:none;}.bubblemap-tokenbar{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:11px;}.bubblemap-selector{width:100%;}.bubblemap-token-symbol{font-size:19px;}.bubblemap-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.bubblemap-graph{display:none;}.bubblemap-mobile-note{display:block;margin:4px 0 8px;color:#778589;font-size:10px;}.bubblemap-sidebar{grid-template-columns:minmax(0,1fr);}.bubblemap-side-card{min-height:0;}.bubblemap-clusters{max-height:280px;}.bubblemap-map-meta{align-items:flex-start;flex-direction:column;}.bubblemap-map-heading{align-items:flex-start;flex-direction:column;}}
+        @media(max-width:640px){.bubblemap-topbar{align-items:flex-start;}.bubblemap-status{display:none;}.bubblemap-tokenbar{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:11px;}.bubblemap-selector{width:100%;}.bubblemap-token-symbol{font-size:19px;}.bubblemap-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.bubblemap-graph{display:block;width:100%;height:58vw;min-height:240px;max-height:360px;}.bubblemap-mobile-note{display:block;margin:4px 0 8px;color:#778589;font-size:10px;}.bubblemap-sidebar{grid-template-columns:minmax(0,1fr);}.bubblemap-side-card{min-height:0;}.bubblemap-clusters{max-height:280px;}.bubblemap-map-meta{align-items:flex-start;flex-direction:column;}.bubblemap-map-heading{align-items:flex-start;flex-direction:column;}}
       `}</style>
       <div className="bubblemap-terminal">
         <div className="bubblemap-topbar">
@@ -543,7 +543,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                     <button type="button" onClick={() => adjustZoom(0.25)} aria-label="Zoom in">+</button>
                   </div>
                 </div>
-                <div className="bubblemap-mobile-note">Explore the ranked cluster list below; the interactive canvas is best viewed on a wider screen.</div>
+                <div className="bubblemap-mobile-note">Drag bubbles to explore the map; use the zoom controls above on smaller screens.</div>
                 <svg
                   className="bubblemap-graph"
                   viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
