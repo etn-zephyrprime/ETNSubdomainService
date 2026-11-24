@@ -629,13 +629,11 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                             return;
                           }
                           setSelectedAddress(node.id);
-                          setSelectedCluster(null);
                         }}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
                             setSelectedAddress(node.id);
-                            setSelectedCluster(null);
                           }
                         }}
                         style={selected ? { filter: `drop-shadow(0 0 9px ${accent}80)` } : undefined}
@@ -758,7 +756,7 @@ export default function CoreTierBubblemaps({ wallet, getAuthParams }) {
                             key={node.address}
                             type="button"
                             className="bubblemap-member-row"
-                            onClick={() => { setSelectedAddress(node.address); setSelectedCluster(null); }}
+                            onClick={() => setSelectedAddress(node.address)}
                           >
                             {displayName(node.address)} <span>{node.pct ?? "—"}%</span>
                           </button>
