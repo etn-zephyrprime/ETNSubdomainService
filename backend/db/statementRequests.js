@@ -6,13 +6,13 @@ import { query } from "./pool.js";
 // client-submitted claim. periodType/year identify one of the four fixed reporting periods (see
 // backend/services/periodTypes.js); logIndex is the log's own on-chain identity, used for dedup.
 
-export async function createFromPurchase({ txHash, logIndex, periodType, year, trackedWallet, payerWallet, amountPaidWei }) {
+export async function createFromPurchase({ txHash, logIndex, periodType, year, trackedWallet, payerWallet, amountPaidWei, costModel = "fifo" }) {
   const res = await query(
-    `INSERT INTO statement_requests (tx_hash, log_index, period_type, year, tracked_wallet, payer_wallet, amount_paid_wei)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO statement_requests (tx_hash, log_index, period_type, year, tracked_wallet, payer_wallet, amount_paid_wei, cost_model)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (tx_hash, log_index) DO NOTHING
      RETURNING *`,
-    [txHash, logIndex, periodType, year, trackedWallet.toLowerCase(), payerWallet.toLowerCase(), amountPaidWei.toString()]
+    [txHash, logIndex, periodType, year, trackedWallet.toLowerCase(), payerWallet.toLowerCase(), amountPaidWei.toString(), costModel]
   );
   return res?.rows[0] || null; // null if this exact (tx_hash, log_index) was already recorded
 }

@@ -11,6 +11,7 @@ import express from "express";
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { getById, getByTxHash, getByPayerWallet, getCumulativeRequestedSeries, markPendingGeneration, markViewedAndFinalize, markRefunded } from "../db/statementRequests.js";
+import { recordStatementOrderIntents } from "../db/statementOrderIntents.js";
 import { getTotalCoreBurned } from "../db/buyAndBurnLog.js";
 import { getTotalCoreBurnedBySweeps } from "../db/subscriptionRevenueSweeps.js";
 import { generateStatement } from "../services/pnlStatementGenerator.js";
@@ -40,6 +41,7 @@ function serializeRequest(r) {
     trackedWallet: r.tracked_wallet,
     payerWallet: r.payer_wallet,
     amountPaidWei: r.amount_paid_wei,
+    costModel: r.cost_model,
     status: r.status,
     selfOwnedAddresses: r.self_owned_addresses,
     createdAt: r.created_at,
@@ -133,6 +135,44 @@ router.post("/pnl/statement/:requestId/request", async (req, res) => {
     // it's no longer PAID, so this needs either an admin retry path or the user should be shown a
     // "generation failed, contact support" state; flagged as a follow-up, not silently hidden).
   });
+});
+
+// Called by the frontend BEFORE sending the purchase transaction, so the watcher can attach the
+// chosen cost-basis method to the statement request it later creates from the confirmed on-chain
+// event (see statementOrderIntents.js). Signed by the payer, the same way GET /pnl/statements is,
+// so nobody else can set the method for someone else's purchase. Only affects how the statement
+// is calculated; the purchase price and period are still validated entirely by the contract.
+const COST_MODELS = new Set(["fifo", "pooled"]);
+const MAX_PERIODS_PER_ORDER = 12;
+
+router.post("/pnl/order-intent", async (req, res) => {
+  const { payerWallet, trackedWallet, periods, costModel, signature, timestamp } = req.body || {};
+  if (!payerWallet || !ethers.isAddress(payerWallet)) {
+    return res.status(400).json({ error: "payerWallet must be a valid address" });
+  }
+  if (!trackedWallet || !ethers.isAddress(trackedWallet)) {
+    return res.status(400).json({ error: "trackedWallet must be a valid address" });
+  }
+  if (!COST_MODELS.has(costModel)) {
+    return res.status(400).json({ error: "costModel must be 'fifo' or 'pooled'" });
+  }
+  if (!Array.isArray(periods) || periods.length === 0 || periods.length > MAX_PERIODS_PER_ORDER) {
+    return res.status(400).json({ error: `periods must be an array of 1 to ${MAX_PERIODS_PER_ORDER} entries` });
+  }
+  for (const p of periods) {
+    if (!Number.isInteger(p?.periodType) || p.periodType < 0 || p.periodType > 3 || !Number.isInteger(p?.year)) {
+      return res.status(400).json({ error: "Each period needs an integer periodType (0-3) and an integer year" });
+    }
+  }
+
+  try {
+    verifyWalletOwnership(payerWallet, signature, timestamp, "PnL Statements");
+  } catch (err) {
+    return res.status(401).json({ error: err.message });
+  }
+
+  await recordStatementOrderIntents({ payerWallet, trackedWallet, periods, costModel });
+  res.json({ ok: true, costModel, periodCount: periods.length });
 });
 
 // The finalize-on-view trigger (see PremiumSubscription.sol's header comment on the two trigger

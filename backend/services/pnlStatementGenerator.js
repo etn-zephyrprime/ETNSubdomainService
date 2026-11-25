@@ -18,6 +18,7 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getAllSwapTradesBefore } from "../db/swapTrades.js";
 import { ingestWalletHistory, getBlockByTimestamp, getTokenMetadata, resolveEnsDisplayName, EXPLORER_BASE_URL } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
+import { replayPooled } from "./pooledCostEngine.js";
 import { getHistoricalPriceUsd, getEarliestAvailableDate } from "./pnlPricing.js";
 // Event-building/lot-valuation primitives — extracted to pnlEventBuilder.js (verbatim, no logic
 // changes) so pnlSnapshotService.js (Core tier's live PnL dashboard feature) can build the exact
@@ -61,23 +62,40 @@ const ORBITRON_BOLD_PATH = path.resolve(__dirname, "..", "fonts", "Orbitron-Bold
 // were built with.
 const PREMIUM_TAB_URL = "https://dashboard.planetzephyros.xyz/pnl";
 
-const DISCLAIMER =
+const DISCLAIMER_TAIL =
   "This statement is provided for informational purposes only and does not constitute tax, " +
-  "legal, or financial advice. Figures use FIFO cost-basis accounting over a fixed reporting " +
+  "legal, or financial advice. Figures use {METHOD} over a fixed reporting " +
   "period, which may not match every jurisdiction's actual tax treatment. Consult a qualified " +
   "professional in your jurisdiction before relying on this statement for tax filing.";
+
+const COST_MODEL_LABELS = {
+  fifo: "FIFO (first in, first out)",
+  pooled: "Pooled average cost (Section 104 / share pooling)",
+};
+
+function disclaimerFor(costModel) {
+  const method = costModel === "pooled" ? "pooled average cost-basis accounting" : "FIFO cost-basis accounting";
+  return DISCLAIMER_TAIL.replace("{METHOD}", method);
+}
 
 // Plain-English explanations for the Summary section's line items, shown further down the
 // statement (after Closing Inventory) rather than inline — keeps the Summary itself scannable
 // while still giving every figure a real definition somewhere in the document.
-const SUMMARY_EXPLANATIONS = [
-  ["On-chain inflows / outflows (USD)", "The USD value of ETN and tokens received or sent on-chain during this period, including both legs of any swap (the sold side counts as an outflow, the bought side as an inflow) — excluding transfers between your own addresses (see \"self-owned addresses\") and gas fees, which are broken out separately below."],
-  ["CEX deposits / withdrawals (USD)", "The USD value of transfers to/from addresses recognized as centralized exchange wallets. Only wallets this app already has on record are detected automatically — anything missed shows up as an on-chain flow instead."],
-  ["Gas fees paid", "The total transaction fees this wallet paid across every transaction in the period, valued in ETN and in USD at the time each fee was paid. Deducted from Net P&L, but not treated as a disposal for cost-basis purposes."],
-  ["Realized P&L (USD)", "Profit or loss actually locked in during this period: for every disposal (a sale, swap, or outbound transfer that isn't a self-transfer), proceeds minus the FIFO cost basis of the specific lot(s) consumed. FIFO means the oldest acquired units of an asset are always treated as sold first."],
-  ["Unrealized P&L (USD)", "The paper profit or loss on whatever this wallet still held at the exact end of the period: current market value at the period-end date minus the FIFO cost basis of those remaining holdings. Nothing here has actually been sold — it reflects value on paper only, as of the period-end snapshot."],
-  ["Net P&L after fees (USD)", "Realized P&L plus Unrealized P&L, minus total gas fees paid (USD) for the period. The single bottom-line figure for the period."],
-];
+function summaryExplanationsFor(costModel) {
+  const pooled = costModel === "pooled";
+  return [
+    ["On-chain inflows / outflows (USD)", "The USD value of ETN and tokens received or sent on-chain during this period, including both legs of any swap (the sold side counts as an outflow, the bought side as an inflow) — excluding transfers between your own addresses (see \"self-owned addresses\") and gas fees, which are broken out separately below."],
+    ["CEX deposits / withdrawals (USD)", "The USD value of transfers to/from addresses recognized as centralized exchange wallets. Only wallets this app already has on record are detected automatically — anything missed shows up as an on-chain flow instead."],
+    ["Gas fees paid", "The total transaction fees this wallet paid across every transaction in the period, valued in ETN and in USD at the time each fee was paid. Deducted from Net P&L, but not treated as a disposal for cost-basis purposes."],
+    ["Realized P&L (USD)", pooled
+      ? "Profit or loss actually locked in during this period: for every disposal (a sale, swap, or outbound transfer that isn't a self-transfer), proceeds minus the pooled average cost of the units sold. Pooled average cost means all units of an asset you hold are treated as one pool, so each sale is costed at the pool's average unit cost at that moment; buying more changes that average."
+      : "Profit or loss actually locked in during this period: for every disposal (a sale, swap, or outbound transfer that isn't a self-transfer), proceeds minus the FIFO cost basis of the specific lot(s) consumed. FIFO means the oldest acquired units of an asset are always treated as sold first."],
+    ["Unrealized P&L (USD)", pooled
+      ? "The paper profit or loss on whatever this wallet still held at the exact end of the period: current market value at the period-end date minus the pooled average cost of those remaining holdings. Nothing here has actually been sold — it reflects value on paper only, as of the period-end snapshot."
+      : "The paper profit or loss on whatever this wallet still held at the exact end of the period: current market value at the period-end date minus the FIFO cost basis of those remaining holdings. Nothing here has actually been sold — it reflects value on paper only, as of the period-end snapshot."],
+    ["Net P&L after fees (USD)", "Realized P&L plus Unrealized P&L, minus total gas fees paid (USD) for the period. The single bottom-line figure for the period."],
+  ];
+}
 
 let cachedR2Client = null;
 function getR2Client() {
@@ -654,6 +672,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   doc.fillColor(THEME.bodyText).fontSize(11);
   doc.text(`Wallet: ${request.tracked_wallet}${ensName ? `  (${ensName})` : ""}`);
   doc.text(`Reporting period: ${periodTypeLabel(request.period_type)} ${request.year}`);
+  doc.text(`Cost-basis method: ${COST_MODEL_LABELS[request.cost_model] || COST_MODEL_LABELS.fifo}`);
   doc.text(`Period: ${periodStart.toISOString().slice(0, 10)} to ${periodEnd.toISOString().slice(0, 10)}`);
   if (blockRange) {
     doc.fillColor(THEME.muted).text(`Block range: ${blockRange.startBlock} to ${blockRange.endBlock} (for cross-checking against the block explorer — see the explanation below)`);
@@ -807,7 +826,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   sectionPageNumbers["Understanding This Statement"] = currentPageNumber;
   sectionHeader("Understanding This Statement");
   doc.fontSize(9);
-  for (const [label, explanation] of SUMMARY_EXPLANATIONS) {
+  for (const [label, explanation] of summaryExplanationsFor(request.cost_model)) {
     doc.fillColor(THEME.white).font("Helvetica-Bold").text(label);
     doc.fillColor(THEME.muted).font("Helvetica").text(explanation);
     doc.moveDown(0.4);
@@ -845,7 +864,7 @@ function buildPdf({ request, periodStart, periodEnd, blockRange, openingValuatio
   }
   doc.moveDown(0.6);
 
-  doc.fontSize(8).fillColor(THEME.muted).text(DISCLAIMER, { align: "left" });
+  doc.fontSize(8).fillColor(THEME.muted).text(disclaimerFor(request.cost_model), { align: "left" });
 
   // Every section's real starting page is known now — go back to page 1 (bufferPages:true keeps
   // every page in memory until end() actually flushes them, so this is safe) and overwrite the
@@ -919,7 +938,8 @@ async function generateStatementUnlimited(requestId) {
   // prior periods too.
   const { events: defiEvents } = await buildDefiFarmEvents(defiActivity);
   const events = assembleLedgerEvents({ transfers, swaps, nftEvents, nftConsumedRowIds, defiEvents, defiActivity });
-  const { opening, closing } = replayFifo(events, periodStart, periodEnd);
+  const replay = request.cost_model === "pooled" ? replayPooled : replayFifo;
+  const { opening, closing } = replay(events, periodStart, periodEnd);
 
   const transfersInPeriod = transfers.filter((t) => {
     const ts = new Date(t.timestamp);
@@ -985,6 +1005,7 @@ async function generateStatementUnlimited(requestId) {
     periodType: request.period_type,
     periodTypeLabel: periodTypeLabel(request.period_type),
     year: request.year,
+    costModel: request.cost_model,
     periodStart: periodStart.toISOString(),
     periodEnd: periodEnd.toISOString(),
     blockRange,
@@ -1051,8 +1072,8 @@ async function generateStatementUnlimited(requestId) {
       txHash: item.txHash,
     })),
     summary: { realizedPnlUsd: realizedPnlUsd.toString(), unrealizedPnlUsd: closingValuation.totalUnrealizedUsd.toString(), netPnlAfterFeesUsd: netPnlUsd.toString() },
-    summaryExplanations: Object.fromEntries(SUMMARY_EXPLANATIONS),
-    disclaimer: DISCLAIMER,
+    summaryExplanations: Object.fromEntries(summaryExplanationsFor(request.cost_model)),
+    disclaimer: disclaimerFor(request.cost_model),
   };
 
   const pdfBuffer = await buildPdf({ request, periodStart, periodEnd, blockRange, openingValuation, closingValuation, gas, flows, gameActivity, defiActivitySummary, realizedPnlUsd, unrealizedPnlUsd: closingValuation.totalUnrealizedUsd, netPnlUsd, tokenMeta, transactionLines, priceCoverageDisclaimer, nftDisclaimer, ensName, realizedEventsInPeriod, realizedGainsByAsset });

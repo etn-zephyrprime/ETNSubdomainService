@@ -12,6 +12,7 @@ import { createRpcProvider } from "./rpcProvider.js";
 import { getPremiumSubscriptionWatcherState, setPremiumSubscriptionWatcherState } from "../state/premiumSubscriptionWatcherState.js";
 import { upsertMembership, getMembership } from "../db/premiumMemberships.js";
 import { createFromPurchase } from "../db/statementRequests.js";
+import { findStatementOrderIntent, markStatementOrderIntentConsumed } from "../db/statementOrderIntents.js";
 import { getPool } from "../db/pool.js";
 import { sendZephyrosMessage, zephyrosBotConfigured, escapeHtml } from "./coreClashTelegram.js";
 import { createPrimaryNameResolver } from "./primaryNameResolver.js";
@@ -137,6 +138,7 @@ async function handleMembershipPurchased(event, tier, resolveDisplayName) {
 async function handlePnlPeriodPurchased(event) {
   const { payer, trackedWallet, periodType, year, amountPaid } = event.args;
 
+  const intent = await findStatementOrderIntent({ payerWallet: payer, trackedWallet, periodType: Number(periodType), year: Number(year) });
   const created = await createFromPurchase({
     txHash: event.transactionHash,
     logIndex: event.index,
@@ -145,9 +147,11 @@ async function handlePnlPeriodPurchased(event) {
     trackedWallet,
     payerWallet: payer,
     amountPaidWei: amountPaid,
+    costModel: intent?.cost_model ?? "fifo",
   });
   if (created) {
-    console.log(`📄 Statement request created: ${created.id} (wallet ${trackedWallet}, periodType ${periodType}, year ${year}, tx ${event.transactionHash})`);
+    if (intent) await markStatementOrderIntentConsumed(intent.id);
+    console.log(`📄 Statement request created: ${created.id} (wallet ${trackedWallet}, periodType ${periodType}, year ${year}, costModel ${created.cost_model}, tx ${event.transactionHash})`);
   }
   // created === null means this exact (tx_hash, log_index) was already recorded — expected on a
   // re-scanned/overlapping block range, not an error.
