@@ -21,11 +21,12 @@ export function usePnlSnapshot() {
   // speedup. Only matters for a wallet still mid-cold-start; see pnlSnapshotRouter.js's own
   // comment for the full mechanism and its safety boundary (a wallet past cold-start ignores this
   // entirely and always gets full pricing).
-  const getLiveSnapshot = useCallback(async (wallet, signature, timestamp, priorityTokens) => {
+  const getLiveSnapshot = useCallback(async (wallet, signature, timestamp, priorityTokens, costModel = "fifo") => {
     const params = new URLSearchParams({
       wallet,
       signature,
       timestamp,
+      costModel,
       ...(priorityTokens ? { priorityTokens: JSON.stringify(priorityTokens) } : {}),
     });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-snapshot?${params}`);

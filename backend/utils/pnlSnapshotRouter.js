@@ -15,7 +15,7 @@ import { getPnlSnapshotHistory, combineSnapshotsByDate } from "../db/pnlSnapshot
 import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from "../db/pnlCategorySnapshots.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
-import { computeLivePnlSnapshot, combineLivePnlSnapshots, getSnapshotFast } from "../services/pnlSnapshotService.js";
+import { computeLivePnlSnapshot, combineLivePnlSnapshots, getSnapshotFast, normalizeCostModel } from "../services/pnlSnapshotService.js";
 import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
 import { getRecentActivity } from "../services/recentActivityService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
@@ -94,6 +94,7 @@ const router = express.Router();
 // priorityTokens — there's nothing to speed up for it anymore.
 router.get("/premium/pnl-snapshot", async (req, res) => {
   const { wallet, signature, timestamp, priorityTokens: priorityTokensRaw } = req.query;
+  const costModel = normalizeCostModel(req.query.costModel);
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -155,7 +156,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
       // Skips the ingest gate below: the recompute runs ingestWalletHistory itself, and the gate only
       // exists to report progress for a slow SYNCHRONOUS run, which this path never does.
       try {
-        const fast = await getSnapshotFast(address, selfOwnedAddresses);
+        const fast = await getSnapshotFast(address, selfOwnedAddresses, costModel);
         if (fast) {
           perWallet.push({ walletAddress: address, ...fast.snapshot });
           if (fast.refreshing) {
@@ -198,7 +199,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
       }
 
       try {
-        const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses, priorityTokens || null);
+        const snapshot = await computeLivePnlSnapshot(address, selfOwnedAddresses, priorityTokens || null, costModel);
         perWallet.push({ walletAddress: address, ...snapshot });
       } catch (err) {
         console.error(`PnL snapshot computation failed for wallet ${address}:`, err);
@@ -212,7 +213,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
     // whatever DID finish this round still shows, rather than blocking everything on the slowest
     // wallet.
     const combined = perWallet.length > 0 ? combineLivePnlSnapshots(perWallet) : null;
-    res.json({ perWallet, combined, failed, needsSelection, ingesting: jobs.length > 0, jobs, refreshing, staleAsOf });
+    res.json({ perWallet, combined, failed, needsSelection, ingesting: jobs.length > 0, jobs, refreshing, staleAsOf, costModel });
   } catch (err) {
     console.error("PnL snapshot computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your live PnL right now — try again shortly" });

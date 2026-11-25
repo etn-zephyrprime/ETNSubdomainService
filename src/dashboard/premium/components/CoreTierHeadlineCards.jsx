@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Wallet as WalletIcon, Coins, TrendingUp, Image as ImageIcon } from "lucide-react";
 import { usePortfolioSummary } from "../../hooks/usePortfolioSummary.js";
 import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
+import { useCostBasisModel } from "../../utils/costBasisModel.js";
 import { useNftPnlSnapshot } from "../../hooks/useNftPnlSnapshot.js";
 import { useEtnPrice } from "../../../hooks/useEtnPrice.js";
 import { formatUsdPrice, formatEtnAmount } from "../../utils/format.js";
@@ -96,6 +97,7 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
   const etnUsdPrice = useEtnPrice();
   const { getPortfolioSummary } = usePortfolioSummary();
   const { getLiveSnapshot } = usePnlSnapshot();
+  const [costModel] = useCostBasisModel();
   const { getNftPnlSnapshot } = useNftPnlSnapshot();
 
   const [savedSummary, setSavedSummary] = useState(undefined); // undefined = loading, null = none saved
@@ -128,7 +130,7 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
         .catch(() => !cancelled && setSavedSummary(null));
       // The PnL panel, when it's the one open, fetches the same snapshot itself and hands it up.
       if (!pnlTabOpen) {
-        getLiveSnapshot(wallet.account, signature, timestamp)
+        getLiveSnapshot(wallet.account, signature, timestamp, undefined, costModel)
           .then((r) => !cancelled && onPnlSnapshot(r))
           .catch(() => !cancelled && setPnlError(true));
       }
@@ -142,6 +144,24 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccess, active]);
 
+  // Switching cost-basis method refreshes the Net PnL figure here too (skips the first render — the
+  // effect above already fetched with the current method).
+  const headlineModelRef = useRef(costModel);
+  useEffect(() => {
+    if (headlineModelRef.current === costModel) return;
+    headlineModelRef.current = costModel;
+    if (!hasAccess || active.length === 0) return;
+    (async () => {
+      try {
+        const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
+        onPnlSnapshot(await getLiveSnapshot(wallet.account, signature, timestamp, undefined, costModel));
+      } catch {
+        // keep showing the current figures
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [costModel]);
+
   // Saved PnL figures being refreshed in the background: re-ask until the live ones arrive.
   useEffect(() => {
     if (!pnlSnapshot?.refreshing || pnlTabOpen || pollsRef.current >= REFRESH_POLL_MAX) return;
@@ -149,7 +169,7 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
       pollsRef.current += 1;
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        onPnlSnapshot(await getLiveSnapshot(wallet.account, signature, timestamp));
+        onPnlSnapshot(await getLiveSnapshot(wallet.account, signature, timestamp, undefined, costModel));
       } catch {
         // keep showing the saved figures; the next tick (if any) tries again
       }
