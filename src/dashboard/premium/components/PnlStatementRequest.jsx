@@ -5,6 +5,7 @@ import DashboardPanel from "./DashboardPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import PnlStatementProgress from "./PnlStatementProgress.jsx";
 import { usePnlPurchase } from "../../../hooks/usePnlPurchase.js";
+import { useWalletAuthSignature } from "../../../hooks/useWalletAuthSignature.js";
 import { useOwnedNames } from "../../../hooks/useOwnedNames.js";
 import { computeNodeForName } from "../../../utils/ens.js";
 import { PERIOD_TYPES, computePeriodBoundaries, isPeriodElapsed } from "../../../utils/periodTypes.js";
@@ -70,6 +71,8 @@ export default function PnlStatementRequest({ wallet }) {
   const [newPeriodType, setNewPeriodType] = useState(0);
   const [newYear, setNewYear] = useState(CURRENT_YEAR - 1);
   const [addPeriodError, setAddPeriodError] = useState(null);
+  const [costModel, setCostModel] = useState("fifo"); // fifo | pooled — recorded before payment, see POST /pnl/order-intent
+  const getAuthParams = useWalletAuthSignature(wallet);
 
   const [stage, setStage] = useState("idle"); // idle | purchasing | waiting-for-backend | requesting | done
   const [stageError, setStageError] = useState(null);
@@ -183,6 +186,24 @@ export default function PnlStatementRequest({ wallet }) {
         ...p,
         periodEnd: computePeriodBoundaries(p.periodType, p.year).periodEnd,
       }));
+
+      const { signature, timestamp } = await getAuthParams("PnL Statements");
+      const intentRes = await fetch(`${PNL_BACKEND_URL}/api/pnl/order-intent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payerWallet: wallet.account,
+          trackedWallet,
+          periods: selectedPeriods.map((p) => ({ periodType: p.periodType, year: p.year })),
+          costModel,
+          signature,
+          timestamp,
+        }),
+      });
+      if (!intentRes.ok) {
+        const body = await intentRes.json().catch(() => ({}));
+        throw new Error(body.error || "Couldn't record your cost-basis choice — nothing was purchased.");
+      }
 
       setStage("purchasing");
       const { txHash } = await purchasePnlPeriods(trackedWallet, periodsWithEnds, activatedDomainNode, totalValueWei, signer);
@@ -346,6 +367,23 @@ export default function PnlStatementRequest({ wallet }) {
           Total: <b style={{ color: "#fff" }}>{ethers.formatEther(totalValueWei)} ETN</b>
         </div>
       )}
+
+      <div style={{ marginBottom: 16 }}>
+        <label htmlFor="pnl-cost-model" style={labelStyle}>Cost-basis method</label>
+        <select
+          id="pnl-cost-model"
+          value={costModel}
+          onChange={(e) => setCostModel(e.target.value)}
+          disabled={busy}
+          style={inputStyle}
+        >
+          <option value="fifo">FIFO (oldest units sold first)</option>
+          <option value="pooled">Pooled average cost (Section 104 / share pooling)</option>
+        </select>
+        <div style={{ fontSize: 11, color: mutedLight, marginTop: 6, lineHeight: 1.5 }}>
+          Chosen before you pay and applied to the statements in this order. It changes how each sale is costed, not the price.
+        </div>
+      </div>
 
       {(error || stageError) && <div style={{ fontSize: 12, color: errorColor, marginBottom: 12 }}>{stageError || error}</div>}
       {stageLabel && <div style={{ fontSize: 12, color: mutedLight, marginBottom: 12 }}>{stageLabel}</div>}
