@@ -15,28 +15,28 @@ async function parseErrorOrThrow(res) {
 }
 
 export function useWhatIfSimulator() {
-  const getSellableHoldings = useCallback(async (wallet, signature, timestamp, walletAddress) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp, walletAddress });
+  const getSellableHoldings = useCallback(async (wallet, signature, timestamp, walletAddress, costModel = "fifo") => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, walletAddress, costModel });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/what-if-holdings?${params}`);
     await parseErrorOrThrow(res);
     return res.json(); // { tokens: [{ tokenAddress, symbol, name, quantity }], positions: [{ key, kind, label, valueUsd }] }
   }, []);
 
-  const simulateSell = useCallback(async (wallet, signature, timestamp, { walletAddress, tokenAddress, quantity }) => {
+  const simulateSell = useCallback(async (wallet, signature, timestamp, { walletAddress, tokenAddress, quantity, costModel = "fifo" }) => {
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/what-if-sell`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wallet, signature, timestamp, walletAddress, tokenAddress, quantity }),
+      body: JSON.stringify({ wallet, signature, timestamp, walletAddress, tokenAddress, quantity, costModel }),
     });
     await parseErrorOrThrow(res);
     return res.json();
   }, []);
 
-  const simulateExit = useCallback(async (wallet, signature, timestamp, { walletAddress, positionKey, exitPct, sellToEtn }) => {
+  const simulateExit = useCallback(async (wallet, signature, timestamp, { walletAddress, positionKey, exitPct, sellToEtn, costModel = "fifo" }) => {
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/what-if-exit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wallet, signature, timestamp, walletAddress, positionKey, exitPct, sellToEtn }),
+      body: JSON.stringify({ wallet, signature, timestamp, walletAddress, positionKey, exitPct, sellToEtn, costModel }),
     });
     await parseErrorOrThrow(res);
     return res.json();

@@ -137,8 +137,11 @@ export async function quoteSell(tokenKey, qty, wallet = null) {
  * Throws WhatIfInputError for a request that can't be simulated (bad quantity, nothing held, not a
  * plain token); returns the full breakdown otherwise.
  */
-export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddress, quantity) {
+const POOLED_WHATIF_NOTE = "Pooled average cost: holding periods aren't tracked, and the ETN cost basis isn't available for this view.";
+
+export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddress, quantity, costModel = "fifo") {
   const wallet = walletAddress.toLowerCase();
+  const pooled = costModel === "pooled";
   const isNative = String(tokenAddress).toUpperCase() === NATIVE_SENTINEL;
   const tokenKey = isNative ? NATIVE_SENTINEL : canonicalTokenKey(String(tokenAddress).toLowerCase());
   if (tokenKey !== NATIVE_SENTINEL && (tokenKey.includes(":") || !ethers.isAddress(tokenKey))) {
@@ -152,8 +155,7 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
   }
   if (!qty.isFinite() || qty.lte(0)) throw new WhatIfInputError("Enter a quantity greater than zero");
 
-  const { closing } = await getLedgerState(wallet, selfOwnedAddresses, null);
-  const openLots = closing.lots.filter((l) => l.tokenAddress === tokenKey && l.quantityRemaining.gt(0));
+  const { closing } = await getLedgerState(wallet, selfOwnedAddresses, null, costModel);
   const heldQuantity = openLots.reduce((s, l) => s.plus(l.quantityRemaining), new Decimal(0));
   const lockedQuantity = (closing.lockedLots || [])
     .filter((l) => l.tokenAddress === tokenKey)
@@ -163,6 +165,7 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
   }
 
   const warnings = [];
+  if (pooled) warnings.push(POOLED_WHATIF_NOTE);
   if (qty.gt(heldQuantity)) {
     warnings.push(`You only hold ${heldQuantity.toString()} freely — simulated selling all of it instead of ${qty.toString()}.`);
     qty = heldQuantity;
@@ -194,14 +197,14 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
     const share = c.quantityConsumed.div(qty);
     const lotProceedsUsd = proceedsUsd.times(share);
     const lotProceedsEtn = proceedsEtn.times(share);
-    const priceThen = c.costBasisUsd.gt(0) ? await etnUsdAt(lot.openedTimestamp) : null;
+    const priceThen = c.costBasisUsd.gt(0) && !pooled ? await etnUsdAt(lot.openedTimestamp) : null;
     const lotCostEtn = c.costBasisUsd.isZero() ? new Decimal(0) : priceThen ? c.costBasisUsd.div(priceThen) : null;
     if (lotCostEtn == null) etnIncomplete = true;
     else costBasisEtn = costBasisEtn.plus(lotCostEtn);
     lots.push({
-      acquiredAt: lot.openedTimestamp,
+      acquiredAt: pooled ? null : lot.openedTimestamp,
       txHash: lot.openedTxHash || null,
-      daysHeld: Math.floor((now - new Date(lot.openedTimestamp).getTime()) / DAY_MS),
+      daysHeld: pooled ? null : Math.floor((now - new Date(lot.openedTimestamp).getTime()) / DAY_MS),
       quantity: c.quantityConsumed.toString(),
       unitCostUsd: new Decimal(lot.unitCostUsd).toString(),
       costBasisUsd: c.costBasisUsd.toString(),
@@ -285,14 +288,20 @@ export async function simulateSell(walletAddress, selfOwnedAddresses, tokenAddre
  * quantity-weighted average holding period, and how many have no recorded cost. */
 function summarizeLots(lots) {
   if (!lots.length) return { count: 0 };
+  // A pooled cost has no acquisition dates or holding periods — report what exists, nothing invented.
+  if (lots.some((l) => l.acquiredAt == null)) {
+    return { count: lots.length, firstAcquiredAt: null, lastAcquiredAt: null, avgDaysHeld: null, zeroCostCount: lots.filter((l) => l.zeroCostBasis).length };
+  }
   const times = lots.map((l) => new Date(l.acquiredAt).getTime());
   const totalQty = lots.reduce((s, l) => s.plus(l.quantity), new Decimal(0));
-  const weightedDays = totalQty.gt(0) ? lots.reduce((s, l) => s.plus(new Decimal(l.quantity).times(l.daysHeld)), new Decimal(0)).div(totalQty) : new Decimal(0);
+  // Holding periods only exist for FIFO lots — a pooled cost has none, so the average is null then.
+  const allHeld = lots.every((l) => l.daysHeld != null);
+  const weightedDays = allHeld && totalQty.gt(0) ? lots.reduce((s, l) => s.plus(new Decimal(l.quantity).times(l.daysHeld)), new Decimal(0)).div(totalQty) : new Decimal(0);
   return {
     count: lots.length,
     firstAcquiredAt: new Date(Math.min(...times)).toISOString(),
     lastAcquiredAt: new Date(Math.max(...times)).toISOString(),
-    avgDaysHeld: Math.round(weightedDays.toNumber()),
+    avgDaysHeld: allHeld ? Math.round(weightedDays.toNumber()) : null,
     zeroCostCount: lots.filter((l) => l.zeroCostBasis).length,
   };
 }
@@ -330,7 +339,7 @@ async function loadPositions(walletAddress) {
 
 /** FIFO cost of taking `quantity` from `lots` (oldest first) — USD from each lot's recorded cost, ETN
  * at ETN's price on each lot's acquisition day. Same lot-consumption rule a real unlock/disposal uses. */
-async function costOfLots(lots, quantity) {
+async function costOfLots(lots, quantity, pooled = false) {
   const qty = new Decimal(quantity);
   if (qty.lte(0)) return { costUsd: new Decimal(0), costEtn: new Decimal(0), etnIncomplete: false, shortfall: new Decimal(0), lots: [] };
   const { consumptions, totalCostBasisUsd, remainingShort } = consumeFifo(lots, qty);
@@ -342,14 +351,15 @@ async function costOfLots(lots, quantity) {
   for (const c of consumptions) {
     const lot = byId.get(c.lotId);
     if (c.costBasisUsd.gt(0)) {
-      const price = await etnUsdAt(lot.openedTimestamp);
+      // A pooled cost has no per-lot acquisition date to price ETN at, so its ETN basis is unavailable.
+      const price = pooled ? null : await etnUsdAt(lot.openedTimestamp);
       if (price) costEtn = costEtn.plus(c.costBasisUsd.div(price));
       else etnIncomplete = true;
     }
     used.push({
-      acquiredAt: lot.openedTimestamp,
+      acquiredAt: pooled ? null : lot.openedTimestamp,
       quantity: c.quantityConsumed.toString(),
-      daysHeld: Math.floor((now - new Date(lot.openedTimestamp).getTime()) / DAY_MS),
+      daysHeld: pooled ? null : Math.floor((now - new Date(lot.openedTimestamp).getTime()) / DAY_MS),
       zeroCostBasis: c.costBasisUsd.isZero(),
     });
   }
@@ -359,9 +369,9 @@ async function costOfLots(lots, quantity) {
 /** What the simulator's pickers offer for `walletAddress`: freely-held tokens (not ETN — it's what
  * you'd be selling into — nor NFTs, V3 position keys or LP pair tokens, which are offered as
  * positions instead), and every exitable LP / farm / staking position. */
-export async function listSellableHoldings(walletAddress, selfOwnedAddresses) {
+export async function listSellableHoldings(walletAddress, selfOwnedAddresses, costModel = "fifo") {
   const wallet = walletAddress.toLowerCase();
-  const [{ closing }, positions] = await Promise.all([getLedgerState(wallet, selfOwnedAddresses, null), loadPositions(wallet)]);
+  const [{ closing }, positions] = await Promise.all([getLedgerState(wallet, selfOwnedAddresses, null, costModel), loadPositions(wallet)]);
   const lpPairs = new Set(positions.filter((p) => p.kind === "v2").map((p) => String(p.raw.tokenAddress).toLowerCase()));
   const byToken = new Map();
   for (const lot of closing.lots) {
@@ -396,14 +406,15 @@ export async function listSellableHoldings(walletAddress, selfOwnedAddresses) {
  * farm/stake (the same locked queue a real unlock draws from, FIFO), the LP-token lots for V2, the
  * position's lots for V3. Fees and rewards are income with zero cost.
  */
-export async function simulateExit(walletAddress, selfOwnedAddresses, positionKey, exitPct, sellToEtn) {
+export async function simulateExit(walletAddress, selfOwnedAddresses, positionKey, exitPct, sellToEtn, costModel = "fifo") {
   const wallet = walletAddress.toLowerCase();
+  const pooled = costModel === "pooled";
   const pct = Number(exitPct);
   if (!Number.isFinite(pct) || pct <= 0 || pct > 100) throw new WhatIfInputError("Exit percentage must be between 0 and 100");
   const f = new Decimal(pct).div(100);
   const full = pct === 100;
 
-  const [positions, { closing }, etnUsdCache] = await Promise.all([loadPositions(wallet), getLedgerState(wallet, selfOwnedAddresses, null), getEtnPriceCache()]);
+  const [positions, { closing }, etnUsdCache] = await Promise.all([loadPositions(wallet), getLedgerState(wallet, selfOwnedAddresses, null, costModel), getEtnPriceCache()]);
   const pos = positions.find((p) => p.key === positionKey);
   if (!pos) throw new WhatIfInputError("That position isn't open in this wallet any more — refresh and pick again");
   const etnUsd = etnUsdCache?.usd != null ? new Decimal(etnUsdCache.usd) : null;
@@ -411,6 +422,7 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
 
   const p = pos.raw;
   const warnings = [];
+  if (pooled) warnings.push(POOLED_WHATIF_NOTE);
   const received = new Map(); // token key -> { tokenAddress, symbol, principal, income }
   const add = (tokenAddress, symbol, principal, income) => {
     const key = canonicalTokenKey(String(tokenAddress).toLowerCase());
@@ -431,13 +443,13 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
       // the deposit history doesn't cover it (missing/zero baseline) — what the position holds now.
       const deposited = leg.depositedAmount != null ? new Decimal(leg.depositedAmount) : null;
       const principal = deposited && deposited.gt(0) ? deposited : new Decimal(leg.amount);
-      costs.push(await costOfLots(lotsFor(closing.lockedLots, key), principal.times(f)));
+      costs.push(await costOfLots(lotsFor(closing.lockedLots, key), principal.times(f), pooled));
     }
     if (p.pendingRewards && Number(p.pendingRewards.amount) > 0) add(p.pendingRewards.tokenAddress, p.pendingRewards.symbol, 0, p.pendingRewards.amount);
     if (Number(p.boltDeposited) > 0) {
       if (full) {
         add(BOLT_ADDRESS, "BOLT", p.boltDeposited, 0);
-        costs.push(await costOfLots(lotsFor(closing.lockedLots, BOLT_ADDRESS), p.boltDeposited));
+        costs.push(await costOfLots(lotsFor(closing.lockedLots, BOLT_ADDRESS), p.boltDeposited, pooled));
       } else {
         warnings.push(`Your ${wholeFmt(new Decimal(p.boltDeposited))} staked BOLT only comes back when you withdraw 100% of this farm.`);
       }
@@ -448,7 +460,7 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
     const leg = p.legs[0];
     const amount = new Decimal(leg.amount).times(f);
     add(leg.tokenAddress, leg.symbol, amount, 0);
-    costs.push(await costOfLots(lotsFor(closing.lockedLots, canonicalTokenKey(String(leg.tokenAddress).toLowerCase())), amount));
+    costs.push(await costOfLots(lotsFor(closing.lockedLots, canonicalTokenKey(String(leg.tokenAddress).toLowerCase())), amount, pooled));
     if (p.currentlyEarly) warnings.push("You are still inside this stake's early-exit window. The contract applies a penalty, which is not deducted here.");
     warnings.push("Pending staking rewards are not included.");
   } else if (pos.kind === "v2") {
@@ -468,12 +480,12 @@ export async function simulateExit(walletAddress, selfOwnedAddresses, positionKe
     const share = free.div(total).times(f);
     exitShare = share;
     for (const leg of p.legs) add(leg.tokenAddress, leg.symbol, new Decimal(leg.amount).times(share), 0);
-    costs.push(await costOfLots(lotsFor(closing.lots, String(p.tokenAddress).toLowerCase()), free.times(f)));
+    costs.push(await costOfLots(lotsFor(closing.lots, String(p.tokenAddress).toLowerCase()), free.times(f), pooled));
   } else if (pos.kind === "v3") {
     for (const leg of p.legs) add(leg.tokenAddress, leg.symbol, new Decimal(leg.amount).times(f), leg.pendingFees);
     const lots = lotsFor(closing.lots, `${POSITION_MANAGER_ADDRESS}:${p.tokenId}`);
     const held = lots.reduce((s, l) => s.plus(l.quantityRemaining), new Decimal(0));
-    costs.push(await costOfLots(lots, held.times(f)));
+    costs.push(await costOfLots(lots, held.times(f), pooled));
     if (p.inRange === false) warnings.push("This position is out of range right now, so it is entirely one token and earning no fees.");
   }
 

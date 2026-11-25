@@ -16,7 +16,8 @@ import { getPnlCategorySnapshotHistory, combineCategorySnapshotsByDate } from ".
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { checkAndStartIngestIfNeeded } from "../services/pnlIngestion.js";
 import { computeLivePnlSnapshot, combineLivePnlSnapshots, getSnapshotFast, normalizeCostModel } from "../services/pnlSnapshotService.js";
-import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots } from "../services/nftPnlService.js";
+import { computePooledWalletHistory, computePooledCategoryHistory, computePooledTokenHistory } from "../services/pooledHistoryService.js";
+import { computeLiveNftPnlSnapshot, combineLiveNftPnlSnapshots, withoutNftEtn } from "../services/nftPnlService.js";
 import { getRecentActivity } from "../services/recentActivityService.js";
 import { CATEGORIES } from "../services/categoryPnlService.js";
 import { computeTokenPnlHistory, combineTokenPnlHistory } from "../services/tokenPnlService.js";
@@ -64,6 +65,28 @@ const AUTH_PURPOSE = "Premium Dashboard"; // same literal every Core tier endpoi
 // build brief's own decision: pnl_snapshots is cheap enough to keep everything, so "all-time on
 // request" costs nothing extra to support, but the default should match the rest of the page).
 const DEFAULT_HISTORY_DAYS = 365;
+
+/** `days` query value -> the pooled window: null for the whole history, else a day count. */
+function pooledWindowDays(days) {
+  if (days === "all") return null;
+  return Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : DEFAULT_HISTORY_DAYS;
+}
+
+/** Pooled daily points for every wallet, flattened to the stored-rollup row shape (walletAddress +
+ * date + figures) so the existing combine helpers and per-wallet filters work unchanged. */
+async function pooledHistoryRows(addresses, windowDays, sinceDateStr, computeFn) {
+  const rows = [];
+  for (const address of addresses) {
+    const selfOwnedAddresses = addresses.filter((a) => a !== address);
+    try {
+      const points = await computeFn(address, selfOwnedAddresses, windowDays);
+      for (const p of points) if (p.date >= sinceDateStr) rows.push({ walletAddress: address, ...p });
+    } catch (err) {
+      console.error(`Pooled history computation failed for wallet ${address}:`, err);
+    }
+  }
+  return rows;
+}
 
 function requireAuthAndAccess(req, res, wallet, signature, timestamp) {
   try {
@@ -226,6 +249,7 @@ router.get("/premium/pnl-snapshot", async (req, res) => {
 // live price lookups at all, so there's no cold-start slowdown to scope around.
 router.get("/premium/nft-pnl", async (req, res) => {
   const { wallet, signature, timestamp } = req.query;
+  const costModel = normalizeCostModel(req.query.costModel);
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -236,7 +260,7 @@ router.get("/premium/nft-pnl", async (req, res) => {
 
   const active = await getCoveredWallets(wallet);
   if (active.length === 0) {
-    return res.json({ perWallet: [], combined: null, failed: [] });
+    return res.json({ perWallet: [], combined: null, failed: [], costModel });
   }
 
   try {
@@ -249,15 +273,16 @@ router.get("/premium/nft-pnl", async (req, res) => {
     for (const address of addresses) {
       const selfOwnedAddresses = addresses.filter((a) => a !== address);
       try {
-        const snapshot = await computeLiveNftPnlSnapshot(address, selfOwnedAddresses);
+        const snapshot = await computeLiveNftPnlSnapshot(address, selfOwnedAddresses, costModel);
         perWallet.push({ walletAddress: address, ...snapshot });
       } catch (err) {
         console.error(`NFT PnL computation failed for wallet ${address}:`, err);
         failed.push(address);
       }
     }
-    const combined = perWallet.length > 0 ? combineLiveNftPnlSnapshots(perWallet) : null;
-    res.json({ perWallet, combined, failed });
+    const combinedRaw = perWallet.length > 0 ? combineLiveNftPnlSnapshots(perWallet) : null;
+    const combined = combinedRaw && costModel === "pooled" ? withoutNftEtn(combinedRaw) : combinedRaw;
+    res.json({ perWallet, combined, failed, costModel });
   } catch (err) {
     console.error("NFT PnL computation failed:", err);
     res.status(502).json({ error: "Couldn't compute your NFT PnL right now — try again shortly" });
@@ -339,6 +364,7 @@ router.get("/premium/recent-activity", async (req, res) => {
 // either way, this table is a plain daily rollup, not a full replay.
 router.get("/premium/pnl-history", async (req, res) => {
   const { wallet, signature, timestamp, days } = req.query;
+  const costModel = normalizeCostModel(req.query.costModel);
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -358,7 +384,10 @@ router.get("/premium/pnl-history", async (req, res) => {
       : new Date(Date.now() - (Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : DEFAULT_HISTORY_DAYS) * 24 * 60 * 60 * 1000);
 
   const addresses = active.map((w) => w.address);
-  const rows = await getPnlSnapshotHistory(wallet, addresses, sinceDate.toISOString().slice(0, 10));
+  const sinceDateStr = sinceDate.toISOString().slice(0, 10);
+  const rows = costModel === "pooled"
+    ? await pooledHistoryRows(addresses, pooledWindowDays(days), sinceDateStr, computePooledWalletHistory)
+    : await getPnlSnapshotHistory(wallet, addresses, sinceDateStr);
   const combined = combineSnapshotsByDate(rows, addresses);
 
   const perWallet = addresses.map((address) => ({
@@ -377,6 +406,7 @@ router.get("/premium/pnl-history", async (req, res) => {
 // Staked & Farming Positions sections for live "right now" figures instead).
 router.get("/premium/pnl-category-history", async (req, res) => {
   const { wallet, signature, timestamp, category, days } = req.query;
+  const costModel = normalizeCostModel(req.query.costModel);
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -399,7 +429,10 @@ router.get("/premium/pnl-category-history", async (req, res) => {
       : new Date(Date.now() - (Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : DEFAULT_HISTORY_DAYS) * 24 * 60 * 60 * 1000);
 
   const addresses = active.map((w) => w.address);
-  const rows = await getPnlCategorySnapshotHistory(wallet, addresses, category, sinceDate.toISOString().slice(0, 10));
+  const sinceDateStr = sinceDate.toISOString().slice(0, 10);
+  const rows = costModel === "pooled"
+    ? await pooledHistoryRows(addresses, pooledWindowDays(days), sinceDateStr, (a, s, w) => computePooledCategoryHistory(a, s, category, w))
+    : await getPnlCategorySnapshotHistory(wallet, addresses, category, sinceDateStr);
   const combined = combineCategorySnapshotsByDate(rows, addresses);
 
   const perWallet = addresses.map((address) => ({
@@ -421,6 +454,7 @@ router.get("/premium/pnl-category-history", async (req, res) => {
 // first time a member selects a given token.
 router.get("/premium/pnl-token-history", async (req, res) => {
   const { wallet, signature, timestamp, tokenAddress, days } = req.query;
+  const costModel = normalizeCostModel(req.query.costModel);
   if (!wallet || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: "Query param wallet must be a valid address" });
   }
@@ -452,7 +486,9 @@ router.get("/premium/pnl-token-history", async (req, res) => {
   for (const address of addresses) {
     const selfOwnedAddresses = addresses.filter((a) => a !== address);
     try {
-      const points = await computeTokenPnlHistory(address, selfOwnedAddresses, tokenAddress, windowDays);
+      const points = costModel === "pooled"
+        ? await computePooledTokenHistory(address, selfOwnedAddresses, tokenAddress, windowDays)
+        : await computeTokenPnlHistory(address, selfOwnedAddresses, tokenAddress, windowDays);
       perWallet.push({ walletAddress: address, points });
     } catch (err) {
       console.error(`Token PnL history computation failed for wallet ${address}:`, err);

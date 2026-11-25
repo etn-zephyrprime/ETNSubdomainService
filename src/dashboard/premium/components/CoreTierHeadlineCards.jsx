@@ -134,7 +134,7 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
           .then((r) => !cancelled && onPnlSnapshot(r))
           .catch(() => !cancelled && setPnlError(true));
       }
-      getNftPnlSnapshot(wallet.account, signature, timestamp)
+      getNftPnlSnapshot(wallet.account, signature, timestamp, costModel)
         .then((r) => !cancelled && setNft(r))
         .catch(() => !cancelled && setNft(null));
     })();
@@ -155,6 +155,7 @@ export default function CoreTierHeadlineCards({ wallet, getAuthParams, hasAccess
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
         onPnlSnapshot(await getLiveSnapshot(wallet.account, signature, timestamp, undefined, costModel));
+        setNft(await getNftPnlSnapshot(wallet.account, signature, timestamp, costModel));
       } catch {
         // keep showing the current figures
       }

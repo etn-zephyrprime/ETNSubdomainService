@@ -43,7 +43,7 @@ export const CATEGORIES = { LIQUIDITY: "liquidity", FARM_STAKING: "farm_staking"
  * real fungible token address, and this app has no scenario where a genuine farm/staking token
  * (CORE, a farm's own token0/token1, a reward token) is ALSO an LP pool contract — so there's no
  * double-counting risk between the two, and a caller can safely treat the two Sets as disjoint. */
-async function resolveCategoryTokenKeys(events, defiActivity) {
+export async function resolveCategoryTokenKeys(events, defiActivity) {
   const candidates = new Set(events.map((e) => e.tokenAddress).filter(Boolean));
   const liquidity = new Set();
   for (const key of candidates) {

@@ -15,8 +15,8 @@ export function useNftPnlSnapshot() {
   // Same "real wait, not a poll tick" cost shape as usePnlSnapshot's getLiveSnapshot — a full
   // transfer-history walk + FIFO replay per wallet, just without any live pricing on top (NFT PnL
   // needs none — see nftPnlService.js's own header comment), so somewhat cheaper in practice.
-  const getNftPnlSnapshot = useCallback(async (wallet, signature, timestamp) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp });
+  const getNftPnlSnapshot = useCallback(async (wallet, signature, timestamp, costModel = "fifo") => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, costModel });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/nft-pnl?${params}`);
     await parseErrorOrThrow(res);
     return res.json(); // { perWallet, combined, failed: [address,...] }

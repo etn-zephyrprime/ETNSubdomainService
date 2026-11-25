@@ -25,6 +25,7 @@ import { getAllTransfersBefore } from "../db/ingestedTransfers.js";
 import { getIngestionState } from "../db/walletIngestionState.js";
 import { ingestWalletHistory } from "./pnlIngestion.js";
 import { replayFifo } from "./fifoLotEngine.js";
+import { replayPooled } from "./pooledCostEngine.js";
 import { buildNftEvents, convertRealizedEventsToEtn } from "./pnlEventBuilder.js";
 import { registerCache } from "../utils/boundedMap.js";
 import { runHeavy } from "../utils/heavyWork.js";
@@ -207,14 +208,16 @@ export function buildRollups(byToken, unmatchedCount) {
 const nftSnapshotCache = registerCache("nftPnlSnapshot", new Map()); // key -> { ingestionUpdatedAt, snapshot }
 const NFT_CACHE_MAX_ENTRIES = 24;
 
-export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresses = []) {
+export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresses = [], costModel = "fifo") {
+  const model = costModel === "pooled" ? "pooled" : "fifo";
   // Ensures this wallet's transfer history is ingested — cheap/no-op if already done (resumes from
   // last_ingested_block, same as computeLivePnlSnapshot's own call). No priorityAssets scoping: NFT
   // PnL needs no live price lookups at all (see this file's header comment), so there's no "slow
   // first computation" to speed up the way the fungible-token panel has.
   await ingestWalletHistory(trackedWallet, selfOwnedAddresses);
 
-  const cacheKey = `${trackedWallet.toLowerCase()}|${[...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",")}`;
+  const baseKey = `${trackedWallet.toLowerCase()}|${[...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",")}`;
+  const cacheKey = model === "pooled" ? `${baseKey}|pooled` : baseKey;
   const state = await getIngestionState(trackedWallet).catch(() => null);
   const updatedAtMs = state?.updated_at ? new Date(state.updated_at).getTime() : null;
   const cacheable = Boolean(state?.cold_start_completed_at);
@@ -225,7 +228,7 @@ export async function computeLiveNftPnlSnapshot(trackedWallet, selfOwnedAddresse
     return hit.snapshot;
   }
 
-  const snapshot = await buildLiveNftPnlSnapshot(trackedWallet);
+  const snapshot = await buildLiveNftPnlSnapshot(trackedWallet, model);
   if (cacheable) {
     nftSnapshotCache.delete(cacheKey);
     nftSnapshotCache.set(cacheKey, { ingestionUpdatedAt: updatedAtMs, snapshot });
@@ -239,16 +242,33 @@ function buildLiveNftPnlSnapshot(...args) {
   return runHeavy("buildLiveNftPnlSnapshot", () => buildLiveNftPnlSnapshotUnlimited(...args));
 }
 
-async function buildLiveNftPnlSnapshotUnlimited(trackedWallet) {
+async function buildLiveNftPnlSnapshotUnlimited(trackedWallet, model) {
   const now = new Date();
   const transfers = await getAllTransfersBefore(trackedWallet, now);
   const { events, unmatchedCount } = buildNftEvents(transfers);
   events.sort((a, b) => a.timestamp - b.timestamp); // buildNftEvents doesn't sort; FIFO needs chronological order
 
+  if (model === "pooled") {
+    // A pooled cost basis has no per-lot acquisition date, so the ETN conversion (which needs one) is not
+    // available. Those figures are nulled below rather than shown as zero.
+    const { closing } = replayPooled(events, now, now);
+    return withoutNftEtn(buildRollups(buildByToken(closing.lots, closing.realizedEvents, []), unmatchedCount));
+  }
   const { closing } = replayFifo(events, now, now);
   const realizedEventsEtn = await convertRealizedEventsToEtn(closing.realizedEvents);
   const byToken = buildByToken(closing.lots, closing.realizedEvents, realizedEventsEtn);
   return buildRollups(byToken, unmatchedCount);
+}
+
+/** Sets every ETN-denominated realized figure to null (top level, per collection, per token). Used
+ * when the cost basis has no ETN conversion (pooled), so the UI shows "unavailable" rather than 0. */
+export function withoutNftEtn(rollups) {
+  return {
+    ...rollups,
+    realizedPnlEtn: null,
+    byCollection: rollups.byCollection.map((c) => ({ ...c, realizedPnlEtn: null })),
+    byToken: rollups.byToken.map((t) => ({ ...t, realizedPnlEtn: null })),
+  };
 }
 
 /** Combines several wallets' own live NFT PnL snapshots into one — same shape/spirit as

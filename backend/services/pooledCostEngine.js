@@ -135,6 +135,86 @@ class PooledLedger {
 }
 
 /**
+ * Applies one event to a PooledLedger. Shared by replayPooled and replayPooledCheckpoints so the two
+ * never disagree on what an event does.
+ */
+function applyPooledEvent(ledger, event) {
+  switch (event.kind) {
+    case "in":
+    case "self_in":
+      ledger.acquire(event);
+      break;
+    case "out":
+      ledger.dispose(event);
+      break;
+    case "self_out":
+      ledger.removeForSelfTransfer(event);
+      break;
+    case "lock":
+      ledger.lock(event);
+      break;
+    case "unlock":
+      ledger.unlock(event);
+      break;
+    case "swap":
+      ledger.dispose({
+        tokenAddress: event.soldTokenAddress,
+        txHash: event.txHash,
+        timestamp: event.timestamp,
+        quantity: event.soldQuantity,
+        proceedsUsd: event.soldProceedsUsd,
+      });
+      ledger.acquire({
+        tokenAddress: event.boughtTokenAddress,
+        timestamp: event.timestamp,
+        quantity: event.boughtQuantity,
+        unitCostUsd: event.boughtUnitCostUsd,
+      });
+      break;
+    default:
+      throw new Error(`replayPooled: unknown event kind "${event.kind}"`);
+  }
+}
+
+/**
+ * Same contract as the FIFO checkpoint replay (see fifoLotEngine.js's replayFifoCheckpoints):
+ * one snapshot per checkpoint (each the exclusive end of a day), from a single pass. Each snapshot is
+ * { checkpoint, lots, realizedPnlUsdCumulative, newRealizedEvents }, where newRealizedEvents are only
+ * the events recorded since the previous checkpoint.
+ */
+export function replayPooledCheckpoints(events, checkpoints) {
+  const ledger = new PooledLedger();
+  const snapshots = [];
+  let checkpointIndex = 0;
+  let lastRealizedCount = 0;
+  const capture = (checkpoint) => {
+    const currentRealizedCount = ledger.realizedEvents.length;
+    snapshots.push({
+      checkpoint,
+      lots: ledger._lotsFrom(ledger.poolsByToken),
+      realizedPnlUsdCumulative: ledger.realizedPnlUsdTotal,
+      newRealizedEvents: ledger.realizedEvents.slice(lastRealizedCount, currentRealizedCount),
+    });
+    lastRealizedCount = currentRealizedCount;
+  };
+
+  for (const event of events) {
+    while (checkpointIndex < checkpoints.length && event.timestamp >= checkpoints[checkpointIndex]) {
+      capture(checkpoints[checkpointIndex]);
+      checkpointIndex++;
+    }
+    if (checkpointIndex >= checkpoints.length) break;
+    applyPooledEvent(ledger, event);
+  }
+  // Checkpoints past the last event still get an entry, holding the ledger's final state.
+  while (checkpointIndex < checkpoints.length) {
+    capture(checkpoints[checkpointIndex]);
+    checkpointIndex++;
+  }
+  return snapshots;
+}
+
+/**
  * Same contract as replayFifo (see fifoLotEngine.js): replays chronologically-sorted events and
  * returns { opening, closing } snapshots at periodStart and periodEnd. Same event kinds, including
  * 'swap', and the same "events at/after periodEnd are never applied" rule.
@@ -148,42 +228,7 @@ export function replayPooled(events, periodStart, periodEnd) {
     if (opening === null && event.timestamp >= periodStart) {
       opening = ledger.snapshot();
     }
-
-    switch (event.kind) {
-      case "in":
-      case "self_in":
-        ledger.acquire(event);
-        break;
-      case "out":
-        ledger.dispose(event);
-        break;
-      case "self_out":
-        ledger.removeForSelfTransfer(event);
-        break;
-      case "lock":
-        ledger.lock(event);
-        break;
-      case "unlock":
-        ledger.unlock(event);
-        break;
-      case "swap":
-        ledger.dispose({
-          tokenAddress: event.soldTokenAddress,
-          txHash: event.txHash,
-          timestamp: event.timestamp,
-          quantity: event.soldQuantity,
-          proceedsUsd: event.soldProceedsUsd,
-        });
-        ledger.acquire({
-          tokenAddress: event.boughtTokenAddress,
-          timestamp: event.timestamp,
-          quantity: event.boughtQuantity,
-          unitCostUsd: event.boughtUnitCostUsd,
-        });
-        break;
-      default:
-        throw new Error(`replayPooled: unknown event kind "${event.kind}"`);
-    }
+    applyPooledEvent(ledger, event);
   }
 
   if (opening === null) opening = ledger.snapshot();
