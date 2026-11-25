@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { TrendingUp, RefreshCw, Info } from "lucide-react";
 import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import SparklineChart from "../../components/SparklineChart.jsx";
 import { usePnlSnapshot } from "../../hooks/usePnlSnapshot.js";
+import { useCostBasisModel } from "../../utils/costBasisModel.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatChartDate, formatEtnAmount } from "../../utils/format.js";
@@ -61,6 +62,36 @@ export function pnlOverTimeValue(p, pnlSubMode) {
   if (pnlSubMode === "realized") return Number(p.realizedPnlUsd);
   if (pnlSubMode === "unrealized") return Number(p.unrealizedPnlUsd);
   return Number(p.realizedPnlUsd) + Number(p.unrealizedPnlUsd);
+}
+
+/** FIFO / Pooled average-cost switch for the live PnL figures (see utils/costBasisModel.js). */
+export function CostBasisToggle({ model, setModel }) {
+  return (
+    <div role="group" aria-label="Cost-basis method" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      {[{ key: "fifo", label: "FIFO" }, { key: "pooled", label: "Pooled" }].map((opt) => (
+        <button
+          key={opt.key}
+          type="button"
+          aria-pressed={model === opt.key}
+          onClick={() => setModel(opt.key)}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 6,
+            fontFamily: monoFont,
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: "pointer",
+            border: `1px solid ${model === opt.key ? green : border}`,
+            background: model === opt.key ? "rgba(24,187,26,0.12)" : "transparent",
+            color: model === opt.key ? green : mutedLight,
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+      <InfoTooltip text="FIFO sells your oldest units first. Pooled average cost costs every sale at your average purchase price. This changes the live figures (current value, unrealized, realized). History charts, category and token views, and NFT PnL stay FIFO. ETN-denominated figures are FIFO-only." />
+    </div>
+  );
 }
 
 /** The PnL/Value toggle buttons — one of two (otherwise identical) right-side header controls
@@ -143,14 +174,15 @@ function pickTokenFigures(snap, tokenFilter) {
       // trading actually growing the ETN I hold", which USD alone can't answer). Defaults to "0"
       // for a snapshot computed before this field existed, same convention realizedPnlUsd's own
       // per-token default already uses below.
-      realizedPnlEtn: snap.realizedPnlEtn ?? "0",
+      realizedPnlEtn: snap.realizedPnlEtn ?? null,
     };
   }
   const holding = snap.holdings?.find((h) => h.tokenAddress === tokenFilter);
   const currentValueUsd = holding?.marketValueUsd ?? null;
   const unrealizedPnlUsd = holding?.marketValueUsd != null ? String(Number(holding.marketValueUsd) - Number(holding.costBasisUsd)) : null;
   const realizedPnlUsd = snap.realizedByToken?.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlUsd ?? "0";
-  const realizedPnlEtn = snap.realizedByTokenEtn?.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlEtn ?? "0";
+  // null (not "0") when this view has no ETN basis at all — pooled cost — so it isn't shown as a real zero.
+  const realizedPnlEtn = snap.realizedByTokenEtn ? snap.realizedByTokenEtn.find((r) => r.tokenAddress === tokenFilter)?.realizedPnlEtn ?? "0" : null;
   return { currentValueUsd, unrealizedPnlUsd, realizedPnlUsd, realizedPnlEtn };
 }
 
@@ -242,6 +274,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   // all four Core Tier panels, and a filter the panels couldn't otherwise agree on).
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getLiveSnapshot, getHistory, getCategoryHistory, getTokenHistory } = usePnlSnapshot();
+  const [costModel, setCostModel] = useCostBasisModel();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
   const [snapshot, setSnapshot] = useState(null); // { perWallet, combined } | null
@@ -283,7 +316,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
       }
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        const res = await getLiveSnapshot(wallet.account, signature, timestamp, priorityTokens);
+        const res = await getLiveSnapshot(wallet.account, signature, timestamp, priorityTokens, costModel);
         setSnapshot(res);
         onSnapshot?.(res); // keeps the headline Net PnL card in step with a Refresh here
         // Seed the picker for any wallet that newly needs one — existing selections for a wallet
@@ -302,8 +335,18 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
         if (!silent) setSnapshotLoading(false);
       }
     },
-    [getAuthParams, getLiveSnapshot, wallet.account]
+    [getAuthParams, getLiveSnapshot, wallet.account, costModel]
   );
+
+  // Switching methods re-fetches the live snapshot (its own cache entry per method). Skips the first
+  // render, which the mount effect below already covers.
+  const costModelRef = useRef(costModel);
+  useEffect(() => {
+    if (costModelRef.current === costModel) return;
+    costModelRef.current = costModel;
+    if (hasAccess && active.length > 0) loadSnapshot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [costModel]);
 
   // While a reconnect's ingest is actually running (snapshot.ingesting — see
   // pnlSnapshotRouter.js's own response shape), re-poll for fresh progress numbers until it's
@@ -475,14 +518,17 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
       defaultCollapsed={false}
       headerRight={
         hasAccess && active.length > 0 && (
-          <DashboardButton
-            onClick={() => loadSnapshot()}
-            disabled={snapshotLoading}
-            style={{ background: "transparent", border: `1px solid ${border}`, color: mutedLight, boxShadow: "none", padding: "6px 12px", fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}
-          >
-            <RefreshCw size={12} />
-            {snapshotLoading ? "Refreshing…" : "Refresh"}
-          </DashboardButton>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <CostBasisToggle model={costModel} setModel={setCostModel} />
+            <DashboardButton
+              onClick={() => loadSnapshot()}
+              disabled={snapshotLoading}
+              style={{ background: "transparent", border: `1px solid ${border}`, color: mutedLight, boxShadow: "none", padding: "6px 12px", fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <RefreshCw size={12} />
+              {snapshotLoading ? "Refreshing…" : "Refresh"}
+            </DashboardButton>
+          </div>
         )
       }
     >
@@ -629,8 +675,8 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
                     <div style={{ fontSize: 22, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                       {fmtSigned(Number(figures.realizedPnlUsd))}
                     </div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: pnlColor(Number(figures.realizedPnlEtn)), marginTop: 2 }}>
-                      {fmtSignedEtn(Number(figures.realizedPnlEtn))}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: figures.realizedPnlEtn == null ? muted : pnlColor(Number(figures.realizedPnlEtn)), marginTop: 2 }}>
+                      {figures.realizedPnlEtn == null ? "ETN figures: FIFO only" : fmtSignedEtn(Number(figures.realizedPnlEtn))}
                     </div>
                     <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>
                       {tokenFilter === "all" ? "Since tracking began, net of gas" : "Since tracking began — gas isn't attributed per token"}

@@ -28,6 +28,7 @@ import { upsertPnlSnapshot, getExistingSnapshotDates } from "../db/pnlSnapshots.
 import { getPersistedPnlSnapshot, upsertPersistedPnlSnapshot } from "../db/pnlSnapshotCache.js";
 import { ingestWalletHistory, backfillDeferredPrices, POSITION_MANAGER_ADDRESS } from "./pnlIngestion.js";
 import { replayFifo, replayFifoCheckpoints } from "./fifoLotEngine.js";
+import { replayPooled } from "./pooledCostEngine.js";
 import { getBatchPricesUsd } from "../utils/tokenChartRouter.js";
 import { getEtnPriceCache } from "../state/etnPriceState.js";
 import { computeLivePositionValuation, addLockedPositionsToValuation } from "./pnlPositionValuation.js";
@@ -74,6 +75,20 @@ const SNAPSHOT_CACHE_TTL_MS = process.env.PNL_SNAPSHOT_CACHE_TTL_MS
 function snapshotCacheKey(trackedWallet, selfOwnedAddresses) {
   const selfOwnedKey = [...selfOwnedAddresses].map((a) => a.toLowerCase()).sort().join(",");
   return `${trackedWallet.toLowerCase()}|${selfOwnedKey}`;
+}
+
+// Live views can be costed FIFO (the default) or pooled average cost. FIFO keeps the original cache
+// keys, so entries saved before the toggle existed stay valid; only the pooled variant gets a suffix.
+export function normalizeCostModel(value) {
+  return value === "pooled" ? "pooled" : "fifo";
+}
+
+function methodCacheKey(key, costModel) {
+  return costModel === "pooled" ? `${key}|pooled` : key;
+}
+
+function copyClosing(closing) {
+  return { lots: closing.lots.slice(), lockedLots: closing.lockedLots.slice(), realizedEvents: closing.realizedEvents.slice() };
 }
 
 // V3 concentrated-liquidity positions use the exact same "address:tokenId" lot-key shape as an NFT
@@ -160,7 +175,8 @@ const inFlightLedgerBuilds = new Map(); // `${key}|${updatedAtMs}` -> Promise
  * deliberately partial view (see computeLivePnlSnapshot's SAFETY BOUNDARY comment).
  */
 
-export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], priorityAssets = null) {
+export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], priorityAssets = null, costModel = "fifo") {
+  const model = normalizeCostModel(costModel);
   const now = new Date();
   const state = await getIngestionState(trackedWallet).catch(() => null);
   const cacheable = Boolean(state?.cold_start_completed_at) && !priorityAssets;
@@ -175,7 +191,7 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
     if (hit && hit.ingestionUpdatedAt === updatedAtMs) {
       rememberLedger(key, hit);
       return {
-        closing: { lots: hit.closing.lots.slice(), lockedLots: hit.closing.lockedLots.slice(), realizedEvents: hit.closing.realizedEvents.slice() },
+        closing: copyClosing(hit.closingByModel[model]),
         gasTotalUsd: hit.gasTotalUsd,
         gasTotalEtn: hit.gasTotalEtn,
         asOf: now,
@@ -193,13 +209,14 @@ export async function getLedgerState(trackedWallet, selfOwnedAddresses = [], pri
     const built = await flight;
     // Same copy-out as a cache hit: callers must never share (and so mutate) one result's arrays.
     return {
-      closing: { lots: built.closing.lots.slice(), lockedLots: built.closing.lockedLots.slice(), realizedEvents: built.closing.realizedEvents.slice() },
+      closing: copyClosing(built.closingByModel[model]),
       gasTotalUsd: built.gasTotalUsd,
       gasTotalEtn: built.gasTotalEtn,
       asOf: now,
     };
   }
-  return buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, false, key, updatedAtMs);
+  const built = await buildLedger(trackedWallet, selfOwnedAddresses, priorityAssets, now, false, key, updatedAtMs);
+  return { closing: copyClosing(built.closingByModel[model]), gasTotalUsd: built.gasTotalUsd, gasTotalEtn: built.gasTotalEtn, asOf: now };
 }
 
 /** buildLedger, through the heavy-work gate (utils/heavyWork.js): it holds a wallet's full history in memory. */
@@ -213,17 +230,21 @@ async function buildLedgerUnlimited(trackedWallet, selfOwnedAddresses, priorityA
     console.warn(`⚠️  Ledger for ${trackedWallet}: ${unresolvedCount} DeFi event(s) couldn't be resolved (RPC?) — result used for this request but NOT cached, so the next one retries.`);
     cacheable = false;
   }
-  const { closing } = replayFifo(events, now, now);
+  // Both cost models replay the SAME event list (one ingest, one history read) — the pooled replay is
+  // in-memory work only, so offering the toggle doesn't add Supabase reads.
+  const { closing: fifoClosing } = replayFifo(events, now, now);
+  const { closing: pooledClosing } = replayPooled(events, now, now);
   const gas = await computeGasFeesUsd(transfers); // whole history — these views have no period to scope it to
-  const compact = { lots: closing.lots, lockedLots: closing.lockedLots || [], realizedEvents: closing.realizedEvents };
+  const compactOf = (closing) => ({ lots: closing.lots, lockedLots: closing.lockedLots || [], realizedEvents: closing.realizedEvents });
+  const closingByModel = { fifo: compactOf(fifoClosing), pooled: compactOf(pooledClosing) };
 
   // gas.totalGasEtn is the RAW ETN actually spent (gasFeeWei summed, no price conversion at all —
   // gas is paid in ETN directly, so this is exact, not an ETN-equivalent derived from a USD figure)
   // — threaded through alongside gasTotalUsd for computeLivePnlSnapshot's own ETN-denominated
   // realized P&L (see pnlEventBuilder.js's convertRealizedEventsToEtn), the same way gasTotalUsd
   // already nets against the USD figure there.
-  if (cacheable) rememberLedger(key, { ingestionUpdatedAt: updatedAtMs, closing: compact, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn });
-  return { closing: compact, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn, asOf: now };
+  if (cacheable) rememberLedger(key, { ingestionUpdatedAt: updatedAtMs, closingByModel, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn });
+  return { closingByModel, gasTotalUsd: gas.totalGasUsd, gasTotalEtn: gas.totalGasEtn, asOf: now };
 }
 
 /** The two parts Current Value is built from, before they're folded together: the open lots valued
@@ -298,7 +319,8 @@ async function fetchLivePricesUsd(lots) {
   return prices;
 }
 
-export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses = [], priorityTokens = null) {
+export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses = [], priorityTokens = null, costModel = "fifo") {
+  const model = normalizeCostModel(costModel);
   const now = new Date();
 
   const ingestionState = await getIngestionState(trackedWallet);
@@ -321,7 +343,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   // the cache and recomputing once more — one small redundant recompute in the (rare) "new data
   // just landed" case, in exchange for never risking a stale hit. A wallet with nothing new keeps
   // the exact same updated_at across requests, so the common case still hits the cache correctly.
-  const cacheKey = snapshotCacheKey(trackedWallet, selfOwnedAddresses);
+  const cacheKey = methodCacheKey(snapshotCacheKey(trackedWallet, selfOwnedAddresses), model);
   const ingestionUpdatedAtMs = ingestionState?.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
   if (!isColdStart) {
     const cached = snapshotCache.get(cacheKey);
@@ -338,7 +360,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
 
   // The ledger (lots + realized disposals + gas) — cached keyed on ingestion progress, see
   // getLedgerState. Only the LIVE PRICING below is recomputed on every snapshot.
-  const { closing, gasTotalUsd, gasTotalEtn } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets);
+  const { closing, gasTotalUsd, gasTotalEtn } = await getLedgerState(trackedWallet, selfOwnedAddresses, priorityAssets, model);
 
   // Live-priced tokens + live-valued liquidity/farm/stake positions, each against the ledger's own
   // cost basis (see pnlPositionValuation.js) — so Current Value and Unrealized P&L include the
@@ -369,7 +391,9 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
   // ETN-accretive). Same gross/net-of-gas and per-token split as the USD figures directly above,
   // for the exact same reasons — gasTotalEtn is the RAW ETN actually spent on gas (no price
   // conversion needed at all, see getLedgerState's own comment), not a USD-converted-back figure.
-  const realizedEventsEtn = await convertRealizedEventsToEtn(closing.realizedEvents);
+  // ETN-denominated figures need each lot's own acquisition-day ETN price, which only FIFO lots carry
+  // today. A pooled view has no per-lot ETN basis, so those figures are reported as null (not zero).
+  const realizedEventsEtn = model === "fifo" ? await convertRealizedEventsToEtn(closing.realizedEvents) : [];
   const realizedPnlEtnGross = realizedEventsEtn.reduce((sum, e) => sum.plus(e.realizedPnlEtn), new Decimal(0));
   const realizedPnlEtn = realizedPnlEtnGross.minus(gasTotalEtn);
   const realizedByTokenEtnMap = new Map(); // tokenAddress -> Decimal
@@ -395,6 +419,7 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     // groupNftHoldingsByCollection's own comment) — done once, this early, so every downstream
     // consumer (combineLivePnlSnapshots' own per-tokenAddress merge, the dashboard's token filter)
     // just sees a collection address like any other regular holdings row, no special-casing needed.
+    costModel: model,
     holdings: groupNftHoldingsByCollection(valuation.perToken, NFT_GROUPING_EXCLUSIONS),
     currentValueUsd: valuation.totalMarketValueUsd.toString(),
     unrealizedPnlUsd: valuation.totalUnrealizedUsd.toString(),
@@ -413,8 +438,8 @@ export async function computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses =
     // ETN-denominated realized P&L — see the comment above realizedPnlEtnGross for why this
     // exists ADDITIONALLY to every USD figure above, not instead of it. Same gross/net-of-gas and
     // per-token-grouped shape as their USD counterparts, for a consistent frontend.
-    realizedPnlEtn: realizedPnlEtn.toString(),
-    realizedByTokenEtn: groupNftRealizedByCollection(
+    realizedPnlEtn: model === "fifo" ? realizedPnlEtn.toString() : null,
+    realizedByTokenEtn: model !== "fifo" ? null : groupNftRealizedByCollection(
       [...realizedByTokenEtnMap.entries()].map(([tokenAddress, etn]) => ({ tokenAddress, realizedPnlEtn: etn.toString() })),
       NFT_GROUPING_EXCLUSIONS,
       "realizedPnlEtn"
@@ -463,12 +488,13 @@ const persistedMemo = registerCache("pnlPersistedMemo", new Map()); // cacheKey 
  * one paid the full FIFO-replay + live-pricing cost — a couple of minutes on screen — even though the
  * result had been computed and thrown away moments (or a day) earlier.
  */
-export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
+export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = [], costModel = "fifo") {
+  const model = normalizeCostModel(costModel);
   const ingestionState = await getIngestionState(trackedWallet).catch(() => null);
   // Cold start: computeLivePnlSnapshot deliberately does its own priority-scoped, never-cached thing.
   if (!ingestionState?.cold_start_completed_at) return null;
 
-  const cacheKey = snapshotCacheKey(trackedWallet, selfOwnedAddresses);
+  const cacheKey = methodCacheKey(snapshotCacheKey(trackedWallet, selfOwnedAddresses), model);
   const ingestionUpdatedAtMs = ingestionState.updated_at ? new Date(ingestionState.updated_at).getTime() : null;
   const cached = snapshotCache.get(cacheKey);
   if (cached && cached.ingestionUpdatedAt === ingestionUpdatedAtMs && Date.now() - cached.computedAt < SNAPSHOT_CACHE_TTL_MS) {
@@ -490,7 +516,7 @@ export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
     return { snapshot: cached.snapshot, refreshing: false };
   }
   if (!inFlightSnapshotRefresh.has(cacheKey)) {
-    const promise = computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses, null)
+    const promise = computeLivePnlSnapshot(trackedWallet, selfOwnedAddresses, null, model)
       .catch((err) => console.error(`⚠️  PnL snapshot: background refresh failed for ${trackedWallet}:`, err.message))
       .finally(() => {
         inFlightSnapshotRefresh.delete(cacheKey);
@@ -509,7 +535,6 @@ export async function getSnapshotFast(trackedWallet, selfOwnedAddresses = []) {
 export function combineLivePnlSnapshots(snapshots) {
   const holdingsByToken = new Map(); // tokenAddress -> { tokenAddress, quantity: Decimal, costBasisUsd: Decimal, marketValueUsd: Decimal|null }
   const realizedByTokenMap = new Map(); // tokenAddress -> Decimal
-  const realizedByTokenEtnMap = new Map(); // tokenAddress -> Decimal
   let currentValueUsd = new Decimal(0);
   let unrealizedPnlUsd = new Decimal(0);
   let realizedPnlUsd = new Decimal(0);
@@ -517,6 +542,10 @@ export function combineLivePnlSnapshots(snapshots) {
   let gasUsd = new Decimal(0);
   let gasEtn = new Decimal(0);
   let pricingIncomplete = false;
+  // A combined ETN figure is only honest when every wallet has one — a pooled wallet has none, so mixing
+  // would silently read as zero. Null then, same as the individual snapshots.
+  const etnAvailable = snapshots.every((s) => s.realizedPnlEtn != null);
+  const realizedByTokenEtnMap = new Map();
 
   for (const snap of snapshots) {
     currentValueUsd = currentValueUsd.plus(snap.currentValueUsd);
@@ -567,13 +596,14 @@ export function combineLivePnlSnapshots(snapshots) {
       marketValueUsd: h.marketValueUsd?.toString() ?? null,
     })),
     realizedByToken: [...realizedByTokenMap.entries()].map(([tokenAddress, usd]) => ({ tokenAddress, realizedPnlUsd: usd.toString() })),
-    realizedByTokenEtn: [...realizedByTokenEtnMap.entries()].map(([tokenAddress, etn]) => ({ tokenAddress, realizedPnlEtn: etn.toString() })),
+    realizedByTokenEtn: etnAvailable ? [...realizedByTokenEtnMap.entries()].map(([tokenAddress, etn]) => ({ tokenAddress, realizedPnlEtn: etn.toString() })) : null,
     currentValueUsd: currentValueUsd.toString(),
     unrealizedPnlUsd: unrealizedPnlUsd.toString(),
     realizedPnlUsd: realizedPnlUsd.toString(),
-    realizedPnlEtn: realizedPnlEtn.toString(),
+    realizedPnlEtn: etnAvailable ? realizedPnlEtn.toString() : null,
     gasUsd: gasUsd.toString(),
     gasEtn: gasEtn.toString(),
+    costModel: snapshots[0]?.costModel ?? "fifo",
     pricingIncomplete,
   };
 }
