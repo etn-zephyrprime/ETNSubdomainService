@@ -23,11 +23,11 @@ export function useScenarios() {
   }, []);
 
   // shocks: { etnPct, allTokensPct, tokenPct: { [token]: pct } }; scope: "all" | wallet address
-  const runStressTest = useCallback(async (wallet, signature, timestamp, { scope, shocks }) => {
+  const runStressTest = useCallback(async (wallet, signature, timestamp, { scope, shocks, costModel = "fifo" }) => {
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/scenarios/stress`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wallet, signature, timestamp, scope, shocks }),
+      body: JSON.stringify({ wallet, signature, timestamp, scope, shocks, costModel }),
     });
     await parseErrorOrThrow(res);
     return res.json();

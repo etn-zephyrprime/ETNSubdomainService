@@ -203,7 +203,7 @@ router.get("/premium/what-if-holdings", async (req, res) => {
     if (!addresses.includes(target)) {
       return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
     }
-    res.json(await listSellableHoldings(target, addresses.filter((a) => a !== target))); // { tokens, positions }
+    res.json(await listSellableHoldings(target, addresses.filter((a) => a !== target), req.query.costModel === "pooled" ? "pooled" : "fifo")); // { tokens, positions }
   } catch (err) {
     console.error("What-if holdings lookup failed:", err);
     res.status(500).json({ error: "Couldn't load this wallet's holdings" });
@@ -267,7 +267,7 @@ router.post("/premium/scenarios/stress", async (req, res) => {
       if (!addresses.includes(one)) return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
       targets = [one];
     }
-    res.json(await runStressTest(targets, addresses, shocks || {}));
+    res.json(await runStressTest(targets, addresses, shocks || {}, req.body?.costModel === "pooled" ? "pooled" : "fifo"));
   } catch (err) {
     if (err instanceof StressInputError) return res.status(400).json({ error: err.message });
     console.error("Stress test failed:", err);
@@ -379,7 +379,7 @@ router.post("/premium/what-if-exit", async (req, res) => {
     if (!addresses.includes(target)) {
       return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
     }
-    res.json(await simulateExit(target, addresses.filter((a) => a !== target), positionKey, exitPct, sellToEtn !== false));
+    res.json(await simulateExit(target, addresses.filter((a) => a !== target), positionKey, exitPct, sellToEtn !== false, req.body?.costModel === "pooled" ? "pooled" : "fifo"));
   } catch (err) {
     if (err instanceof WhatIfInputError) return res.status(400).json({ error: err.message });
     console.error("What-if exit simulation failed:", err);
@@ -413,7 +413,7 @@ router.post("/premium/what-if-sell", async (req, res) => {
     if (!addresses.includes(target)) {
       return res.status(403).json({ error: "That wallet isn't one of your tracked wallets" });
     }
-    const result = await simulateSell(target, addresses.filter((a) => a !== target), tokenAddress, quantity);
+    const result = await simulateSell(target, addresses.filter((a) => a !== target), tokenAddress, quantity, req.body?.costModel === "pooled" ? "pooled" : "fifo");
     res.json(result);
   } catch (err) {
     if (err instanceof WhatIfInputError) return res.status(400).json({ error: err.message });

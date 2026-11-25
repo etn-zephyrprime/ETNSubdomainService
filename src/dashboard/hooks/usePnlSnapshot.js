@@ -34,8 +34,8 @@ export function usePnlSnapshot() {
     return res.json(); // { perWallet, combined, failed: [address,...], needsSelection: [{walletAddress, availableTokens}] }
   }, []);
 
-  const getHistory = useCallback(async (wallet, signature, timestamp, days) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp, ...(days ? { days: String(days) } : {}) });
+  const getHistory = useCallback(async (wallet, signature, timestamp, days, costModel = "fifo") => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, costModel, ...(days ? { days: String(days) } : {}) });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-history?${params}`);
     await parseErrorOrThrow(res);
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}] }
@@ -43,8 +43,8 @@ export function usePnlSnapshot() {
 
   // Same shape as getHistory above, scoped to one category ("liquidity" or "farm_staking" — see
   // categoryPnlService.js's own CATEGORIES) — /premium/pnl-category-history.
-  const getCategoryHistory = useCallback(async (wallet, signature, timestamp, category, days) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp, category, ...(days ? { days: String(days) } : {}) });
+  const getCategoryHistory = useCallback(async (wallet, signature, timestamp, category, days, costModel = "fifo") => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, category, costModel, ...(days ? { days: String(days) } : {}) });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-category-history?${params}`);
     await parseErrorOrThrow(res);
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}] }
@@ -62,8 +62,8 @@ export function usePnlSnapshot() {
     return res.json(); // { perWallet: [{ walletAddress, positions: [{ id, kind, category, label, token0, token1, open, points: [{date, amount0, amount1}] }], skipped }], failed }
   }, []);
 
-  const getTokenHistory = useCallback(async (wallet, signature, timestamp, tokenAddress, days) => {
-    const params = new URLSearchParams({ wallet, signature, timestamp, tokenAddress, ...(days ? { days: String(days) } : {}) });
+  const getTokenHistory = useCallback(async (wallet, signature, timestamp, tokenAddress, days, costModel = "fifo") => {
+    const params = new URLSearchParams({ wallet, signature, timestamp, tokenAddress, costModel, ...(days ? { days: String(days) } : {}) });
     const res = await fetch(`${PNL_BACKEND_URL}/api/premium/pnl-token-history?${params}`);
     await parseErrorOrThrow(res);
     return res.json(); // { perWallet: [{walletAddress, points}], combined: [{date, totalValueUsd, realizedPnlUsd, unrealizedPnlUsd}], failed: [address,...] }

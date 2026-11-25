@@ -3,7 +3,7 @@
 // zero-cost shortfall and farm lock/unlock behavior it must share with FIFO.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { replayPooled } from "../services/pooledCostEngine.js";
+import { replayPooled, replayPooledCheckpoints } from "../services/pooledCostEngine.js";
 import { replayFifo } from "../services/fifoLotEngine.js";
 
 const START = new Date("2025-01-01T00:00:00Z");
@@ -87,4 +87,19 @@ test("opening inventory reflects only events before periodStart", () => {
   const { opening, closing } = replayPooled(averageExample, at(4), END);
   assert.equal(opening.lots[0].quantityRemaining.toString(), "20");
   assert.equal(closing.lots[0].quantityRemaining.toString(), "15");
+});
+
+test("checkpoint replay matches a point-in-time replay at each day end", () => {
+  const snapshots = replayPooledCheckpoints(averageExample, [at(4), at(5)]);
+  assert.equal(snapshots[0].lots[0].quantityRemaining.toString(), "20");
+  assert.equal(snapshots[0].newRealizedEvents.length, 0);
+  assert.equal(snapshots[1].lots[0].quantityRemaining.toString(), "15");
+  assert.equal(snapshots[1].newRealizedEvents.length, 1);
+  assert.equal(snapshots[1].realizedPnlUsdCumulative.toString(), "10");
+});
+
+test("checkpoints past the last event still get a snapshot of the final state", () => {
+  const snapshots = replayPooledCheckpoints(averageExample, [at(10)]);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].lots[0].quantityRemaining.toString(), "15");
 });

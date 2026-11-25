@@ -344,7 +344,10 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
   useEffect(() => {
     if (costModelRef.current === costModel) return;
     costModelRef.current = costModel;
-    if (hasAccess && active.length > 0) loadSnapshot();
+    if (hasAccess && active.length > 0) {
+      loadSnapshot();
+      loadHistory();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [costModel]);
 
@@ -382,12 +385,12 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     setHistoryError(null);
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-      const res = await getHistory(wallet.account, signature, timestamp);
+      const res = await getHistory(wallet.account, signature, timestamp, undefined, costModel);
       setHistory(res);
     } catch (err) {
       setHistoryError(err.message || "Couldn't load PnL history");
     }
-  }, [getAuthParams, getHistory, wallet.account]);
+  }, [getAuthParams, getHistory, wallet.account, costModel]);
 
   useEffect(() => {
     if (!hasAccess || active.length === 0) {
@@ -411,7 +414,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     (async () => {
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        const res = await getCategoryHistory(wallet.account, signature, timestamp, selectedCategory);
+        const res = await getCategoryHistory(wallet.account, signature, timestamp, selectedCategory, undefined, costModel);
         if (!cancelled) setCategoryHistory(res);
       } catch (err) {
         if (!cancelled) setCategoryHistoryError(err.message || "Couldn't load category PnL history");
@@ -421,7 +424,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     // Not keyed on getAuthParams: it's rebuilt on every parent render (see CoreTierGasSpend.jsx's
     // load effect), which re-fetched on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAccess, active, selectedCategory]);
+  }, [hasAccess, active, selectedCategory, costModel]);
 
   // A per-wallet snapshot entry has the exact same shape as the combined one (perWallet.push in
   // pnlSnapshotRouter.js spreads the full snapshot alongside walletAddress) — same for a
@@ -481,7 +484,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
     (async () => {
       try {
         const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-        const res = await getTokenHistory(wallet.account, signature, timestamp, tokenFilter);
+        const res = await getTokenHistory(wallet.account, signature, timestamp, tokenFilter, undefined, costModel);
         if (!cancelled) setTokenHistory(res);
       } catch (err) {
         if (!cancelled) setTokenHistoryError(err.message || "Couldn't load this token's PnL history");
@@ -490,7 +493,7 @@ export default function CoreTierPnl({ wallet, getAuthParams, onSelectToken, core
       }
     })();
     return () => { cancelled = true; };
-  }, [hasAccess, active, getAuthParams, getTokenHistory, wallet.account, tokenFilter]);
+  }, [hasAccess, active, getAuthParams, getTokenHistory, wallet.account, tokenFilter, costModel]);
 
   const mainChartHistory =
     tokenFilter === "all"

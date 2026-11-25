@@ -4,6 +4,7 @@ import CollapsibleCoreTierPanel from "./CollapsibleCoreTierPanel.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import CoreTierGate from "./CoreTierGate.jsx";
 import { useNftPnlSnapshot } from "../../hooks/useNftPnlSnapshot.js";
+import { useCostBasisModel } from "../../utils/costBasisModel.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { useTokenNames } from "../../hooks/useTokenNames.js";
 import { formatUsdPrice, formatEtnAmount } from "../../utils/format.js";
@@ -46,6 +47,7 @@ function fmtDate(v) {
 export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, walletFilter }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getNftPnlSnapshot } = useNftPnlSnapshot();
+  const [costModel] = useCostBasisModel();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
   const [snapshot, setSnapshot] = useState(null); // { perWallet, combined } | null
@@ -57,14 +59,14 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
     setSnapshotError(null);
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-      const res = await getNftPnlSnapshot(wallet.account, signature, timestamp);
+      const res = await getNftPnlSnapshot(wallet.account, signature, timestamp, costModel);
       setSnapshot(res);
     } catch (err) {
       setSnapshotError(err.message || "Couldn't compute your NFT PnL");
     } finally {
       setSnapshotLoading(false);
     }
-  }, [getAuthParams, getNftPnlSnapshot, wallet.account]);
+  }, [getAuthParams, getNftPnlSnapshot, wallet.account, costModel]);
 
   useEffect(() => {
     if (!hasAccess || active.length === 0) {
@@ -73,7 +75,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
     }
     loadSnapshot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAccess, active]);
+  }, [hasAccess, active, costModel]);
 
   // Same per-wallet-entry-has-the-combined-shape convention as CoreTierPnl.jsx's own walletFilter
   // handling — a drop-in swap, nothing downstream needs to know which it's looking at.
@@ -102,7 +104,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           // pnlEventBuilder.js's convertRealizedEventsToEtn for why ("is my NFT trading actually
           // growing the ETN I hold"). Defaults to "0" for a snapshot computed before this field
           // existed, same convention this file's own realizedPnlUsd fields already assume.
-          realizedPnlEtn: combined.realizedPnlEtn ?? "0",
+          realizedPnlEtn: combined.realizedPnlEtn ?? null,
           heldCount: combined.heldTokenCount,
           soldCount: combined.soldTokenCount,
         }
@@ -110,7 +112,7 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
           costBasisUsd: (Number(scopeCollection.heldCostBasisUsd) + Number(scopeCollection.soldCostBasisUsd)).toString(),
           proceedsUsd: scopeCollection.proceedsUsd,
           realizedPnlUsd: scopeCollection.realizedPnlUsd,
-          realizedPnlEtn: scopeCollection.realizedPnlEtn ?? "0",
+          realizedPnlEtn: scopeCollection.realizedPnlEtn ?? null,
           heldCount: scopeCollection.heldTokenCount,
           soldCount: scopeCollection.soldTokenCount,
         };
@@ -236,8 +238,8 @@ export default function CoreTierNftPnl({ wallet, getAuthParams, coreTierAccess, 
                           <div style={{ fontSize: 20, fontWeight: 900, color: pnlColor(Number(figures.realizedPnlUsd)) }}>
                             {fmtSigned(Number(figures.realizedPnlUsd))}
                           </div>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: pnlColor(Number(figures.realizedPnlEtn)) }}>
-                            {fmtSignedEtn(Number(figures.realizedPnlEtn))}
+                          <div style={{ fontSize: 12, fontWeight: 700, color: figures.realizedPnlEtn == null ? muted : pnlColor(Number(figures.realizedPnlEtn)) }}>
+                            {figures.realizedPnlEtn == null ? "ETN: FIFO only" : fmtSignedEtn(Number(figures.realizedPnlEtn))}
                           </div>
                         </div>
                         <div>

@@ -5,6 +5,7 @@ import CoreTierGate from "./CoreTierGate.jsx";
 import DashboardButton from "./DashboardButton.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useWhatIfSimulator } from "../../hooks/useWhatIfSimulator.js";
+import { useCostBasisModel } from "../../utils/costBasisModel.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { formatUsdPrice, formatEtnAmount } from "../../utils/format.js";
 import { green, muted, mutedLight, orange, border, panel2, error as errorColor, monoFont } from "../../theme.js";
@@ -55,6 +56,7 @@ const dateFmt = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "num
 export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, walletFilter, embedded = false }) {
   const { hasAccess, accessError, awaitingActivation, manualCheckLoading, active, checkAccessOnce } = coreTierAccess;
   const { getSellableHoldings, simulateSell, simulateExit } = useWhatIfSimulator();
+  const [costModel] = useCostBasisModel();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
 
   const [simWallet, setSimWallet] = useState(null);
@@ -82,12 +84,12 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
     setHoldingsError(null);
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
-      const res = await getSellableHoldings(wallet.account, signature, timestamp, address);
+      const res = await getSellableHoldings(wallet.account, signature, timestamp, address, costModel);
       setHoldings({ tokens: res.tokens || [], positions: res.positions || [] });
     } catch (err) {
       setHoldingsError(err.message || "Couldn't load this wallet's holdings");
     }
-  }, [getAuthParams, getSellableHoldings, wallet.account]);
+  }, [getAuthParams, getSellableHoldings, wallet.account, costModel]);
 
   // Keyed on the chosen wallet only — NOT loadHoldings, whose identity follows getAuthParams, which
   // is rebuilt on every parent render (see CoreTierGasSpend.jsx's load effect): depending on it
@@ -100,7 +102,7 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
     setPositionKey("");
     loadHoldings(simWallet);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simWallet]);
+  }, [simWallet, costModel]);
 
   const selectedToken = useMemo(() => (holdings?.tokens || []).find((h) => h.tokenAddress === token) || null, [holdings, token]);
   const selectedPosition = useMemo(() => (holdings?.positions || []).find((p) => p.key === positionKey) || null, [holdings, positionKey]);
@@ -127,8 +129,8 @@ export default function CoreTierWhatIf({ wallet, getAuthParams, coreTierAccess, 
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
       const r =
         mode === "token"
-          ? await simulateSell(wallet.account, signature, timestamp, { walletAddress: simWallet, tokenAddress: selectedToken.tokenAddress, quantity: String(quantity) })
-          : await simulateExit(wallet.account, signature, timestamp, { walletAddress: simWallet, positionKey, exitPct: Number(exitPct), sellToEtn });
+          ? await simulateSell(wallet.account, signature, timestamp, { walletAddress: simWallet, tokenAddress: selectedToken.tokenAddress, quantity: String(quantity), costModel })
+          : await simulateExit(wallet.account, signature, timestamp, { walletAddress: simWallet, positionKey, exitPct: Number(exitPct), sellToEtn, costModel });
       setResult({ mode, data: r });
     } catch (err) {
       setResult(null);
@@ -294,7 +296,7 @@ export function SellResult({ result }) {
         <Callout>This sale is large for the pool — splitting it up or selling over time would likely get a better price.</Callout>
       )}
       <div style={{ fontSize: 11, color: mutedLight, lineHeight: 1.7 }}>
-        {ls?.count > 0 && <>From {ls.count} purchase{ls.count === 1 ? "" : "s"} ({dateFmt(ls.firstAcquiredAt)}{ls.firstAcquiredAt !== ls.lastAcquiredAt ? ` – ${dateFmt(ls.lastAcquiredAt)}` : ""}), held ~{ls.avgDaysHeld} days · </>}
+        {ls?.count > 0 && (ls.firstAcquiredAt ? <>From {ls.count} purchase{ls.count === 1 ? "" : "s"} ({dateFmt(ls.firstAcquiredAt)}{ls.firstAcquiredAt !== ls.lastAcquiredAt ? ` – ${dateFmt(ls.lastAcquiredAt)}` : ""}){ls.avgDaysHeld != null ? `, held ~${ls.avgDaysHeld} days` : ""} · </> : <>Pooled average cost from {ls.count} holding{ls.count === 1 ? "" : "s"} · </>)}
         {shortQty(result.remaining.quantity)} {symbol} left · gas {result.gas ? `≈ ${smallUsdFmt(Number(result.gas.usd))}` : "n/a"}
         {alt && <> · the other pool pays {etnFmt(Number(alt.etnOut))}</>}
       </div>
@@ -345,7 +347,7 @@ export function ExitResult({ result }) {
         {il != null && <Kpi label="Impermanent loss" value={`${il.toFixed(2)}%`} sub={holdUsd != null && holdUsd < 0 ? `holding would be +${usdShort(Math.abs(holdUsd))}` : "included above"} tone={il < -1 ? "warn" : undefined} />}
       </KpiRow>
       <div style={{ fontSize: 11, color: mutedLight }}>
-        {result.lotsSummary?.count > 0 && <>Releases {result.lotsSummary.count} purchase{result.lotsSummary.count === 1 ? "" : "s"}, held ~{result.lotsSummary.avgDaysHeld} days · </>}
+        {result.lotsSummary?.count > 0 && <>Releases {result.lotsSummary.count} purchase{result.lotsSummary.count === 1 ? "" : "s"}{result.lotsSummary.avgDaysHeld != null ? `, held ~${result.lotsSummary.avgDaysHeld} days` : " (pooled average cost)"} · </>}
         gas {result.gas ? `≈ ${smallUsdFmt(Number(result.gas.usd))}${result.gas.swaps ? ` (withdraw + ${result.gas.swaps} sale${result.gas.swaps === 1 ? "" : "s"})` : ""}` : "n/a"}
       </div>
       <WarningList warnings={result.warnings} />

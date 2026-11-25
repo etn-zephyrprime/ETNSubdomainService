@@ -102,8 +102,8 @@ async function v3Tokens(positionKey) {
 }
 
 /** One wallet's components, unpriced holdings, pending rewards and the live Current Value they sum to. */
-async function buildWalletComponents(wallet, selfOwnedAddresses) {
-  const { closing } = await getLedgerState(wallet, selfOwnedAddresses, null);
+async function buildWalletComponents(wallet, selfOwnedAddresses, costModel = "fifo") {
+  const { closing } = await getLedgerState(wallet, selfOwnedAddresses, null, costModel);
   const [{ openValuation, positions }, defi] = await Promise.all([
     computeLiveValuationParts(wallet, closing),
     getOpenDefiPositionsUsd(wallet).catch(() => ({ positions: [] })),
@@ -219,7 +219,7 @@ async function tokenUsdPrice(token, etnUsd) {
  * Runs the stress test for `wallets` (one tracked wallet, or all of a member's) — each valued with the
  * member's other tracked wallets as self-owned, exactly like the PnL page. Read-only.
  */
-export async function runStressTest(wallets, allCoveredAddresses, rawShocks) {
+export async function runStressTest(wallets, allCoveredAddresses, rawShocks, costModel = "fifo") {
   const shocks = normalizeShocks(rawShocks);
   const etnCache = await getEtnPriceCache();
   if (etnCache?.usd == null) throw new Error("ETN/USD price isn't available right now — try again shortly");
@@ -227,7 +227,7 @@ export async function runStressTest(wallets, allCoveredAddresses, rawShocks) {
   const etnMult = 1 + shocks.etnPct / 100;
 
   const parts = [];
-  for (const w of wallets) parts.push(await buildWalletComponents(w, allCoveredAddresses.filter((a) => a !== w)));
+  for (const w of wallets) parts.push(await buildWalletComponents(w, allCoveredAddresses.filter((a) => a !== w), costModel));
   const components = parts.flatMap((p) => p.components);
   const stressed = stressComponents(components, shocks);
 

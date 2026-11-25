@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import DashboardButton from "./DashboardButton.jsx";
 import InfoTooltip from "../../components/InfoTooltip.jsx";
 import { useScenarios } from "../../hooks/useScenarios.js";
+import { useCostBasisModel } from "../../utils/costBasisModel.js";
 import { useDisplayNames } from "../../hooks/useDisplayNames.js";
 import { formatUsdPrice } from "../../utils/format.js";
 import { muted, mutedLight, border, error as errorColor, monoFont } from "../../theme.js";
@@ -40,6 +41,7 @@ const pctOf = (from, to) => (from > 0 ? ((to - from) / from) * 100 : null);
 /** Scenarios — Tool 1, portfolio stress test (backend/services/scenarioStressTest.js). */
 export default function CoreTierStressTest({ wallet, getAuthParams, active }) {
   const { runStressTest } = useScenarios();
+  const [costModel] = useCostBasisModel();
   const { resolve: resolveWalletName } = useDisplayNames(active.map((w) => w.address));
   const [scope, setScope] = useState("all");
   const [etnPct, setEtnPct] = useState("-30");
@@ -55,7 +57,7 @@ export default function CoreTierStressTest({ wallet, getAuthParams, active }) {
     try {
       const { signature, timestamp } = await getAuthParams(AUTH_PURPOSE);
       const overrides = Object.fromEntries(Object.entries(tokenPct).filter(([, v]) => v !== "" && v != null));
-      setResult(await runStressTest(wallet.account, signature, timestamp, { scope, shocks: { etnPct, allTokensPct: allPct, tokenPct: overrides } }));
+      setResult(await runStressTest(wallet.account, signature, timestamp, { scope, costModel, shocks: { etnPct, allTokensPct: allPct, tokenPct: overrides } }));
     } catch (err) {
       setError(err.message || "Couldn't run the stress test");
     } finally {
