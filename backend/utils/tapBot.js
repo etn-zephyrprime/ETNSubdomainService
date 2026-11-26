@@ -94,7 +94,9 @@ async function sendDonation(ctx, chatId) {
   form.append(
     "caption",
     `💰 <b>Donate ETN to keep the taps going</b>\n\n<code>${ctx.wallet.address}</code>\n\n` +
-      `Scan the QR code or send ETN on Electroneum to the address above.`,
+      `Scan the QR code or send ETN on Electroneum to the address above.\n\n` +
+      `⚠️ <b>Disclaimer:</b> this is a plain ETN transfer to a wallet, not a smart contract. ` +
+      `Donations are not refundable or guaranteed. Send at your own risk.`,
   );
   form.append("reply_markup", JSON.stringify(MENU_KEYBOARD));
   form.append("photo", new Blob([png], { type: "image/png" }), "donate.png");
