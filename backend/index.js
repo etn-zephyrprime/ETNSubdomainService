@@ -48,6 +48,7 @@ import { startCoreClashNftMintWatcher } from "./utils/coreClashNftMintWatcher.js
 import { startCoreClashNftSaleWatcher } from "./utils/coreClashNftSaleWatcher.js";
 import { startCoreClashAdvertScheduler } from "./utils/coreClashAdvertScheduler.js";
 import { startCoreClashDripBot } from "./utils/coreClashDripBot.js";
+import { startTapBot } from "./utils/tapBot.js";
 import { startPremiumSubscriptionWatcher } from "./utils/premiumSubscriptionWatcher.js";
 import { startPnlAutoFinalizeScheduler } from "./utils/pnlAutoFinalizeScheduler.js";
 import { startPnlSplitExecutionScheduler } from "./utils/pnlSplitExecutionScheduler.js";
@@ -185,6 +186,7 @@ app.listen(PORT, () => {
   // uncommenting this line. File/logic untouched; this only stops it from starting at all.
   // safeStart("Core Clash advert scheduler", startCoreClashAdvertScheduler);
   safeStart("Core Clash drip bot", startCoreClashDripBot);
+  safeStart("Tap bot", startTapBot);
 
   // Premium Feature #1 (per-wallet PnL statements) — see backend/services/pnlStatementGenerator.js
   // and the PremiumSubscription contract in the PlanetZephyros repo. All three no-op cleanly if
