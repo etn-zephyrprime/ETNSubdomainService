@@ -5,16 +5,32 @@
 // QR code so people can top the wallet up. When the wallet can't cover gas, taps are refused and
 // the donate prompt is shown instead.
 //
+// Taps, gas burned, and the leaderboard are stored in Postgres (migration 039_tap_bot_taps.sql).
+// Without DATABASE_URL the bot still taps; it just omits the counters and leaderboard.
+//
 // Uses long-polling (getUpdates) so it needs no public webhook URL. It needs its own bot token: a
 // token that already has a webhook set elsewhere will make getUpdates fail with a 409 conflict.
 import { ethers } from "ethers";
 import QRCode from "qrcode";
 import { createRpcProvider } from "./rpcProvider.js";
+import { recordTap, setTapGas, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 const TAP_GAS_LIMIT = 21000n;
 const POLL_TIMEOUT_SECONDS = 30;
+const MILESTONE_EVERY = 1000;
+const FLAIR_CHANCE = 0.2;
+const FUEL_FULL_ETN = Number(process.env.TAP_FUEL_FULL_ETN || 100);
+
+const FLAIR = [
+  "🐉 The dragon approves.",
+  "🚀 To the moon (of gas).",
+  "🧯 Fire contained. For now.",
+  "🪙 Every tap is a tiny ETN send-off.",
+  "🕹️ Tap responsibly.",
+  "🌋 Eruption level: minor.",
+];
 
 const MENU_KEYBOARD = {
   inline_keyboard: [
@@ -30,6 +46,9 @@ function enqueue(fn) {
   sendQueue = run.catch(() => {});
   return run;
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 async function callApi(token, method, body) {
   const res = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
@@ -50,6 +69,20 @@ function sendText(token, chatId, text, replyMarkup = MENU_KEYBOARD) {
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: replyMarkup,
+  });
+}
+
+function editText(token, chatId, messageId, text, replyMarkup = MENU_KEYBOARD) {
+  return callApi(token, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    reply_markup: replyMarkup,
+  }).catch((err) => {
+    // Telegram rejects an edit that changes nothing; that's harmless here.
+    if (!/not modified/.test(err.message)) throw err;
   });
 }
 
@@ -74,7 +107,14 @@ async function sendDonation(ctx, chatId) {
   if (!data.ok) throw new Error(`sendPhoto failed: ${data.description}`);
 }
 
-// Runs inside the send queue. Returns the tx hash, or null if the wallet can't cover gas.
+function fuelGauge(balanceWei) {
+  const eth = Number(ethers.formatEther(balanceWei));
+  const filled = Math.max(0, Math.min(10, Math.round((eth / FUEL_FULL_ETN) * 10)));
+  return `[${"█".repeat(filled)}${"░".repeat(10 - filled)}] ${eth.toFixed(2)} ETN`;
+}
+
+// Runs inside the send queue. Returns { hash, tx, balance }, or { hash: null, balance } when the
+// wallet can't cover gas.
 async function sendTapTx(ctx) {
   const feeData = await ctx.provider.getFeeData();
   const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
@@ -86,25 +126,93 @@ async function sendTapTx(ctx) {
     value: 0n,
     gasLimit: TAP_GAS_LIMIT,
   });
-  return { hash: tx.hash, balance };
+  return { hash: tx.hash, tx, balance };
 }
 
-async function handleTap(ctx, chatId) {
-  const result = await enqueue(() => sendTapTx(ctx));
-  if (!result.hash) {
-    await sendText(
+// Keeps the database and the tap reply in step with the chain: the gas figure is only known once
+// the receipt lands, so it is written back in the background.
+function trackReceipt(tx) {
+  tx.wait()
+    .then((receipt) => setTapGas(tx.hash, (receipt.gasUsed * receipt.gasPrice).toString()))
+    .catch((err) => console.error("⚠️  Tap bot receipt tracking failed:", err.message));
+}
+
+async function handleTap(ctx, chatId, from) {
+  const progress = await sendText(ctx.token, chatId, "🔥 Tapping…");
+  const messageId = progress.message_id;
+
+  try {
+    const result = await enqueue(() => sendTapTx(ctx));
+    if (!result.hash) {
+      await editText(
+        ctx.token,
+        chatId,
+        messageId,
+        `🪫 <b>Out of gas!</b> The tap wallet has ${ethers.formatEther(result.balance)} ETN left, not enough for the next tap.\n\n` +
+          `Donate ETN to keep it running.`,
+      );
+      return;
+    }
+
+    await editText(ctx.token, chatId, messageId, "💥 Burning gas…");
+    await sleep(400);
+    await editText(ctx.token, chatId, messageId, "✨ Burned!");
+
+    trackReceipt(result.tx);
+    const name = from?.username ? `@${from.username}` : from?.first_name || "someone";
+    let stats = null;
+    try {
+      await recordTap({
+        txHash: result.hash,
+        chatId,
+        userId: from?.id,
+        username: from?.username,
+        firstName: from?.first_name,
+      });
+      stats = await getTapStats();
+    } catch (err) {
+      console.error("⚠️  Tap bot could not record tap:", err.message);
+    }
+
+    const taps = stats ? `Tap #${stats.taps} by ${escapeHtml(name)}` : `Tapped by ${escapeHtml(name)}`;
+    const flair = Math.random() < FLAIR_CHANCE ? `\n${FLAIR[Math.floor(Math.random() * FLAIR.length)]}` : "";
+    await editText(
       ctx.token,
       chatId,
-      `🪫 <b>Out of gas!</b> The tap wallet has ${ethers.formatEther(result.balance)} ETN left, not enough for the next tap.\n\n` +
-        `Donate ETN to keep it running.`,
+      messageId,
+      `🔥 <b>${taps}</b>\n<a href="${EXPLORER_BASE_URL}/tx/${result.hash}">View transaction</a>\n` +
+        `⛽ ${fuelGauge(result.balance)}${flair}`,
     );
-    return;
+
+    if (stats && stats.taps % MILESTONE_EVERY === 0) {
+      await sendText(ctx.token, chatId, `🎉 <b>Milestone!</b> ${stats.taps.toLocaleString()} taps burned so far.`);
+    }
+  } catch (err) {
+    console.error("⚠️  Tap failed:", err.message);
+    await editText(ctx.token, chatId, messageId, "⚠️ Tap failed. Try again in a moment.").catch(() => {});
   }
-  await sendText(
-    ctx.token,
-    chatId,
-    `🔥 <b>Tapped!</b> <a href="${EXPLORER_BASE_URL}/tx/${result.hash}">View transaction</a>`,
-  );
+}
+
+async function sendStats(ctx, chatId) {
+  const [stats, leaderboard, balance] = await Promise.all([
+    getTapStats().catch(() => null),
+    getLeaderboard(10).catch(() => null),
+    ctx.provider.getBalance(ctx.wallet.address),
+  ]);
+
+  const lines = [];
+  if (stats) {
+    const burned = Number(ethers.formatEther(stats.burnedWei)).toFixed(6);
+    lines.push(`📊 <b>Tap stats</b>`, `🔥 Taps: ${stats.taps.toLocaleString()}`, `🪙 Gas burned: ${burned} ETN`);
+  } else {
+    lines.push(`📊 <b>Tap stats</b> unavailable (no database configured)`);
+  }
+  lines.push(`⛽ ${fuelGauge(balance)}`);
+  if (leaderboard && leaderboard.length > 0) {
+    lines.push("", `🏆 <b>Leaderboard</b>`);
+    leaderboard.forEach((row, i) => lines.push(`${i + 1}. ${escapeHtml(row.name)} — ${row.taps.toLocaleString()}`));
+  }
+  await sendText(ctx.token, chatId, lines.join("\n"));
 }
 
 async function handleUpdate(ctx, update) {
@@ -112,14 +220,17 @@ async function handleUpdate(ctx, update) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
     await callApi(ctx.token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
-    if (cb.data === "tap") return handleTap(ctx, chatId);
+    if (cb.data === "tap") return handleTap(ctx, chatId, cb.from);
     if (cb.data === "donate") return sendDonation(ctx, chatId);
     return;
   }
 
   const text = update.message?.text;
-  if (text && /^\/(start|menu)(@\w+)?(\s|$)/.test(text)) {
+  if (!text) return;
+  if (/^\/(start|menu)(@\w+)?(\s|$)/.test(text)) {
     await sendText(ctx.token, update.message.chat.id, "Tap to burn a little ETN, or donate to keep the taps going.");
+  } else if (/^\/stats(@\w+)?(\s|$)/.test(text)) {
+    await sendStats(ctx, update.message.chat.id);
   }
 }
 
@@ -138,7 +249,7 @@ async function pollLoop(ctx) {
       }
     } catch (err) {
       console.error("⚠️  Tap bot poll failed:", err.message);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      await sleep(5000);
     }
   }
 }
