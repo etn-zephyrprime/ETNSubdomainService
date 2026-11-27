@@ -19,6 +19,10 @@ const TELEGRAM_API = "https://api.telegram.org";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 const TAP_GAS_LIMIT = 21000n;
 const POLL_TIMEOUT_SECONDS = 30;
+// Topic link t.me/c/2905908099/6550 → supergroup chat id -100<2905908099>, forum topic 6550.
+const TAP_CHAT_ID = String(process.env.TAP_BOT_CHAT_ID || "-1002905908099");
+const TAP_TOPIC_ID = Number(process.env.TAP_BOT_TOPIC_ID || 6550);
+const AUTO_DELETE_MS = 5 * 60 * 1000;
 const MILESTONE_EVERY = 1000;
 const FLAIR_CHANCE = 0.2;
 const FUEL_FULL_ETN = Number(process.env.TAP_FUEL_FULL_ETN || 100);
@@ -49,6 +53,8 @@ function enqueue(fn) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const inTapTopic = (message) =>
+  String(message?.chat?.id) === TAP_CHAT_ID && message?.message_thread_id === TAP_TOPIC_ID;
 
 async function callApi(token, method, body) {
   const res = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
@@ -62,13 +68,25 @@ async function callApi(token, method, body) {
   return data.result;
 }
 
+function scheduleDelete(token, chatId, messageId) {
+  setTimeout(() => {
+    callApi(token, "deleteMessage", { chat_id: chatId, message_id: messageId }).catch((err) =>
+      console.error("⚠️  Tap bot could not auto-delete message:", err.message),
+    );
+  }, AUTO_DELETE_MS);
+}
+
 function sendText(token, chatId, text, replyMarkup = MENU_KEYBOARD) {
   return callApi(token, "sendMessage", {
     chat_id: chatId,
+    message_thread_id: TAP_TOPIC_ID,
     text,
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: replyMarkup,
+  }).then((message) => {
+    scheduleDelete(token, chatId, message.message_id);
+    return message;
   });
 }
 
@@ -90,6 +108,7 @@ async function sendDonation(ctx, chatId) {
   const png = await QRCode.toBuffer(ctx.wallet.address, { type: "png", margin: 2, width: 512 });
   const form = new FormData();
   form.append("chat_id", String(chatId));
+  form.append("message_thread_id", String(TAP_TOPIC_ID));
   form.append("parse_mode", "HTML");
   form.append(
     "caption",
@@ -107,6 +126,7 @@ async function sendDonation(ctx, chatId) {
   });
   const data = await res.json();
   if (!data.ok) throw new Error(`sendPhoto failed: ${data.description}`);
+  scheduleDelete(ctx.token, chatId, data.result.message_id);
 }
 
 function fuelGauge(balanceWei) {
@@ -220,6 +240,7 @@ async function sendStats(ctx, chatId) {
 async function handleUpdate(ctx, update) {
   if (update.callback_query) {
     const cb = update.callback_query;
+    if (!inTapTopic(cb.message)) return;
     const chatId = cb.message.chat.id;
     await callApi(ctx.token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
     if (cb.data === "tap") return handleTap(ctx, chatId, cb.from);
@@ -227,13 +248,17 @@ async function handleUpdate(ctx, update) {
     return;
   }
 
-  const text = update.message?.text;
-  if (!text) return;
-  if (/^\/(start|menu)(@\w+)?(\s|$)/.test(text)) {
-    await sendText(ctx.token, update.message.chat.id, "Tap to burn a little ETN, or donate to keep the taps going.");
-  } else if (/^\/stats(@\w+)?(\s|$)/.test(text)) {
-    await sendStats(ctx, update.message.chat.id);
+  const message = update.message;
+  if (!message?.text || !inTapTopic(message)) return;
+  const chatId = message.chat.id;
+  if (/^\/(start|menu)(@\w+)?(\s|$)/.test(message.text)) {
+    await sendText(ctx.token, chatId, "Tap to burn a little ETN, or donate to keep the taps going.");
+  } else if (/^\/stats(@\w+)?(\s|$)/.test(message.text)) {
+    await sendStats(ctx, chatId);
+  } else {
+    return;
   }
+  scheduleDelete(ctx.token, chatId, message.message_id);
 }
 
 async function pollLoop(ctx) {
