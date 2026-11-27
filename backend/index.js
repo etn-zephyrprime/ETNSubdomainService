@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import generateNftRouter from "./utils/GenerateNft.js";
 import telegramLinkRouter, { registerTelegramWebhook } from "./utils/telegramLinkRouter.js";
+import discordTapRouter from "./utils/discordTapBot.js";
 import notisLinkRouter, { registerNotisWebhook } from "./utils/notisLinkRouter.js";
 import tokenChartRouter from "./utils/tokenChartRouter.js";
 import tokenLiquidityLockRouter from "./utils/tokenLiquidityLockRouter.js";
@@ -98,7 +99,7 @@ app.use(cors({
     return callback(new Error("Not allowed by CORS"));
   },
 }));
-app.use(express.json());
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "etn-name-service-backend" });
@@ -106,6 +107,7 @@ app.get("/", (req, res) => {
 
 app.use("/api", generateNftRouter);
 app.use("/api", telegramLinkRouter);
+app.use("/api", discordTapRouter);
 app.use("/api", notisLinkRouter);
 app.use("/api", tokenChartRouter);
 app.use("/api", tokenLiquidityLockRouter);
