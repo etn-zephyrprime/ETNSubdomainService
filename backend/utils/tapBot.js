@@ -30,12 +30,20 @@ const FLAIR_CHANCE = 0.2;
 const FUEL_FULL_ETN = Number(process.env.TAP_FUEL_FULL_ETN || 100);
 
 const FLAIR = [
-  "🐉 The dragon approves.",
-  "🚀 To the moon (of gas).",
-  "🧯 Fire contained. For now.",
-  "🪙 Every tap is a tiny ETN send-off.",
-  "🕹️ Tap responsibly.",
-  "🌋 Eruption level: minor.",
+  "🚀 Wen moon? Wen gas.",
+  "📜 Your tap is on-chain. Your regrets are not.",
+  "🦍 Diamond hands, gas-powered.",
+  "⛽ Not financial advice. Not even gas advice.",
+  "🪙 Congrats, you just paid the network to hear you click.",
+  "🐢 Block times are a lifestyle.",
+  "⚡ Electroneum: lightning-fast, thumb-powered.",
+  "🧠 Brain: 0 gas. Thumb: 1 tap.",
+  "🔥 Burning ETN one tap at a time, no s'mores included.",
+  "🕳️ Down the gas-fee rabbit hole we go.",
+  "🫡 Nonce up, dignity down.",
+  "🎰 Every tap is a tiny donation to the gas gods.",
+  "🔐 Not your keys, not your ETN. But this tap is all yours.",
+  "🧾 Proof of tap, proof of nap-free thumbs.",
 ];
 
 const MENU_TEXT = "Tap to burn a little ETN, or donate to keep the taps going.";
