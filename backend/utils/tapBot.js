@@ -23,6 +23,7 @@ const POLL_TIMEOUT_SECONDS = 30;
 const TAP_CHAT_ID = String(process.env.TAP_BOT_CHAT_ID || "-1002905908099");
 const TAP_TOPIC_ID = Number(process.env.TAP_BOT_TOPIC_ID || 6550);
 const AUTO_DELETE_MS = 5 * 60 * 1000;
+const MENU_CHECK_MS = 60 * 1000;
 const MILESTONE_EVERY = 1000;
 const FLAIR_CHANCE = 0.2;
 const FUEL_FULL_ETN = Number(process.env.TAP_FUEL_FULL_ETN || 100);
@@ -36,12 +37,45 @@ const FLAIR = [
   "🌋 Eruption level: minor.",
 ];
 
+const MENU_TEXT = "Tap to burn a little ETN, or donate to keep the taps going.";
+
 const MENU_KEYBOARD = {
   inline_keyboard: [
     [{ text: "🔥 Tap (burn gas)", callback_data: "tap" }],
     [{ text: "💰 Donate ETN", callback_data: "donate" }],
   ],
 };
+
+// The menu is the one bot message that is never auto-deleted, so the topic always has a button
+// to tap. Only one menu exists at a time: posting a new one removes the previous one.
+let menuAnchor = null;
+
+async function postMenu(token, chatId) {
+  const message = await callApi(token, "sendMessage", {
+    chat_id: chatId,
+    message_thread_id: TAP_TOPIC_ID,
+    text: MENU_TEXT,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    reply_markup: MENU_KEYBOARD,
+  });
+  const previous = menuAnchor;
+  menuAnchor = { chatId, messageId: message.message_id };
+  if (previous) {
+    callApi(token, "deleteMessage", { chat_id: previous.chatId, message_id: previous.messageId }).catch(() => {});
+  }
+  return message;
+}
+
+// Re-posts the menu if it has been deleted. An unchanged edit is a no-op that proves it still exists.
+async function ensureMenu(token) {
+  if (!menuAnchor) return postMenu(token, TAP_CHAT_ID);
+  try {
+    await editText(token, menuAnchor.chatId, menuAnchor.messageId, MENU_TEXT);
+  } catch {
+    await postMenu(token, menuAnchor.chatId);
+  }
+}
 
 // Taps share one wallet, so sends are serialized to keep nonces from colliding.
 let sendQueue = Promise.resolve();
@@ -252,7 +286,7 @@ async function handleUpdate(ctx, update) {
   if (!message?.text || !inTapTopic(message)) return;
   const chatId = message.chat.id;
   if (/^\/(tap|menu)(@\w+)?(\s|$)/.test(message.text)) {
-    await sendText(ctx.token, chatId, "Tap to burn a little ETN, or donate to keep the taps going.");
+    await postMenu(ctx.token, chatId);
   } else if (/^\/statto(@\w+)?(\s|$)/.test(message.text)) {
     await sendStats(ctx, chatId);
   } else {
@@ -293,5 +327,9 @@ export async function startTapBot() {
   const me = await callApi(token, "getMe", {});
 
   console.log(`🔥 Tap bot @${me.username} started — wallet ${wallet.address}`);
+  await ensureMenu(token).catch((err) => console.error("⚠️  Tap bot could not post menu:", err.message));
+  setInterval(() => {
+    ensureMenu(token).catch((err) => console.error("⚠️  Tap bot menu check failed:", err.message));
+  }, MENU_CHECK_MS);
   pollLoop({ token, provider, wallet });
 }
