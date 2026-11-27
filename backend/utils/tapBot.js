@@ -251,9 +251,9 @@ async function handleUpdate(ctx, update) {
   const message = update.message;
   if (!message?.text || !inTapTopic(message)) return;
   const chatId = message.chat.id;
-  if (/^\/(start|menu)(@\w+)?(\s|$)/.test(message.text)) {
+  if (/^\/(tap|menu)(@\w+)?(\s|$)/.test(message.text)) {
     await sendText(ctx.token, chatId, "Tap to burn a little ETN, or donate to keep the taps going.");
-  } else if (/^\/stats(@\w+)?(\s|$)/.test(message.text)) {
+  } else if (/^\/statto(@\w+)?(\s|$)/.test(message.text)) {
     await sendStats(ctx, chatId);
   } else {
     return;
