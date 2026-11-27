@@ -90,7 +90,20 @@ const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
 const inTapTopic = (message) =>
   String(message?.chat?.id) === TAP_CHAT_ID && message?.message_thread_id === TAP_TOPIC_ID;
 
-async function callApi(token, method, body) {
+// Telegram allows roughly 20 messages a minute per group. Sends are spaced to stay under that, and a
+// 429 response is retried after the wait Telegram asks for.
+const SEND_GAP_MS = 3100;
+const SENDING_METHODS = new Set(["sendMessage", "sendPhoto"]);
+let nextSendAt = 0;
+async function throttleSend() {
+  const now = Date.now();
+  const at = Math.max(now, nextSendAt);
+  nextSendAt = at + SEND_GAP_MS;
+  if (at > now) await sleep(at - now);
+}
+
+async function callApi(token, method, body, attempt = 0) {
+  if (SENDING_METHODS.has(method)) await throttleSend();
   const res = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -98,7 +111,13 @@ async function callApi(token, method, body) {
     signal: AbortSignal.timeout((POLL_TIMEOUT_SECONDS + 10) * 1000),
   });
   const data = await res.json();
-  if (!data.ok) throw new Error(`${method} failed: ${data.description}`);
+  if (!data.ok) {
+    if (data.error_code === 429 && attempt < 3) {
+      await sleep((data.parameters?.retry_after ?? 5) * 1000);
+      return callApi(token, method, body, attempt + 1);
+    }
+    throw new Error(`${method} failed: ${data.description}`);
+  }
   return data.result;
 }
 
@@ -153,6 +172,7 @@ async function sendDonation(ctx, chatId) {
   );
   form.append("reply_markup", JSON.stringify(MENU_KEYBOARD));
   form.append("photo", new Blob([png], { type: "image/png" }), "donate.png");
+  await throttleSend();
   const res = await fetch(`${TELEGRAM_API}/bot${ctx.token}/sendPhoto`, {
     method: "POST",
     body: form,
