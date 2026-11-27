@@ -14,6 +14,7 @@ import { ethers } from "ethers";
 import QRCode from "qrcode";
 import { createRpcProvider } from "./rpcProvider.js";
 import { recordTap, setTapGas, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
+import { buildBurnGif } from "./tapBurnGif.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
@@ -49,6 +50,7 @@ const MENU_KEYBOARD = {
 // The menu is the one bot message that is never auto-deleted, so the topic always has a button
 // to tap. Only one menu exists at a time: posting a new one removes the previous one.
 let menuAnchor = null;
+let burnGif = null;
 
 async function postMenu(token, chatId) {
   const message = await callApi(token, "sendMessage", {
@@ -157,6 +159,38 @@ function editText(token, chatId, messageId, text, replyMarkup = MENU_KEYBOARD) {
   });
 }
 
+function editCaption(token, chatId, messageId, caption, replyMarkup = MENU_KEYBOARD) {
+  return callApi(token, "editMessageCaption", {
+    chat_id: chatId,
+    message_id: messageId,
+    caption,
+    parse_mode: "HTML",
+    reply_markup: replyMarkup,
+  }).catch((err) => {
+    if (!/not modified/.test(err.message)) throw err;
+  });
+}
+
+async function sendBurnAnimation(ctx, chatId, caption) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("message_thread_id", String(TAP_TOPIC_ID));
+  form.append("parse_mode", "HTML");
+  form.append("caption", caption);
+  form.append("reply_markup", JSON.stringify(MENU_KEYBOARD));
+  form.append("animation", new Blob([burnGif], { type: "image/gif" }), "burning.gif");
+  await throttleSend();
+  const res = await fetch(`${TELEGRAM_API}/bot${ctx.token}/sendAnimation`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(20000),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`sendAnimation failed: ${data.description}`);
+  scheduleDelete(ctx.token, chatId, data.result.message_id);
+  return data.result;
+}
+
 async function sendDonation(ctx, chatId) {
   const png = await QRCode.toBuffer(ctx.wallet.address, { type: "png", margin: 2, width: 512 });
   const form = new FormData();
@@ -226,25 +260,29 @@ function trackReceipt(tx) {
 }
 
 async function handleTap(ctx, chatId, from) {
-  const progress = await sendText(ctx.token, chatId, "🔥 Tapping…");
+  let usingGif = Boolean(burnGif);
+  let progress = usingGif ? await sendBurnAnimation(ctx, chatId, "🔥 Burning…").catch(() => null) : null;
+  if (!progress) {
+    usingGif = false;
+    progress = await sendText(ctx.token, chatId, "🔥 Tapping…");
+  }
   const messageId = progress.message_id;
+  const setProgress = (text) =>
+    usingGif ? editCaption(ctx.token, chatId, messageId, text) : editText(ctx.token, chatId, messageId, text);
 
   try {
     const result = await enqueue(() => sendTapTx(ctx));
     if (!result.hash) {
-      await editText(
-        ctx.token,
-        chatId,
-        messageId,
+      await setProgress(
         `🪫 <b>Out of gas!</b> The tap wallet has ${ethers.formatEther(result.balance)} ETN left, not enough for the next tap.\n\n` +
           `Donate ETN to keep it running.`,
       );
       return;
     }
 
-    await editText(ctx.token, chatId, messageId, "💥 Burning gas…");
+    await setProgress("💥 Burning gas…");
     await sleep(400);
-    await editText(ctx.token, chatId, messageId, "✨ Burned!");
+    await setProgress("✨ Burned!");
 
     trackReceipt(result.tx);
     const name = from?.username ? `@${from.username}` : from?.first_name || "someone";
@@ -264,10 +302,7 @@ async function handleTap(ctx, chatId, from) {
 
     const taps = stats ? `Tap #${stats.taps} by ${escapeHtml(name)}` : `Tapped by ${escapeHtml(name)}`;
     const flair = Math.random() < FLAIR_CHANCE ? `\n${FLAIR[Math.floor(Math.random() * FLAIR.length)]}` : "";
-    await editText(
-      ctx.token,
-      chatId,
-      messageId,
+    await setProgress(
       `🔥 <b>${taps}</b>\n<a href="${EXPLORER_BASE_URL}/tx/${result.hash}">View transaction</a>\n` +
         `⛽ ${fuelGauge(result.balance)}${flair}`,
     );
@@ -277,7 +312,7 @@ async function handleTap(ctx, chatId, from) {
     }
   } catch (err) {
     console.error("⚠️  Tap failed:", err.message);
-    await editText(ctx.token, chatId, messageId, "⚠️ Tap failed. Try again in a moment.").catch(() => {});
+    await setProgress("⚠️ Tap failed. Try again in a moment.").catch(() => {});
   }
 }
 
@@ -359,6 +394,10 @@ export async function startTapBot() {
   const wallet = new ethers.Wallet(process.env.TAP_WALLET_PRIVATE_KEY, provider);
   const token = process.env.TAP_BOT_TOKEN;
   const me = await callApi(token, "getMe", {});
+  burnGif = await buildBurnGif().catch((err) => {
+    console.error("⚠️  Tap bot could not build burn GIF, using text progress:", err.message);
+    return null;
+  });
 
   console.log(`🔥 Tap bot @${me.username} started — wallet ${wallet.address}`);
   await ensureMenu(token).catch((err) => console.error("⚠️  Tap bot could not post menu:", err.message));
