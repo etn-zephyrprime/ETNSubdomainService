@@ -97,8 +97,11 @@ function enqueue(fn) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const inTapTopic = (message) =>
-  String(message?.chat?.id) === TAP_CHAT_ID && message?.message_thread_id === TAP_TOPIC_ID;
+const isAllowedChat = (message) =>
+  message?.chat?.type === "private" ||
+  (String(message?.chat?.id) === TAP_CHAT_ID && message?.message_thread_id === TAP_TOPIC_ID);
+// Private chats have no topic; group messages must go to the tap topic.
+const topicParams = (chatId) => (String(chatId) === TAP_CHAT_ID ? { message_thread_id: TAP_TOPIC_ID } : {});
 
 // Telegram allows roughly 20 messages a minute per group. Sends are spaced to stay under that, and a
 // 429 response is retried after the wait Telegram asks for.
@@ -139,16 +142,16 @@ function scheduleDelete(token, chatId, messageId) {
   }, AUTO_DELETE_MS);
 }
 
-function sendText(token, chatId, text, replyMarkup = MENU_KEYBOARD) {
+function sendText(token, chatId, text, replyMarkup = MENU_KEYBOARD, { persist = false } = {}) {
   return callApi(token, "sendMessage", {
     chat_id: chatId,
-    message_thread_id: TAP_TOPIC_ID,
+    ...topicParams(chatId),
     text,
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: replyMarkup,
   }).then((message) => {
-    scheduleDelete(token, chatId, message.message_id);
+    if (!persist) scheduleDelete(token, chatId, message.message_id);
     return message;
   });
 }
@@ -182,7 +185,7 @@ function editCaption(token, chatId, messageId, caption, replyMarkup = MENU_KEYBO
 async function sendBurnAnimation(ctx, chatId, caption) {
   const form = new FormData();
   form.append("chat_id", String(chatId));
-  form.append("message_thread_id", String(TAP_TOPIC_ID));
+  for (const [key, value] of Object.entries(topicParams(chatId))) form.append(key, String(value));
   form.append("parse_mode", "HTML");
   form.append("caption", caption);
   form.append("reply_markup", JSON.stringify(MENU_KEYBOARD));
@@ -203,7 +206,7 @@ async function sendDonation(ctx, chatId) {
   const png = await QRCode.toBuffer(ctx.wallet.address, { type: "png", margin: 2, width: 512 });
   const form = new FormData();
   form.append("chat_id", String(chatId));
-  form.append("message_thread_id", String(TAP_TOPIC_ID));
+  for (const [key, value] of Object.entries(topicParams(chatId))) form.append(key, String(value));
   form.append("parse_mode", "HTML");
   form.append(
     "caption",
@@ -349,7 +352,7 @@ async function sendStats(ctx, chatId) {
 async function handleUpdate(ctx, update) {
   if (update.callback_query) {
     const cb = update.callback_query;
-    if (!inTapTopic(cb.message)) return;
+    if (!isAllowedChat(cb.message)) return;
     const chatId = cb.message.chat.id;
     await callApi(ctx.token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
     if (cb.data === "tap") return handleTap(ctx, chatId, cb.from);
@@ -358,10 +361,14 @@ async function handleUpdate(ctx, update) {
   }
 
   const message = update.message;
-  if (!message?.text || !inTapTopic(message)) return;
+  if (!message?.text || !isAllowedChat(message)) return;
   const chatId = message.chat.id;
   if (/^\/(tap|menu)(@\w+)?(\s|$)/.test(message.text)) {
-    await postMenu(ctx.token, chatId);
+    if (message.chat.type === "private") {
+      await sendText(ctx.token, chatId, MENU_TEXT, MENU_KEYBOARD, { persist: true });
+    } else {
+      await postMenu(ctx.token, chatId);
+    }
   } else if (/^\/statto(@\w+)?(\s|$)/.test(message.text)) {
     await sendStats(ctx, chatId);
   } else {
