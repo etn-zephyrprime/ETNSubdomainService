@@ -189,10 +189,20 @@ function fuelGauge(balanceWei) {
   return `[${"█".repeat(filled)}${"░".repeat(10 - filled)}] ${eth.toFixed(2)} ETN`;
 }
 
+// Fee data is reused for 30s so each tap doesn't re-query the RPC for it.
+const FEE_CACHE_MS = 30 * 1000;
+let feeCache = { at: 0, data: null };
+async function currentFees(provider) {
+  if (!feeCache.data || Date.now() - feeCache.at > FEE_CACHE_MS) {
+    feeCache = { at: Date.now(), data: await provider.getFeeData() };
+  }
+  return feeCache.data;
+}
+
 // Runs inside the send queue. Returns { hash, tx, balance }, or { hash: null, balance } when the
 // wallet can't cover gas.
 async function sendTapTx(ctx) {
-  const feeData = await ctx.provider.getFeeData();
+  const feeData = await currentFees(ctx.provider);
   const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice;
   const balance = await ctx.provider.getBalance(ctx.wallet.address);
   if (balance < TAP_GAS_LIMIT * gasPrice) return { hash: null, balance };
@@ -201,6 +211,8 @@ async function sendTapTx(ctx) {
     to: ctx.wallet.address,
     value: 0n,
     gasLimit: TAP_GAS_LIMIT,
+    maxFeePerGas: feeData.maxFeePerGas,
+    maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
   });
   return { hash: tx.hash, tx, balance };
 }
@@ -342,6 +354,8 @@ export async function startTapBot() {
   }
 
   const provider = createRpcProvider();
+  // Receipt polling every 15s instead of ethers' 4s default; the bot doesn't need faster confirmations.
+  provider.pollingInterval = 15000;
   const wallet = new ethers.Wallet(process.env.TAP_WALLET_PRIVATE_KEY, provider);
   const token = process.env.TAP_BOT_TOKEN;
   const me = await callApi(token, "getMe", {});
