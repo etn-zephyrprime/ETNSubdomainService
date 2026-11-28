@@ -14,6 +14,7 @@ import { ethers } from "ethers";
 import QRCode from "qrcode";
 import { recordTap, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
 import { buildBurnGif } from "./tapBurnGif.js";
+import { rollHuntDrop } from "./tapHunt.js";
 import {
   EXPLORER_BASE_URL,
   MILESTONE_EVERY,
@@ -206,6 +207,28 @@ async function sendDonation(ctx, chatId) {
   scheduleDelete(ctx.token, chatId, data.result.message_id);
 }
 
+async function sendDirect(token, userId, text) {
+  try {
+    await callApi(token, "sendMessage", {
+      chat_id: userId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
+    return true;
+  } catch (err) {
+    console.error("⚠️  Tap bot could not DM a hunt word:", err.message);
+    return false;
+  }
+}
+
+function huntMessage(hunt) {
+  const word = escapeHtml(hunt.word);
+  if (!hunt.isNew) return `🧩 You found <b>${word}</b> again. You already had it.`;
+  const done = hunt.won ? "\n🏁 You now have all 24 words. Work out the order yourself." : "";
+  return `🧩 You found a word: <b>${word}</b>${done}`;
+}
+
 async function handleTap(ctx, chatId, from) {
   let usingGif = Boolean(burnGif);
   let progress = usingGif ? await sendBurnAnimation(ctx, chatId, "🔥 Burning…").catch(() => null) : null;
@@ -249,10 +272,25 @@ async function handleTap(ctx, chatId, from) {
 
     const taps = stats ? `Tap #${stats.taps} by ${escapeHtml(name)}` : `Tapped by ${escapeHtml(name)}`;
     const flair = maybeFlair();
+    const hunt = await rollHuntDrop(from.id).catch((err) => {
+      console.error("⚠️  Tap hunt roll failed:", err.message);
+      return null;
+    });
+    let huntLine = "";
+    if (hunt) {
+      const delivered = await sendDirect(ctx.token, from.id, huntMessage(hunt));
+      huntLine =
+        `\n📜 ${escapeHtml(hunt.sentence)}` +
+        (delivered ? "" : "\n📩 Start a private chat with me to receive your words.");
+    }
     await setProgress(
       `🔥 <b>${taps}</b>\n<a href="${EXPLORER_BASE_URL}/tx/${result.hash}">View transaction</a>\n` +
-        `⛽ ${fuelGauge(result.balance)}${flair}`,
+        `⛽ ${fuelGauge(result.balance)}${flair}${huntLine}`,
     );
+
+    if (hunt?.won) {
+      await sendText(ctx.token, chatId, "🏁 <b>Someone has collected all 24 words!</b>");
+    }
 
     if (stats && stats.taps % MILESTONE_EVERY === 0) {
       await sendText(ctx.token, chatId, `🎉 <b>Milestone!</b> ${stats.taps.toLocaleString()} taps burned so far.`);
