@@ -46,6 +46,31 @@ function loadHuntWords() {
   return huntWords;
 }
 
+/** The prize wallet address: TAP_PRIZE_ADDRESS if set, otherwise derived from TAP_PRIZE_MNEMONIC. Null when neither is configured. */
+export function prizeAddress() {
+  if (process.env.TAP_PRIZE_ADDRESS) return process.env.TAP_PRIZE_ADDRESS;
+  if (!loadHuntWords()) return null;
+  return ethers.HDNodeWallet.fromPhrase(process.env.TAP_PRIZE_MNEMONIC).address;
+}
+
+/** The prize wallet balance as text, e.g. "12.34 ETN", or null if unavailable. Cached for a minute. */
+let treasureCache = { at: 0, text: null };
+const TREASURE_CACHE_MS = 60 * 1000;
+export async function prizeTreasure(provider) {
+  if (Date.now() - treasureCache.at < TREASURE_CACHE_MS) return treasureCache.text;
+  let text = null;
+  if (loadHuntWords()) {
+    try {
+      const balance = await provider.getBalance(prizeAddress());
+      text = `${Number(ethers.formatEther(balance)).toFixed(2)} ETN`;
+    } catch (err) {
+      console.error("⚠️  Could not read treasure balance:", err.message);
+    }
+  }
+  treasureCache = { at: Date.now(), text };
+  return text;
+}
+
 /** Chance that any one tap drops a word, given how many words the leading player holds. */
 export function dropChance(leaderDistinct) {
   if (leaderDistinct < 6) return 1 / 500;

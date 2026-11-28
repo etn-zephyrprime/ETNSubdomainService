@@ -5,6 +5,7 @@
 import { ethers } from "ethers";
 import { createRpcProvider } from "./rpcProvider.js";
 import { setTapGas } from "../db/tapBotTaps.js";
+import { prizeTreasure } from "./tapHunt.js";
 
 export const EXPLORER_BASE_URL = process.env.EXPLORER_BASE_URL || "https://blockexplorer.electroneum.com";
 export const TAP_GAS_LIMIT = 21000n;
@@ -12,6 +13,25 @@ export const MILESTONE_EVERY = 1000;
 export const FLAIR_CHANCE = 0.2;
 export const FUEL_FULL_ETN = Number(process.env.TAP_FUEL_FULL_ETN || 100);
 export const MENU_TEXT = "Tap to burn a little ETN, or donate to keep the taps going.";
+
+/** Menu text, with the treasure hunt section and live treasure balance when the hunt is configured. Plain text, safe for Telegram and Discord. */
+export async function menuText() {
+  const treasure = await prizeTreasure(getTapContext().provider);
+  if (!treasure) return MENU_TEXT;
+  return [
+    MENU_TEXT,
+    "",
+    "🏴‍☠️ TREASURE HUNT",
+    "Taps can reveal words from a secret 24-word seed phrase. Collect them all and work out the order to unlock the treasure wallet.",
+    `💰 Current treasure: ${treasure}`,
+    "",
+    "How to start:",
+    "1. Tap 🔥 and watch for a 📜 sentence in the tap message.",
+    "2. Each word you find is sent to you privately. Keep track of them there.",
+    "3. Collect all 24 words and work out their order yourself.",
+    "4. Import the phrase into a wallet to claim the treasure.",
+  ].join("\n");
+}
 
 const FLAIR = [
   "🚀 Wen moon? Wen gas.",

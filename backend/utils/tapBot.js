@@ -14,11 +14,12 @@ import { ethers } from "ethers";
 import QRCode from "qrcode";
 import { recordTap, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
 import { buildBurnGif } from "./tapBurnGif.js";
-import { rollHuntDrop } from "./tapHunt.js";
+import { rollHuntDrop, prizeAddress } from "./tapHunt.js";
 import {
   EXPLORER_BASE_URL,
   MILESTONE_EVERY,
   MENU_TEXT,
+  menuText,
   enqueue,
   fuelGauge,
   getTapContext,
@@ -39,6 +40,7 @@ const MENU_KEYBOARD = {
   inline_keyboard: [
     [{ text: "🔥 Tap (burn gas)", callback_data: "tap" }],
     [{ text: "💰 Donate ETN", callback_data: "donate" }],
+    [{ text: "🏴‍☠️ Add to treasure", callback_data: "treasure" }],
   ],
 };
 
@@ -51,7 +53,7 @@ async function postMenu(token, chatId) {
   const message = await callApi(token, "sendMessage", {
     chat_id: chatId,
     message_thread_id: TAP_TOPIC_ID,
-    text: MENU_TEXT,
+    text: await menuText(),
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: MENU_KEYBOARD,
@@ -68,7 +70,7 @@ async function postMenu(token, chatId) {
 async function ensureMenu(token) {
   if (!menuAnchor) return postMenu(token, TAP_CHAT_ID);
   try {
-    await editText(token, menuAnchor.chatId, menuAnchor.messageId, MENU_TEXT);
+    await editText(token, menuAnchor.chatId, menuAnchor.messageId, await menuText());
   } catch {
     await postMenu(token, menuAnchor.chatId);
   }
@@ -181,15 +183,15 @@ async function sendBurnAnimation(ctx, chatId, caption) {
   return data.result;
 }
 
-async function sendDonation(ctx, chatId) {
-  const png = await QRCode.toBuffer(ctx.wallet.address, { type: "png", margin: 2, width: 512 });
+async function sendDonation(ctx, chatId, address = ctx.wallet.address, heading = "💰 <b>Donate ETN to keep the taps going</b>") {
+  const png = await QRCode.toBuffer(address, { type: "png", margin: 2, width: 512 });
   const form = new FormData();
   form.append("chat_id", String(chatId));
   for (const [key, value] of Object.entries(topicParams(chatId))) form.append(key, String(value));
   form.append("parse_mode", "HTML");
   form.append(
     "caption",
-    `💰 <b>Donate ETN to keep the taps going</b>\n\n<code>${ctx.wallet.address}</code>\n\n` +
+    `${heading}\n\n<code>${address}</code>\n\n` +
       `Scan the QR code or send ETN on Electroneum to the address above.\n\n` +
       `⚠️ <b>Disclaimer:</b> this is a plain ETN transfer to a wallet, not a smart contract. ` +
       `Donations are not refundable or guaranteed. Send at your own risk.`,
@@ -331,6 +333,11 @@ async function handleUpdate(ctx, update) {
     await callApi(ctx.token, "answerCallbackQuery", { callback_query_id: cb.id }).catch(() => {});
     if (cb.data === "tap") return handleTap(ctx, chatId, cb.from);
     if (cb.data === "donate") return sendDonation(ctx, chatId);
+    if (cb.data === "treasure") {
+      const address = prizeAddress();
+      if (!address) return sendText(ctx.token, chatId, "🏴‍☠️ The treasure hunt isn't active right now.");
+      return sendDonation(ctx, chatId, address, "🏴‍☠️ <b>Add to the treasure</b>");
+    }
     return;
   }
 
@@ -339,7 +346,7 @@ async function handleUpdate(ctx, update) {
   const chatId = message.chat.id;
   if (/^\/(tap|menu)(@\w+)?(\s|$)/.test(message.text)) {
     if (message.chat.type === "private") {
-      await sendText(ctx.token, chatId, MENU_TEXT, MENU_KEYBOARD, { persist: true });
+      await sendText(ctx.token, chatId, await menuText(), MENU_KEYBOARD, { persist: true });
     } else {
       await postMenu(ctx.token, chatId);
     }

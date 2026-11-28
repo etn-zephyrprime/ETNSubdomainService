@@ -13,11 +13,11 @@ import QRCode from "qrcode";
 import { ethers } from "ethers";
 import { recordTap, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
 import { buildBurnGif } from "./tapBurnGif.js";
-import { rollHuntDrop } from "./tapHunt.js";
+import { rollHuntDrop, prizeAddress } from "./tapHunt.js";
 import {
   EXPLORER_BASE_URL,
   MILESTONE_EVERY,
-  MENU_TEXT,
+  menuText,
   enqueue,
   fuelGauge,
   getTapContext,
@@ -37,6 +37,10 @@ const MENU_COMPONENTS = [
       { type: 2, style: 1, label: "🔥 Tap (burn gas)", custom_id: "tap" },
       { type: 2, style: 2, label: "💰 Donate ETN", custom_id: "donate" },
     ],
+  },
+  {
+    type: 1,
+    components: [{ type: 2, style: 3, label: "🏴‍☠️ Add to treasure", custom_id: "treasure" }],
   },
 ];
 
@@ -231,14 +235,17 @@ async function handleTap(interaction) {
   }
 }
 
-async function handleDonate(interaction) {
+async function handleDonate(
+  interaction,
+  address = getTapContext().wallet.address,
+  heading = "💰 **Donate ETN to keep the taps going**",
+) {
   const token = interaction.token;
-  const address = getTapContext().wallet.address;
   try {
     const png = await QRCode.toBuffer(address, { type: "png", margin: 2, width: 512 });
     await editOriginal(token, {
       content:
-        "💰 **Donate ETN to keep the taps going**\n\n" +
+        heading + "\n\n" +
         `\`${address}\`\n\n` +
         "Scan the QR code or send ETN on Electroneum to the address above.\n\n" +
         "⚠️ **Disclaimer:** this is a plain ETN transfer to a wallet, not a smart contract. " +
@@ -254,7 +261,7 @@ async function handleDonate(interaction) {
 
 const router = Router();
 
-router.post("/discord/tap/interactions", (req, res) => {
+router.post("/discord/tap/interactions", async (req, res) => {
   if (!isEnabled()) return res.status(404).end();
 
   const signature = req.get("X-Signature-Ed25519");
@@ -269,7 +276,7 @@ router.post("/discord/tap/interactions", (req, res) => {
 
   if (interaction.type === 1) return res.json({ type: 1 });
   if (interaction.type === 2 && name === "tap") {
-    return res.json({ type: 4, data: { content: MENU_TEXT, components: MENU_COMPONENTS } });
+    return res.json({ type: 4, data: { content: await menuText(), components: MENU_COMPONENTS } });
   }
   if (interaction.type === 2 && name === "statto") {
     res.json({ type: 5 });
@@ -279,6 +286,13 @@ router.post("/discord/tap/interactions", (req, res) => {
   if (interaction.type === 3 && customId === "tap") {
     res.json({ type: 5 });
     handleTap(interaction);
+    return;
+  }
+  if (interaction.type === 3 && customId === "treasure") {
+    const address = prizeAddress();
+    if (!address) return res.json({ type: 4, data: { content: "The treasure hunt isn't active right now.", flags: 64 } });
+    res.json({ type: 5 });
+    handleDonate(interaction, address, "🏴‍☠️ **Add to the treasure**");
     return;
   }
   if (interaction.type === 3 && customId === "donate") {
