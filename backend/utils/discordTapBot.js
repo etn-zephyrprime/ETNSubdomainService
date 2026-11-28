@@ -13,6 +13,7 @@ import QRCode from "qrcode";
 import { ethers } from "ethers";
 import { recordTap, getTapStats, getLeaderboard } from "../db/tapBotTaps.js";
 import { buildBurnGif } from "./tapBurnGif.js";
+import { rollHuntDrop } from "./tapHunt.js";
 import {
   EXPLORER_BASE_URL,
   MILESTONE_EVERY,
@@ -113,15 +114,22 @@ function scheduleOriginalDelete(interactionToken) {
   }, AUTO_DELETE_MS);
 }
 
-async function followUp(interactionToken, content) {
+async function followUp(interactionToken, content, { persist = false } = {}) {
   const message = await discordFetch(`${webhookUrl(interactionToken)}?wait=true`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ content }),
   });
+  if (persist) return;
   setTimeout(() => {
     discordFetch(`${webhookUrl(interactionToken)}/messages/${message.id}`, { method: "DELETE" }).catch(() => {});
   }, AUTO_DELETE_MS);
+}
+
+function discordHuntMessage(hunt) {
+  if (!hunt.isNew) return `🧩 You found **${hunt.word}** again. You already had it.`;
+  const done = hunt.won ? "\n🏁 You now have all 24 words. Work out the order yourself." : "";
+  return `🧩 You found a word: **${hunt.word}**${done}`;
 }
 
 async function statsText() {
@@ -195,11 +203,22 @@ async function handleTap(interaction) {
     }
 
     const taps = stats ? `Tap #${stats.taps} by ${name}` : `Tapped by ${name}`;
+    const hunt = await rollHuntDrop(user?.id).catch((err) => {
+      console.error("⚠️  Discord tap hunt roll failed:", err.message);
+      return null;
+    });
+    const huntLine = hunt ? `\n📜 ${hunt.sentence}` : "";
     await editOriginal(token, {
       content:
         `🔥 **${taps}**\n[View transaction](${EXPLORER_BASE_URL}/tx/${result.hash})\n` +
-        `⛽ ${fuelGauge(result.balance)}${maybeFlair()}`,
+        `⛽ ${fuelGauge(result.balance)}${maybeFlair()}${huntLine}`,
     });
+
+    if (hunt) {
+      await followUp(token, discordHuntMessage(hunt), { persist: true }).catch((err) =>
+        console.error("⚠️  Discord hunt word could not be sent:", err.message),
+      );
+    }
 
     if (stats && stats.taps % MILESTONE_EVERY === 0) {
       await followUp(token, `🎉 **Milestone!** ${stats.taps.toLocaleString()} taps burned so far.`);
